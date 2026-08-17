@@ -6,8 +6,11 @@ require (
 	github.com/SENERGY-Platform/device-repository v0.2.51
 	github.com/SENERGY-Platform/models/go v0.0.0-20260710115411-5b8e00d6e038
 	github.com/SENERGY-Platform/service-commons v0.0.0-20260507090252-155b04bb4c46
+	github.com/SENERGY-Platform/timescale-wrapper v0.1.0
 	github.com/gin-contrib/cors v1.7.7
 	github.com/gin-gonic/gin v1.12.0
+	github.com/gorilla/websocket v1.5.3
+	gonum.org/v1/gonum v0.17.0
 )
 
 require (
