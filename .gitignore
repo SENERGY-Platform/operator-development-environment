@@ -1,0 +1,27 @@
+# binaries
+/operator-development-environment
+/ode
+__debug_bin*
+
+# local overrides
+config.local.json
+.env
+.env.*
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# editors
+.idea/
+*.iml
+
+# Shared VS Code run configs are committed; per-user state is not.
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
+!.vscode/extensions.json
+frontend/*.tsbuildinfo
+frontend/.env.local
