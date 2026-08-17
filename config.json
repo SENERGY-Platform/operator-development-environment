@@ -1,0 +1,14 @@
+{
+  "api_port": "8080",
+  "debug": true,
+
+  "required_realm_role": "developer",
+
+  "device_repo_url": "https://api.senergy.infai.org/device-repository",
+  "timescale_wrapper_url": "https://api.senergy.infai.org/db",
+
+  "ontology_cache_ttl": "1h",
+  "ontology_invalidate_interval": "5m",
+
+  "cors_origins": ["http://localhost:5173"]
+}
