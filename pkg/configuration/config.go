@@ -42,6 +42,26 @@ type ConfigStruct struct {
 	OntologyCacheTtl      string `json:"ontology_cache_ttl"`
 	OntologyInvalidateInt string `json:"ontology_invalidate_interval"`
 
+	// TimeseriesRequestTimeout bounds a single timescale-wrapper request. A
+	// profiler pass over a long window is the slowest thing ODE asks of the
+	// platform, so this is generous by design.
+	TimeseriesRequestTimeout string `json:"timeseries_request_timeout"`
+
+	// Profiler windows (SPEC D25). The raw pass reads the smaller of these two
+	// bounds, anchored at the most recent data.
+	//
+	// int64 rather than int deliberately: HandleEnvironmentVars only knows how to
+	// set Int64 among the integer kinds, so an int field would silently ignore
+	// its environment variable.
+	ProfilerRawWindowDays      int64 `json:"profiler_raw_window_days"`
+	ProfilerRawWindowPoints    int64 `json:"profiler_raw_window_points"`
+	ProfilerCoverageWindowDays int64 `json:"profiler_coverage_window_days"`
+	ProfilerConcurrency        int64 `json:"profiler_concurrency"`
+
+	// ProfilerLocalTimezone is used only to flag DST transition windows.
+	// Computation stays in UTC throughout (§5.4.13).
+	ProfilerLocalTimezone string `json:"profiler_local_timezone"`
+
 	CorsOrigins []string `json:"cors_origins"`
 }
 
@@ -75,6 +95,24 @@ func applyDefaults(config Config) {
 	}
 	if config.OntologyInvalidateInt == "" {
 		config.OntologyInvalidateInt = "5m"
+	}
+	if config.TimeseriesRequestTimeout == "" {
+		config.TimeseriesRequestTimeout = "60s"
+	}
+	if config.ProfilerRawWindowDays <= 0 {
+		config.ProfilerRawWindowDays = 14
+	}
+	if config.ProfilerRawWindowPoints <= 0 {
+		config.ProfilerRawWindowPoints = 100000
+	}
+	if config.ProfilerCoverageWindowDays <= 0 {
+		config.ProfilerCoverageWindowDays = 90
+	}
+	if config.ProfilerConcurrency <= 0 {
+		config.ProfilerConcurrency = 4
+	}
+	if config.ProfilerLocalTimezone == "" {
+		config.ProfilerLocalTimezone = "Europe/Berlin"
 	}
 }
 

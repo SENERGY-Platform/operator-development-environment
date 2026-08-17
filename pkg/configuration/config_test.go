@@ -75,6 +75,45 @@ func TestDefaultsFillTheUnsetOperationalValues(t *testing.T) {
 	if config.OntologyInvalidateInt != "5m" {
 		t.Errorf("OntologyInvalidateInt = %q, want 5m", config.OntologyInvalidateInt)
 	}
+	if config.TimeseriesRequestTimeout != "60s" {
+		t.Errorf("TimeseriesRequestTimeout = %q, want 60s", config.TimeseriesRequestTimeout)
+	}
+	// SPEC D25: the raw pass reads the smaller of fourteen days or a hundred
+	// thousand points.
+	if config.ProfilerRawWindowDays != 14 {
+		t.Errorf("ProfilerRawWindowDays = %d, want 14", config.ProfilerRawWindowDays)
+	}
+	if config.ProfilerRawWindowPoints != 100000 {
+		t.Errorf("ProfilerRawWindowPoints = %d, want 100000", config.ProfilerRawWindowPoints)
+	}
+	if config.ProfilerCoverageWindowDays != 90 {
+		t.Errorf("ProfilerCoverageWindowDays = %d, want 90", config.ProfilerCoverageWindowDays)
+	}
+	if config.ProfilerConcurrency != 4 {
+		t.Errorf("ProfilerConcurrency = %d, want 4", config.ProfilerConcurrency)
+	}
+	if config.ProfilerLocalTimezone != "Europe/Berlin" {
+		t.Errorf("ProfilerLocalTimezone = %q, want Europe/Berlin", config.ProfilerLocalTimezone)
+	}
+}
+
+// The profiler's numeric settings are int64 rather than int because
+// HandleEnvironmentVars only knows how to set Int64 among the integer kinds: an
+// int field would silently ignore its environment variable.
+func TestTheProfilerWindowsCanBeSetFromTheEnvironment(t *testing.T) {
+	t.Setenv("PROFILER_RAW_WINDOW_DAYS", "7")
+	t.Setenv("PROFILER_RAW_WINDOW_POINTS", "5000")
+
+	config, err := Load(writeConfig(t, `{"api_port":"8080"}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if config.ProfilerRawWindowDays != 7 {
+		t.Errorf("ProfilerRawWindowDays = %d, want the environment value 7", config.ProfilerRawWindowDays)
+	}
+	if config.ProfilerRawWindowPoints != 5000 {
+		t.Errorf("ProfilerRawWindowPoints = %d, want the environment value 5000", config.ProfilerRawWindowPoints)
+	}
 }
 
 func TestAnExplicitRealmRoleSurvivesTheDefaults(t *testing.T) {
