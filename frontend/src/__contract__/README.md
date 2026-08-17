@@ -1,0 +1,58 @@
+# Contract fixtures
+
+The JSON here was captured from a running ODE backend. `contract.ts` assigns each
+file to the type `src/api.ts` declares for that endpoint, so `npm run build` fails
+if the two ever disagree — a renamed or dropped field breaks the build instead of
+becoming `undefined` at runtime in front of a developer.
+
+This is not decoration. Writing it caught four real defects on its first run:
+`available_conversions` arriving as `null` rather than `[]` (which crashed the
+candidate detail), an absurd ADF statistic on a deterministic series, harmonics of
+the daily cycle reported as separate periods, and periodicity computed on a
+counter's level instead of its rate.
+
+## Regenerating
+
+Needed whenever the backend's JSON shape changes on purpose. Point `ODE` at a
+platform, get a token, and re-capture:
+
+```bash
+TOKEN=...                       # a Keycloak access token with the developer role
+BASE=http://localhost:8080
+DIR=frontend/src/__contract__
+
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/quick-profiles" > $DIR/quick.json
+
+# Any candidate's device and service from quick.json:
+DEV=$(jq -r '.candidates[0].series_ref.device_id' $DIR/quick.json)
+SVC=$(jq -r '.candidates[0].series_ref.service_id' $DIR/quick.json)
+
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"device_id\":\"$DEV\",\"service_id\":\"$SVC\"}" "$BASE/profiles" > $DIR/profiles.json
+
+PID=$(jq -r '.profiles[0].profile_id' $DIR/profiles.json)
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/profiles/$PID" > $DIR/profile.json
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/profiles/$PID/projection" > $DIR/projection.json
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/profiles/$PID/sessions?limit=5" > $DIR/sessions.json
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/timeseries/availability?device_id=$DEV" > $DIR/availability.json
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"field_path":"value_semantics.unit","action":"correct","computed_value":"W","confirmed_value":"kW"}' \
+  "$BASE/profiles/$PID/overrides" > $DIR/override.json
+```
+
+Then `npm run build`. Two things to keep in mind when a capture changes the shape:
+
+- **`Loose<T>` in `contract.ts` widens string-literal unions to `string`.** A JSON
+  import types every string as `string`, so without it the check fails on
+  `confidence: "uncertain"` not being the union member it plainly is. Field sets
+  and structure are still compared exactly, which is the point.
+- **A field that is genuinely optional per variable must be optional in the
+  type.** The provenance map is the live example: a variable with no
+  characteristic carries no `value_semantics.characteristic_id` entry, so the map's
+  value type admits `undefined`.
+
+## What is deliberately not checked here
+
+Values. This asks whether the frontend and the backend agree on the shape of the
+payload, not whether a detector is right — that is what the Go fixture tests are
+for (`pkg/profiler`, SPEC §5.4.14).

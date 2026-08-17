@@ -23,6 +23,8 @@
   --accent: #6ea8fe;
   --online: #4ec9a5;
   --offline: #e06c75;
+  --warn: #e5c07b;
+  --raised: #1e2430;
 
   color-scheme: dark;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -53,13 +55,23 @@ button:hover {
   border-color: var(--accent);
 }
 
-input {
+input,
+select {
   font: inherit;
   color: inherit;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.35rem 0.6rem;
+}
+
+code {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  font-size: 0.92em;
+}
+
+.wrap {
+  overflow-wrap: anywhere;
 }
 
 .app {
@@ -89,6 +101,7 @@ input {
   color: var(--muted);
 }
 
+.header-left,
 .header-right {
   display: flex;
   align-items: center;
@@ -130,9 +143,36 @@ input {
   padding: 1rem;
 }
 
+/*
+ * The profiler is two panes rather than the auto-fit grid: the candidate table
+ * is eight columns wide and a profile is a long column of sections, so neither
+ * survives being squeezed into a third of the width.
+ */
+.panes.profiler {
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  align-items: start;
+  height: 100%;
+}
+
+.panes.profiler .pane {
+  max-height: 100%;
+}
+
+.pane-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.pane-actions {
+  flex-shrink: 0;
+}
+
 .pane h2 {
   margin: 0;
   font-size: 1rem;
+  overflow-wrap: anywhere;
 }
 
 .pane-subtitle {
@@ -205,21 +245,30 @@ input {
   min-width: 0;
 }
 
-.devices {
+.grid {
   width: 100%;
   border-collapse: collapse;
 }
 
-.devices th,
-.devices td {
+.grid th,
+.grid td {
   text-align: left;
   padding: 0.3rem 0.4rem;
   border-bottom: 1px solid var(--border);
+  vertical-align: top;
 }
 
-.devices th {
+.grid th {
   color: var(--muted);
   font-weight: 500;
+  white-space: nowrap;
+}
+
+.grid td.numeric,
+.grid th.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .state.online {
@@ -253,4 +302,468 @@ input {
 
 .fatal h1 {
   font-size: 1.2rem;
+}
+
+/* --- M1: profiler --- */
+
+.tabs {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.tabs button {
+  padding: 0.25rem 0.55rem;
+}
+
+.tabs .active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tabs.small button {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.9em;
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.7rem;
+}
+
+.filters > input {
+  flex: 1;
+  min-width: 8rem;
+}
+
+.filter-window,
+.filter-check {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.filter-window input {
+  width: 8.5rem;
+}
+
+.filter-check input {
+  width: 4.5rem;
+}
+
+.filter-check input[type="checkbox"] {
+  width: auto;
+}
+
+/*
+ * The read counter is the M1a acceptance criterion on screen. Green while the
+ * value count is zero, red the moment it is not — a candidate list that cost a
+ * value read is a broken tier, not a slow query.
+ */
+.reads {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 0.45rem 0.7rem;
+  margin-bottom: 0.6rem;
+  background: var(--raised);
+}
+
+.reads.clean {
+  border-left-color: var(--online);
+}
+
+.reads.dirty {
+  border-left-color: var(--offline);
+}
+
+.reads-headline {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.reads.clean .reads-headline {
+  color: var(--online);
+}
+
+.reads.dirty .reads-headline {
+  color: var(--offline);
+}
+
+.reads-detail,
+.reads-note {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.candidates tbody tr {
+  cursor: pointer;
+}
+
+.candidates tbody tr:hover {
+  background: var(--raised);
+}
+
+.grid tbody tr.selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.grid tbody tr.unreadable {
+  color: var(--muted);
+}
+
+.score {
+  position: relative;
+  display: inline-block;
+  min-width: 3.4rem;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+  text-align: right;
+}
+
+.score-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.score-text {
+  position: relative;
+  padding: 0 0.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.tag {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  margin: 0 0.2rem 0.2rem 0;
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.tag.warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.tag.ok-tag {
+  border-color: var(--online);
+  color: var(--online);
+}
+
+.tag.read-raw {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tag.read-none {
+  opacity: 0.7;
+}
+
+.ok {
+  color: var(--online);
+}
+
+.warn {
+  color: var(--warn);
+}
+
+.muted-inline {
+  color: var(--muted);
+}
+
+.section {
+  border-top: 1px solid var(--border);
+}
+
+.section:first-child {
+  border-top: none;
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  padding: 0.5rem 0;
+  text-align: left;
+}
+
+.section-head:hover {
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.section-title {
+  font-weight: 600;
+}
+
+.section-note {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.section-body {
+  padding: 0 0 0.7rem 1.5rem;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: minmax(7rem, max-content) minmax(0, 1fr);
+  gap: 0.3rem 0.8rem;
+  margin: 0;
+}
+
+.kv dt {
+  color: var(--muted);
+}
+
+.kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.kv dd .kv {
+  margin-top: 0.2rem;
+}
+
+/*
+ * A non-result is shown, not blanked. SPEC D24 makes absence distinguishable
+ * from negation in the data, and an empty cell would throw that away at the last
+ * step — the reader would conclude "no periodicity" where the profile says
+ * "could not determine".
+ */
+.nc {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.nc-tag {
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.9em;
+  align-self: flex-start;
+}
+
+.nc-detail {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.confidence {
+  border-radius: 999px;
+  padding: 0 0.4rem;
+  font-size: 0.8em;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.confidence.certain {
+  border-color: var(--online);
+  color: var(--online);
+}
+
+.confidence.likely {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.evidence {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.45rem;
+  min-width: 4.2rem;
+}
+
+.stat-label {
+  color: var(--muted);
+  font-size: 0.78em;
+}
+
+.stat-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.flags {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.6rem;
+}
+
+.flag {
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+
+.flag summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.flag-name {
+  color: var(--warn);
+}
+
+.flag pre,
+.json {
+  margin: 0.4rem 0 0;
+  padding: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 26rem;
+  font-size: 0.85em;
+}
+
+.compute {
+  max-width: 34rem;
+}
+
+button.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.computed-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.6rem;
+  margin-bottom: 0.3rem;
+}
+
+.computed-reads {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.9em;
+}
+
+.llm-head {
+  margin-bottom: 0.5rem;
+}
+
+.llm-head .muted {
+  margin-top: 0;
+}
+
+.override-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px dashed var(--border);
+}
+
+.override-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.override-form label.grow {
+  flex: 1;
+  min-width: 8rem;
+}
+
+.override-form span {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.list.tight li {
+  border-bottom: none;
+  padding: 0.05rem 0;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+/*
+ * The diagnosis wraps onto its own line: it is a sentence explaining why a
+ * profile is empty, not a metric, and truncating it would defeat the point.
+ */
+.reads-diagnosis {
+  flex-basis: 100%;
+  color: var(--text);
+}
+
+.reads.dirty .reads-diagnosis {
+  color: var(--warn);
+}
+
+/*
+ * The socket indicator only appears when the connection is not simply working:
+ * a stalled screen should say why, and a healthy one should not carry a badge
+ * nobody needs to read.
+ */
+.socket {
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  color: var(--warn);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.socket.closed {
+  border-color: var(--offline);
+  color: var(--offline);
+}
+
+.compute-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
 }

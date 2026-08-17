@@ -17,22 +17,27 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   api,
-  ApiError,
   type AspectTreeNode,
   type Device,
   type OntologyFunction,
   type Session,
 } from "./api";
 import { logout } from "./keycloak";
+import { ProfilerView } from "./profiler";
+import { Centered, Muted, Pane, describe, useLoad } from "./ui";
+
+type View = "ontology" | "profiler";
 
 /**
- * M0 shell. The pane layout of SPEC §2 (Chat / Data / Exploration / Code /
- * Experiment) arrives with the milestones that fill those panes; showing five
- * empty docks now would be scaffolding, not progress.
+ * M0 and M1 shell. The pane layout of SPEC §2 (Chat / Data / Exploration / Code
+ * / Experiment) arrives with the milestones that fill those panes; showing five
+ * empty docks now would be scaffolding, not progress. What exists is switched
+ * between rather than crammed into one grid.
  */
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<View>("profiler");
 
   useEffect(() => {
     api
@@ -46,26 +51,56 @@ export default function App() {
 
   return (
     <div className="app">
-      <Header session={session} />
-      <main className="panes">
-        <AspectTreePane />
-        <FunctionsPane />
-        <DevicesPane />
-      </main>
+      <Header session={session} view={view} onView={setView} />
+      {view === "ontology" ? (
+        <main className="panes">
+          <AspectTreePane />
+          <FunctionsPane />
+          <DevicesPane />
+        </main>
+      ) : (
+        <ProfilerView />
+      )}
     </div>
   );
 }
 
-function Header({ session }: { session: Session }) {
+function Header({
+  session,
+  view,
+  onView,
+}: {
+  session: Session;
+  view: View;
+  onView: (view: View) => void;
+}) {
   return (
     <header className="header">
-      <div>
+      <div className="header-left">
         <span className="brand">ODE</span>
-        <span className="subtitle">Operator Development Environment</span>
+        <nav className="tabs">
+          {(
+            [
+              ["ontology", "Ontology"],
+              ["profiler", "Profiler"],
+            ] as [View, string][]
+          ).map(([id, label]) => (
+            <button key={id} className={view === id ? "active" : ""} onClick={() => onView(id)}>
+              {label}
+            </button>
+          ))}
+        </nav>
       </div>
       <div className="header-right">
-        {/* SPEC §3.2: the current exposure tier is surfaced persistently. */}
-        <span className="tier" title="Data exposure tier for the LLM (SPEC §3.2)">
+        {/*
+          SPEC §3.2: the current exposure tier is surfaced persistently. It gates
+          what the LLM may be given, not what the developer may see, which is why
+          the profiler below is reachable at L0.
+        */}
+        <span
+          className="tier"
+          title="Data exposure tier for the LLM (SPEC §3.2). It gates LLM tools, not this UI."
+        >
           Tier {session.exposure_tier}
         </span>
         <span className="user">
@@ -184,7 +219,7 @@ function DevicesPane() {
       {data && data.devices.length === 0 && <Muted>No devices match.</Muted>}
       {data && data.devices.length > 0 && (
         <>
-          <table className="devices">
+          <table className="grid">
             <thead>
               <tr>
                 <th>Name</th>
@@ -211,71 +246,6 @@ function DevicesPane() {
       )}
     </Pane>
   );
-}
-
-// --- shared bits ---
-
-function useLoad<T>(load: () => Promise<T>) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    load()
-      .then((result) => {
-        if (!cancelled) setData(result);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(describe(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
-
-  return { data, error, loading };
-}
-
-function describe(e: unknown): string {
-  if (e instanceof ApiError) {
-    if (e.isForbidden) {
-      return "Forbidden. This account is missing the `developer` realm role, or may not read this resource.";
-    }
-    return `${e.status}: ${e.message}`;
-  }
-  return e instanceof Error ? e.message : String(e);
-}
-
-function Pane({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="pane">
-      <h2>{title}</h2>
-      <p className="pane-subtitle">{subtitle}</p>
-      <div className="pane-body">{children}</div>
-    </section>
-  );
-}
-
-function Muted({ children }: { children: React.ReactNode }) {
-  return <p className="muted">{children}</p>;
-}
-
-function Centered({ children }: { children: React.ReactNode }) {
-  return <div className="centered">{children}</div>;
 }
 
 function FatalError({ message }: { message: string }) {

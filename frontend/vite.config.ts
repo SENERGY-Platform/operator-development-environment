@@ -11,6 +11,9 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:8080",
         changeOrigin: true,
+        // The profiler runs over a WebSocket, and the proxy will not forward an
+        // upgrade without this.
+        ws: true,
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
