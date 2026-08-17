@@ -1,0 +1,82 @@
+name: 'PROD Docker Image'
+
+# The tag trigger is deliberately gone: this workflow now creates tags itself,
+# and reacting to its own tags would be circular.
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Reused rather than duplicated, so the release path runs exactly the suite
+  # that guards pull requests.
+  test:
+    uses: ./.github/workflows/tests.yml
+
+  tag:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      new_tag: ${{ steps.tag.outputs.new_tag }}
+      new_version: ${{ steps.tag.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The tag action reads the tag history to work out the next version;
+          # the default shallow clone contains none of it.
+          fetch-depth: 0
+
+      - name: Bump version and push tag
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The image is identified solely by this tag, so an empty one would push
+      # `...:` and produce either a failure or a mislabelled image. Fail here
+      # instead, where the cause is legible.
+      - name: Require a tag
+        if: steps.tag.outputs.new_tag == ''
+        run: |
+          echo "::error::github-tag-action created no tag, so there is nothing to label the image with."
+          exit 1
+
+  build:
+    needs: tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.CR_PAT }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/senergy-platform/operator-development-environment:${{ needs.tag.outputs.new_tag }}
+
+      - name: Summary
+        run: |
+          echo "Pushed \`ghcr.io/senergy-platform/operator-development-environment:${{ needs.tag.outputs.new_tag }}\`" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  # master is deliberately absent: the release workflow calls this one via
+  # workflow_call, so a push to master would otherwise run the suite twice.
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - master
+      - dev
+  workflow_call:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
