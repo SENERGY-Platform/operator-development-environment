@@ -31,6 +31,8 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/configuration"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
 // Start brings up the HTTP server and returns a WaitGroup that completes once
@@ -64,19 +66,56 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		})
 	}
 
+	ontologyRepo := ontology.New(newOntologyClient, ontology.Options{
+		TTL:                ttl,
+		InvalidateInterval: invalidateInterval,
+	})
+
+	deps := api.Deps{
+		Ontology: ontologyRepo,
+		Devices:  devices.New(deviceClient),
+	}
+
+	// The timeseries client and the profiler are optional so that a deployment
+	// without a timescale-wrapper URL still serves the M0 surface instead of
+	// failing to start. validate() warns about it.
+	if config.TimescaleWrapperUrl != "" {
+		timeout, err := time.ParseDuration(config.TimeseriesRequestTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("config: timeseries_request_timeout: %w", err)
+		}
+		timeseriesClient := timeseries.New(config.TimescaleWrapperUrl, timeseries.Options{Timeout: timeout})
+
+		// The profile store is in-memory (see profiler.MemoryStore): computed
+		// profiles are recomputable, but the override overlay is developer input
+		// and does not survive a restart. Persisting it needs a database, which
+		// is a deployment decision this milestone does not make.
+		profilerService, err := profiler.New(
+			timeseriesClient,
+			profiler.NewSnapshotOntology(ontologyRepo),
+			profiler.NewMemoryStore(),
+			profiler.Options{
+				RawWindowMaxDays:   int(config.ProfilerRawWindowDays),
+				RawWindowMaxPoints: int(config.ProfilerRawWindowPoints),
+				CoverageWindowDays: int(config.ProfilerCoverageWindowDays),
+				Concurrency:        int(config.ProfilerConcurrency),
+				LocalTimezone:      config.ProfilerLocalTimezone,
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+		deps.Timeseries = timeseriesClient
+		deps.Profiler = profilerService
+	}
+
 	router := api.NewRouter(
 		api.Config{
 			RequiredRealmRole: config.RequiredRealmRole,
 			CorsOrigins:       config.CorsOrigins,
 			Debug:             config.Debug,
 		},
-		api.Deps{
-			Ontology: ontology.New(newOntologyClient, ontology.Options{
-				TTL:                ttl,
-				InvalidateInterval: invalidateInterval,
-			}),
-			Devices: devices.New(deviceClient),
-		},
+		deps,
 	)
 
 	server := &http.Server{
@@ -120,6 +159,9 @@ func validate(config configuration.Config) error {
 	}
 	if config.RequiredRealmRole == "" {
 		slog.Warn("no required_realm_role configured: every authenticated platform user may use ODE")
+	}
+	if config.TimescaleWrapperUrl == "" {
+		slog.Warn("no timescale_wrapper_url configured: the timeseries and profiler routes are not served")
 	}
 	return nil
 }

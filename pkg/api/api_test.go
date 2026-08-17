@@ -94,20 +94,38 @@ type fakeDeviceClient struct {
 	gotToken string
 	err      error
 	code     int
+
+	// serve overrides the canned single device, for the tests that need a device
+	// carrying its type and permissions.
+	serve []models.ExtendedDevice
+	// gotListOptions and gotAction record what the handler asked for, which is how
+	// the Read-versus-Execute distinction of §5.1 is checked.
+	gotListOptions drmodel.ExtendedDeviceListOptions
+	gotAction      drmodel.AuthAction
 }
 
-func (f *fakeDeviceClient) ListExtendedDevices(token string, _ drmodel.ExtendedDeviceListOptions) ([]models.ExtendedDevice, int64, error, int) {
+func (f *fakeDeviceClient) ListExtendedDevices(token string, options drmodel.ExtendedDeviceListOptions) ([]models.ExtendedDevice, int64, error, int) {
 	f.gotToken = token
+	f.gotListOptions = options
 	if f.err != nil {
 		return nil, 0, f.err, f.code
+	}
+	if f.serve != nil {
+		return f.serve, int64(len(f.serve)), nil, 200
 	}
 	return []models.ExtendedDevice{{Device: models.Device{Id: "device-1", Name: "PV Meter"}}}, 1, nil, 200
 }
 
-func (f *fakeDeviceClient) ReadExtendedDevice(id string, token string, _ drmodel.AuthAction, _ bool) (models.ExtendedDevice, error, int) {
+func (f *fakeDeviceClient) ReadExtendedDevice(id string, token string, action drmodel.AuthAction, _ bool) (models.ExtendedDevice, error, int) {
 	f.gotToken = token
+	f.gotAction = action
 	if f.err != nil {
 		return models.ExtendedDevice{}, f.err, f.code
+	}
+	for _, device := range f.serve {
+		if device.Id == id {
+			return device, nil, 200
+		}
 	}
 	return models.ExtendedDevice{Device: models.Device{Id: id, Name: "PV Meter"}}, nil, 200
 }

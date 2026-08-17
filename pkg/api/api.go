@@ -31,6 +31,8 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/auth"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
 type Config struct {
@@ -40,8 +42,10 @@ type Config struct {
 }
 
 type Deps struct {
-	Ontology *ontology.Repository
-	Devices  *devices.Service
+	Ontology   *ontology.Repository
+	Devices    *devices.Service
+	Timeseries TimeseriesReader
+	Profiler   *profiler.Profiler
 }
 
 // NewRouter wires the ODE HTTP surface.
@@ -85,6 +89,35 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 	dev := secured.Group("/devices")
 	dev.GET("", handleListDevices(deps.Devices))
 	dev.GET("/:id", handleGetDevice(deps.Devices))
+
+	// M1a and M1b. The routes stay off the router entirely when the profiler is
+	// not configured, so a deployment without a timeseries URL answers 404
+	// rather than panicking on the first request.
+	if deps.Timeseries != nil {
+		ts := secured.Group("/timeseries")
+		ts.GET("/availability", handleAvailability(deps.Timeseries))
+		ts.GET("/usage", handleUsage(deps.Timeseries))
+	}
+	if deps.Profiler != nil {
+		// The WebSocket carries the same two operations as the routes below.
+		//
+		// It is not behind auth.Middleware: a browser cannot set an Authorization
+		// header on a WebSocket handshake, so the handler reads the token from the
+		// subprotocol or the query and enforces the realm role itself. Everything
+		// else about §3.1 is unchanged — the gateway validates, ODE authorises.
+		r.GET("/ws", handleWebSocket(cfg, deps.Devices, deps.Profiler))
+
+		// Kept off /profiles to avoid a static segment beside the :id wildcard.
+		secured.GET("/quick-profiles", handleQuickProfiles(deps.Devices, deps.Profiler))
+
+		profiles := secured.Group("/profiles")
+		profiles.POST("", handleCreateProfiles(deps.Devices, deps.Profiler))
+		profiles.GET("/:id", handleGetProfile(deps.Profiler))
+		profiles.GET("/:id/projection", handleProjection(deps.Profiler))
+		profiles.GET("/:id/sessions", handleSessions(deps.Profiler))
+		// Developer action only, never an LLM tool (§5.8, D21).
+		profiles.POST("/:id/overrides", handleCreateOverride(deps.Profiler))
+	}
 
 	return r
 }
@@ -220,6 +253,7 @@ func handleGetDevice(svc *devices.Service) gin.HandlerFunc {
 func respondUpstream(c *gin.Context, err error) {
 	var devErr *devices.UpstreamError
 	var ontErr *ontology.UpstreamError
+	var tsErr *timeseries.UpstreamError
 
 	code := 0
 	switch {
@@ -227,6 +261,8 @@ func respondUpstream(c *gin.Context, err error) {
 		code = devErr.Code
 	case errors.As(err, &ontErr):
 		code = ontErr.Code
+	case errors.As(err, &tsErr):
+		code = tsErr.Code
 	}
 
 	switch code {
