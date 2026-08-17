@@ -1,0 +1,256 @@
+/*
+ * Copyright 2026 InfAI (CC SES)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+:root {
+  --bg: #10131a;
+  --surface: #171b24;
+  --border: #262c39;
+  --text: #e5e9f0;
+  --muted: #8b94a7;
+  --accent: #6ea8fe;
+  --online: #4ec9a5;
+  --offline: #e06c75;
+
+  color-scheme: dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+input {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin-right: 0.6rem;
+}
+
+.subtitle,
+.pane-subtitle {
+  color: var(--muted);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.tier {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  margin-left: 0.4rem;
+  background: var(--border);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.8em;
+}
+
+.panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+  padding: 1rem;
+  overflow: auto;
+  flex: 1;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.pane h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.pane-subtitle {
+  margin: 0.25rem 0 0.75rem;
+  font-size: 0.85em;
+}
+
+.pane-body {
+  overflow: auto;
+  flex: 1;
+}
+
+.tree,
+.tree ul,
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tree ul {
+  padding-left: 1.1rem;
+  border-left: 1px solid var(--border);
+  margin-left: 0.45rem;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.12rem 0;
+}
+
+.twisty {
+  border: none;
+  padding: 0;
+  width: 1.1rem;
+  color: var(--muted);
+}
+
+.twisty.leaf {
+  text-align: center;
+  cursor: default;
+}
+
+.list li {
+  padding: 0.2rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.toggle {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+
+.toggle .active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.search {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+}
+
+.devices {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.devices th,
+.devices td {
+  text-align: left;
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.devices th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.state.online {
+  color: var(--online);
+}
+
+.state.offline {
+  color: var(--offline);
+}
+
+.state.unknown {
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+  margin: 0.5rem 0 0;
+}
+
+.centered {
+  display: grid;
+  place-items: center;
+  height: 100vh;
+  padding: 1rem;
+}
+
+.fatal {
+  max-width: 34rem;
+  text-align: center;
+}
+
+.fatal h1 {
+  font-size: 1.2rem;
+}
