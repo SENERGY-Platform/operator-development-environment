@@ -27,13 +27,20 @@ import (
 
 	devicerepo "github.com/SENERGY-Platform/device-repository/lib/client"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/admin"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/api"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/configuration"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/database"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/identifiers"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/mcp"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
 
 // Start brings up the HTTP server and returns a WaitGroup that completes once
@@ -74,6 +81,23 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 
 	deviceService := devices.New(deviceClient)
 
+	// Postgres, if configured. Optional in the same way the timescale-wrapper is:
+	// without it ODE runs the in-memory stores, and validate() has already said
+	// what that costs.
+	var db *database.DB
+	if config.PostgresUrl != "" {
+		db, err = database.Connect(ctx, config.PostgresUrl, database.Options{
+			MaxConns: int32(config.PostgresMaxConns),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := database.Migrate(ctx, db); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+
 	// The ontology index is built once and memoised per snapshot. It is hoisted
 	// out of the profiler's block below because semantic selection needs it too —
 	// the unit and the completeness of a resolved variable come from it — and
@@ -85,6 +109,11 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		Devices:  deviceService,
 	}
 
+	// Held separately from deps.Timeseries, which is the narrow reader interface the
+	// HTTP routes need. The tool surface additionally needs Query, for the tier-L2
+	// preview, so it gets the concrete client.
+	var timeseriesClient *timeseries.Client
+
 	// The timeseries client and the profiler are optional so that a deployment
 	// without a timescale-wrapper URL still serves the M0 surface instead of
 	// failing to start. validate() warns about it.
@@ -93,22 +122,31 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		if err != nil {
 			return nil, fmt.Errorf("config: timeseries_request_timeout: %w", err)
 		}
-		timeseriesClient := timeseries.New(config.TimescaleWrapperUrl, timeseries.Options{Timeout: timeout})
+		timeseriesClient = timeseries.New(config.TimescaleWrapperUrl, timeseries.Options{Timeout: timeout})
 
-		// The profile store is in-memory (see profiler.MemoryStore): computed
-		// profiles are recomputable, but the override overlay is developer input
-		// and does not survive a restart. Persisting it needs a database, which
-		// is a deployment decision this milestone does not make.
+		// Separate from the client default above: value reads legitimately take far
+		// longer than metadata probes, and one timeout cannot serve both.
+		readTimeout, err := time.ParseDuration(config.ProfilerReadTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("config: profiler_read_timeout: %w", err)
+		}
+
+		// The override overlay is an empirical record of human confirmation
+		// (§5.4.3), so it goes to Postgres when there is one. Computed profiles stay
+		// in memory either way: losing one costs a recomputation, and they are large.
+		profileStore := profilerStore(db)
+
 		profilerService, err := profiler.New(
 			timeseriesClient,
 			ontologyIndex,
-			profiler.NewMemoryStore(),
+			profileStore,
 			profiler.Options{
 				RawWindowMaxDays:   int(config.ProfilerRawWindowDays),
 				RawWindowMaxPoints: int(config.ProfilerRawWindowPoints),
 				CoverageWindowDays: int(config.ProfilerCoverageWindowDays),
 				Concurrency:        int(config.ProfilerConcurrency),
 				LocalTimezone:      config.ProfilerLocalTimezone,
+				ReadTimeout:        readTimeout,
 			},
 		)
 		if err != nil {
@@ -131,6 +169,11 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		return nil, err
 	}
 	deps.Selection = resolver
+
+	// M3: providers, the tool surface, the dispatcher, chat and the admin controls.
+	if err := startM3(ctx, config, &deps, db, ontologyRepo, deviceService, timeseriesClient); err != nil {
+		return nil, err
+	}
 
 	router := api.NewRouter(
 		api.Config{
@@ -166,9 +209,281 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			slog.Error("api shutdown", "error", err)
 		}
+		// After the server, so no in-flight request loses its connection mid-write.
+		db.Close()
 	}()
 
 	return wg, nil
+}
+
+// profilerStore picks the profile store.
+//
+// MemoryStore when there is no database; otherwise the same in-memory store for
+// computed profiles with the override overlay persisted. The split is deliberate:
+// a profile is a recomputable artifact, an override is developer input that
+// §5.4.3 calls an empirical record, and only one of the two is worth a table.
+func profilerStore(db *database.DB) profiler.Store {
+	if db == nil {
+		return profiler.NewMemoryStore()
+	}
+	return profiler.NewOverlayStore(profiler.NewMemoryStore(), profiler.NewPostgresOverrides(db))
+}
+
+// startM3 wires the LLM surface. It is a function rather than inline because the
+// wiring has real branching: any subset of four providers may be configured, and
+// a deployment with none serves M0–M2 unchanged.
+func startM3(
+	ctx context.Context,
+	config configuration.Config,
+	deps *api.Deps,
+	db *database.DB,
+	ontologyRepo *ontology.Repository,
+	deviceService *devices.Service,
+	timeseriesClient *timeseries.Client,
+) error {
+	pricing := llm.NewPricing(config.LlmCurrency, modelPrices(config.LlmPricing)...)
+
+	providers, err := buildProviders(ctx, config, pricing)
+	if err != nil {
+		return err
+	}
+	if providers.Len() == 0 {
+		slog.Warn("no llm provider is configured: the chat, tool and admin routes are not served",
+			"hint", "set anthropic_api_key, openai_api_key, compatible_base_url or claude_cli_enabled")
+		return nil
+	}
+
+	// The admin service comes first: chat.New refuses to build without one, because
+	// §3.3's caps are not an optional extra.
+	adminStore := adminStore(db)
+	adminService, err := admin.New(adminStore, pricing)
+	if err != nil {
+		return err
+	}
+
+	chatStore := chatStore(db)
+	ids := identifiers.New()
+
+	// The engine is needed by the tool surface (as the selection sink) and the tool
+	// surface is needed by the engine, so the registry is built against a holder
+	// the engine is written into once it exists. A tool executor only runs during a
+	// dispatch, which is always after Start has returned, so the indirection is
+	// never observed as a nil.
+	sink := &selectionSink{}
+
+	registry, err := tools.NewSurface(tools.Deps{
+		Ontology:           ontologyRepo,
+		Devices:            deviceService,
+		Timeseries:         timeseriesOrNil(timeseriesClient),
+		Profiler:           profilerOrNil(deps.Profiler),
+		Selection:          selectionOrNil(deps.Selection),
+		SelectionSink:      sink,
+		ProfileTokenBudget: int(config.ToolProfileTokenBudget),
+		ProfileMaxProfiles: int(config.ToolProfileMaxProfiles),
+		QuickTokenBudget:   int(config.ToolQuickTokenBudget),
+		PreviewMaxPoints:   int(config.ToolPreviewMaxPoints),
+		DeviceLimit:        config.SelectionDeviceLimit,
+	})
+	if err != nil {
+		return err
+	}
+
+	dispatcher, err := tools.NewDispatcher(registry, adminService, ids)
+	if err != nil {
+		return err
+	}
+
+	exchangeTimeout, err := time.ParseDuration(config.ChatExchangeTimeout)
+	if err != nil {
+		return fmt.Errorf("config: chat_exchange_timeout: %w", err)
+	}
+
+	// ctx, not a background context: an exchange is detached from the request that
+	// started it but not from the process, so shutdown still stops one in flight.
+	engine, err := chat.New(ctx, providers, dispatcher, chatStore, adminService, ids, chat.Options{
+		MaxIterations:   int(config.LlmMaxToolIterations),
+		MaxTokens:       int(config.LlmMaxTokens),
+		Effort:          config.LlmEffort,
+		MCPEndpoint:     mcpEndpoint(config),
+		ExchangeTimeout: exchangeTimeout,
+	})
+	if err != nil {
+		return err
+	}
+	sink.engine = engine
+
+	deps.Chat = engine
+	deps.Admin = adminService
+
+	// The MCP transport is mounted only when something needs it, which today means
+	// the CLI provider. Mounting it unconditionally would publish ODE's tools to
+	// any MCP client for no configured reason.
+	if config.ClaudeCliEnabled {
+		server, err := mcp.New(dispatcher, engine, "0.3.0")
+		if err != nil {
+			return err
+		}
+		deps.MCP = server.Handler(api.AuthenticateMCP(config.RequiredRealmRole))
+		if mcpEndpoint(config) == "" {
+			slog.Warn("the claude CLI provider is enabled but public_url is not set: " +
+				"the CLI will run in text-only advisory mode because it cannot reach ODE's MCP endpoint")
+		}
+	}
+
+	slog.Info("llm surface ready",
+		"providers", providers.Names(),
+		"tools_declared", len(registry.Definitions()),
+		"tools_available_at_l0", len(registry.Available(tools.L0)),
+		"persistent", db != nil)
+	return nil
+}
+
+// buildProviders registers every configured provider, in the order §5.7 lists
+// them. The first registered is the default a session gets.
+func buildProviders(
+	ctx context.Context, config configuration.Config, pricing *llm.Pricing,
+) (*llm.Registry, error) {
+	registry, err := llm.NewRegistry()
+	if err != nil {
+		return nil, err
+	}
+
+	if config.AnthropicApiKey != "" {
+		provider, err := llm.NewAnthropicProvider("anthropic", llm.AnthropicOptions{
+			APIKey:           config.AnthropicApiKey,
+			BaseURL:          config.AnthropicBaseUrl,
+			Models:           config.AnthropicModels,
+			MaxTokens:        int(config.LlmMaxTokens),
+			Effort:           config.LlmEffort,
+			AdaptiveThinking: config.LlmAdaptiveThinking,
+		}, pricing)
+		if err != nil {
+			return nil, err
+		}
+		if err := registry.Register(provider); err != nil {
+			return nil, err
+		}
+	}
+
+	if config.OpenaiApiKey != "" {
+		provider, err := llm.NewOpenAIProvider("openai", llm.OpenAIOptions{
+			APIKey:    config.OpenaiApiKey,
+			BaseURL:   config.OpenaiBaseUrl,
+			Models:    config.OpenaiModels,
+			MaxTokens: int(config.LlmMaxTokens),
+		}, pricing)
+		if err != nil {
+			return nil, err
+		}
+		if err := registry.Register(provider); err != nil {
+			return nil, err
+		}
+	}
+
+	if config.CompatibleBaseUrl != "" {
+		provider, err := llm.NewOpenAICompatibleProvider(config.CompatibleName, llm.OpenAIOptions{
+			APIKey:    config.CompatibleApiKey,
+			BaseURL:   config.CompatibleBaseUrl,
+			Models:    config.CompatibleModels,
+			MaxTokens: int(config.LlmMaxTokens),
+			Tools:     config.CompatibleTools,
+		}, pricing)
+		if err != nil {
+			return nil, err
+		}
+		if err := registry.Register(provider); err != nil {
+			return nil, err
+		}
+	}
+
+	if config.ClaudeCliEnabled {
+		provider := llm.NewAnthropicCLIProvider("claude-cli", llm.CLIOptions{
+			Binary: config.ClaudeCliBinary,
+			Models: config.ClaudeCliModels,
+		}, pricing)
+		// Probed at startup, as §5.7 requires. It never fails startup: a missing CLI
+		// degrades this one provider and leaves the others alone.
+		provider.Probe(ctx)
+		if err := registry.Register(provider); err != nil {
+			return nil, err
+		}
+	}
+
+	return registry, nil
+}
+
+func mcpEndpoint(config configuration.Config) string {
+	if config.PublicUrl == "" {
+		return ""
+	}
+	return mcp.Endpoint(config.PublicUrl)
+}
+
+func modelPrices(configured []configuration.ModelPrice) []llm.ModelPrice {
+	out := make([]llm.ModelPrice, 0, len(configured))
+	for _, price := range configured {
+		out = append(out, llm.ModelPrice{
+			Model:              price.Model,
+			InputPerMTok:       price.InputPerMTok,
+			OutputPerMTok:      price.OutputPerMTok,
+			CachedInputPerMTok: price.CachedInputPerMTok,
+		})
+	}
+	return out
+}
+
+func adminStore(db *database.DB) admin.Store {
+	if db == nil {
+		return admin.NewMemoryStore()
+	}
+	return admin.NewPostgresStore(db)
+}
+
+func chatStore(db *database.DB) chat.Store {
+	if db == nil {
+		return chat.NewMemoryStore()
+	}
+	return chat.NewPostgresStore(db)
+}
+
+// selectionSink breaks the cycle between the tool surface and the chat engine.
+//
+// propose_data_selection writes to the session it was called in, so the tool
+// needs the engine; the engine needs the dispatcher, which needs the tools. The
+// holder is written once during startup and read only inside a dispatch, which
+// cannot happen before Start returns.
+type selectionSink struct{ engine *chat.Engine }
+
+func (s *selectionSink) PutProposedSelection(
+	ctx context.Context, sessionID string, proposal tools.ProposedSelection,
+) error {
+	if s.engine == nil {
+		return errors.New("chat is not configured")
+	}
+	return s.engine.PutProposedSelection(ctx, sessionID, proposal)
+}
+
+// profilerOrNil and selectionOrNil are rankerOrNil's siblings: the same typed-nil
+// footgun, for the two optional services the tool surface reads through.
+func timeseriesOrNil(client *timeseries.Client) tools.Timeseries {
+	if client == nil {
+		return nil
+	}
+	return client
+}
+
+func profilerOrNil(prof *profiler.Profiler) tools.Profiler {
+	if prof == nil {
+		return nil
+	}
+	return prof
+}
+
+func selectionOrNil(resolver *selection.Resolver) tools.Selection {
+	if resolver == nil {
+		return nil
+	}
+	return resolver
 }
 
 // rankerOrNil hands the resolver an interface that is actually nil when there is
@@ -199,6 +514,14 @@ func validate(config configuration.Config) error {
 	}
 	if config.TimescaleWrapperUrl == "" {
 		slog.Warn("no timescale_wrapper_url configured: the timeseries and profiler routes are not served")
+	}
+	if config.PostgresUrl == "" {
+		// Not a warning about tidiness. §3.3's per-user spend cap is computed from
+		// recorded usage, so without a database the cap is only as old as this
+		// process: a restart hands every developer a fresh allowance.
+		slog.Warn("no postgres_url configured: chat history, the exposure-tier audit trail, " +
+			"the profiler override overlay and LLM spend accounting are in memory and will not " +
+			"survive a restart, so a per-user spend cap does not hold across one")
 	}
 	return nil
 }

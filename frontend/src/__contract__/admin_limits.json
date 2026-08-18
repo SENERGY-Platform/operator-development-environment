@@ -1,0 +1,28 @@
+{
+  "currency": "EUR",
+  "declared": {
+    "kernel_cpu_default": "M4 (kernel/, SPEC §5.6)",
+    "kernel_cpu_max": "M4 (kernel/, SPEC §5.6)",
+    "kernel_mem_default": "M4 (kernel/, SPEC §5.6)",
+    "kernel_mem_max": "M4 (kernel/, SPEC §5.6)",
+    "max_concurrent_ray_jobs": "M7 (experiments/, SPEC §5.12)"
+  },
+  "defaults": {
+    "max_tier": "L2",
+    "period": "720h0m0s",
+    "soft_warn_fraction": 0.8
+  },
+  "enforced": [
+    "period",
+    "token_cap",
+    "cost_cap",
+    "soft_warn_fraction",
+    "global_cost_cap",
+    "allowed_providers",
+    "allowed_models",
+    "max_tier",
+    "max_concurrent_sessions"
+  ],
+  "limits": [],
+  "pricing": []
+}

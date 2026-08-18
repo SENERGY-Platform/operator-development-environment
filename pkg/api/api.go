@@ -28,12 +28,16 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/admin"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/auth"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/mcp"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
 
 type Config struct {
@@ -48,6 +52,14 @@ type Deps struct {
 	Timeseries TimeseriesReader
 	Profiler   *profiler.Profiler
 	Selection  *selection.Resolver
+
+	// M3. Chat and Admin arrive together: a chat engine without an admin service
+	// cannot enforce §3.3, and chat.New refuses to be built without one.
+	Chat  *chat.Engine
+	Admin *admin.Service
+	// MCP is the tool surface over its second transport, mounted only when a
+	// provider that needs it is configured.
+	MCP http.Handler
 }
 
 // NewRouter wires the ODE HTTP surface.
@@ -78,7 +90,7 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 
 	secured := r.Group("/", auth.Middleware(cfg.RequiredRealmRole))
 
-	secured.GET("/session", handleSession)
+	secured.GET("/session", handleSession(deps))
 
 	ont := secured.Group("/ontology")
 	ont.GET("/aspect-tree", handleAspectTree(deps.Ontology))
@@ -107,15 +119,19 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		ts.GET("/availability", handleAvailability(deps.Timeseries))
 		ts.GET("/usage", handleUsage(deps.Timeseries))
 	}
-	if deps.Profiler != nil {
-		// The WebSocket carries the same operations as the routes below.
-		//
-		// It is not behind auth.Middleware: a browser cannot set an Authorization
-		// header on a WebSocket handshake, so the handler reads the token from the
-		// subprotocol or the query and enforces the realm role itself. Everything
-		// else about §3.1 is unchanged — the gateway validates, ODE authorises.
+	// The WebSocket is ODE's streaming surface: the profiler operations below, and
+	// the chat exchange of §5.7. Registered whenever either is configured, because a
+	// deployment may have one without the other.
+	//
+	// It is not behind auth.Middleware: a browser cannot set an Authorization header
+	// on a WebSocket handshake, so the handler reads the token from the subprotocol
+	// or the query and enforces the realm role itself. Everything else about §3.1 is
+	// unchanged — the gateway validates, ODE authorises.
+	if deps.Profiler != nil || deps.Chat != nil {
 		r.GET("/ws", handleWebSocket(cfg, deps))
+	}
 
+	if deps.Profiler != nil {
 		// Kept off /profiles to avoid a static segment beside the :id wildcard.
 		secured.GET("/quick-profiles", handleQuickProfiles(deps.Devices, deps.Profiler))
 
@@ -128,22 +144,91 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		profiles.POST("/:id/overrides", handleCreateOverride(deps.Profiler))
 	}
 
+	// M3. Chat, the tool surface and the admin controls (§3.2, §3.3, §5.7, §5.8).
+	if deps.Chat != nil {
+		secured.GET("/llm/providers", handleListProviders(deps.Chat))
+		// The §5.8 table, including the tools this build does not implement and the
+		// capabilities that deliberately have none. Readable by any developer:
+		// knowing what the assistant may do is not privileged information.
+		secured.GET("/llm/tools", handleListTools(deps.Chat))
+
+		sessions := secured.Group("/chat/sessions")
+		sessions.POST("", handleCreateChatSession(deps.Chat))
+		sessions.GET("", handleListChatSessions(deps.Chat))
+		sessions.GET("/:id", handleGetChatSession(deps.Chat))
+		sessions.DELETE("/:id", handleDeleteChatSession(deps.Chat))
+		// Sending a message and resolving a confirmation are on the WebSocket, not
+		// here: both stream, and an exchange outlives any one request (see ws_chat.go).
+		//
+		// The developer's tier control (§3.2). No LLM tool exists for this.
+		sessions.PUT("/:id/tier", handleSetTier(deps.Chat))
+		sessions.GET("/:id/tier-changes", handleTierAudit(deps.Chat))
+	}
+
+	if deps.Admin != nil {
+		// The realm role gate is on the group, so a route added here later cannot
+		// forget it.
+		adminGroup := secured.Group("/admin", requireAdmin())
+		adminGroup.GET("/limits", handleGetLimits(deps.Admin))
+		adminGroup.PUT("/limits", handlePutLimits(deps.Admin))
+		adminGroup.GET("/limits/:sub", handleGetSubjectLimits(deps.Admin))
+		adminGroup.PUT("/limits/:sub", handlePutLimits(deps.Admin))
+		adminGroup.GET("/usage", handleAdminUsage(deps.Admin))
+		adminGroup.GET("/tool-calls", handleToolAudit(deps.Admin))
+	}
+
+	if deps.MCP != nil {
+		// Not under `secured`: the MCP handler authenticates itself, because it has
+		// to read the session header and resolve a tier before any tool is offered.
+		// It uses the same token parsing and the same required realm role.
+		r.Any(mcp.Path, gin.WrapH(deps.MCP))
+	}
+
 	return r
 }
 
 // handleSession lets the SPA confirm who the backend thinks it is talking to,
-// and surface the exposure tier once §3.2 lands.
-func handleSession(c *gin.Context) {
-	token := auth.MustFromContext(c)
-	c.JSON(http.StatusOK, gin.H{
-		"user_id":  token.Sub,
-		"username": token.Username,
-		"email":    token.Email,
-		"roles":    token.GetRoles(),
-		"is_admin": token.IsAdmin(),
-		// SPEC §3.2: L0 is the default and the only tier M0 implements.
-		"exposure_tier": "L0",
-	})
+// and learn what this deployment can do.
+//
+// The exposure tier reported here is the *default* a new session starts at, plus
+// the ceiling this user may raise one to (§3.3). It is not a live tier: a tier is
+// session-scoped (§3.2), so the SPA reads the real one from the session itself.
+func handleSession(deps Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := auth.MustFromContext(c)
+		body := gin.H{
+			"user_id":  token.Sub,
+			"username": token.Username,
+			"email":    token.Email,
+			"roles":    token.GetRoles(),
+			"is_admin": token.IsAdmin(),
+			// The default a new session starts at (§3.2).
+			"exposure_tier": tools.DefaultTier,
+			"features": gin.H{
+				"profiler":  deps.Profiler != nil,
+				"selection": deps.Selection != nil,
+				"chat":      deps.Chat != nil,
+				"mcp":       deps.MCP != nil,
+			},
+		}
+
+		if deps.Admin != nil {
+			effective, err := deps.Admin.Effective(c.Request.Context(), token.Sub)
+			if err == nil {
+				body["max_exposure_tier"] = effective.MaxTierOr()
+				body["limits"] = effective
+				if spend, err := deps.Admin.Spend(c.Request.Context(), token.Sub,
+					effective.PeriodDuration()); err == nil {
+					body["spend"] = spend
+				}
+			}
+		}
+		if deps.Chat != nil {
+			body["providers"] = deps.Chat.Providers().Describe()
+		}
+
+		c.JSON(http.StatusOK, body)
+	}
 }
 
 func handleAspectTree(repo *ontology.Repository) gin.HandlerFunc {

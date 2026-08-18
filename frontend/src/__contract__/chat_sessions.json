@@ -1,0 +1,15 @@
+{
+  "sessions": [
+    {
+      "created_at": "2026-08-18T07:52:54.986253724Z",
+      "exposure_tier": "L1",
+      "id": "id-1",
+      "message_count": 2,
+      "model": "stub-model",
+      "provider": "stub",
+      "title": "which devices are there?",
+      "updated_at": "2026-08-18T07:52:54.986384296Z",
+      "user_sub": "user-123"
+    }
+  ]
+}

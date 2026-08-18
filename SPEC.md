@@ -465,6 +465,16 @@ Collapses unbounded arrays: sessions → `session_stats` + 3–5 exemplars; gaps
 
 A washing machine over two years produces thousands of sessions; unelided, that alone exceeds any sane context budget.
 
+**The same rule at L0, and against breadth rather than depth.**
+
+```go
+func ProjectQuick(r QuickResult, tokenBudget int) QuickView
+```
+
+Drops `provenance` and the materialised-aggregate list, states the fields that are the same for every candidate once, and fits the ranked list to the budget one device at a time — a fleet of one device type ties on every ranking input, and a ranked prefix would answer a question about three inverters with one inverter's variables. What was cut is recorded per device, named as well as identified.
+
+A budget *per item* is not a bound on a response: eighty candidates unprojected are around 48k tokens, and `profile_series` yields one projection per variable of a service. The tool surface therefore bounds both, `tool_quick_token_budget` for the candidate list and `tool_profile_max_profiles` for the profile list, with `variable_paths` as the way to ask for a profile the cap left out. A tool result is resent on every iteration of the tool loop, so an unbounded one is charged for the whole turn, not once.
+
 #### 5.4.9 Sessions as a separate resource (D27)
 
 ```

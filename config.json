@@ -10,7 +10,7 @@
   "ontology_cache_ttl": "1h",
   "ontology_invalidate_interval": "5m",
 
-  "timeseries_request_timeout": "60s",
+  "timeseries_request_timeout": "180s",
 
   "profiler_raw_window_days": 14,
   "profiler_raw_window_points": 100000,
@@ -21,6 +21,48 @@
   "selection_concurrency": 4,
   "selection_max_criteria": 12,
   "selection_device_limit": 10,
+
+  "//postgres": "Empty runs the in-memory stores. A per-user LLM spend cap is then only as old as the process, so set this before relying on one (SPEC §3.3).",
+  "postgres_url": "",
+  "postgres_max_conns": 8,
+
+  "//llm": "Any subset of the four providers of SPEC §5.7. With none configured, ODE serves M0-M2 and no chat. Keys belong in the environment, not here.",
+  "anthropic_api_key": "",
+  "anthropic_models": ["claude-opus-5"],
+
+  "openai_api_key": "",
+  "openai_models": [],
+
+  "compatible_name": "local",
+  "compatible_base_url": "",
+  "compatible_models": [],
+  "compatible_tools": false,
+
+  "//claude_cli": "A development convenience for working without an API key. Reaches ODE's tools over MCP, so it needs public_url to be set.",
+  "claude_cli_enabled": false,
+  "claude_cli_binary": "claude",
+  "claude_cli_models": [],
+
+  "public_url": "http://localhost:8080",
+
+  "llm_max_tokens": 8192,
+  "llm_effort": "max",
+  "llm_adaptive_thinking": true,
+  "llm_max_tool_iterations": 12,
+
+  "//llm_pricing": "Per million tokens, for the estimated cost SPEC §3.3 accounts against. Matched exactly, else by longest prefix. Not baked into the binary: published prices change, and a stale figure makes a cost cap quietly wrong. Verify before relying on these.",
+  "llm_currency": "EUR",
+  "llm_pricing": [
+    { "model": "claude-opus-5", "input_per_mtok": 5.0, "output_per_mtok": 25.0 },
+    { "model": "claude-sonnet-5", "input_per_mtok": 3.0, "output_per_mtok": 15.0 },
+    { "model": "claude-haiku-4-5", "input_per_mtok": 1.0, "output_per_mtok": 5.0 }
+  ],
+
+  "//tool_bounds": "The first two bound one projection; the next two bound a whole response. tool_quick_token_budget is what a ranked candidate list may cost the model, tool_profile_max_profiles how many full profiles one profile_series answer carries. Raise them and every tool call carries the difference for the rest of the turn.",
+  "tool_profile_token_budget": 4000,
+  "tool_profile_max_profiles": 4,
+  "tool_quick_token_budget": 4000,
+  "tool_preview_max_points": 500,
 
   "cors_origins": ["http://localhost:5173"]
 }

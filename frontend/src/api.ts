@@ -51,12 +51,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError(response.status, message);
   }
+  // 204 carries no body, and calling json() on one throws. DELETE answers 204, so
+  // this is the normal path rather than an edge case.
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
 const get = <T>(path: string) => request<T>(path);
 const post = <T>(path: string, body: unknown) =>
   request<T>(path, { method: "POST", body: JSON.stringify(body) });
+const put = <T>(path: string, body: unknown) =>
+  request<T>(path, { method: "PUT", body: JSON.stringify(body) });
+const del = (path: string) => request<void>(path, { method: "DELETE" });
 
 // --- M0 ---
 
@@ -66,7 +72,19 @@ export interface Session {
   email: string;
   roles: string[];
   is_admin: boolean;
-  exposure_tier: string;
+  /** The tier a *new* chat session starts at. A live tier is session-scoped. */
+  exposure_tier: Tier;
+  features: {
+    profiler: boolean;
+    selection: boolean;
+    chat: boolean;
+    mcp: boolean;
+  };
+  /** Present only when the LLM surface is configured (M3). */
+  max_exposure_tier?: Tier;
+  limits?: Limits;
+  spend?: Spend;
+  providers?: ProviderInfo[];
 }
 
 export interface AspectTreeNode {
@@ -819,6 +837,272 @@ function query(params: Record<string, string | number | boolean | undefined>): s
   return encoded ? `?${encoded}` : "";
 }
 
+// --- M3: the LLM surface (SPEC §3.2, §3.3, §5.7, §5.8) ---
+
+/**
+ * Tier is the data exposure tier. A string union rather than a number, matching
+ * the wire form: the backend marshals "L0" precisely so a reader never has to
+ * know whether the levels are 0- or 1-based.
+ */
+export type Tier = "L0" | "L1" | "L2";
+
+export const TIERS: Tier[] = ["L0", "L1", "L2"];
+
+/** What each tier exposes, for the persistent indicator §3.2 asks for. */
+export const TIER_EXPOSES: Record<Tier, string> = {
+  L0: "Ontology, device names and types, availability, volume and rate estimates, connection state, QuickProfile. No values.",
+  L1: "L0 plus SeriesProfile and RelationProfile: statistics, detected periods, session stats, quality flags.",
+  L2: "L1 plus downsampled series previews, which are actual values.",
+};
+
+export interface Capabilities {
+  tools: boolean;
+  streaming: boolean;
+  system: boolean;
+  max_tokens?: number;
+  models?: string[];
+  tools_out_of_band?: boolean;
+  degraded?: boolean;
+  degraded_reason?: string;
+}
+
+export interface ProviderInfo {
+  name: string;
+  capabilities: Capabilities;
+  default: boolean;
+}
+
+export interface ToolInfo {
+  name: string;
+  description: string;
+  effect: string;
+  min_tier: Tier;
+  confirm: boolean;
+  implemented: boolean;
+  unavailable: string;
+}
+
+export interface TierInfo {
+  tier: Tier;
+  exposes: string;
+  available: string[];
+}
+
+export interface ToolSurface {
+  tools: ToolInfo[];
+  tiers: TierInfo[];
+  /** The capabilities §5.8 denies: name → why it is a developer action. */
+  denied: Record<string, string>;
+}
+
+export interface Limits {
+  period?: string;
+  token_cap?: number;
+  cost_cap?: number;
+  soft_warn_fraction?: number;
+  global_cost_cap?: number;
+  allowed_providers?: string[];
+  allowed_models?: string[];
+  max_tier?: Tier;
+  max_concurrent_sessions?: number;
+  kernel_cpu_default?: string;
+  kernel_cpu_max?: string;
+  kernel_mem_default?: string;
+  kernel_mem_max?: string;
+  max_concurrent_ray_jobs?: number;
+}
+
+export interface Spend {
+  tokens: number;
+  cost: number;
+  requests: number;
+  from: string;
+  to: string;
+}
+
+export interface LimitsRecord {
+  subject: string;
+  limits: Limits;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface ModelPrice {
+  model: string;
+  input_per_mtok: number;
+  output_per_mtok: number;
+  cached_input_per_mtok?: number;
+}
+
+export interface LimitsSurface {
+  limits: LimitsRecord[];
+  defaults: Limits;
+  /** Which fields this build acts on, and which are stored for a later milestone. */
+  enforced: string[];
+  declared: Record<string, string>;
+  pricing: ModelPrice[];
+  currency: string;
+}
+
+export interface UsageRecord {
+  user_sub: string;
+  session_id?: string;
+  provider: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens?: number;
+  cost: number;
+  cost_estimated: boolean;
+  at: string;
+}
+
+export interface ToolCallRecord {
+  user_sub: string;
+  session_id: string;
+  tool: string;
+  tier: Tier;
+  outcome: string;
+  duration_ms: number;
+  at: string;
+}
+
+export interface ProposedSeries {
+  device_id: string;
+  service_id: string;
+  variable_path: string;
+  role?: string;
+  reason?: string;
+}
+
+export interface ProposedSelection {
+  rationale: string;
+  series: ProposedSeries[];
+  proposed_at: string;
+}
+
+export interface ChatSession {
+  id: string;
+  user_sub: string;
+  title: string;
+  provider: string;
+  model: string;
+  exposure_tier: Tier;
+  selection?: ProposedSelection;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export type ChatRole = "user" | "assistant";
+
+export interface ChatContent {
+  type: "text" | "tool_use" | "tool_result";
+  text?: string;
+  tool_use_id?: string;
+  tool_name?: string;
+  tool_input?: unknown;
+  tool_result?: string;
+  is_error?: boolean;
+}
+
+export interface ChatMessage {
+  session_id: string;
+  seq: number;
+  role: ChatRole;
+  content: ChatContent[];
+  created_at: string;
+}
+
+export interface PendingConfirmation {
+  id: string;
+  tool: string;
+  input: unknown;
+  tier: Tier;
+  created_at: string;
+}
+
+export interface ChatSessionDetail {
+  session: ChatSession;
+  messages: ChatMessage[];
+  pending_confirmations: PendingConfirmation[];
+}
+
+export interface TierChange {
+  session_id: string;
+  user_sub: string;
+  from: Tier;
+  to: Tier;
+  at: string;
+}
+
+export interface ToolResult {
+  call_id: string;
+  tool: string;
+  outcome: string;
+  content: unknown;
+  is_error: boolean;
+  duration_ms: number;
+}
+
+export interface Usage {
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens?: number;
+  provider?: string;
+  model?: string;
+  cost_eur?: number;
+  cost_estimated?: boolean;
+}
+
+export interface LimitWarning {
+  scope: string;
+  kind: string;
+  cap: number;
+  spent: number;
+  fraction: number;
+}
+
+/** The refusal shape §3.2 fixes, as the LLM relays it. */
+export interface TierRefusal {
+  blocked_by_tier: Tier;
+  required: Tier;
+  tool?: string;
+  hint?: string;
+}
+
+/** One step of a running tool, for showing that a slow one is alive. */
+export interface ToolProgress {
+  tool: string;
+  stage: string;
+  detail: string;
+}
+
+/** One event of the chat stream. */
+export interface ChatEvent {
+  type:
+    | "text_delta"
+    | "tool_call"
+    | "tool_result"
+    | "done"
+    | "error"
+    | "confirmation_required"
+    | "limit_exceeded"
+    | "warning"
+    | "usage"
+    | "progress";
+  text?: string;
+  tool_call?: { id: string; name: string; input: unknown };
+  tool_result?: ToolResult;
+  confirmation?: PendingConfirmation;
+  usage?: Usage;
+  warnings?: LimitWarning[];
+  progress?: ToolProgress;
+  limit?: Record<string, unknown>;
+  stop_reason?: string;
+  error?: string;
+}
+
 export const api = {
   session: () => get<Session>("/session"),
   aspectTree: () => get<{ tree: AspectTreeNode[] }>("/ontology/aspect-tree"),
@@ -860,4 +1144,37 @@ export const api = {
       `/profiles/${encodeURIComponent(id)}/overrides`,
       body,
     ),
+
+  // --- M3 ---
+
+  providers: () => get<{ providers: ProviderInfo[]; default: string }>("/llm/providers"),
+  toolSurface: () => get<ToolSurface>("/llm/tools"),
+
+  chatSessions: () => get<{ sessions: ChatSession[] }>("/chat/sessions"),
+  createChatSession: (body: { title?: string; provider?: string; model?: string; exposure_tier?: Tier }) =>
+    post<ChatSession>("/chat/sessions", body),
+  chatSession: (id: string) => get<ChatSessionDetail>(`/chat/sessions/${encodeURIComponent(id)}`),
+  deleteChatSession: (id: string) => del(`/chat/sessions/${encodeURIComponent(id)}`),
+  /** The developer's tier control (§3.2). There is no LLM tool for this. */
+  setTier: (id: string, tier: Tier) =>
+    put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/tier`, { exposure_tier: tier }),
+  tierChanges: (id: string) =>
+    get<{ changes: TierChange[] }>(`/chat/sessions/${encodeURIComponent(id)}/tier-changes`),
+
+  adminLimits: () => get<LimitsSurface>("/admin/limits"),
+  adminSubjectLimits: (sub: string) =>
+    get<{ subject: string; effective: Limits; spend: Spend }>(
+      `/admin/limits/${encodeURIComponent(sub)}`,
+    ),
+  setAdminLimits: (sub: string, limits: Limits) =>
+    put<{ subject: string; effective: Limits }>(
+      sub ? `/admin/limits/${encodeURIComponent(sub)}` : "/admin/limits",
+      limits,
+    ),
+  adminUsage: (params: { sub?: string; period?: string; limit?: number } = {}) =>
+    get<{ usage: UsageRecord[]; spend: Spend; period: string; currency: string }>(
+      `/admin/usage${query(params)}`,
+    ),
+  adminToolCalls: (params: { sub?: string; period?: string; limit?: number } = {}) =>
+    get<{ tool_calls: ToolCallRecord[]; period: string }>(`/admin/tool-calls${query(params)}`),
 };

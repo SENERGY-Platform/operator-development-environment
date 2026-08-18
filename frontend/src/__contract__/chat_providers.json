@@ -1,0 +1,17 @@
+{
+  "default": "stub",
+  "providers": [
+    {
+      "capabilities": {
+        "models": [
+          "stub-model"
+        ],
+        "streaming": true,
+        "system": true,
+        "tools": true
+      },
+      "default": true,
+      "name": "stub"
+    }
+  ]
+}

@@ -18,6 +18,7 @@ package api_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -522,5 +523,126 @@ func TestCandidatesOverTheWebSocketCarryTheirDeviceNames(t *testing.T) {
 		if candidate.Device.DeviceTypeName == "" {
 			t.Errorf("candidate %s carries no device type name", candidate.SeriesRef.DeviceID)
 		}
+	}
+}
+
+// --- token refresh: the connection outlives the token ---
+
+// mintTokenAs is mintToken with a chosen subject and a nonce. The nonce is what
+// makes a refresh testable: two tokens with identical claims are the same string,
+// and a test could not then tell which one a read presented.
+func mintTokenAs(sub, nonce string, roles []string) string {
+	header := map[string]any{"alg": "RS256", "typ": "JWT", "kid": "gateway"}
+	claims := map[string]any{
+		"sub":                sub,
+		"jti":                nonce,
+		"preferred_username": "dev",
+		"realm_access":       map[string]any{"roles": roles},
+	}
+	return segment(header) + "." + segment(claims) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte("signature-checked-at-the-gateway"))
+}
+
+func (h *wsHarness) dialWith(t *testing.T, token string) *websocket.Conn {
+	t.Helper()
+	url := "ws" + strings.TrimPrefix(h.server.URL, "http") + "/ws"
+	conn, response, err := websocket.DefaultDialer.Dial(url,
+		http.Header{"Authorization": []string{"Bearer " + token}})
+	if err != nil {
+		status := 0
+		if response != nil {
+			status = response.StatusCode
+		}
+		t.Fatalf("dial: %v (status %d)", err, status)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// A handshake authenticates once and the connection then lives as long as the tab.
+// The access token does not: the SPA refreshes it on a thirty-second horizon, and a
+// connection that kept its handshake copy would present an expired credential on
+// every read after that — a 401 from the platform that looks like a platform fault
+// and disappears on reload.
+func TestARefreshedTokenIsWhatTheNextOperationPresents(t *testing.T) {
+	harness := newWSHarness(t, false)
+	conn := harness.dialWith(t, mintTokenAs("user-123", "handshake", []string{"developer"}))
+
+	send(t, conn, map[string]any{"type": "quick_profiles", "id": "q1"})
+	if frame := await(t, conn, "result", "error"); frame.Type != "result" {
+		t.Fatalf("the first operation failed: %s", frame.Error)
+	}
+
+	refreshed := mintTokenAs("user-123", "refreshed", []string{"developer"})
+	send(t, conn, map[string]any{
+		"type": "auth", "id": "a1", "payload": map[string]any{"token": refreshed},
+	})
+	if frame := await(t, conn, "result", "error"); frame.Type != "result" {
+		t.Fatalf("the refresh was refused: %s", frame.Error)
+	}
+
+	send(t, conn, map[string]any{"type": "quick_profiles", "id": "q2"})
+	if frame := await(t, conn, "result", "error"); frame.Type != "result" {
+		t.Fatalf("the second operation failed: %s", frame.Error)
+	}
+	if got, want := harness.devices.token(), "Bearer "+refreshed; got != want {
+		t.Errorf("upstream token = %q, want the refreshed one", got)
+	}
+}
+
+// ODE reads claims without verifying them — the gateway verifies (§3.1) — so `sub`
+// is the only thing tying this connection's identity, its chat sessions and its
+// spend against the §3.3 cap, to the credential its reads are made with. Adopting
+// another subject's token would silently attribute one user's reads to another.
+func TestARefreshedTokenForAnotherSubjectIsRefusedAndTheOldOneKept(t *testing.T) {
+	harness := newWSHarness(t, false)
+	original := mintTokenAs("user-123", "handshake", []string{"developer"})
+	conn := harness.dialWith(t, original)
+
+	send(t, conn, map[string]any{
+		"type": "auth", "id": "a1",
+		"payload": map[string]any{"token": mintTokenAs("user-999", "stolen", []string{"developer"})},
+	})
+	frame := await(t, conn, "result", "error")
+	if frame.Type != "error" || frame.Status != http.StatusForbidden {
+		t.Fatalf("frame = %+v, want a 403 error", frame)
+	}
+
+	send(t, conn, map[string]any{"type": "quick_profiles", "id": "q1"})
+	if frame := await(t, conn, "result", "error"); frame.Type != "result" {
+		t.Fatalf("the connection stopped working after a refused refresh: %s", frame.Error)
+	}
+	if got, want := harness.devices.token(), "Bearer "+original; got != want {
+		t.Errorf("upstream token = %q, want the connection's original", got)
+	}
+}
+
+// The realm role is ODE's own authorisation decision (SPEC D5). A role revoked
+// while the tab was open must end the connection's authority rather than survive
+// in a socket nobody re-authorised.
+func TestARefreshedTokenWithoutTheDeveloperRoleIsRefused(t *testing.T) {
+	harness := newWSHarness(t, false)
+	conn := harness.dialWith(t, mintTokenAs("user-123", "handshake", []string{"developer"}))
+
+	send(t, conn, map[string]any{
+		"type": "auth", "id": "a1",
+		"payload": map[string]any{"token": mintTokenAs("user-123", "demoted", []string{"offline_access"})},
+	})
+	frame := await(t, conn, "result", "error")
+	if frame.Type != "error" || frame.Status != http.StatusForbidden {
+		t.Fatalf("frame = %+v, want a 403 error", frame)
+	}
+}
+
+func TestAnUnparseableRefreshedTokenIsRefused(t *testing.T) {
+	harness := newWSHarness(t, false)
+	conn := harness.dialWith(t, mintTokenAs("user-123", "handshake", []string{"developer"}))
+
+	send(t, conn, map[string]any{
+		"type": "auth", "id": "a1", "payload": map[string]any{"token": "not-a-jwt"},
+	})
+	frame := await(t, conn, "result", "error")
+	if frame.Type != "error" || frame.Status != http.StatusUnauthorized {
+		t.Fatalf("frame = %+v, want a 401 error", frame)
 	}
 }

@@ -77,6 +77,16 @@ type Options struct {
 	// computation, which stays in UTC throughout.
 	LocalTimezone string
 	Now           func() time.Time
+
+	// ReadTimeout bounds one value-reading request to the platform, overriding the
+	// timeseries client's default.
+	//
+	// It is separate because the two kinds of request are not comparable: a raw pass
+	// bounded at a hundred thousand points is megabytes of JSON the server has to
+	// assemble, whereas an availability probe answers from metadata. Sharing one
+	// timeout means either the probe waits far too long to fail or the read is cut
+	// off mid-assembly. Zero keeps the client's default.
+	ReadTimeout time.Duration
 }
 
 type Profiler struct {
@@ -136,6 +146,12 @@ type ProfileRequest struct {
 	Device         models.ExtendedDevice
 	ServiceID      string
 	AnalysisWindow Window
+	// Progress is called as the pass moves between phases, so a caller streaming to
+	// a developer can show that a multi-minute operation is alive and what it is
+	// doing. Optional; nil means nothing is reported.
+	//
+	// It is called from the goroutine running the pass and must not block.
+	Progress func(Phase)
 	// RawWindow overrides the default bounded raw read. Recorded in the profile
 	// as a developer override, so a profile computed over an unusual window is
 	// not mistaken for a default one (D25).
@@ -146,6 +162,23 @@ type ProfileRequest struct {
 	GroupTime string
 }
 
+// Phase is one step of a profile pass, for Progress.
+type Phase struct {
+	// Stage is a stable identifier a UI can switch on.
+	Stage string `json:"stage"`
+	// Detail is human-readable and may name counts or windows.
+	Detail string `json:"detail"`
+}
+
+const (
+	PhaseAvailability = "availability"
+	PhaseVariables    = "variables"
+	PhaseRawRead      = "raw_read"
+	PhaseAggregated   = "aggregated_read"
+	PhaseDetect       = "detect"
+	PhaseStore        = "store"
+)
+
 type ProfileResult struct {
 	Profiles []ResolvedProfile `json:"profiles"`
 	Reads    ReadCounts        `json:"reads"`
@@ -155,6 +188,14 @@ type ProfileResult struct {
 	AnalysisWindow Window    `json:"analysis_window"`
 	RawWindow      RawWindow `json:"raw_window"`
 	GroupTime      string    `json:"group_time"`
+}
+
+// report is the nil-safe form of ProfileRequest.Progress.
+func report(progress func(Phase), stage, detail string) {
+	if progress == nil {
+		return
+	}
+	progress(Phase{Stage: stage, Detail: detail})
 }
 
 // ProfileService computes a full SeriesProfile per variable of one service.
@@ -198,6 +239,7 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 
 	result := ProfileResult{Profiles: []ResolvedProfile{}, FromCache: []string{}}
 
+	report(req.Progress, PhaseAvailability, "asking the platform which window has data")
 	availability, err := p.ts.DataAvailability(ctx, token, device.Id)
 	result.Reads.Availability++
 	if err != nil {
@@ -239,6 +281,8 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 		return result, nil
 	}
 
+	report(req.Progress, PhaseRawRead, fmt.Sprintf(
+		"reading raw points for %d variable(s) over %s", len(variables), raw.Window))
 	rawSet, rawTruncated, err := p.readRaw(ctx, token, device.Id, req.ServiceID, variables, raw, &result.Reads)
 	if err != nil {
 		return ProfileResult{}, err
@@ -263,6 +307,8 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 	result.GroupTime = groupTime
 	bucket := bucketSecondsOf(groupTime)
 
+	report(req.Progress, PhaseAggregated, fmt.Sprintf(
+		"reading aggregates at %s over %s", groupTime, analysis))
 	aggregated, err := p.readAggregated(ctx, token, device.Id, req.ServiceID, variables, analysis, groupTime, &result.Reads)
 	if err != nil {
 		// The aggregated pass is not fatal: every field it feeds carries
@@ -273,6 +319,7 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 		aggregated = map[string]aggregatedSeries{}
 	}
 
+	report(req.Progress, PhaseDetect, fmt.Sprintf("running detectors over %d variable(s)", len(variables)))
 	computed := p.detect(detectionInput{
 		device:       device,
 		service:      service,
@@ -381,7 +428,8 @@ func (p *Profiler) readRaw(
 		},
 	}
 
-	results, err := p.ts.Query(ctx, token, []timeseries.QueryElement{element}, timeseries.QueryOptions{})
+	results, err := p.ts.Query(ctx, token, []timeseries.QueryElement{element},
+		timeseries.QueryOptions{Timeout: p.opts.ReadTimeout})
 	reads.Values++
 	if err != nil {
 		return timeseries.ResultSet{}, false, err
@@ -445,7 +493,8 @@ func (p *Profiler) readAggregated(
 		})
 	}
 
-	results, err := p.ts.Query(ctx, token, elements, timeseries.QueryOptions{})
+	results, err := p.ts.Query(ctx, token, elements,
+		timeseries.QueryOptions{Timeout: p.opts.ReadTimeout})
 	reads.Values++
 	if err != nil {
 		return nil, err

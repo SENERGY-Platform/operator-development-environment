@@ -11,7 +11,7 @@ file only says how to run what exists.
 
 ## Status
 
-**M0, M1a, M1b and M2 of the build order in SPEC.md §6.** What works today:
+**M0, M1a, M1b, M2 and M3 of the build order in SPEC.md §6.** What works today:
 
 - The `developer` realm role gate on every route. Token signature, expiry and
   audience are validated by the platform API gateway, not here.
@@ -43,10 +43,33 @@ file only says how to run what exists.
   full profile with every non-result shown as one, the paginated sessions, the LLM
   projection, and the confirmation form.
 
-Not built yet: everything from M3 onward — the LLM provider abstraction, the tool
-surface and exposure-tier enforcement, kernels, repositories and experiments.
-There are no charts: the exploration pane is M5, and it needs the chart-spec
-surface of §5.9 to draw anything.
+- **LLM provider abstraction** — one `Provider` interface over the Anthropic API,
+  the OpenAI API, any OpenAI-compatible server, and the local `claude` CLI, all
+  normalised to one event stream. A session names a provider; nothing above
+  `pkg/llm` mentions a concrete one.
+- **The tool surface of §5.8** — all eighteen tools declared, twelve implemented,
+  every call dispatched through one gate that enforces the **exposure tier** before
+  anything executes. The four capabilities §5.8 denies have no tool at all, and a
+  test asserts they never gain one.
+- **An MCP server** carrying the same registry over a second transport, for the CLI
+  provider. Same dispatcher, same tier gate — not a second, weaker door.
+- **Chat with tool dispatch**: sessions, the agentic loop, developer-controlled
+  tiers with an append-only audit trail, and held confirmations for the tools that
+  need one (D11). A turn is a **detached exchange** — it outlives the connection
+  that started it, so closing the tab during a five-minute profile leaves the answer
+  waiting rather than losing it. Streamed over the same WebSocket as the profiler.
+- **Admin limits (§3.3)** behind the `admin` realm role: per-user and global token
+  and cost caps, provider and model allow-lists, a maximum exposure tier, and
+  accounting recorded per provider request.
+- **PostgreSQL** for the things whose loss would matter: spend accounting, the
+  tier audit trail, chat history, and the profiler's override overlay.
+- A **Chat view and a Settings view in the SPA**: the conversation with every tool
+  call and refusal visible, the tier control beside it, and the admin surface that
+  says which limits it actually enforces.
+
+Not built yet: M4 onward — kernels, repositories, experiments and the exploration
+pane. There are no charts: the pane is M5, and it needs the chart-spec surface of
+§5.9 to draw anything.
 
 ## Architecture in one paragraph
 
@@ -66,6 +89,16 @@ pkg/timeseries/    timescale-wrapper client: availability, usage, batched reads
 pkg/profiler/      QuickProfile, SeriesProfile, detectors, store, projection
 pkg/selection/     semantic selection: intent → criteria → selectables → devices
                    → ranked series, plus ontology_gaps
+pkg/llm/           provider abstraction: one interface, one event stream, four
+                   transports, plus the model price table for cost estimation
+pkg/tools/         the §5.8 tool surface and the one Dispatcher that enforces
+                   the exposure tier before any tool runs
+pkg/chat/          sessions, the tool loop, tier changes with their audit trail,
+                   held confirmations
+pkg/admin/         §3.3: effective limits, the pre-request check, accounting
+pkg/mcp/           the same tool registry over MCP, for the CLI provider
+pkg/database/      pgx pool and the schema the above persist into
+pkg/identifiers/   unguessable ids for anything that appears in a URL
 pkg/api/           gin routes, plus the cancellable WebSocket in ws.go and the
                    operations both surfaces share in operations.go
 pkg/configuration/ config.json plus environment overrides
@@ -95,6 +128,16 @@ variables, using the platform's usual camel-case-to-`UPPER_SNAKE` mapping
 | `profiler_local_timezone` | Used only to flag DST transitions; computation is UTC throughout |
 | `selection_max_criteria` | How many criteria combinations one resolution may send, default 12. One request each, because the platform ANDs a criteria list — see the last section |
 | `selection_device_limit` / `selection_concurrency` | Devices a resolution expands (default 10) and how many selectables requests run at once (default 4) |
+| `postgres_url` | Empty runs the in-memory stores. **A per-user spend cap is then only as old as the process** — see the last section |
+| `anthropic_api_key` / `openai_api_key` | The central key of D8. Any subset of the four providers may be configured; with none, the chat routes are not served |
+| `compatible_base_url` / `compatible_tools` | An OpenAI-compatible server (vLLM, Ollama, Azure). `compatible_tools` declares whether it implements function calling — ODE cannot find out without trying |
+| `claude_cli_enabled` / `public_url` | The local `claude` CLI, for working without an API key. It reaches ODE's tools over MCP, so it needs `public_url` |
+| `llm_pricing` / `llm_currency` | Per million tokens, for the estimated cost §3.3 accounts against. Not baked into the binary, because a stale price makes a cost cap quietly wrong |
+| `llm_effort` / `llm_adaptive_thinking` | Anthropic's `output_config.effort`, and whether to send `thinking: {type: "adaptive"}` |
+| `llm_max_tool_iterations` | How many times one exchange may loop through tools, default 12. A model that never concludes is stopped by control flow rather than by the spend cap |
+| `tool_preview_max_points` | Caps a tier-L2 preview, default 500. This is what keeps "downsampled preview" from becoming a raw series read |
+| `profiler_read_timeout` | Bounds one *value-reading* request, default 300s, separately from `timeseries_request_timeout` above, which bounds a metadata probe and should fail fast |
+| `chat_exchange_timeout` | Ceiling on one detached turn, default 30m. It exists because an exchange no longer ends with its connection |
 | `cors_origins` | Only needed if the SPA is not served through the Vite proxy |
 
 ## Trying M1
@@ -203,6 +246,151 @@ ontology work. Only the ranking needs the profiler, and the response says so in
 `notes` instead of failing. The SPA's Selection tab does need the WebSocket, which
 is registered with the profiler.
 
+## Trying M3
+
+M3 is the LLM surface: a provider abstraction, the tool allow-list of §5.8, the
+exposure tiers of §3.2 enforced before any tool runs, and the admin limits of §3.3.
+
+### Without an API key
+
+The local `claude` CLI is the development path, and it needs no key. It reaches
+ODE's tools over MCP, so `public_url` has to be something the CLI can resolve:
+
+```bash
+CLAUDE_CLI_ENABLED=true PUBLIC_URL=http://localhost:8080 ./ode -config config.json
+```
+
+Startup logs what came up:
+
+```json
+{"level":"INFO","msg":"llm surface ready","providers":["claude-cli"],
+ "tools_declared":18,"tools_available_at_l0":8,"persistent":false}
+```
+
+`tools_declared` is §5.8's whole table; `tools_available_at_l0` is what a session
+can actually reach at the default tier. The gap between the two is the point of the
+milestone.
+
+With an API key instead, set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Several
+providers may be configured at once; the first registered is the default, and a
+session records which one it uses.
+
+### The tool table, and what has no tool
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/llm/tools | jq '{
+  at_l0: (.tiers[] | select(.tier=="L0") | .available),
+  denied: (.denied | keys)
+}'
+```
+
+`denied` is §5.8's "no tool exists" list — changing the exposure tier, changing
+admin limits, writing a `ProfileOverride`, promoting a recommendation. They are
+absent from the registry rather than refused at dispatch, and `NewRegistry` refuses
+to register one. A refusal would still advertise the capability and invite the model
+to argue with it.
+
+### Watching the tier block a tool
+
+Create a session — it starts at L0, which §3.2 makes the default rather than a
+choice a caller has to remember:
+
+```bash
+SID=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{}' $BASE/chat/sessions | jq -r .id)
+```
+
+Sending a message is a WebSocket operation, so this one needs a WebSocket client
+rather than curl — `websocat` will do:
+
+```bash
+websocat -H="Authorization: Bearer $TOKEN" ws://localhost:8080/ws <<EOF
+{"type":"chat_send","id":"r1","payload":{"session_id":"$SID",
+ "message":"show me the actual values for any power series you can find"}}
+EOF
+```
+
+Frames come back as `accepted`, then one `event` per item of the stream, then `done`.
+At L0 the assistant can resolve the intent and rank candidates,
+and `preview_series` is not offered to it at all; if it asks anyway, the dispatcher
+answers with §3.2's refusal verbatim:
+
+```json
+{"blocked_by_tier":"L0","required":"L2","tool":"preview_series",
+ "hint":"the developer controls this. Ask them to raise the exposure tier to L2 …"}
+```
+
+Two more messages are worth knowing by hand. `chat_attach` subscribes to a turn
+already in flight and replays it from the start, which is what a reconnect does:
+
+```json
+{"type":"chat_attach","id":"r2","payload":{"session_id":"<SID>"}}
+```
+
+`chat_cancel` abandons the turn. Closing the socket does **not** — that only detaches
+your view, and the exchange runs on:
+
+```json
+{"type":"chat_cancel","id":"r3","payload":{"session_id":"<SID>"}}
+```
+
+Worth trying, because it is the behaviour the design turns on: start a message, close
+the socket while a tool is running, reconnect, `chat_attach`, and the turn is still
+there. `GET /chat/sessions/$SID` shows the messages persisted either way.
+
+Raise the tier, and the same request works:
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"exposure_tier":"L2"}' $BASE/chat/sessions/$SID/tier
+
+# Every change is logged with its time and its user (§3.2).
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/chat/sessions/$SID/tier-changes | jq .
+```
+
+### The same gate over MCP
+
+The MCP transport is the CLI provider's route to the tools, and it enforces the
+same gate through the same dispatcher. Worth checking by hand, because a second
+transport is exactly where a bypass would hide:
+
+```bash
+# The session id is a header, because the tier lives on the session.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "X-ODE-Session: $SID" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18",
+       "capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}' $BASE/mcp
+
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "X-ODE-Session: $SID" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' $BASE/mcp
+```
+
+The advertised list is the session's tier, read from the session on every request —
+never from a header a client could set for itself.
+
+### Admin limits
+
+Behind the `admin` realm role. A cap is checked before each provider request, and
+answered with a structured refusal rather than a generic error:
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"period":"24h","token_cap":50}' $BASE/admin/limits/$SUB
+
+# Then, once 50 tokens are spent, the next message is refused:
+# 429 {"error":"limit_exceeded","scope":"user","kind":"tokens","cap":50,
+#      "spent":43306,"period":"24h0m0s","resets_at":"…"}
+```
+
+Two things the settings surface tells you that a plain form would hide. Which
+fields this build actually enforces — the kernel and Ray caps of §3.3 are stored
+now and enforced from M4 and M7, and an administrator setting one should know that.
+And whether a cost cap can bind at all: cost is estimated from `llm_pricing`, so a
+model with no configured price accrues zero and the cap silently does not apply to
+it. `GET /admin/usage` marks those requests `unpriced` rather than showing them as
+free.
+
 ## The profiler over a WebSocket
 
 The Profiler and Selection views run their slow operations over `GET /ws` rather
@@ -223,6 +411,7 @@ tab from costing platform reads.
 → {"type":"resolve_selection","id":"s1","payload":{"intent":"…","limit":10}}
 → {"type":"cancel","id":"p1"}
 → {"type":"ping","id":"…"}
+→ {"type":"auth","id":"a1","payload":{"token":"<refreshed access token>"}}
 
 ← {"type":"accepted","id":"p1"}
 ← {"type":"result","id":"p1","payload":{…}}
@@ -241,6 +430,16 @@ An `Authorization` header and an `?access_token=` parameter also work, for clien
 that are not browsers; the query form is supported but avoided by the SPA because
 it ends up in access logs. The realm role is enforced on the upgrade, so §3.1 is
 unchanged: the gateway validates, ODE authorises.
+
+**And it has to be re-presented.** The handshake happens once; the access token
+expires. `auth` replaces the credential this connection presents to the platform,
+and the SPA sends it whenever a refresh produced a new token — which is what keeps
+a tab open for an hour from reading with an expired one. The subject must be
+unchanged and the realm role must still be present, or the frame is refused with
+403 and the connection keeps the credential it had: `sub` is the only thing tying a
+connection's chat sessions and its spend against the §3.3 cap to the token its
+reads are made with. Expiry is not checked here, exactly as it is not checked on
+the upgrade — that is the gateway's, and `servicejwt.Token` does not carry `exp`.
 
 A cancelled operation answers `cancelled`, never `error`. An aborted read fails on
 the way out, and reporting that as a platform fault would be a lie.
@@ -303,12 +502,29 @@ The frontend build is also a **contract test**. `frontend/src/__contract__` hold
 JSON captured from a running backend, assigned to the types the SPA declares for
 those endpoints, so a renamed or dropped field fails the build instead of
 becoming `undefined` in front of a developer. It earned its place on the first
-run by catching four defects; see the README in that directory, including how to
+run by catching four defects, and caught a fifth on the M3 pass — a `duration_ms`
+field carrying nanoseconds. See the README in that directory, including how to
 recapture the fixtures when the shape changes on purpose.
+
+The M3 fixtures are regenerated from the API test harness rather than a platform:
+
+```bash
+ODE_WRITE_CONTRACT=$PWD/frontend/src/__contract__ \
+  go test ./pkg/api/ -run ContractFixtures
+```
 
 The backend tests use no containers and no network. The device repository is a
 fake and test tokens are minted unsigned — deliberately, since signatures are
 the gateway's concern — so the suite runs in a few seconds without the platform.
+The M3 packages hold to the same rule: the LLM providers are exercised through a
+scripted fake that returns a fixed event script, so a whole tool loop runs with no
+API key, and the Postgres stores are only wired in `pkg.Start` — the tests run the
+memory implementations of the same interfaces.
+
+The MCP tests are the exception worth knowing about: they run a real MCP client
+against a real server over `httptest`, because the property being checked is that a
+second transport enforces the same gate, and a fake client would only prove the
+server agrees with itself.
 
 Detector correctness is checked against fixtures with known answers rather than
 against the platform (SPEC §5.4.14): a synthesised 15-minute series with an
@@ -316,7 +532,7 @@ injected gap, a monotonic counter with two resets, a bimodal washing-machine
 load, white noise against a random walk. That is what makes the profiler testable
 without an LLM and without the cluster.
 
-## Five things worth knowing before you extend this
+## Things worth knowing before you extend this
 
 **ODE does not validate tokens, and must therefore sit behind the gateway.**
 Signature, expiry and audience are checked centrally by the platform API
@@ -344,6 +560,35 @@ stay distinguishable: an LLM that reads a missing `dominant_periods_s` as "no
 periodicity" will propose a model on that basis, and nothing downstream can
 recover the difference.
 
+**A token budget per item is not a bound on a response.** `tool_profile_token_budget`
+bounds one `LLMProfileView`, and for a while it was the only bound the tool surface
+had. Breadth then multiplied it: `quick_profile` over three inverters assembled
+eighty candidates and about 48k tokens, two thirds of that the provenance sidecar
+and the same `not_computed` sentence repeated once per candidate, and
+`profile_series` returns one profile per variable of a service. A tool result is
+resent on every iteration of the tool loop, so the cost lands on the whole turn
+rather than on the call. `profiler.ProjectQuick` is the L0 counterpart of
+`profiler.Project`: it drops what only ODE itself needs, spends
+`tool_quick_token_budget` a device at a time — a fleet of one device type ties on
+every ranking input, so a ranked prefix would answer about three inverters with one
+inverter's variables — and records what it cut in `elided` and `elided_devices`,
+devices by name. `tool_profile_max_profiles` bounds the other list, and
+`variable_paths` is how a caller asks for a profile the cap left out. The HTTP and
+WebSocket surfaces are unprojected on purpose: the frontend renders every field.
+Add a tool that returns a list, and bound the list.
+
+**A connection outlives its token, and a chat turn can too.** The WebSocket
+handshake authenticates once and the socket then lives as long as the tab, while
+the SPA's access token is refreshed on a thirty-second horizon. The connection
+therefore holds a `sessionToken` that an `auth` frame replaces, and every operation
+reads it at the moment it runs rather than copying it per connection. The chat
+engine goes one step further: `chat.TokenSource` is read per *tool call*, because an
+exchange is detached from the request that started it — a turn running twelve tool
+iterations, or a confirmation a developer approves ten minutes later, would
+otherwise dispatch with a credential that expired while it waited. Both failures
+looked like platform faults and both disappeared on reload, which is the worst kind
+of bug report to receive.
+
 **A selectables criteria list is an AND, and an empty one matches everything.**
 `POST /v2/query/device-type-selectables` narrows the device type set with each
 criterion in turn, so `[{function: power}, {function: energy}]` asks for a device
@@ -358,12 +603,101 @@ substituted upstream with one empty criterion that matches every device type on 
 platform, which is why `ontology.DeviceTypeSelectables` refuses it outright. None of
 this is a compile error and all of it looks like an empty platform.
 
-**The profile store is in-memory.** `profiler.MemoryStore` is the only
-implementation, behind an interface. Losing computed profiles across a restart
-only costs a recomputation, but the **override overlay is developer input and an
-empirical record** (§5.4.3), and it does not survive either. Persisting it means
-choosing and deploying a database, which is a decision M1b did not need to make —
-so make it deliberately, rather than discovering the gap in a demo.
+**Computed profiles are in memory; the override overlay is not.** The two halves of
+`profiler.Store` have different durability requirements and now have different
+homes. A computed profile is reproducible — losing it costs a recomputation — so it
+stays in `MemoryStore`. An override is a developer's confirmation of derived
+semantics, which §5.4.3 calls an empirical record, so with a `postgres_url` it goes
+to a table (`profiler.NewOverlayStore` composes the two). Without one, both are in
+memory and the warning at startup says so.
+
+**Every tool call goes through one `Dispatch`, and that is the whole tier
+argument.** `pkg/tools` is written so there is no path to an executor that skips a
+check: the executor lives in an unexported field, `Dispatch` is the only caller, and
+the order — exists, implemented, tier, confirmation, run — is the milestone's exit
+criterion rather than an implementation detail. The MCP transport shares the same
+dispatcher for the same reason; a second tool list would be a second, weaker gate.
+If you add a tool, add it to the registry, not beside it.
+
+**A denied capability has no tool, and that is different from refusing one.** The
+four operations §5.8 forbids are absent from the registry, `NewRegistry` refuses to
+register one, and a call to a denied name is answered "unknown tool" rather than
+"forbidden". Naming it forbidden would describe a capability boundary the model will
+then try to talk its way around; "no such tool" ends the line of enquiry. There is a
+test asserting all of this, because absence is the kind of property that quietly
+stops holding.
+
+**The admin tier ceiling binds continuously, not only when raising.** An earlier
+version checked `max_tier` only on the way up, so a session already at L2 kept its
+L2 tools after an administrator lowered the maximum — a policy that applied to
+future sessions only. `chat.Engine.effectiveTier` now clamps on every read of a
+session's tier, including the MCP path, and fails closed to L0 if the policy cannot
+be read. The stored tier and the effective tier can therefore differ, which is why
+`SetTier` compares against the stored one.
+
+**`time.Duration` marshals as nanoseconds.** A field named `duration_ms` carrying a
+`time.Duration` is wrong by a factor of a million and nothing about the JSON says
+so — both are plausible integers. `tools.Millis` exists to make the name true. The
+frontend's contract check is what caught it; that is the second time that check has
+paid for itself.
+
+**A chat exchange is detached from the connection that started it, and this is the
+load-bearing decision in the whole surface.** `chat.Exchange` is a turn running on
+the process's own context with its own ceiling (`chat_exchange_timeout`), publishing
+to zero or more subscribers. A connection is a *view*, not the owner.
+
+It is worth knowing why it is at the level of the whole exchange rather than of
+individual slow tools. A tool result is only useful inside a conversation: if
+`profile_series` ran as a background job but the exchange died with the socket, the
+profile would complete into a cache nobody was reading and the conversation would
+have lost the turn. Detaching the exchange makes every tool inside it survive for
+free, and leaves nothing for a per-tool job registry to add.
+
+Three consequences:
+
+- **Closing a tab is not cancelling.** Detaching a view leaves the turn running;
+  `chat_cancel` abandons it. The two are separate messages because they are separate
+  intentions, and the Stop button sends both.
+- **Reconnecting resumes.** `chat_attach` subscribes to whatever is still in flight,
+  and `Subscribe` replays from the start of the turn — so a reattached view sees the
+  whole thing, not just the remainder. The SPA attaches on every socket open.
+- **A slow subscriber is dropped, not waited for.** If a client stops draining, the
+  exchange closes that subscriber rather than stalling the work; the client re-reads
+  the persisted messages, which are the source of truth in any case.
+
+**Streaming is all on `/ws`, and this departs from §5.7 deliberately.** The spec says
+the provider stream is "Streamed to the SPA over SSE", and the first implementation
+did that. It was wrong in practice for the reason `ws.go` was written: between the
+`tool_call` event and its `tool_result` nothing is written, and a 3-second tool
+produced 3.001s of measured silence — so any proxy idle timeout closed a healthy
+connection mid-exchange.
+
+SSE can be kept alive with a comment heartbeat, and that is a real fix; the reason it
+is not the one here is that it would leave ODE maintaining two streaming paths with
+two sets of liveness and cancellation semantics, when the WebSocket already had the
+harder half working. Note the mechanism either way: **the WebSocket survives idle
+because it pings every 30s ([ws.go:242](pkg/api/ws.go#L242)), not because it is a
+WebSocket.**
+
+Request/response stays REST — sessions, the tier, the audit, admin, MCP — because a
+status code means something there and those routes are worth being able to curl.
+
+**Two platform timeouts, because the two kinds of request are not comparable.**
+`timeseries_request_timeout` (60s) bounds a metadata probe: availability, usage. It
+should fail fast. `profiler_read_timeout` (300s) bounds a value read, where the
+server assembles megabytes of JSON for a raw pass of up to a hundred thousand
+points. One shared timeout means either the probe waits far too long to fail or the
+read is cut off mid-assembly. The client applies whichever it is given as a context
+deadline and carries no `http.Client.Timeout` of its own — that field is an absolute
+cap and would silently win over the longer one.
+
+**Spend accounting is per provider request, not per exchange.** §3.3 says "recorded
+per request", and it has to be: the tool loop makes several provider calls, and
+recording only the aggregate at the end would let one exchange overrun a cap by its
+whole length — bounded by nothing but `llm_max_tool_iterations`. The cap is checked
+before each call and against spend already recorded, so it can be overshot by at
+most one request. Refusing on a prediction instead would refuse requests that would
+have fit.
 
 ## Licence
 

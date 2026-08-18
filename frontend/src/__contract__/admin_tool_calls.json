@@ -1,0 +1,23 @@
+{
+  "period": "720h0m0s",
+  "tool_calls": [
+    {
+      "at": "2026-08-18T07:52:54.986443689Z",
+      "duration_ms": 0,
+      "outcome": "blocked_by_tier",
+      "session_id": "id-1",
+      "tier": "L0",
+      "tool": "l2_tool",
+      "user_sub": "user-123"
+    },
+    {
+      "at": "2026-08-18T07:52:54.986442558Z",
+      "duration_ms": 0,
+      "outcome": "ok",
+      "session_id": "id-1",
+      "tier": "L0",
+      "tool": "l0_tool",
+      "user_sub": "user-123"
+    }
+  ]
+}

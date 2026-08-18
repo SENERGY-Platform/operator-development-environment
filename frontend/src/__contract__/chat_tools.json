@@ -1,0 +1,57 @@
+{
+  "denied": {
+    "delete_platform_data": "no tool deletes platform data",
+    "deploy_to_production": "promotion to a production pipeline is a developer decision, never an autonomous one",
+    "modify_evaluation_criteria": "the developer defines the evaluation criteria; that is the human-in-the-loop premise of the whole system",
+    "modify_operator_lib": "the shared Operator Lib is platform code, out of scope for a session",
+    "promote_recommendation": "recommendations are strictly advisory and become binding only by explicit developer promotion (D28)",
+    "set_admin_limits": "admin limits bound the LLM's own spend, so the LLM must not be able to move them (§3.3)",
+    "set_exposure_tier": "the exposure tier is the developer's control over what the LLM may see; a tool to raise it would defeat §3.2 entirely",
+    "write_profile_override": "a ProfileOverride is a human confirmation of derived semantics and an empirical record; an LLM-written one would be fabricated ground truth (D21, D11)",
+    "write_timeseries": "ODE reads the timeseries store and never writes to it"
+  },
+  "tiers": [
+    {
+      "available": [
+        "l0_tool"
+      ],
+      "exposes": "Ontology, device names and types, availability windows, volume and rate estimates, connection state, QuickProfile. No values whatsoever.",
+      "tier": "L0"
+    },
+    {
+      "available": [
+        "l0_tool"
+      ],
+      "exposes": "L0 plus SeriesProfile and RelationProfile: statistics, detected periods, session stats, quality flags. Aggregates are still data.",
+      "tier": "L1"
+    },
+    {
+      "available": [
+        "l0_tool",
+        "l2_tool"
+      ],
+      "exposes": "L1 plus downsampled series previews, which are actual values.",
+      "tier": "L2"
+    }
+  ],
+  "tools": [
+    {
+      "confirm": false,
+      "description": "d",
+      "effect": "",
+      "implemented": true,
+      "min_tier": "L0",
+      "name": "l0_tool",
+      "unavailable": ""
+    },
+    {
+      "confirm": false,
+      "description": "d",
+      "effect": "",
+      "implemented": true,
+      "min_tier": "L2",
+      "name": "l2_tool",
+      "unavailable": ""
+    }
+  ]
+}

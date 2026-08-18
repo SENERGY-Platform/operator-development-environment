@@ -861,3 +861,421 @@ button.primary:disabled {
 .device-type::before {
   content: "· ";
 }
+
+/* --- M3: chat, the tier control and the admin surface --- */
+
+.panes.chat-layout {
+  grid-template-columns: minmax(260px, 22rem) minmax(0, 1fr);
+  align-items: start;
+}
+
+.panes.admin-layout {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+}
+
+@media (max-width: 1100px) {
+  .panes.chat-layout,
+  .panes.admin-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The tier indicator, coloured by how much it exposes. Not decoration: §3.2 asks
+   for the current tier to be persistently visible, and a developer scanning a
+   session list should be able to see at a glance which conversations can read
+   values. */
+.tier-L0 {
+  border-color: var(--online);
+  color: var(--online);
+}
+
+.tier-L1 {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.tier-L2 {
+  border-color: var(--offline);
+  color: var(--offline);
+}
+
+.tier-cap {
+  color: var(--muted);
+}
+
+.spend {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- sessions --- */
+
+.new-session {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.new-session .hint,
+.limit-field .hint {
+  color: var(--muted);
+  font-size: 0.85em;
+  flex-basis: 100%;
+}
+
+.degraded-list {
+  flex-basis: 100%;
+  margin: 0.25rem 0 0;
+  padding-left: 1rem;
+  color: var(--warn);
+  font-size: 0.9em;
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.session-list li {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.session-list li.active {
+  border-color: var(--accent);
+  background: var(--raised);
+}
+
+.session-open {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  align-items: flex-start;
+  border: none;
+  text-align: left;
+  padding: 0.5rem;
+}
+
+.session-title {
+  font-weight: 500;
+}
+
+.session-meta {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.session-delete {
+  border: none;
+  color: var(--muted);
+  padding: 0 0.5rem;
+}
+
+.session-delete:hover {
+  color: var(--offline);
+}
+
+/* --- the conversation --- */
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.turn {
+  display: flex;
+}
+
+.turn-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  max-width: 46rem;
+}
+
+.turn.user {
+  justify-content: flex-end;
+}
+
+.turn.user .turn-body {
+  background: var(--raised);
+  border: 1px solid var(--border);
+}
+
+.turn.assistant .turn-body {
+  background: transparent;
+  border: 1px solid transparent;
+  padding-left: 0;
+}
+
+.thinking {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* A tool call is shown, not implied: the developer should be able to see that the
+   assistant read the ontology rather than guessed. */
+.tool-turn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.tool-turn.tool-error {
+  border-color: var(--warn);
+}
+
+.tool-head {
+  width: 100%;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  border: none;
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+}
+
+.tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.tool-outcome {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.tool-outcome.outcome-ok {
+  color: var(--online);
+}
+
+.tool-outcome.outcome-blocked_by_tier,
+.tool-outcome.outcome-awaiting_confirmation {
+  color: var(--warn);
+}
+
+.tool-outcome.outcome-failed,
+.tool-outcome.outcome-invalid_input,
+.tool-outcome.outcome-unknown_tool {
+  color: var(--offline);
+}
+
+/* The refusal, spelled out. A blocked call rendered as nothing would leave the
+   developer wondering why the answer was thin. */
+.tool-refusal {
+  margin-left: auto;
+  color: var(--warn);
+  font-size: 0.85em;
+}
+
+.tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0 0.6rem 0.6rem;
+}
+
+.tool-label {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.notice {
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.notice-info {
+  border-color: var(--accent);
+}
+
+.notice-warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.notice-error {
+  border-color: var(--offline);
+  color: var(--offline);
+}
+
+/* --- the composer --- */
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+
+.composer textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  resize: vertical;
+}
+
+.composer-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.usage {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- the tier control (§3.2) --- */
+
+.tier-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  align-items: flex-end;
+  max-width: 26rem;
+}
+
+.tier-buttons {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.tier-button.active {
+  background: var(--raised);
+  font-weight: 600;
+}
+
+.tier-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tier-exposes,
+.tier-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85em;
+  text-align: right;
+}
+
+.tier-hint strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+button.link {
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 0.85em;
+}
+
+.tier-audit {
+  margin: 0.25rem 0 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  font-size: 0.85em;
+  text-align: left;
+  align-self: stretch;
+}
+
+/* --- confirmation (D11) --- */
+
+.confirmation {
+  margin-top: 0.75rem;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.confirmation-head {
+  color: var(--warn);
+}
+
+.confirmation-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* --- the tool surface table --- */
+
+.grid.tools tbody tr.unavailable td {
+  color: var(--muted);
+}
+
+.denied-row {
+  display: grid;
+  grid-template-columns: minmax(12rem, auto) 1fr;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+}
+
+.denied-row dt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+}
+
+.denied-row dd {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* --- the admin surface (§3.3) --- */
+
+.limits-form,
+.new-override {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.limit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 12rem;
+}
+
+.limit-field > span:first-child {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.form-actions {
+  flex-basis: 100%;
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* A progress line on a running tool. Replaced in place rather than stacked: a
+   profile reports a few phases and each supersedes the last. */
+.tool-progress {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.85em;
+  font-style: italic;
+}

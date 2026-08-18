@@ -14,22 +14,41 @@
  */
 import type {
   AvailabilityList,
+  ChatSession,
+  ChatSessionDetail,
   LLMProfileView,
+  LimitsSurface,
   ProfileOverrideRecord,
   ProfileResult,
+  ProviderInfo,
   QuickProfileList,
   SelectionResult,
   SeriesProfile,
+  Session,
   SessionPage,
+  Spend,
+  TierChange,
+  ToolCallRecord,
+  ToolSurface,
+  UsageRecord,
 } from "../api";
 
+import adminLimits from "./admin_limits.json";
+import adminToolCalls from "./admin_tool_calls.json";
+import adminUsage from "./admin_usage.json";
 import availability from "./availability.json";
+import chatProviders from "./chat_providers.json";
+import chatSession from "./chat_session.json";
+import chatSessions from "./chat_sessions.json";
+import chatTierChanges from "./chat_tier_changes.json";
+import chatTools from "./chat_tools.json";
 import override from "./override.json";
 import profile from "./profile.json";
 import profiles from "./profiles.json";
 import projection from "./projection.json";
 import quick from "./quick.json";
 import selection from "./selection.json";
+import platformSession from "./session.json";
 import sessions from "./sessions.json";
 
 type Loose<T> = T extends string
@@ -51,4 +70,18 @@ export const checked = {
   sessions: sessions satisfies Loose<SessionPage>,
   availability: availability satisfies Loose<AvailabilityList>,
   override: override.override satisfies Loose<ProfileOverrideRecord>,
+
+  // M3. Emitted by the API test harness rather than captured from a platform, for
+  // the same reason selection.json was — see the README. The field sets are the
+  // backend's own marshalling; the values are a fake's.
+  session: platformSession satisfies Loose<Session>,
+  providers: chatProviders.providers satisfies Loose<ProviderInfo[]>,
+  tools: chatTools satisfies Loose<ToolSurface>,
+  chatSessions: chatSessions.sessions satisfies Loose<ChatSession[]>,
+  chatSession: chatSession satisfies Loose<ChatSessionDetail>,
+  tierChanges: chatTierChanges.changes satisfies Loose<TierChange[]>,
+  adminLimits: adminLimits satisfies Loose<LimitsSurface>,
+  adminUsage: adminUsage.usage satisfies Loose<UsageRecord[]>,
+  adminSpend: adminUsage.spend satisfies Loose<Spend>,
+  adminToolCalls: adminToolCalls.tool_calls satisfies Loose<ToolCallRecord[]>,
 };

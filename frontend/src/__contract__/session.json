@@ -1,0 +1,44 @@
+{
+  "email": "dev@example.org",
+  "exposure_tier": "L0",
+  "features": {
+    "chat": true,
+    "mcp": false,
+    "profiler": false,
+    "selection": false
+  },
+  "is_admin": true,
+  "limits": {
+    "max_tier": "L2",
+    "period": "720h0m0s",
+    "soft_warn_fraction": 0.8
+  },
+  "max_exposure_tier": "L2",
+  "providers": [
+    {
+      "capabilities": {
+        "models": [
+          "stub-model"
+        ],
+        "streaming": true,
+        "system": true,
+        "tools": true
+      },
+      "default": true,
+      "name": "stub"
+    }
+  ],
+  "roles": [
+    "developer",
+    "admin"
+  ],
+  "spend": {
+    "cost": 0.0021,
+    "from": "2026-07-19T07:52:54.992526096Z",
+    "requests": 2,
+    "to": "2026-08-18T07:52:54.99252689Z",
+    "tokens": 173
+  },
+  "user_id": "user-123",
+  "username": "dev"
+}

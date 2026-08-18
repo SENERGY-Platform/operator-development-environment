@@ -1,0 +1,35 @@
+{
+  "currency": "EUR",
+  "period": "720h0m0s",
+  "spend": {
+    "cost": 0.0021,
+    "from": "2026-07-19T07:52:54.992781397Z",
+    "requests": 2,
+    "to": "2026-08-18T07:52:54.992781493Z",
+    "tokens": 173
+  },
+  "usage": [
+    {
+      "at": "2026-08-18T07:52:54.986442276Z",
+      "cost": 0.0021,
+      "cost_estimated": true,
+      "input_tokens": 120,
+      "model": "stub-model",
+      "output_tokens": 45,
+      "provider": "stub",
+      "session_id": "id-1",
+      "user_sub": "user-123"
+    },
+    {
+      "at": "2026-08-18T07:52:54.986360547Z",
+      "cost": 0,
+      "cost_estimated": false,
+      "input_tokens": 5,
+      "model": "stub-model",
+      "output_tokens": 3,
+      "provider": "stub",
+      "session_id": "id-1",
+      "user_sub": "user-123"
+    }
+  ]
+}

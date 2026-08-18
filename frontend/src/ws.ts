@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import type { ChatEvent } from "./api";
 import { token } from "./keycloak";
 
 /**
@@ -50,7 +51,7 @@ export class Cancelled extends Error {
 }
 
 type Inbound = {
-  type: "accepted" | "result" | "error" | "cancelled" | "pong";
+  type: "accepted" | "result" | "event" | "done" | "error" | "cancelled" | "pong";
   id?: string;
   payload?: unknown;
   error?: string;
@@ -62,12 +63,42 @@ interface Pending {
   reject: (reason: unknown) => void;
 }
 
+/**
+ * A subscription to a chat exchange.
+ *
+ * Separate from Pending because the two message shapes differ in kind: a profiler
+ * operation answers once with a result, whereas an exchange emits many events and
+ * then finishes. Routing both through one promise would mean either buffering the
+ * whole turn before showing any of it, or resolving on the first event.
+ */
+interface Stream {
+  onEvent: (event: ChatEvent) => void;
+  resolve: (value: StreamOutcome) => void;
+  reject: (reason: unknown) => void;
+}
+
+/** StreamOutcome says whether there was a turn to watch — see chat_attach. */
+export interface StreamOutcome {
+  attached: boolean;
+}
+
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
 const SUBPROTOCOL = "ode.bearer.token";
 
 /** How long to wait before retrying a dropped connection, and the ceiling. */
 const RETRY_MIN_MS = 500;
 const RETRY_MAX_MS = 10_000;
+
+/**
+ * How often to check, while connected, whether the access token has been renewed.
+ *
+ * On a timer rather than only before each request, which is the opposite of what
+ * `keycloak.ts` does for HTTP — and for a reason. A chat turn runs detached on the
+ * backend and emits events for minutes without the client sending anything, so
+ * there is no request to hang the refresh off. The check is local unless the token
+ * is nearly expired, and the auth frame only goes out when the string changed.
+ */
+const TOKEN_POLL_MS = 20_000;
 
 function socketUrl(): string {
   // BASE is a path in development, where Vite proxies it, and may be absolute in
@@ -77,11 +108,24 @@ function socketUrl(): string {
   return resolved.toString();
 }
 
-export class ProfilerSocket {
+/**
+ * OdeSocket is ODE's single streaming connection.
+ *
+ * It carries both surfaces: the profiler's one-shot operations, and the chat
+ * exchange. Having one is the point — a profile read outlives an HTTP request, and
+ * so does a chat turn that runs one, so both need the same liveness (the ping in
+ * ws.go) and the same cancellation.
+ */
+export class OdeSocket {
   private socket: WebSocket | null = null;
   private connecting: Promise<WebSocket> | null = null;
   private readonly pending = new Map<string, Pending>();
+  private readonly streams = new Map<string, Stream>();
   private sequence = 0;
+  /** The access token the backend currently holds for this connection. */
+  private socketToken: string | undefined;
+  private refreshing: Promise<void> | null = null;
+  private tokenTimer: number | undefined;
   private retryDelay = RETRY_MIN_MS;
   private closed = false;
   private listeners = new Set<(state: SocketState) => void>();
@@ -113,7 +157,7 @@ export class ProfilerSocket {
     signal?: AbortSignal,
   ): Promise<T> {
     const id = `r${++this.sequence}`;
-    const socket = await this.connect();
+    const socket = await this.ready();
 
     return new Promise<T>((resolve, reject) => {
       if (signal?.aborted) {
@@ -161,9 +205,77 @@ export class ProfilerSocket {
     });
   }
 
+  /**
+   * stream subscribes to a chat exchange and resolves when the turn ends.
+   *
+   * Aborting detaches this view and leaves the exchange running, which is what
+   * closing a tab should do. Stopping the work is a separate act — see cancelChat —
+   * because the backend's exchange is detached from any connection.
+   */
+  async stream(
+    type: "chat_send" | "chat_confirm" | "chat_attach",
+    payload: unknown,
+    handlers: { onEvent: (event: ChatEvent) => void; signal?: AbortSignal },
+  ): Promise<StreamOutcome> {
+    const id = `s${++this.sequence}`;
+    const socket = await this.ready();
+
+    return new Promise<StreamOutcome>((resolve, reject) => {
+      if (handlers.signal?.aborted) {
+        reject(new Cancelled());
+        return;
+      }
+
+      const finish = () => {
+        this.streams.delete(id);
+        handlers.signal?.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        // Detach the view. The exchange keeps running server-side.
+        this.trySend({ type: "cancel", id });
+        finish();
+        reject(new Cancelled());
+      };
+      handlers.signal?.addEventListener("abort", onAbort, { once: true });
+
+      this.streams.set(id, {
+        onEvent: handlers.onEvent,
+        resolve: (value) => {
+          finish();
+          resolve(value);
+        },
+        reject: (reason) => {
+          finish();
+          reject(reason);
+        },
+      });
+
+      try {
+        socket.send(JSON.stringify({ type, id, payload }));
+      } catch (e: unknown) {
+        finish();
+        reject(e);
+      }
+    });
+  }
+
+  /**
+   * cancelChat abandons the turn running on a session.
+   *
+   * Distinct from aborting a stream, which only detaches this client's view.
+   */
+  cancelChat(sessionId: string) {
+    this.trySend({
+      type: "chat_cancel",
+      id: `c${++this.sequence}`,
+      payload: { session_id: sessionId },
+    });
+  }
+
   /** close stops reconnecting and drops the connection, cancelling server work. */
   close() {
     this.closed = true;
+    this.stopTokenPolling();
     this.rejectAll(new Cancelled());
     this.socket?.close();
     this.socket = null;
@@ -173,6 +285,78 @@ export class ProfilerSocket {
   private trySend(message: unknown) {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(message));
+    }
+  }
+
+  /**
+   * ready is connect plus a current token.
+   *
+   * The handshake authenticates once and this connection then lives as long as the
+   * tab, but the access token behind it expires — so the backend has to be handed
+   * the refreshed one, or its next platform read goes out with an expired
+   * credential and comes back 401.
+   */
+  private async ready(): Promise<WebSocket> {
+    const socket = await this.connect();
+    await this.refreshServerToken(socket);
+    return socket;
+  }
+
+  /**
+   * refreshServerToken hands the backend the current access token if it has
+   * changed.
+   *
+   * `token()` only talks to Keycloak when the token is within thirty seconds of
+   * expiring, so this costs nothing on most calls, and the auth frame is only sent
+   * when the string actually changed — roughly once per token lifetime. Waiting for
+   * the acknowledgement is deliberate: a refusal (a revoked role, say) should
+   * surface here, as itself, rather than as an upstream failure two calls later.
+   */
+  private async refreshServerToken(socket: WebSocket): Promise<void> {
+    if (this.refreshing) return this.refreshing;
+
+    this.refreshing = (async () => {
+      const accessToken = await token();
+      if (!accessToken || accessToken === this.socketToken) return;
+
+      const id = `a${++this.sequence}`;
+      await new Promise<void>((resolve, reject) => {
+        this.pending.set(id, { resolve: () => resolve(), reject });
+        try {
+          socket.send(JSON.stringify({ type: "auth", id, payload: { token: accessToken } }));
+        } catch (e: unknown) {
+          this.pending.delete(id);
+          reject(e);
+        }
+      });
+      this.socketToken = accessToken;
+    })();
+
+    try {
+      await this.refreshing;
+    } finally {
+      this.refreshing = null;
+    }
+  }
+
+  private startTokenPolling(socket: WebSocket) {
+    this.stopTokenPolling();
+    this.tokenTimer = window.setInterval(() => {
+      if (this.socket !== socket) return;
+      void this.refreshServerToken(socket).catch((e: unknown) => {
+        // The backend refused the credential — a revoked role, or a token it will
+        // not accept. Dropping the connection is the honest response: the
+        // reconnect re-runs the handshake, which either works or fails with the
+        // real reason where the UI already reports it.
+        if (e instanceof WsError) socket.close();
+      });
+    }, TOKEN_POLL_MS);
+  }
+
+  private stopTokenPolling() {
+    if (this.tokenTimer !== undefined) {
+      window.clearInterval(this.tokenTimer);
+      this.tokenTimer = undefined;
     }
   }
 
@@ -189,6 +373,8 @@ export class ProfilerSocket {
       // the token travels as a subprotocol. The backend also accepts a query
       // parameter, which is avoided here because it would end up in access logs.
       const protocols = accessToken ? [`${SUBPROTOCOL}.${accessToken}`] : undefined;
+      // What the backend holds from here on, until an auth frame replaces it.
+      this.socketToken = accessToken;
       const socket = new WebSocket(socketUrl(), protocols);
 
       return await new Promise<WebSocket>((resolve, reject) => {
@@ -196,6 +382,7 @@ export class ProfilerSocket {
           this.socket = socket;
           this.connecting = null;
           this.retryDelay = RETRY_MIN_MS;
+          this.startTokenPolling(socket);
           this.setState("open");
           resolve(socket);
         };
@@ -206,6 +393,7 @@ export class ProfilerSocket {
         socket.onclose = (event) => {
           this.socket = null;
           this.connecting = null;
+          this.stopTokenPolling();
           const reason =
             event.code === 1006
               ? "the connection dropped — check that the backend is reachable and that the account has the developer role"
@@ -233,6 +421,28 @@ export class ProfilerSocket {
       return;
     }
     if (!frame.id) return;
+
+    // Chat streams first: they own their ids and settle on done rather than result.
+    const stream = this.streams.get(frame.id);
+    if (stream) {
+      switch (frame.type) {
+        case "event":
+          stream.onEvent(frame.payload as ChatEvent);
+          return;
+        case "done":
+          stream.resolve((frame.payload as StreamOutcome) ?? { attached: true });
+          return;
+        case "cancelled":
+          stream.reject(new Cancelled());
+          return;
+        case "error":
+          stream.reject(new WsError(frame.status ?? 0, frame.error ?? "unknown error"));
+          return;
+        default:
+          // accepted, pong: acknowledgement only.
+          return;
+      }
+    }
 
     const waiting = this.pending.get(frame.id);
     switch (frame.type) {
@@ -280,13 +490,26 @@ export class ProfilerSocket {
     const waiting = [...this.pending.values()];
     this.pending.clear();
     for (const entry of waiting) entry.reject(reason);
+
+    // Chat streams are failed too, but the exchange behind one is *not* over: it
+    // is detached and still running. The caller reattaches on reconnect rather
+    // than treating this as a lost turn — see ChatView.
+    const streams = [...this.streams.values()];
+    this.streams.clear();
+    for (const entry of streams) entry.reject(reason);
   }
 }
 
 export type SocketState = "idle" | "connecting" | "open" | "reconnecting" | "closed";
 
-/** One socket for the app: the profiler is the only thing that needs it. */
-export const profilerSocket = new ProfilerSocket();
+/** One socket for the app, carrying both the profiler operations and chat. */
+export const odeSocket = new OdeSocket();
+
+/**
+ * profilerSocket is the former name, kept so the profiler and selection views read
+ * unchanged. Same object.
+ */
+export const profilerSocket = odeSocket;
 
 export function describeWsError(e: unknown): string {
   if (e instanceof Cancelled) return "cancelled";

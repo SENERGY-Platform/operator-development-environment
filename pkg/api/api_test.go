@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
@@ -129,6 +130,9 @@ func (fakeOntologyClient) GetDeviceTypeSelectablesV2(
 }
 
 type fakeDeviceClient struct {
+	// mux guards gotToken alone. The WebSocket tests read it from the test
+	// goroutine while a session goroutine writes it, which the HTTP tests never do.
+	mux      sync.Mutex
 	gotToken string
 	err      error
 	code     int
@@ -142,8 +146,21 @@ type fakeDeviceClient struct {
 	gotAction      drmodel.AuthAction
 }
 
-func (f *fakeDeviceClient) ListExtendedDevices(token string, options drmodel.ExtendedDeviceListOptions) ([]models.ExtendedDevice, int64, error, int) {
+// token is the credential the last call presented.
+func (f *fakeDeviceClient) token() string {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	return f.gotToken
+}
+
+func (f *fakeDeviceClient) recordToken(token string) {
+	f.mux.Lock()
+	defer f.mux.Unlock()
 	f.gotToken = token
+}
+
+func (f *fakeDeviceClient) ListExtendedDevices(token string, options drmodel.ExtendedDeviceListOptions) ([]models.ExtendedDevice, int64, error, int) {
+	f.recordToken(token)
 	f.gotListOptions = options
 	if f.err != nil {
 		return nil, 0, f.err, f.code
@@ -155,7 +172,7 @@ func (f *fakeDeviceClient) ListExtendedDevices(token string, options drmodel.Ext
 }
 
 func (f *fakeDeviceClient) ReadExtendedDevice(id string, token string, action drmodel.AuthAction, _ bool) (models.ExtendedDevice, error, int) {
-	f.gotToken = token
+	f.recordToken(token)
 	f.gotAction = action
 	if f.err != nil {
 		return models.ExtendedDevice{}, f.err, f.code
@@ -367,8 +384,8 @@ func TestDeviceListReadsOnBehalfOfTheCaller(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body %s", w.Code, w.Body.String())
 	}
-	if h.devices.gotToken != "Bearer "+token {
-		t.Errorf("upstream token = %q, want the caller's own token", h.devices.gotToken)
+	if h.devices.token() != "Bearer "+token {
+		t.Errorf("upstream token = %q, want the caller's own token", h.devices.token())
 	}
 }
 

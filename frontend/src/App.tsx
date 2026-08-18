@@ -23,23 +23,25 @@ import {
   type OntologyFunction,
   type Session,
 } from "./api";
+import { AdminView } from "./admin";
+import { ChatView } from "./chat";
 import { logout } from "./keycloak";
 import { ProfilerView } from "./profiler";
 import { SelectionView } from "./selection";
 import { Centered, Muted, Pane, describe, useLoad } from "./ui";
 
-type View = "ontology" | "selection" | "profiler";
+type View = "chat" | "ontology" | "selection" | "profiler" | "admin";
 
 /**
- * M0 and M1 shell. The pane layout of SPEC §2 (Chat / Data / Exploration / Code
- * / Experiment) arrives with the milestones that fill those panes; showing five
+ * The shell through M3. The pane layout of SPEC §2 (Chat / Data / Exploration /
+ * Code / Experiment) arrives with the milestones that fill those panes; showing
  * empty docks now would be scaffolding, not progress. What exists is switched
  * between rather than crammed into one grid.
  */
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<View>("profiler");
+  const [view, setView] = useState<View | null>(null);
 
   useEffect(() => {
     api
@@ -51,18 +53,25 @@ export default function App() {
   if (error) return <FatalError message={error} />;
   if (!session) return <Centered>Loading session…</Centered>;
 
+  // Chat is the surface a developer starts from once a provider is configured;
+  // without one, the profiler, as before. Resolved after the session loads rather
+  // than defaulted in useState, because which tabs exist depends on the answer.
+  const current: View = view ?? (session.features.chat ? "chat" : "profiler");
+
   return (
     <div className="app">
-      <Header session={session} view={view} onView={setView} />
-      {view === "ontology" && (
+      <Header session={session} view={current} onView={setView} />
+      {current === "chat" && <ChatView session={session} />}
+      {current === "ontology" && (
         <main className="panes">
           <AspectTreePane />
           <FunctionsPane />
           <DevicesPane />
         </main>
       )}
-      {view === "selection" && <SelectionView />}
-      {view === "profiler" && <ProfilerView />}
+      {current === "selection" && <SelectionView />}
+      {current === "profiler" && <ProfilerView />}
+      {current === "admin" && <AdminView />}
     </div>
   );
 }
@@ -76,18 +85,24 @@ function Header({
   view: View;
   onView: (view: View) => void;
 }) {
+  // A tab is offered only when its surface is actually served, so a deployment
+  // without a provider or without a timescale-wrapper shows what it has rather
+  // than tabs that answer 404.
+  const tabs: [View, string][] = [];
+  if (session.features.chat) tabs.push(["chat", "Chat"]);
+  tabs.push(["ontology", "Ontology"]);
+  if (session.features.selection) tabs.push(["selection", "Selection"]);
+  if (session.features.profiler) tabs.push(["profiler", "Profiler"]);
+  // §3.3's settings surface, gated on the realm role at the router as well; hiding
+  // the tab is a courtesy, not the enforcement.
+  if (session.is_admin && session.features.chat) tabs.push(["admin", "Settings"]);
+
   return (
     <header className="header">
       <div className="header-left">
         <span className="brand">ODE</span>
         <nav className="tabs">
-          {(
-            [
-              ["ontology", "Ontology"],
-              ["selection", "Selection"],
-              ["profiler", "Profiler"],
-            ] as [View, string][]
-          ).map(([id, label]) => (
+          {tabs.map(([id, label]) => (
             <button key={id} className={view === id ? "active" : ""} onClick={() => onView(id)}>
               {label}
             </button>
@@ -96,16 +111,28 @@ function Header({
       </div>
       <div className="header-right">
         {/*
-          SPEC §3.2: the current exposure tier is surfaced persistently. It gates
-          what the LLM may be given, not what the developer may see, which is why
-          the profiler below is reachable at L0.
+          SPEC §3.2: the exposure tier is surfaced persistently. What appears here is
+          the default a *new* chat session starts at, plus the ceiling this developer
+          may raise one to — a live tier is session-scoped and belongs beside the
+          conversation it governs, which is where the chat view puts it.
         */}
         <span
           className="tier"
-          title="Data exposure tier for the LLM (SPEC §3.2). It gates LLM tools, not this UI."
+          title={
+            "Data exposure tier for the LLM (SPEC §3.2). It gates LLM tools, not this UI. " +
+            "New sessions start here; the live tier is shown in the chat pane."
+          }
         >
-          Tier {session.exposure_tier}
+          New sessions: {session.exposure_tier}
+          {session.max_exposure_tier && session.max_exposure_tier !== "L2" && (
+            <span className="tier-cap"> (max {session.max_exposure_tier})</span>
+          )}
         </span>
+        {session.spend && (
+          <span className="spend" title="Estimated LLM spend this period (SPEC §3.3)">
+            {session.spend.tokens.toLocaleString("en-GB")} tokens
+          </span>
+        )}
         <span className="user">
           {session.username}
           {session.is_admin && <span className="badge">admin</span>}

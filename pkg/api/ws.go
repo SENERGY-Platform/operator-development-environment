@@ -30,6 +30,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
@@ -52,12 +53,25 @@ const (
 	msgSelection     = "resolve_selection"
 	msgCancel        = "cancel"
 	msgPing          = "ping"
+	// msgAuth replaces the connection's token. A handshake happens once and the
+	// connection then lives as long as the tab; the access token does not.
+	msgAuth = "auth"
+
+	// Chat (§5.7). These differ in kind from the three above: a profiler operation
+	// answers once with a result, whereas an exchange emits a stream of events, so
+	// they are served by streamExchange rather than start.
+	msgChatSend    = "chat_send"
+	msgChatConfirm = "chat_confirm"
+	msgChatAttach  = "chat_attach"
+	msgChatCancel  = "chat_cancel"
 
 	// Message types, server to client.
 	msgAccepted  = "accepted"
 	msgResult    = "result"
+	msgEvent     = "event"
 	msgError     = "error"
 	msgCancelled = "cancelled"
+	msgDone      = "done"
 	msgPong      = "pong"
 )
 
@@ -138,11 +152,13 @@ func handleWebSocket(cfg Config, deps Deps) gin.HandlerFunc {
 
 		session := &wsSession{
 			conn:          conn,
-			bearer:        "Bearer " + token,
+			token:         newSessionToken(token),
 			user:          parsed.Sub,
+			requiredRole:  cfg.RequiredRealmRole,
 			deviceService: deps.Devices,
 			profiler:      deps.Profiler,
 			selection:     deps.Selection,
+			chat:          deps.Chat,
 			outbound:      make(chan wsOutbound, outboundBuffer),
 			running:       map[string]context.CancelFunc{},
 			slots:         make(chan struct{}, concurrentPerConnection),
@@ -199,13 +215,50 @@ func originChecker(allowed []string) func(*http.Request) bool {
 	}
 }
 
+// sessionToken is the connection's credential, replaceable while the connection
+// stays up.
+//
+// The handshake authenticates once, and every platform read afterwards presents
+// whatever this holds. Keeping the handshake's copy for the life of the socket was
+// wrong in a way that is hard to report: the SPA refreshes its access token on a
+// thirty-second horizon, so a tab left open past the token's lifetime would send
+// an expired one on its next profile, the platform would answer 401, and the
+// failure would look like a platform fault that goes away on reload.
+//
+// Read under RLock on every operation rather than captured per connection, so a
+// refresh reaches work that is already running.
+type sessionToken struct {
+	mux    sync.RWMutex
+	bearer string
+}
+
+func newSessionToken(token string) *sessionToken {
+	return &sessionToken{bearer: "Bearer " + token}
+}
+
+// Bearer is a chat.TokenSource as a method value, which is how the detached chat
+// exchange reads the current token per tool call.
+func (t *sessionToken) Bearer() string {
+	t.mux.RLock()
+	defer t.mux.RUnlock()
+	return t.bearer
+}
+
+func (t *sessionToken) replace(token string) {
+	t.mux.Lock()
+	defer t.mux.Unlock()
+	t.bearer = "Bearer " + token
+}
+
 type wsSession struct {
 	conn          *websocket.Conn
-	bearer        string
+	token         *sessionToken
 	user          string
+	requiredRole  string
 	deviceService *devices.Service
 	profiler      *profiler.Profiler
 	selection     *selection.Resolver
+	chat          *chat.Engine
 
 	outbound chan wsOutbound
 
@@ -292,8 +345,14 @@ func (s *wsSession) readLoop(ctx context.Context) {
 			s.send(wsOutbound{Type: msgPong, ID: message.ID})
 		case msgCancel:
 			s.cancelOperation(message.ID)
+		case msgAuth:
+			s.replaceToken(message)
 		case msgQuickProfiles, msgProfile, msgSelection:
 			s.start(ctx, message)
+		case msgChatSend, msgChatConfirm, msgChatAttach:
+			s.startExchange(ctx, message)
+		case msgChatCancel:
+			s.cancelExchange(ctx, message)
 		default:
 			s.send(wsOutbound{
 				Type: msgError, ID: message.ID,
@@ -380,7 +439,7 @@ func (s *wsSession) run(ctx context.Context, message wsInbound) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return runQuickProfiles(ctx, s.bearer, s.deviceService, s.profiler, input)
+		return runQuickProfiles(ctx, s.token.Bearer(), s.deviceService, s.profiler, input)
 
 	case msgProfile:
 		var body profileRequestBody
@@ -391,7 +450,7 @@ func (s *wsSession) run(ctx context.Context, message wsInbound) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return runProfile(ctx, s.bearer, s.deviceService, s.profiler, input)
+		return runProfile(ctx, s.token.Bearer(), s.deviceService, s.profiler, input)
 
 	case msgSelection:
 		// Here for the same reason the candidate listing is: a resolution expands
@@ -405,11 +464,79 @@ func (s *wsSession) run(ctx context.Context, message wsInbound) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return runSelection(ctx, s.bearer, s.selection, input)
+		return runSelection(ctx, s.token.Bearer(), s.selection, input)
 
 	default:
 		return nil, errors.New("unknown message type " + message.Type)
 	}
+}
+
+// replaceToken adopts a token the client has just refreshed.
+//
+// Three checks, and each of them is the same check the handshake makes, for the
+// same reason. It must parse, or the connection would keep working until the next
+// read failed upstream with an error that says nothing about its cause. The
+// subject must be unchanged: ODE reads claims without verifying them (§3.1 — the
+// gateway verifies), so `sub` is the only thing tying this connection's identity —
+// its chat sessions, its spend against the §3.3 cap, its audit rows — to the
+// credential the reads are made with, and a token for someone else belongs on a
+// new connection. And the realm role is re-checked, because a role revoked while
+// the tab was open should end the connection's authority rather than survive in a
+// socket nobody re-authorised.
+//
+// Expiry is deliberately not checked, matching the handshake: the gateway is what
+// validates it (§3.1), and servicejwt.Token does not even carry `exp`. A client
+// that installs an already-expired token gets 401s from the platform, which is its
+// own answer.
+func (s *wsSession) replaceToken(message wsInbound) {
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := decodePayload(message.Payload, &body); err != nil {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID,
+			Error: err.Error(), Status: http.StatusBadRequest,
+		})
+		return
+	}
+
+	token := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(body.Token), "Bearer "), "bearer ")
+	if token == "" {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID,
+			Error: "a token is required", Status: http.StatusBadRequest,
+		})
+		return
+	}
+
+	parsed, err := servicejwt.Parse(token)
+	if err != nil || parsed.Valid() != nil {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID,
+			Error: "invalid auth token", Status: http.StatusUnauthorized,
+		})
+		return
+	}
+	if parsed.Sub != s.user {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID,
+			Error:  "the token belongs to another user; open a new connection for it",
+			Status: http.StatusForbidden,
+		})
+		return
+	}
+	if s.requiredRole != "" && !parsed.HasRole(s.requiredRole) {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID,
+			Error:  "the refreshed token is missing the required realm role",
+			Status: http.StatusForbidden,
+		})
+		return
+	}
+
+	s.token.replace(token)
+	slog.Debug("websocket token replaced", "user", s.user)
+	s.send(wsOutbound{Type: msgResult, ID: message.ID, Payload: map[string]any{"authenticated": true}})
 }
 
 func (s *wsSession) cancelOperation(id string) {
@@ -429,12 +556,40 @@ func (s *wsSession) cancelOperation(id string) {
 // send drops the message rather than blocking when a client cannot keep up.
 // Blocking here would stall every other operation on the connection, and the
 // ping/pong deadline is what eventually closes a client that has stopped reading.
-func (s *wsSession) send(message wsOutbound) {
+// send queues a message, dropping it if the client cannot keep up, and reports
+// whether it was queued.
+//
+// Dropping is right for the profiler surface: those messages are large, infrequent,
+// and each operation's result is self-contained, so losing one costs a retry rather
+// than corrupting anything.
+func (s *wsSession) send(message wsOutbound) bool {
 	select {
 	case s.outbound <- message:
+		return true
 	default:
 		slog.Warn("websocket outbound buffer full; dropping a message",
 			"user", s.user, "type", message.Type, "id", message.ID)
+		return false
+	}
+}
+
+// sendStream queues a message, waiting for room, and reports whether it got there.
+//
+// The chat relay uses this because dropping an event would silently lose part of the
+// assistant's answer — a text delta or a tool result — leaving the developer reading
+// a mangled reply with no indication anything was missing.
+//
+// Waiting is safe rather than a stall risk: the exchange publishes without blocking,
+// and its own subscriber buffer is what bounds how far behind this relay may fall.
+// Once that buffer overflows the exchange drops the subscriber, the events channel
+// closes, and the relay reports done — so a wedged client ends its own view instead
+// of holding up the work.
+func (s *wsSession) sendStream(ctx context.Context, message wsOutbound) bool {
+	select {
+	case s.outbound <- message:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 

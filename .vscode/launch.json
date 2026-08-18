@@ -11,7 +11,8 @@
       "args": ["-config", "config.json"],
       "env": {
         "DEBUG": "true",
-        "API_PORT": "8080"
+        "API_PORT": "8080",
+        "CLAUDE_CLI_ENABLED": "true",
       }
     },
     {

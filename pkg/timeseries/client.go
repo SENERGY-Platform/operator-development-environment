@@ -99,27 +99,44 @@ const defaultTimeout = 60 * time.Second
 type Client struct {
 	baseURL string
 	http    *http.Client
+	// timeout is the default deadline applied per request when the caller sets no
+	// override. Held here rather than on http.Client.Timeout because that field is
+	// an absolute cap that a longer per-call deadline cannot exceed — and the
+	// profiler's value reads legitimately need longer than a metadata probe.
+	timeout time.Duration
 }
 
 type Options struct {
-	// Timeout bounds a single request. A profiler pass over a long analysis
-	// window is the slowest thing ODE asks of the platform, so this is
-	// deliberately generous rather than the usual few seconds.
+	// Timeout bounds a single request unless the call overrides it. A profiler pass
+	// over a long analysis window is the slowest thing ODE asks of the platform, so
+	// this is deliberately generous rather than the usual few seconds.
 	Timeout time.Duration
 	// HTTPClient replaces the transport entirely, for tests.
+	//
+	// Its own Timeout field is left alone if set, but note that it caps every
+	// request absolutely: a per-call override longer than it cannot take effect.
 	HTTPClient *http.Client
 }
 
 func New(baseURL string, opts Options) *Client {
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		timeout := opts.Timeout
-		if timeout <= 0 {
-			timeout = defaultTimeout
-		}
-		httpClient = &http.Client{Timeout: timeout}
+		// Deliberately no Timeout on the client: every request gets a context
+		// deadline in do() instead, which is the only way a single call can be
+		// allowed longer than the default. A client-level Timeout would silently
+		// win over the longer deadline.
+		httpClient = &http.Client{}
 	}
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: httpClient}
+	return &Client{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		http:    httpClient,
+		timeout: timeout,
+	}
 }
 
 // DataAvailability implements probe_availability (SPEC §5.3): per service, the
@@ -144,13 +161,20 @@ func (c *Client) DeviceUsage(ctx context.Context, token string, deviceIDs []stri
 	if len(deviceIDs) == 0 {
 		return nil, fmt.Errorf("timeseries: usage/devices: %w: no device ids", ErrInvalidRequest)
 	}
-	return post[[]Usage](ctx, c, token, "/usage/devices", nil, deviceIDs)
+	return post[[]Usage](ctx, c, token, "/usage/devices", nil, deviceIDs, 0)
 }
 
 type QueryOptions struct {
 	// TimeFormat overrides the Go layout timestamps are rendered in. Empty
 	// means the package default, which is what DecodeResults expects.
 	TimeFormat string
+	// Timeout overrides the client default for this one request.
+	//
+	// This exists for the profiler's value reads. A raw pass bounded at a hundred
+	// thousand points is megabytes of JSON the server has to assemble, and it needs
+	// materially longer than an availability probe — while a probe that hangs should
+	// still fail fast. One shared timeout cannot serve both.
+	Timeout time.Duration
 }
 
 // Query issues one batched POST /queries/v2. Batching is not an optimisation
@@ -183,7 +207,7 @@ func (c *Client) Query(ctx context.Context, token string, elements []QueryElemen
 		"format":      []string{string(twmodel.PerQuery)},
 		"time_format": []string{layout},
 	}
-	return post[[]QueryResult](ctx, c, token, "/queries/v2", query, elements)
+	return post[[]QueryResult](ctx, c, token, "/queries/v2", query, elements, opts.Timeout)
 }
 
 // describeElement names an element in an error without dumping the payload.
@@ -209,20 +233,31 @@ func describeElement(e QueryElement) string {
 }
 
 func get[T any](ctx context.Context, c *Client, token, path string, query url.Values) (T, error) {
-	return do[T](ctx, c, token, http.MethodGet, path, query, nil)
+	return do[T](ctx, c, token, http.MethodGet, path, query, nil, 0)
 }
 
-func post[T any](ctx context.Context, c *Client, token, path string, query url.Values, payload any) (T, error) {
+func post[T any](ctx context.Context, c *Client, token, path string, query url.Values, payload any, timeout time.Duration) (T, error) {
 	var zero T
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return zero, fmt.Errorf("timeseries: %s: encoding request: %w", path, err)
 	}
-	return do[T](ctx, c, token, http.MethodPost, path, query, body)
+	return do[T](ctx, c, token, http.MethodPost, path, query, body, timeout)
 }
 
-func do[T any](ctx context.Context, c *Client, token, method, path string, query url.Values, body []byte) (T, error) {
+func do[T any](ctx context.Context, c *Client, token, method, path string, query url.Values, body []byte, timeout time.Duration) (T, error) {
 	var result T
+
+	// Always bounded. The http.Client carries no Timeout of its own, so a caller
+	// that passed a deadline-free context would otherwise wait forever.
+	if timeout <= 0 {
+		timeout = c.timeout
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 
 	var reader io.Reader
 	if body != nil {
