@@ -107,7 +107,11 @@ export class ProfilerSocket {
    * the backend stops its platform reads rather than finishing work nobody will
    * look at.
    */
-  async request<T>(type: "quick_profiles" | "profile", payload: unknown, signal?: AbortSignal): Promise<T> {
+  async request<T>(
+    type: "quick_profiles" | "profile" | "resolve_selection",
+    payload: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const id = `r${++this.sequence}`;
     const socket = await this.connect();
 

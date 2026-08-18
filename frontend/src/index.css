@@ -767,3 +767,97 @@ button.primary:disabled {
   gap: 0.5rem;
   align-items: center;
 }
+
+/*
+ * Semantic selection (SPEC §5.2). Two panes rather than the auto-fit grid, for
+ * the same reason the profiler is: the left column is a form and a chain of
+ * evidence, the right one is an eight-column candidate table.
+ */
+.panes.selection {
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  align-items: start;
+  height: 100%;
+}
+
+.panes.selection .pane {
+  max-height: 100%;
+}
+
+.filter-check select {
+  width: auto;
+}
+
+/*
+ * The terms are the intent as the matcher read it. Green where a match used the
+ * word, amber where nothing did — the matcher has no thesaurus, so a word it
+ * could not place is a fact about the ontology the developer has to see.
+ */
+.terms {
+  margin-bottom: 0.5rem;
+}
+
+.notes li {
+  color: var(--muted);
+  font-size: 0.9em;
+  padding: 0.15rem 0;
+}
+
+/* A match is a name, its score and the evidence that produced it. */
+.match {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5rem;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0;
+}
+
+.match-name {
+  overflow-wrap: anywhere;
+}
+
+.match-basis {
+  grid-column: 1 / -1;
+}
+
+.gap {
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.gap:first-child {
+  border-top: none;
+}
+
+.gap-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.gap-consequence {
+  color: var(--muted);
+  font-size: 0.9em;
+  padding: 0.15rem 0;
+}
+
+.gap-paths code {
+  margin-right: 0.4rem;
+  font-size: 0.85em;
+}
+
+/*
+ * The device type beside a device name. Quieter than the name it qualifies —
+ * "Kitchen Meter" is what a developer is looking for and "SmartMeter Modbus" is
+ * what distinguishes it from the other two.
+ */
+.device-type {
+  margin-left: 0.4rem;
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.device-type::before {
+  content: "· ";
+}

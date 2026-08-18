@@ -18,6 +18,7 @@ import type {
   ProfileOverrideRecord,
   ProfileResult,
   QuickProfileList,
+  SelectionResult,
   SeriesProfile,
   SessionPage,
 } from "../api";
@@ -28,6 +29,7 @@ import profile from "./profile.json";
 import profiles from "./profiles.json";
 import projection from "./projection.json";
 import quick from "./quick.json";
+import selection from "./selection.json";
 import sessions from "./sessions.json";
 
 type Loose<T> = T extends string
@@ -42,6 +44,7 @@ type Loose<T> = T extends string
 
 export const checked = {
   quick: quick satisfies Loose<QuickProfileList>,
+  selection: selection satisfies Loose<SelectionResult>,
   profiles: profiles satisfies Loose<ProfileResult>,
   profile: profile satisfies Loose<SeriesProfile>,
   projection: projection satisfies Loose<LLMProfileView>,

@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   api,
+  deviceLabel,
   type AspectTreeNode,
   type Device,
   type OntologyFunction,
@@ -24,9 +25,10 @@ import {
 } from "./api";
 import { logout } from "./keycloak";
 import { ProfilerView } from "./profiler";
+import { SelectionView } from "./selection";
 import { Centered, Muted, Pane, describe, useLoad } from "./ui";
 
-type View = "ontology" | "profiler";
+type View = "ontology" | "selection" | "profiler";
 
 /**
  * M0 and M1 shell. The pane layout of SPEC §2 (Chat / Data / Exploration / Code
@@ -52,15 +54,15 @@ export default function App() {
   return (
     <div className="app">
       <Header session={session} view={view} onView={setView} />
-      {view === "ontology" ? (
+      {view === "ontology" && (
         <main className="panes">
           <AspectTreePane />
           <FunctionsPane />
           <DevicesPane />
         </main>
-      ) : (
-        <ProfilerView />
       )}
+      {view === "selection" && <SelectionView />}
+      {view === "profiler" && <ProfilerView />}
     </div>
   );
 }
@@ -82,6 +84,7 @@ function Header({
           {(
             [
               ["ontology", "Ontology"],
+              ["selection", "Selection"],
               ["profiler", "Profiler"],
             ] as [View, string][]
           ).map(([id, label]) => (
@@ -229,7 +232,14 @@ function DevicesPane() {
             <tbody>
               {data.devices.map((device: Device) => (
                 <tr key={device.id}>
-                  <td>{device.name || device.id}</td>
+                  <td title={device.id}>
+                    {deviceLabel(device)}
+                    {device.device_type_name && (
+                      <span className="device-type" title={device.device_type_id}>
+                        {device.device_type_name}
+                      </span>
+                    )}
+                  </td>
                   <td>
                     <span className={`state ${device.connection_state || "unknown"}`}>
                       {device.connection_state || "unknown"}

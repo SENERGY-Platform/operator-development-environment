@@ -88,10 +88,19 @@ export interface OntologyFunction {
 export interface Device {
   id: string;
   name: string;
+  /** Computed per request, and what the platform's own UIs show. Prefer it. */
+  display_name?: string;
   device_type_id: string;
+  /** Computed per request, so not always populated. */
+  device_type_name?: string;
   connection_state: string;
   shared?: boolean;
   permissions?: Record<string, boolean>;
+}
+
+/** deviceLabel is the one place that decides how a device is named on screen. */
+export function deviceLabel(device: Device): string {
+  return device.display_name || device.name || device.id;
 }
 
 export interface DeviceList {
@@ -221,8 +230,19 @@ export interface RankHints {
   score: number;
 }
 
+/**
+ * The candidate's device as a human reads it, beside the SeriesRef machines key on.
+ * The ids are not repeated here — `series_ref.device_id` is the one.
+ */
+export interface DeviceInfo {
+  name: string;
+  device_type_id: string;
+  device_type_name: string;
+}
+
 export interface QuickProfile {
   series_ref: SeriesRef;
+  device: DeviceInfo;
   tier: string;
   availability: Value<AvailabilityWindow>;
   volume: Value<Volume>;
@@ -640,6 +660,140 @@ export interface ProfileOverrideRecord {
   note?: string;
 }
 
+// --- M2: semantic selection (SPEC §5.2) ---
+
+/**
+ * Matched is the evidence behind one text-to-ontology resolution, and the reason
+ * the UI can show *why* a function was offered. The matcher is lexical, so an
+ * unaudited match would be a guess the developer has no way to check.
+ */
+export interface Matched {
+  score: number;
+  matched_terms: string[];
+  basis: "display_name" | "name" | "explicit_id";
+}
+
+export interface FunctionMatch {
+  id: string;
+  name: string;
+  rdf_type: string;
+  concept_id: string;
+  matched: Matched;
+}
+
+/** descendants_included is always true: an aspect criterion covers its subtree. */
+export interface AspectMatch {
+  id: string;
+  name: string;
+  descendants_included: boolean;
+  matched: Matched;
+}
+
+export interface DeviceClassMatch {
+  id: string;
+  name: string;
+  matched: Matched;
+}
+
+/**
+ * One FilterCriteria as sent, with what it found. There is one request per
+ * criterion because the platform ANDs a criteria list, so this is also the
+ * request count — and `device_types: 0` is how "the ontology knows this, the
+ * platform has none" becomes visible.
+ */
+export interface Criterion {
+  function_id?: string;
+  aspect_id?: string;
+  device_class_id?: string;
+  interaction?: string;
+  device_types: number;
+}
+
+export interface Selectable {
+  device_type_id: string;
+  /** Empty when this account can reach no device of the type; show the id then. */
+  device_type_name: string;
+  service_id: string;
+  service_name?: string;
+  path: string;
+  characteristic_id: string | null;
+  unit: string;
+  unit_source: string;
+  interaction: string;
+  type?: string;
+  function_id?: string;
+  aspect_id?: string;
+  aspect_name?: string;
+  queryable: boolean;
+  reason?: string;
+  ontology_completeness: Completeness;
+}
+
+export interface CandidateDevice {
+  device_id: string;
+  /** Already the platform's display name where it has one. */
+  name: string;
+  connection_state: string;
+  device_type_id: string;
+  device_type_name: string;
+  permissions: Record<string, boolean>;
+  series: number;
+}
+
+/** SPEC D16: completeness discovered at runtime, per device type, and reported. */
+export interface OntologyGap {
+  device_type_id: string;
+  device_type_name: string;
+  missing: string[];
+  consequence: string;
+  paths: string[];
+}
+
+export interface SelectionReads {
+  selectables: number;
+  device_lists: number;
+  availability: number;
+  usage: number;
+  /** Must be zero: the whole operation is tier L0. */
+  values: number;
+}
+
+export interface SelectionResult {
+  intent: string;
+  terms: string[];
+  unmatched_terms: string[];
+  matched_functions: FunctionMatch[];
+  matched_aspects: AspectMatch[];
+  matched_device_classes: DeviceClassMatch[];
+  criteria: Criterion[];
+  selectables: Selectable[];
+  candidate_devices: CandidateDevice[];
+  ontology_gaps: OntologyGap[];
+  candidates: QuickProfile[];
+  skipped: SkippedDevice[];
+  reads: SelectionReads;
+  coverage_window: Window;
+  device_limit: number;
+  total_devices: number;
+  /** What an empty list would otherwise leave the reader to infer. */
+  notes: string[];
+}
+
+export interface SelectionRequest {
+  intent?: string;
+  function_ids?: string[];
+  aspect_ids?: string[];
+  device_class_ids?: string[];
+  interaction?: "event" | "request" | "event+request" | "any";
+  include_controlling?: boolean;
+  match_limit?: number;
+  min_score?: number;
+  limit?: number;
+  window?: Window;
+  /** Absent means true; false asks for the ontology resolution alone. */
+  rank?: boolean;
+}
+
 export interface QuickProfileQuery {
   search?: string;
   from?: string;
@@ -690,6 +844,8 @@ export const api = {
         limit: 100,
       })}`,
     ),
+
+  selection: (body: SelectionRequest) => post<SelectionResult>("/selection", body),
 
   createProfiles: (body: ProfileRequest) => post<ProfileResult>("/profiles", body),
   profile: (id: string) => get<SeriesProfile>(`/profiles/${encodeURIComponent(id)}`),

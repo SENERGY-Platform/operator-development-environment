@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
   isNotComputed,
+  type DeviceInfo,
   type QuickProfileList,
   type LLMProfileView,
   type ProfileResult,
@@ -345,7 +346,7 @@ function CandidatesPane({
   );
 }
 
-function seriesKey(candidate: QuickProfile): string {
+export function seriesKey(candidate: QuickProfile): string {
   const ref = candidate.series_ref;
   return `${ref.device_id}|${ref.service_id}|${ref.variable_path}`;
 }
@@ -355,8 +356,11 @@ function seriesKey(candidate: QuickProfile): string {
  * list must cost no value read at all. The backend counts them, so this is the
  * answer's own claim rather than a promise about the code — and it turns red if
  * it is ever not zero.
+ *
+ * Semantic selection (M2) makes the same claim about a longer chain of calls, so
+ * it reuses this and passes its own breakdown as `detail`.
  */
-function ReadCounter({ reads }: { reads: ReadCounts }) {
+export function ReadCounter({ reads, detail }: { reads: ReadCounts; detail?: string }) {
   const clean = reads.values === 0;
   return (
     <div className={`reads ${clean ? "clean" : "dirty"}`}>
@@ -364,7 +368,7 @@ function ReadCounter({ reads }: { reads: ReadCounts }) {
         {reads.values} value read{reads.values === 1 ? "" : "s"}
       </span>
       <span className="reads-detail">
-        {reads.availability} availability · {reads.usage} usage
+        {detail ?? `${reads.availability} availability · ${reads.usage} usage`}
       </span>
       <span className="reads-note">
         {clean
@@ -375,16 +379,22 @@ function ReadCounter({ reads }: { reads: ReadCounts }) {
   );
 }
 
-function CandidateRow({
+/**
+ * CandidateRow is shared with the selection view, where a resolved series is
+ * shown but not selectable — hence the optional onSelect. One row component
+ * rather than two, because the columns mean the same thing in both places and two
+ * would drift.
+ */
+export function CandidateRow({
   candidate,
   rank,
-  selected,
+  selected = false,
   onSelect,
 }: {
   candidate: QuickProfile;
   rank: number;
-  selected: boolean;
-  onSelect: () => void;
+  selected?: boolean;
+  onSelect?: () => void;
 }) {
   const hints = candidate.rank_hints;
   return (
@@ -394,7 +404,9 @@ function CandidateRow({
       title={candidate.queryable ? undefined : candidate.reason}
     >
       <td className="numeric">{rank}</td>
-      <td>{shortId(candidate.series_ref.device_id)}</td>
+      <td title={candidate.series_ref.device_id}>
+        <DeviceLabel device={candidate.device} fallbackId={candidate.series_ref.device_id} />
+      </td>
       <td>
         <code>{candidate.series_ref.variable_path}</code>
         {!candidate.queryable && <span className="tag warn">unreadable</span>}
@@ -419,7 +431,56 @@ function CandidateRow({
   );
 }
 
-function ScoreBar({ score }: { score: number }) {
+/**
+ * deviceName is the one rule for naming a device on screen: the platform's display
+ * name, and the shortened id only when there is nothing else.
+ *
+ * `device` is required in the API type and the contract check proves a current
+ * backend sends it, so the undefined case is not supposed to happen. It is admitted
+ * anyway because it did happen — a frontend hot-reloading against a backend older
+ * than the field crashed the whole candidate table on `device.name`. Degrading to
+ * the id is the same trade Val makes for a null Value in ui.tsx: one line, and a
+ * shape surprise stays a cosmetic loss rather than a blank pane.
+ */
+export function deviceName(device: DeviceInfo | undefined, fallbackId: string): string {
+  return device?.name || shortId(fallbackId);
+}
+
+/** The device type, named where the platform named it and shortened where not. */
+export function deviceTypeLabel(device: DeviceInfo | undefined): string {
+  if (!device) return "";
+  return device.device_type_name || (device.device_type_id ? shortId(device.device_type_id) : "");
+}
+
+/**
+ * DeviceLabel names a device with its device type beside it — "Kitchen Meter" tells
+ * a developer nothing when three of them exist, and "SmartMeter Modbus" is what
+ * separates them.
+ *
+ * The id stays in the row's tooltip either way, because that is what a bug report
+ * needs to quote.
+ */
+export function DeviceLabel({
+  device,
+  fallbackId,
+}: {
+  device: DeviceInfo | undefined;
+  fallbackId: string;
+}) {
+  const type = deviceTypeLabel(device);
+  return (
+    <>
+      <span>{deviceName(device, fallbackId)}</span>
+      {type && (
+        <span className="device-type" title={device?.device_type_id}>
+          {type}
+        </span>
+      )}
+    </>
+  );
+}
+
+export function ScoreBar({ score }: { score: number }) {
   const width = Math.min(100, Math.max(0, score * 100));
   return (
     <span className="score" title={String(round(score, 3))}>
@@ -520,10 +581,15 @@ function ProfilePane({
 
   const profile = computed?.profiles.find((p) => p.series_ref.variable_path === viewing) ?? null;
 
+  // Through the same two helpers the candidate rows use, so the header and the row
+  // a developer clicked cannot disagree about what the device is called.
+  const named = deviceName(candidate.device, candidate.series_ref.device_id);
+  const type = deviceTypeLabel(candidate.device);
+
   return (
     <Pane
       title={candidate.series_ref.variable_path}
-      subtitle={`${shortId(candidate.series_ref.device_id)} · service ${shortId(
+      subtitle={`${named}${type ? ` (${type})` : ""} · service ${shortId(
         candidate.series_ref.service_id,
       )} · interaction ${candidate.interaction}`}
       actions={
