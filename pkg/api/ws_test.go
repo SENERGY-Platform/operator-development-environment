@@ -418,3 +418,109 @@ func TestCancellingAFinishedRequestIsNotAnError(t *testing.T) {
 		t.Errorf("frame = %s (%s), want a plain cancelled", frame.Type, frame.Error)
 	}
 }
+
+// Semantic selection runs over the socket for the same reason the candidate
+// listing does: a resolution expands devices, and availability is one call per
+// device that a client changing its mind should be able to stop.
+func TestSelectionOverTheWebSocketReturnsTheSameDocument(t *testing.T) {
+	harness := newWSHarness(t, false)
+	conn := harness.dial(t, "developer")
+
+	send(t, conn, map[string]any{
+		"type": "resolve_selection", "id": "s1",
+		"payload": map[string]any{"intent": testIntent},
+	})
+	await(t, conn, "accepted")
+
+	frame := await(t, conn, "result", "error")
+	if frame.Type != "result" {
+		t.Fatalf("frame = %s (%s), want a result", frame.Type, frame.Error)
+	}
+
+	var payload struct {
+		Candidates []struct {
+			SeriesRef struct {
+				VariablePath string `json:"variable_path"`
+			} `json:"series_ref"`
+		} `json:"candidates"`
+		Reads struct {
+			Values int `json:"values"`
+		} `json:"reads"`
+	}
+	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.Candidates) != 1 || payload.Candidates[0].SeriesRef.VariablePath != powerPath {
+		t.Errorf("candidates = %+v, want the one resolved series", payload.Candidates)
+	}
+	if payload.Reads.Values != 0 {
+		t.Errorf("reads.values = %d, want 0 over this surface too", payload.Reads.Values)
+	}
+}
+
+// The socket classifies errors through the same function the HTTP routes use, so
+// a malformed selection payload carries 400 rather than leaving the client to
+// guess whether the platform is down.
+func TestAMalformedSelectionOverTheWebSocketCarries400(t *testing.T) {
+	harness := newWSHarness(t, false)
+	conn := harness.dial(t, "developer")
+
+	send(t, conn, map[string]any{
+		"type": "resolve_selection", "id": "s1",
+		"payload": map[string]any{"intent": testIntent, "window": map[string]any{"from": "not-a-timestamp", "to": "also-not"}},
+	})
+	await(t, conn, "accepted")
+
+	frame := await(t, conn, "error", "result")
+	if frame.Type != "error" {
+		t.Fatalf("frame = %s, want error", frame.Type)
+	}
+	if frame.Status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", frame.Status)
+	}
+}
+
+// The Profiler view lists candidates over the socket, not over the HTTP route, so
+// the device block has to be on this surface too. It is the same struct through the
+// same operation — this test exists because "same struct" is exactly the kind of
+// assumption that stops being true, and the symptom is a table of URNs.
+func TestCandidatesOverTheWebSocketCarryTheirDeviceNames(t *testing.T) {
+	harness := newWSHarness(t, false)
+	conn := harness.dial(t, "developer")
+
+	send(t, conn, map[string]any{"type": "quick_profiles", "id": "q1", "payload": map[string]any{"limit": 10}})
+	await(t, conn, "accepted")
+
+	frame := await(t, conn, "result", "error")
+	if frame.Type != "result" {
+		t.Fatalf("frame = %s (%s), want a result", frame.Type, frame.Error)
+	}
+
+	var payload struct {
+		Candidates []struct {
+			SeriesRef struct {
+				DeviceID string `json:"device_id"`
+			} `json:"series_ref"`
+			Device struct {
+				Name           string `json:"name"`
+				DeviceTypeID   string `json:"device_type_id"`
+				DeviceTypeName string `json:"device_type_name"`
+			} `json:"device"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.Candidates) == 0 {
+		t.Fatal("no candidates")
+	}
+	for _, candidate := range payload.Candidates {
+		if candidate.Device.Name == "" {
+			t.Errorf("candidate %s carries no device name; the list would read as URNs",
+				candidate.SeriesRef.DeviceID)
+		}
+		if candidate.Device.DeviceTypeName == "" {
+			t.Errorf("candidate %s carries no device type name", candidate.SeriesRef.DeviceID)
+		}
+	}
+}

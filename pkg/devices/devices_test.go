@@ -246,3 +246,54 @@ func TestParseListOptionsRejectsANonBooleanFullDeviceType(t *testing.T) {
 		t.Fatalf("error = %v, want ErrInvalidOption", err)
 	}
 }
+
+// The platform keeps two names, and display_name is the one its own UIs show. A
+// developer choosing between forty candidate series reads names, so ODE has to
+// name a device the way the rest of the platform does.
+func TestDisplayNamePrefersThePlatformsDisplayName(t *testing.T) {
+	device := models.ExtendedDevice{
+		Device:      models.Device{Id: "urn:infai:ses:device:1", Name: "meter-1"},
+		DisplayName: "Kitchen Meter",
+	}
+	if got := DisplayName(device); got != "Kitchen Meter" {
+		t.Errorf("DisplayName = %q, want the display name", got)
+	}
+
+	device.DisplayName = ""
+	if got := DisplayName(device); got != "meter-1" {
+		t.Errorf("DisplayName = %q, want the device's own name", got)
+	}
+}
+
+// Never the id: an id is what a series is keyed on, not what a human reads. A
+// nameless device is reported as nameless so the caller decides what to show.
+func TestDisplayNameDoesNotFallBackToTheId(t *testing.T) {
+	device := models.ExtendedDevice{Device: models.Device{Id: "urn:infai:ses:device:1"}}
+	if got := DisplayName(device); got != "" {
+		t.Errorf("DisplayName = %q, want empty rather than the id", got)
+	}
+}
+
+// device_type_name is computed by the repository per request and is not always
+// there; the device type itself arrives with every fulldt read, which is what a
+// candidate listing does.
+func TestTypeNameFallsBackToTheDeviceTypeThatArrivedWithTheDevice(t *testing.T) {
+	device := models.ExtendedDevice{
+		Device:         models.Device{Id: "urn:infai:ses:device:1", DeviceTypeId: "dt-meter"},
+		DeviceTypeName: "SmartMeter Modbus",
+	}
+	if got := TypeName(device); got != "SmartMeter Modbus" {
+		t.Errorf("TypeName = %q, want the computed name", got)
+	}
+
+	device.DeviceTypeName = ""
+	device.DeviceType = &models.DeviceType{Id: "dt-meter", Name: "Meter"}
+	if got := TypeName(device); got != "Meter" {
+		t.Errorf("TypeName = %q, want the device type's own name", got)
+	}
+
+	device.DeviceType = nil
+	if got := TypeName(device); got != "" {
+		t.Errorf("TypeName = %q, want empty when neither is available", got)
+	}
+}

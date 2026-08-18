@@ -32,6 +32,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -71,9 +72,17 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		InvalidateInterval: invalidateInterval,
 	})
 
+	deviceService := devices.New(deviceClient)
+
+	// The ontology index is built once and memoised per snapshot. It is hoisted
+	// out of the profiler's block below because semantic selection needs it too —
+	// the unit and the completeness of a resolved variable come from it — and
+	// selection is served whether or not a timescale-wrapper is configured.
+	ontologyIndex := profiler.NewSnapshotOntology(ontologyRepo)
+
 	deps := api.Deps{
 		Ontology: ontologyRepo,
-		Devices:  devices.New(deviceClient),
+		Devices:  deviceService,
 	}
 
 	// The timeseries client and the profiler are optional so that a deployment
@@ -92,7 +101,7 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		// is a deployment decision this milestone does not make.
 		profilerService, err := profiler.New(
 			timeseriesClient,
-			profiler.NewSnapshotOntology(ontologyRepo),
+			ontologyIndex,
 			profiler.NewMemoryStore(),
 			profiler.Options{
 				RawWindowMaxDays:   int(config.ProfilerRawWindowDays),
@@ -108,6 +117,20 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		deps.Timeseries = timeseriesClient
 		deps.Profiler = profilerService
 	}
+
+	// Semantic selection (§5.2). The ranker is the profiler, which may be absent;
+	// selection then resolves an intent to series without the availability-based
+	// order, and says so in the response rather than failing.
+	resolver, err := selection.New(ontologyRepo, ontologyIndex, deviceService, rankerOrNil(deps.Profiler),
+		selection.Options{
+			Concurrency: int(config.SelectionConcurrency),
+			MaxCriteria: int(config.SelectionMaxCriteria),
+			DeviceLimit: config.SelectionDeviceLimit,
+		})
+	if err != nil {
+		return nil, err
+	}
+	deps.Selection = resolver
 
 	router := api.NewRouter(
 		api.Config{
@@ -146,6 +169,20 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 	}()
 
 	return wg, nil
+}
+
+// rankerOrNil hands the resolver an interface that is actually nil when there is
+// no profiler.
+//
+// Passing the typed nil pointer straight in would produce a non-nil interface
+// holding a nil pointer, and the resolver's "is there a ranker" check would pass
+// before dereferencing it. This is the one Go footgun in the wiring, so it is a
+// named function rather than an inline conditional.
+func rankerOrNil(prof *profiler.Profiler) selection.Ranker {
+	if prof == nil {
+		return nil
+	}
+	return prof
 }
 
 // validate fails fast on configuration that would otherwise produce confusing

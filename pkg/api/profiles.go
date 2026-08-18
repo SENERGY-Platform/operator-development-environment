@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,7 +29,9 @@ import (
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/auth"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -353,6 +356,13 @@ func handleCreateOverride(prof *profiler.Profiler) gin.HandlerFunc {
 	}
 }
 
+// parse reads a window from a request body.
+//
+// The errors wrap profiler.ErrInvalidRequest so that statusForError classifies
+// them as 400 rather than falling through to "the platform failed". The HTTP
+// routes answer 400 for a malformed body themselves, but the WebSocket classifies
+// through that one function — and a badly typed window arriving as a platform
+// outage is precisely the guess the socket's status field exists to prevent.
 func (w windowBody) parse(name string) (profiler.Window, error) {
 	out := profiler.Window{}
 	from := strings.TrimSpace(w.From)
@@ -361,18 +371,18 @@ func (w windowBody) parse(name string) (profiler.Window, error) {
 		return out, nil
 	}
 	if from == "" || to == "" {
-		return out, errors.New(name + " needs both from and to")
+		return out, fmt.Errorf("%w: %s needs both from and to", profiler.ErrInvalidRequest, name)
 	}
 	parsedFrom, err := time.Parse(time.RFC3339, from)
 	if err != nil {
-		return out, errors.New(name + ".from must be an RFC3339 timestamp")
+		return out, fmt.Errorf("%w: %s.from must be an RFC3339 timestamp", profiler.ErrInvalidRequest, name)
 	}
 	parsedTo, err := time.Parse(time.RFC3339, to)
 	if err != nil {
-		return out, errors.New(name + ".to must be an RFC3339 timestamp")
+		return out, fmt.Errorf("%w: %s.to must be an RFC3339 timestamp", profiler.ErrInvalidRequest, name)
 	}
 	if !parsedTo.After(parsedFrom) {
-		return out, errors.New(name + ".to must be after " + name + ".from")
+		return out, fmt.Errorf("%w: %s.to must be after %s.from", profiler.ErrInvalidRequest, name, name)
 	}
 	return profiler.Window{From: parsedFrom.UTC(), To: parsedTo.UTC()}, nil
 }
@@ -420,6 +430,8 @@ func statusForError(err error) int {
 		errors.Is(err, profiler.ErrInvalidOverride),
 		errors.Is(err, profiler.ErrInvalidCursor),
 		errors.Is(err, devices.ErrInvalidOption),
+		errors.Is(err, selection.ErrInvalidRequest),
+		errors.Is(err, ontology.ErrNoCriteria),
 		errors.Is(err, timeseries.ErrInvalidRequest):
 		return http.StatusBadRequest
 	case errors.Is(err, profiler.ErrNoPermission):

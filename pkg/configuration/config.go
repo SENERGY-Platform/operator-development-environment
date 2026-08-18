@@ -62,6 +62,14 @@ type ConfigStruct struct {
 	// Computation stays in UTC throughout (§5.4.13).
 	ProfilerLocalTimezone string `json:"profiler_local_timezone"`
 
+	// Semantic selection (§5.2). SelectionMaxCriteria is the one worth
+	// understanding: a resolution sends one device-type-selectables request per
+	// combination of matched function and matched aspect, because the platform ANDs
+	// a criteria list, and this caps how many.
+	SelectionConcurrency int64 `json:"selection_concurrency"`
+	SelectionMaxCriteria int64 `json:"selection_max_criteria"`
+	SelectionDeviceLimit int64 `json:"selection_device_limit"`
+
 	CorsOrigins []string `json:"cors_origins"`
 }
 
@@ -113,6 +121,15 @@ func applyDefaults(config Config) {
 	}
 	if config.ProfilerLocalTimezone == "" {
 		config.ProfilerLocalTimezone = "Europe/Berlin"
+	}
+	if config.SelectionConcurrency <= 0 {
+		config.SelectionConcurrency = 4
+	}
+	if config.SelectionMaxCriteria <= 0 {
+		config.SelectionMaxCriteria = 12
+	}
+	if config.SelectionDeviceLimit <= 0 {
+		config.SelectionDeviceLimit = 10
 	}
 }
 

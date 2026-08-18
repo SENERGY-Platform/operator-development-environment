@@ -49,6 +49,10 @@ type Client interface {
 	ListConceptsWithCharacteristics(options model.ConceptListOptions) ([]models.ConceptWithCharacteristics, int64, error, int)
 	GetDeviceClasses() ([]models.DeviceClass, error, int)
 	GetLastUpdateTimestamps(token string, userId string) ([]model.LastUpdateTimestamp, error, int)
+	// GetDeviceTypeSelectablesV2 is the semantic selection query of §5.2. It is
+	// listed among the tokenless reads for the same reason as the rest: it
+	// authenticates through the client's auth closure, not through an argument.
+	GetDeviceTypeSelectablesV2(query []model.FilterCriteria, pathPrefix string, includeModified bool, servicesMustMatchAllCriteria bool) ([]model.DeviceTypeSelectable, error, int)
 }
 
 // Snapshot is one consistent read of the ontology.

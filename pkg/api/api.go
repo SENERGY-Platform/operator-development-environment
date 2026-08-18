@@ -32,6 +32,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -46,6 +47,7 @@ type Deps struct {
 	Devices    *devices.Service
 	Timeseries TimeseriesReader
 	Profiler   *profiler.Profiler
+	Selection  *selection.Resolver
 }
 
 // NewRouter wires the ODE HTTP surface.
@@ -90,6 +92,13 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 	dev.GET("", handleListDevices(deps.Devices))
 	dev.GET("/:id", handleGetDevice(deps.Devices))
 
+	// M2. Served whenever a resolver is configured, which needs only the ontology
+	// and the device repository: a deployment without a timescale-wrapper URL still
+	// resolves an intent to series, it just cannot rank them by availability.
+	if deps.Selection != nil {
+		secured.POST("/selection", handleSelection(deps.Selection))
+	}
+
 	// M1a and M1b. The routes stay off the router entirely when the profiler is
 	// not configured, so a deployment without a timeseries URL answers 404
 	// rather than panicking on the first request.
@@ -99,13 +108,13 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		ts.GET("/usage", handleUsage(deps.Timeseries))
 	}
 	if deps.Profiler != nil {
-		// The WebSocket carries the same two operations as the routes below.
+		// The WebSocket carries the same operations as the routes below.
 		//
 		// It is not behind auth.Middleware: a browser cannot set an Authorization
 		// header on a WebSocket handshake, so the handler reads the token from the
 		// subprotocol or the query and enforces the realm role itself. Everything
 		// else about §3.1 is unchanged — the gateway validates, ODE authorises.
-		r.GET("/ws", handleWebSocket(cfg, deps.Devices, deps.Profiler))
+		r.GET("/ws", handleWebSocket(cfg, deps))
 
 		// Kept off /profiles to avoid a static segment beside the :id wildcard.
 		secured.GET("/quick-profiles", handleQuickProfiles(deps.Devices, deps.Profiler))

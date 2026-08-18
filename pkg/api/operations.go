@@ -25,10 +25,11 @@ import (
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 )
 
-// The two operations the profiler surface exposes, as functions rather than
-// handlers.
+// The operations the profiler and selection surfaces expose, as functions rather
+// than handlers.
 //
 // Both HTTP and the WebSocket call these, which is the point: the WebSocket
 // exists because a profile read outlives an HTTP timeout, not because it should
@@ -110,6 +111,67 @@ func runQuickProfiles(
 		TotalDevices:   listed.Total,
 		DeviceLimit:    limit,
 	}, nil
+}
+
+// SelectionInput is one semantic selection (§5.2).
+type SelectionInput struct {
+	Intent         string
+	FunctionIDs    []string
+	AspectIDs      []string
+	DeviceClassIDs []string
+
+	Interaction        models.Interaction
+	IncludeControlling bool
+
+	MatchLimit int
+	MinScore   float64
+
+	// Limit is how many *devices* the resolution expands, with the same meaning
+	// and the same ceiling as a candidate listing: availability is one call per
+	// device and cannot be batched. Zero means the resolver's default.
+	Limit       int64
+	Window      profiler.Window
+	SkipRanking bool
+}
+
+// runSelection clamps the device limit and hands over to pkg/selection.
+//
+// The clamp lives here rather than in the resolver so that "how many devices an
+// ODE request may expand" has one answer across both operations that expand
+// devices — a resolution that quietly listed two hundred would take twenty times
+// as long as the candidate listing beside it for no stated reason.
+func runSelection(
+	ctx context.Context,
+	token string,
+	resolver *selection.Resolver,
+	input SelectionInput,
+) (selection.Result, error) {
+	if resolver == nil {
+		return selection.Result{}, fmt.Errorf("%w: semantic selection is not configured",
+			selection.ErrInvalidRequest)
+	}
+
+	limit := input.Limit
+	if limit <= 0 {
+		limit = defaultDeviceLimit
+	}
+	if limit > maxDeviceLimit {
+		limit = maxDeviceLimit
+	}
+
+	return resolver.Resolve(ctx, token, selection.Request{
+		Intent:             input.Intent,
+		FunctionIDs:        input.FunctionIDs,
+		AspectIDs:          input.AspectIDs,
+		DeviceClassIDs:     input.DeviceClassIDs,
+		Interaction:        input.Interaction,
+		IncludeControlling: input.IncludeControlling,
+		MatchLimit:         input.MatchLimit,
+		MinScore:           input.MinScore,
+		DeviceLimit:        limit,
+		Window:             input.Window,
+		SkipRanking:        input.SkipRanking,
+	})
 }
 
 // ProfileInput is one service-scoped profile computation.

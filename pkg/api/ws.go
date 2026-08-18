@@ -32,6 +32,7 @@ import (
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 )
 
 // The WebSocket surface exists for one reason: a profile read outlives an HTTP
@@ -48,6 +49,7 @@ const (
 	// Message types, client to server.
 	msgQuickProfiles = "quick_profiles"
 	msgProfile       = "profile"
+	msgSelection     = "resolve_selection"
 	msgCancel        = "cancel"
 	msgPing          = "ping"
 
@@ -94,7 +96,7 @@ type wsOutbound struct {
 }
 
 // handleWebSocket upgrades and serves one connection.
-func handleWebSocket(cfg Config, deviceService *devices.Service, prof *profiler.Profiler) gin.HandlerFunc {
+func handleWebSocket(cfg Config, deps Deps) gin.HandlerFunc {
 	upgrader := websocket.Upgrader{
 		HandshakeTimeout: 15 * time.Second,
 		ReadBufferSize:   4 * 1024,
@@ -138,8 +140,9 @@ func handleWebSocket(cfg Config, deviceService *devices.Service, prof *profiler.
 			conn:          conn,
 			bearer:        "Bearer " + token,
 			user:          parsed.Sub,
-			deviceService: deviceService,
-			profiler:      prof,
+			deviceService: deps.Devices,
+			profiler:      deps.Profiler,
+			selection:     deps.Selection,
 			outbound:      make(chan wsOutbound, outboundBuffer),
 			running:       map[string]context.CancelFunc{},
 			slots:         make(chan struct{}, concurrentPerConnection),
@@ -202,6 +205,7 @@ type wsSession struct {
 	user          string
 	deviceService *devices.Service
 	profiler      *profiler.Profiler
+	selection     *selection.Resolver
 
 	outbound chan wsOutbound
 
@@ -288,7 +292,7 @@ func (s *wsSession) readLoop(ctx context.Context) {
 			s.send(wsOutbound{Type: msgPong, ID: message.ID})
 		case msgCancel:
 			s.cancelOperation(message.ID)
-		case msgQuickProfiles, msgProfile:
+		case msgQuickProfiles, msgProfile, msgSelection:
 			s.start(ctx, message)
 		default:
 			s.send(wsOutbound{
@@ -388,6 +392,20 @@ func (s *wsSession) run(ctx context.Context, message wsInbound) (any, error) {
 			return nil, err
 		}
 		return runProfile(ctx, s.bearer, s.deviceService, s.profiler, input)
+
+	case msgSelection:
+		// Here for the same reason the candidate listing is: a resolution expands
+		// devices, and availability is one call per device. Cancelling it stops
+		// those reads rather than only the waiting.
+		var body selectionBody
+		if err := decodePayload(message.Payload, &body); err != nil {
+			return nil, err
+		}
+		input, err := body.toInput()
+		if err != nil {
+			return nil, err
+		}
+		return runSelection(ctx, s.bearer, s.selection, input)
 
 	default:
 		return nil, errors.New("unknown message type " + message.Type)

@@ -17,6 +17,7 @@
 package api_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -31,6 +32,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/api"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 )
 
 // mintToken builds a token with an arbitrary signature. The API gateway
@@ -90,6 +92,42 @@ func (fakeOntologyClient) GetLastUpdateTimestamps(string, string) ([]drmodel.Las
 	return []drmodel.LastUpdateTimestamp{{Collection: "aspects", UnixTimestamp: 1000}}, nil, 200
 }
 
+// GetDeviceTypeSelectablesV2 answers for the one device type in this suite, and
+// only when the criterion actually addresses it — so a test can tell a resolution
+// that found something from one that found nothing.
+func (fakeOntologyClient) GetDeviceTypeSelectablesV2(
+	query []drmodel.FilterCriteria, _ string, _ bool, _ bool,
+) ([]drmodel.DeviceTypeSelectable, error, int) {
+	for _, criterion := range query {
+		if criterion.FunctionId != "" && criterion.FunctionId != "fn-power" {
+			return []drmodel.DeviceTypeSelectable{}, nil, 200
+		}
+		if criterion.AspectId != "" && criterion.AspectId != "kitchen" {
+			return []drmodel.DeviceTypeSelectable{}, nil, 200
+		}
+		if criterion.Interaction != "" && criterion.Interaction != models.EVENT {
+			return []drmodel.DeviceTypeSelectable{}, nil, 200
+		}
+	}
+
+	device := apiDevice()
+	return []drmodel.DeviceTypeSelectable{{
+		DeviceTypeId: device.DeviceTypeId,
+		Services:     device.DeviceType.Services,
+		ServicePathOptions: map[string][]drmodel.ServicePathOption{
+			testServiceID: {{
+				ServiceId:        testServiceID,
+				Path:             powerPath,
+				CharacteristicId: "ch-watt",
+				FunctionId:       "fn-power",
+				AspectNode:       models.AspectNode{Id: "kitchen", Name: "Kitchen", RootId: "building"},
+				Type:             models.Float,
+				Interaction:      models.EVENT,
+			}},
+		},
+	}}, nil, 200
+}
+
 type fakeDeviceClient struct {
 	gotToken string
 	err      error
@@ -140,11 +178,24 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	deviceClient := &fakeDeviceClient{}
+	ontologyRepo := ontology.New(func(string) ontology.Client { return fakeOntologyClient{} }, ontology.Options{})
+	deviceService := devices.New(deviceClient)
+
+	// No ranker: this harness has no profiler, which is the deployment without a
+	// timescale-wrapper URL. Semantic selection still resolves an intent to series
+	// there, so the route is wired and the missing ranking is a note.
+	resolver, err := selection.New(ontologyRepo, staticOntology{index: apiOntology()}, deviceService, nil,
+		selection.Options{})
+	if err != nil {
+		t.Fatalf("selection.New: %v", err)
+	}
+
 	router := api.NewRouter(
 		api.Config{RequiredRealmRole: "developer", Debug: false},
 		api.Deps{
-			Ontology: ontology.New(func(string) ontology.Client { return fakeOntologyClient{} }, ontology.Options{}),
-			Devices:  devices.New(deviceClient),
+			Ontology:  ontologyRepo,
+			Devices:   deviceService,
+			Selection: resolver,
 		},
 	)
 	return &harness{router: router, devices: deviceClient}
@@ -153,6 +204,22 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) get(t *testing.T, path string, roles ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if roles != nil {
+		req.Header.Set("Authorization", "Bearer "+mintToken(roles))
+	}
+	w := httptest.NewRecorder()
+	h.router.ServeHTTP(w, req)
+	return w
+}
+
+func (h *harness) post(t *testing.T, path string, body any, roles ...string) *httptest.ResponseRecorder {
+	t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encode body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded))
+	req.Header.Set("Content-Type", "application/json")
 	if roles != nil {
 		req.Header.Set("Authorization", "Bearer "+mintToken(roles))
 	}

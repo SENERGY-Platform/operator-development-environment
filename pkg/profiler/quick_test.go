@@ -430,3 +430,90 @@ func TestTheDeclaredBlockCarriesTheOntologyUnitAndRange(t *testing.T) {
 		t.Fatal("value.power is missing from the candidate list")
 	}
 }
+
+// A candidate has to be readable as a candidate: a ranked list addressed only by
+// URN is a list nobody can choose from, because the ids differ in their last few
+// characters and the device type is what separates two meters in one room.
+func TestACandidateCarriesItsDeviceAndTypeName(t *testing.T) {
+	device := meterDevice("urn:infai:ses:device:1", "urn:infai:ses:service:1")
+	device.DisplayName = "Kitchen Meter"
+	device.DeviceTypeName = "SmartMeter Modbus"
+
+	fake := &fakeTimeseries{
+		availability: map[string][]timeseries.Availability{},
+		usage:        map[string]timeseries.Usage{},
+	}
+	prof := newTestProfiler(t, fake, powerOntology(), quickNow)
+
+	result, err := prof.QuickProfiles(context.Background(), "Bearer caller",
+		QuickRequest{Devices: []models.ExtendedDevice{device}})
+	if err != nil {
+		t.Fatalf("QuickProfiles: %v", err)
+	}
+	if len(result.Candidates) == 0 {
+		t.Fatal("no candidates")
+	}
+
+	got := result.Candidates[0].Device
+	if got.Name != "Kitchen Meter" {
+		t.Errorf("device name = %q, want the platform's display name", got.Name)
+	}
+	if got.DeviceTypeID != "dt-meter" {
+		t.Errorf("device type id = %q, want dt-meter", got.DeviceTypeID)
+	}
+	if got.DeviceTypeName != "SmartMeter Modbus" {
+		t.Errorf("device type name = %q, want the computed name", got.DeviceTypeName)
+	}
+	// The ids are not repeated in the block; SeriesRef is what anything is keyed on.
+	if result.Candidates[0].SeriesRef.DeviceID != "urn:infai:ses:device:1" {
+		t.Errorf("series ref = %+v, want the device id intact", result.Candidates[0].SeriesRef)
+	}
+}
+
+// Without a computed device_type_name the type still arrives with the device,
+// because every candidate listing reads with fulldt.
+func TestACandidateFallsBackToTheDeviceTypesOwnName(t *testing.T) {
+	device := meterDevice("urn:infai:ses:device:1", "urn:infai:ses:service:1")
+	fake := &fakeTimeseries{
+		availability: map[string][]timeseries.Availability{},
+		usage:        map[string]timeseries.Usage{},
+	}
+	prof := newTestProfiler(t, fake, powerOntology(), quickNow)
+
+	result, err := prof.QuickProfiles(context.Background(), "Bearer caller",
+		QuickRequest{Devices: []models.ExtendedDevice{device}})
+	if err != nil {
+		t.Fatalf("QuickProfiles: %v", err)
+	}
+	if got := result.Candidates[0].Device.DeviceTypeName; got != "Meter" {
+		t.Errorf("device type name = %q, want the device type's own name", got)
+	}
+	if got := result.Candidates[0].Device.Name; got != "PV Meter" {
+		t.Errorf("device name = %q, want the device's own name", got)
+	}
+}
+
+// A device that cannot be profiled is reported by name too — the developer looking
+// for it is looking for a name, not a URN.
+func TestASkippedDeviceIsReportedByItsDisplayName(t *testing.T) {
+	device := meterDevice("urn:infai:ses:device:1", "urn:infai:ses:service:1")
+	device.DisplayName = "Kitchen Meter"
+	device.Permissions = models.Permissions{Read: true}
+
+	prof := newTestProfiler(t, &fakeTimeseries{
+		availability: map[string][]timeseries.Availability{},
+		usage:        map[string]timeseries.Usage{},
+	}, powerOntology(), quickNow)
+
+	result, err := prof.QuickProfiles(context.Background(), "Bearer caller",
+		QuickRequest{Devices: []models.ExtendedDevice{device}})
+	if err != nil {
+		t.Fatalf("QuickProfiles: %v", err)
+	}
+	if len(result.Skipped) != 1 {
+		t.Fatalf("skipped = %+v, want the unreadable device", result.Skipped)
+	}
+	if result.Skipped[0].Name != "Kitchen Meter" {
+		t.Errorf("skipped name = %q, want the display name", result.Skipped[0].Name)
+	}
+}

@@ -33,6 +33,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -121,7 +122,11 @@ func apiDevice() models.ExtendedDevice {
 						Id: "cv-root", Name: "value", Type: models.Structure,
 						SubContentVariables: []models.ContentVariable{{
 							Id: "cv-power", Name: "power", Type: models.Float,
-							CharacteristicId: "ch-watt", FunctionId: "fn-power",
+							// The aspect is declared because the device repository derives
+							// its selectables index from these same content variables: a
+							// variable with no aspect could never be matched by an aspect
+							// criterion, so a fake that omits it contradicts itself.
+							CharacteristicId: "ch-watt", FunctionId: "fn-power", AspectId: "kitchen",
 						}},
 					},
 				}},
@@ -202,13 +207,26 @@ func newProfileHarnessWith(t *testing.T, client profiler.TimeseriesClient) *prof
 		t.Fatalf("profiler.New: %v", err)
 	}
 
+	ontologyRepo := ontology.New(func(string) ontology.Client { return fakeOntologyClient{} }, ontology.Options{})
+	deviceService := devices.New(deviceClient)
+
+	// The profiler is the ranker (§5.2: candidates are ranked by QuickProfile), so
+	// this harness exercises the full resolution — including the read counter that
+	// makes the tier-L0 claim checkable.
+	resolver, err := selection.New(ontologyRepo, staticOntology{index: apiOntology()}, deviceService, prof,
+		selection.Options{})
+	if err != nil {
+		t.Fatalf("selection.New: %v", err)
+	}
+
 	router := api.NewRouter(
 		api.Config{RequiredRealmRole: "developer", Debug: false},
 		api.Deps{
-			Ontology:   ontology.New(func(string) ontology.Client { return fakeOntologyClient{} }, ontology.Options{}),
-			Devices:    devices.New(deviceClient),
+			Ontology:   ontologyRepo,
+			Devices:    deviceService,
 			Timeseries: fakeTs,
 			Profiler:   prof,
+			Selection:  resolver,
 		},
 	)
 	return &profileHarness{router: router, devices: deviceClient, timeseries: fakeTs, profiler: prof}

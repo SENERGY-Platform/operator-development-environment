@@ -26,6 +26,7 @@ import (
 
 	"github.com/SENERGY-Platform/models/go/models"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -34,8 +35,9 @@ import (
 // connection state, so it sits at exposure tier L0 and a developer can go from
 // an intent to a shortlist of three series before any value is read.
 type QuickProfile struct {
-	SeriesRef SeriesRef `json:"series_ref"`
-	Tier      string    `json:"tier"`
+	SeriesRef SeriesRef  `json:"series_ref"`
+	Device    DeviceInfo `json:"device"`
+	Tier      string     `json:"tier"`
 
 	Availability Value[AvailabilityWindow] `json:"availability"`
 	Volume       Value[Volume]             `json:"volume"`
@@ -52,6 +54,20 @@ type QuickProfile struct {
 	Reason    string `json:"reason,omitempty"`
 
 	Provenance Provenance `json:"provenance"`
+}
+
+// DeviceInfo is the candidate's device as a human reads it, beside the SeriesRef
+// that machines key on.
+//
+// It exists because a ranked list of forty candidates addressed only by URN is a
+// list nobody can choose from: the ids differ in their last few characters, and the
+// device type is what separates two meters in the same room. The ids are not
+// repeated here — SeriesRef carries them.
+type DeviceInfo struct {
+	// Name is the platform's display name where it has one (see devices.DisplayName).
+	Name           string `json:"name"`
+	DeviceTypeID   string `json:"device_type_id"`
+	DeviceTypeName string `json:"device_type_name"`
 }
 
 type Aggregate struct {
@@ -210,7 +226,7 @@ func (p *Profiler) QuickProfiles(ctx context.Context, token string, req QuickReq
 		switch {
 		case device.DeviceType == nil:
 			result.Skipped = append(result.Skipped, SkippedDevice{
-				DeviceID: device.Id, Name: device.Name,
+				DeviceID: device.Id, Name: devices.DisplayName(device),
 				Reason: "device type not resolved: read the device with full_device_type to enumerate its variables",
 			})
 		case !device.Permissions.Execute:
@@ -218,7 +234,7 @@ func (p *Profiler) QuickProfiles(ctx context.Context, token string, req QuickReq
 			// device's data (§5.1). Offering a series ODE cannot read wastes the
 			// developer's decision and fails at query time instead of here.
 			result.Skipped = append(result.Skipped, SkippedDevice{
-				DeviceID: device.Id, Name: device.Name,
+				DeviceID: device.Id, Name: devices.DisplayName(device),
 				Reason: "no execute permission: the caller may see this device but not read its data",
 			})
 		default:
@@ -334,6 +350,11 @@ func (p *Profiler) quickProfile(
 			DeviceID:     device.Id,
 			ServiceID:    variable.ServiceID,
 			VariablePath: variable.Path,
+		},
+		Device: DeviceInfo{
+			Name:           devices.DisplayName(device),
+			DeviceTypeID:   device.DeviceTypeId,
+			DeviceTypeName: devices.TypeName(device),
 		},
 		Tier:        TierQuick,
 		Interaction: variable.Interaction,
@@ -483,6 +504,18 @@ func liveness(state models.ConnectionState, availability Value[AvailabilityWindo
 	out.LastValueAgeS = Computed(age)
 	prov.FromAPI("liveness.last_value_age_s", "timescale-wrapper:/data-availability")
 	return out
+}
+
+// VariableCompleteness reports what the ontology fails to declare about one
+// variable, reading nothing.
+//
+// It exists so that semantic selection's ontology_gaps (§5.2) is the *same*
+// judgement a QuickProfile reports in ontology_completeness, rather than a
+// second gap detector with its own vocabulary. Two of those would eventually
+// disagree about one variable in two places in the same UI, and neither would
+// look wrong.
+func VariableCompleteness(variable Variable, index *OntologyIndex) Completeness {
+	return completeness(variable, ResolveUnits(variable, index, Provenance{}))
 }
 
 // completeness implements D16: what the device type fails to declare is

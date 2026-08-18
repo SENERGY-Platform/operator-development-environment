@@ -44,6 +44,16 @@ type fakeClient struct {
 	aspectCode   int
 	timestampErr error
 
+	// selectableCalls records the criteria of every selectables query, which is
+	// how the tests check that ODE sends one criterion per request rather than a
+	// list the platform would AND.
+	selectableCalls  [][]model.FilterCriteria
+	selectables      []model.DeviceTypeSelectable
+	selectableErr    error
+	selectableCode   int
+	selectablePrefix string
+	selectableAll    bool
+
 	// delay lets a test hold a load open while other goroutines pile up.
 	delay time.Duration
 }
@@ -86,6 +96,21 @@ func (f *fakeClient) ListConceptsWithCharacteristics(model.ConceptListOptions) (
 
 func (f *fakeClient) GetDeviceClasses() ([]models.DeviceClass, error, int) {
 	return []models.DeviceClass{{Id: "dc-meter", Name: "Meter"}}, nil, 200
+}
+
+func (f *fakeClient) GetDeviceTypeSelectablesV2(
+	query []model.FilterCriteria, pathPrefix string, _ bool, servicesMustMatchAllCriteria bool,
+) ([]model.DeviceTypeSelectable, error, int) {
+	f.mux.Lock()
+	f.selectableCalls = append(f.selectableCalls, query)
+	f.selectablePrefix = pathPrefix
+	f.selectableAll = servicesMustMatchAllCriteria
+	f.mux.Unlock()
+
+	if f.selectableErr != nil {
+		return nil, f.selectableErr, f.selectableCode
+	}
+	return f.selectables, nil, 200
 }
 
 func (f *fakeClient) GetLastUpdateTimestamps(string, string) ([]model.LastUpdateTimestamp, error, int) {

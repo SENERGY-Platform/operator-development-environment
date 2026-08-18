@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	devicerepo "github.com/SENERGY-Platform/device-repository/lib/client"
+	"github.com/SENERGY-Platform/device-repository/lib/model"
 )
 
 // This exercises the real device-repository client rather than a fake, because
@@ -54,6 +55,13 @@ func TestOntologyClientSendsTheTokenOnTokenlessMethods(t *testing.T) {
 	}
 	if _, err, code := client.GetDeviceClasses(); err != nil {
 		t.Fatalf("GetDeviceClasses: %v (code %d)", err, code)
+	}
+	// Semantic selection (M2) reads through the same closure. It is exercised here
+	// because it is the one endpoint the whole feature rests on, and a 401 from the
+	// gateway would look like a platform that knows nothing about the intent.
+	if _, err, code := client.GetDeviceTypeSelectablesV2(
+		[]model.FilterCriteria{{FunctionId: "fn-power"}}, "", false, false); err != nil {
+		t.Fatalf("GetDeviceTypeSelectablesV2: %v (code %d)", err, code)
 	}
 
 	mux.Lock()

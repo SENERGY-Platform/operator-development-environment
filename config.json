@@ -18,5 +18,9 @@
   "profiler_concurrency": 4,
   "profiler_local_timezone": "Europe/Berlin",
 
+  "selection_concurrency": 4,
+  "selection_max_criteria": 12,
+  "selection_device_limit": 10,
+
   "cors_origins": ["http://localhost:5173"]
 }

@@ -82,6 +82,41 @@ func (s *Service) Get(token string, id string, action model.AuthAction) (models.
 	return device, nil
 }
 
+// DisplayName is what a human should be shown for a device.
+//
+// The platform keeps two names: `name` is the device's own, and `display_name` is
+// computed per request and is what the platform's own UIs show — an
+// attribute-driven label a user chose, where there is one. Preferring it keeps ODE
+// naming a device the way the rest of the platform does.
+//
+// It never falls back to the id. An id is what a series is keyed on, not what a
+// developer picking between forty candidates should have to read; a caller that
+// wants one takes it from the SeriesRef.
+func DisplayName(device models.ExtendedDevice) string {
+	if device.DisplayName != "" {
+		return device.DisplayName
+	}
+	return device.Name
+}
+
+// TypeName is the device type's name, which is what makes a device
+// distinguishable when several share a display name — "Meter 3" says much less
+// than "Meter 3 (SmartMeter Modbus)".
+//
+// device_type_name is computed by the repository on request and is not always
+// populated; the device type itself arrives whenever ODE reads with fulldt, which
+// every candidate listing does. Empty means neither was available, and the caller
+// shows the id instead rather than an empty gap.
+func TypeName(device models.ExtendedDevice) string {
+	if device.DeviceTypeName != "" {
+		return device.DeviceTypeName
+	}
+	if device.DeviceType != nil {
+		return device.DeviceType.Name
+	}
+	return ""
+}
+
 // ParseListOptions maps SPA query parameters onto the device-repository's
 // option struct. It is a pure function so the mapping can be tested without a
 // server or a platform.
