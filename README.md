@@ -11,7 +11,7 @@ file only says how to run what exists.
 
 ## Status
 
-**M0, M1a and M1b of the build order in SPEC.md §6.** What works today:
+**M0, M1a, M1b and M2 of the build order in SPEC.md §6.** What works today:
 
 - The `developer` realm role gate on every route. Token signature, expiry and
   audience are validated by the platform API gateway, not here.
@@ -32,11 +32,18 @@ file only says how to run what exists.
   store with an append-only override overlay, the LLM projection, and sessions
   as a paginated resource.
 
-- A **Profiler view in the SPA** over all of the above: the ranked candidate
-  list with its read counter, the full profile with every non-result shown as
-  one, the paginated sessions, the LLM projection, and the confirmation form.
+- **Semantic selection** — a text intent resolved through the ontology to
+  concrete series: matched functions and aspects with the evidence behind each
+  match, `device-type-selectables` per criteria combination, the devices the
+  caller may read data from, `ontology_gaps` per device type, and the resulting
+  series ranked by `QuickProfile`. Still no values read, so still tier L0.
 
-Not built yet: everything from M2 onward — semantic selection, the LLM tool
+- A **Selection view and a Profiler view in the SPA**: the intent resolution with
+  every step auditable, then the ranked candidate list with its read counter, the
+  full profile with every non-result shown as one, the paginated sessions, the LLM
+  projection, and the confirmation form.
+
+Not built yet: everything from M3 onward — the LLM provider abstraction, the tool
 surface and exposure-tier enforcement, kernels, repositories and experiments.
 There are no charts: the exploration pane is M5, and it needs the chart-spec
 surface of §5.9 to draw anything.
@@ -52,10 +59,13 @@ own per-user permissions.
 
 ```text
 pkg/auth/          claim reading, developer-role gate, on-behalf-of token
-pkg/ontology/      cached snapshot facade over the device repository
+pkg/ontology/      cached snapshot facade over the device repository, the aspect
+                   tree, the selectables query and the lexical intent matcher
 pkg/devices/       per-user device reads, never cached across users
 pkg/timeseries/    timescale-wrapper client: availability, usage, batched reads
 pkg/profiler/      QuickProfile, SeriesProfile, detectors, store, projection
+pkg/selection/     semantic selection: intent → criteria → selectables → devices
+                   → ranked series, plus ontology_gaps
 pkg/api/           gin routes, plus the cancellable WebSocket in ws.go and the
                    operations both surfaces share in operations.go
 pkg/configuration/ config.json plus environment overrides
@@ -83,6 +93,8 @@ variables, using the platform's usual camel-case-to-`UPPER_SNAKE` mapping
 | `profiler_raw_window_days` / `profiler_raw_window_points` | Bounds on the raw pass, the smaller of the two wins (SPEC D25). 14 days or 100 000 points |
 | `profiler_coverage_window_days` | Lookback the QuickProfile coverage proxy uses when a request names no window |
 | `profiler_local_timezone` | Used only to flag DST transitions; computation is UTC throughout |
+| `selection_max_criteria` | How many criteria combinations one resolution may send, default 12. One request each, because the platform ANDs a criteria list — see the last section |
+| `selection_device_limit` / `selection_concurrency` | Devices a resolution expands (default 10) and how many selectables requests run at once (default 4) |
 | `cors_origins` | Only needed if the SPA is not served through the Vite proxy |
 
 ## Trying M1
@@ -121,12 +133,85 @@ where the app lands. In order:
 The exposure tier in the header gates LLM tools, not this UI — which is why the
 profiler is reachable at L0. Enforcing it is M3.
 
+## Trying M2
+
+Open the **Selection** tab and type what you want to model — `forecast PV
+generation for this site` is the example SPEC §5.2 is written around. There is no
+model involved: the words are matched against the ontology's own function, aspect
+and device-class names.
+
+What to look at, in the order the resolution happens:
+
+1. **The terms.** Your intent as the matcher read it, green where a match used the
+   word and amber where nothing did. There is no synonym table on purpose — an
+   amber `pv` means the platform ontology has no such wording, which is a fact
+   about the ontology rather than a matcher that needs another attempt. Deciding
+   that "generation" means "production" would be ODE asserting domain knowledge it
+   does not have, invisibly.
+2. **The matches, with their evidence.** Each carries a score — the share of that
+   ontology term's own words your intent mentioned — the words it used, and which
+   label it matched on. Nothing is narrowed to one: `Power Generation` and `Power
+   Consumption` both surface for "power", ranked, because only you can tell which
+   you meant.
+3. **The criteria sent.** One row per request, with how many device types each
+   found. A row finding zero is the difference between *the ontology has no such
+   thing* and *this platform has none of them* — the two failures that otherwise
+   look identical from an empty list.
+4. **The read counter.** Same as M1a's and for the same reason: selection and
+   triage both complete at tier L0, so the value count has to be zero. It counts
+   the selectables and device calls too, which is what a resolution actually costs.
+5. **Ontology gaps.** What each device type fails to declare, discovered at
+   runtime (D16), grouped by consequence — "no server-side unit conversion" and
+   "cannot be found by semantic selection" are different problems with different
+   fixes. This is the same judgement each candidate reports about itself, not a
+   second opinion.
+
+Untick **rank by QuickProfile** for the cheap form: the ontology resolution with no
+per-device availability call at all. Series that exist in the ontology but cannot be
+read — a service input, a JSONB list column — are shown and marked rather than
+dropped, because the developer who searched for one needs to know it was seen.
+
+There is no button from a resolved series into the profiler. Promoting a selection
+is `propose_data_selection`, which requires developer confirmation and arrives with
+the tool surface in M3; until then, the Profiler tab starts from its own list.
+
+### Semantic selection over HTTP
+
+```text
+POST /selection
+{
+  "intent": "forecast PV generation for this site",
+  "function_ids": [], "aspect_ids": [], "device_class_ids": [],
+  "interaction": "event",          // or request, event+request, any
+  "include_controlling": false,
+  "match_limit": 5, "min_score": 0.5,
+  "limit": 10,                     // devices to expand
+  "window": {"from": "…", "to": "…"},
+  "rank": true
+}
+```
+
+`intent` or one of the three id lists is required — with nothing to resolve there
+are no criteria, and an empty criteria list matches *every* device type on the
+platform, so it is refused rather than sent. The id lists bypass the matcher
+entirely, which is how the LLM will call this in M3 once it has read the ontology
+itself; an id the ontology snapshot does not know is reported and queried anyway,
+because the snapshot can be older than the platform.
+
+The route is served even without a `timescale_wrapper_url`: the resolution is
+ontology work. Only the ranking needs the profiler, and the response says so in
+`notes` instead of failing. The SPA's Selection tab does need the WebSocket, which
+is registered with the profiler.
+
 ## The profiler over a WebSocket
 
-The Profiler view runs its two slow operations over `GET /ws` rather than the HTTP
-routes, because a read outlives an HTTP request: a raw pass bounded at 100 000
-points is megabytes of JSON per column, and an ingress idle timeout turns that
-into a 504 — with the backend still reading for a client that has gone.
+The Profiler and Selection views run their slow operations over `GET /ws` rather
+than the HTTP routes, because a read outlives an HTTP request: a raw pass bounded at
+100 000 points is megabytes of JSON per column, and an ingress idle timeout turns
+that into a 504 — with the backend still reading for a client that has gone. A
+resolution is on the socket for the milder version of the same reason: it expands
+devices, availability is one call per device, and a developer changing their mind
+should stop those reads rather than leave them running.
 
 Every request carries an `id`. The client can cancel one, and closing the socket
 cancels everything that connection was doing, which is what stops a closed browser
@@ -135,6 +220,7 @@ tab from costing platform reads.
 ```text
 → {"type":"quick_profiles","id":"q1","payload":{"limit":10,"search":"","window":{…}}}
 → {"type":"profile","id":"p1","payload":{"device_id":"…","service_id":"…"}}
+→ {"type":"resolve_selection","id":"s1","payload":{"intent":"…","limit":10}}
 → {"type":"cancel","id":"p1"}
 → {"type":"ping","id":"…"}
 
@@ -169,6 +255,7 @@ fixtures. All of them sit behind the `developer` role gate.
 | `GET /timeseries/availability?device_id=` | Per-service availability window and materialised aggregates |
 | `GET /timeseries/usage?device_ids=a,b` | Bytes and bytes per day, for cost estimation at tier L0 |
 | `GET /quick-profiles` | Candidate series ranked from metadata alone. `limit` is **devices**, default 10; plus `search`, `from`, `to`, `include_unqueryable`. Reports its own read counts, and `reads.values` is always 0 |
+| `POST /selection` | Semantic selection (§5.2), documented above. Also `reads.values` 0 |
 | `POST /profiles` | Computes a full profile per variable of one service. Body: `device_id`, `service_id`, optional `analysis_window`, `raw_window`, `group_time`, `session_params` |
 | `GET /profiles/{id}` | The stored profile with its override overlay resolved |
 | `GET /profiles/{id}/projection?token_budget=` | The one model-facing view: arrays collapsed, provenance dropped, elisions recorded |
@@ -229,7 +316,7 @@ injected gap, a monotonic counter with two resets, a bimodal washing-machine
 load, white noise against a random walk. That is what makes the profiler testable
 without an LLM and without the cluster.
 
-## Four things worth knowing before you extend this
+## Five things worth knowing before you extend this
 
 **ODE does not validate tokens, and must therefore sit behind the gateway.**
 Signature, expiry and audience are checked centrally by the platform API
@@ -245,7 +332,8 @@ metadata; `models.Execute` governs reading a device's *data*. `/devices` still
 lists under `Read`, because it serves metadata. Everything that reads or offers
 to read a series — `/quick-profiles`, `POST /profiles` — is scoped to `Execute`,
 because timescale-wrapper checks `Execute` itself and would otherwise refuse the
-read after the developer had already chosen the series.
+read after the developer had already chosen the series. `POST /selection` is scoped
+to `Execute` for the same reason: it offers series to read.
 
 **Never null, never absent.** Every computable profile field is either a value or
 an explicit `{"status": "not_computed", "reason": ..., "detail": ...}` (SPEC
@@ -255,6 +343,20 @@ detector that fails to run cannot report a silent zero. Absence and negation mus
 stay distinguishable: an LLM that reads a missing `dominant_periods_s` as "no
 periodicity" will propose a model on that basis, and nothing downstream can
 recover the difference.
+
+**A selectables criteria list is an AND, and an empty one matches everything.**
+`POST /v2/query/device-type-selectables` narrows the device type set with each
+criterion in turn, so `[{function: power}, {function: energy}]` asks for a device
+type carrying *both* — for two unrelated functions, none at all. An intent means
+the opposite: any matched function, in any matched aspect. `pkg/selection` therefore
+sends **one criterion per request** and unions the answers, which is why a
+resolution's request count is functions × aspects and why `selection_max_criteria`
+exists. Two corollaries are just as easy to get wrong: an aspect criterion already
+covers the node's whole subtree, so passing descendants as extra criteria ANDs a
+parent with its child and matches nothing; and an *empty* criteria list is
+substituted upstream with one empty criterion that matches every device type on the
+platform, which is why `ontology.DeviceTypeSelectables` refuses it outright. None of
+this is a compile error and all of it looks like an empty platform.
 
 **The profile store is in-memory.** `profiler.MemoryStore` is the only
 implementation, behind an interface. Losing computed profiles across a restart

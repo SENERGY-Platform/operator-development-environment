@@ -5,6 +5,21 @@ file to the type `src/api.ts` declares for that endpoint, so `npm run build` fai
 if the two ever disagree — a renamed or dropped field breaks the build instead of
 becoming `undefined` at runtime in front of a developer.
 
+**Two exceptions, worth knowing before you trust them.**
+
+`selection.json` was emitted by the M2 API test harness rather than captured from a
+platform, because M2 was built without platform access. It is still the backend's
+own marshalling of its own types, which is what this check is about — but its
+*values* are a fake's, and its device types are smaller than any real one.
+
+`quick.json` is a real capture with one **hand-patched** field: each candidate's
+`device` block was added by hand when it was introduced, again for want of a
+platform. The ids and the names in that block are invented, so do not read them as
+evidence of anything; the field set around them is still the backend's.
+
+Recapture both from a platform with the commands below when you next have one, and
+this note goes away.
+
 This is not decoration. Writing it caught four real defects on its first run:
 `available_conversions` arriving as `null` rather than `[]` (which crashed the
 candidate detail), an absurd ADF statistic on a deterministic series, harmonics of
@@ -22,6 +37,9 @@ BASE=http://localhost:8080
 DIR=frontend/src/__contract__
 
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/quick-profiles" > $DIR/quick.json
+
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"intent":"forecast PV generation"}' "$BASE/selection" > $DIR/selection.json
 
 # Any candidate's device and service from quick.json:
 DEV=$(jq -r '.candidates[0].series_ref.device_id' $DIR/quick.json)
