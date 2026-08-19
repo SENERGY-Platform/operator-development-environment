@@ -1279,3 +1279,102 @@ button.link {
   font-size: 0.85em;
   font-style: italic;
 }
+
+/* --- M4: the kernel pane (SPEC §5.6) --- */
+
+.panes.kernel-layout {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+}
+
+.kernel-status {
+  margin-bottom: 12px;
+}
+
+.kernel-status .device-type,
+.kernel-status .tag {
+  margin-left: 8px;
+}
+
+/*
+ * The transcript scrolls and the composer does not, so the editor stays put while
+ * a long-running cell fills the pane above it.
+ */
+.cells {
+  flex: 1;
+  min-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 4px;
+}
+
+.cell {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.cell-error {
+  border-color: var(--offline);
+}
+
+.cell-code {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--raised);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cell-output {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cell-output:empty {
+  display: none;
+}
+
+.out {
+  margin: 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.out.stderr,
+.cell-traceback {
+  color: var(--offline);
+}
+
+.out.result pre {
+  margin: 0;
+}
+
+.out.result img {
+  max-width: 100%;
+  margin-top: 6px;
+}
+
+.cell-running {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.cell-status {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+
+.workspace-path {
+  margin: 0 0 12px;
+  font-size: 12px;
+}

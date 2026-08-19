@@ -58,11 +58,28 @@
     { "model": "claude-haiku-4-5", "input_per_mtok": 1.0, "output_per_mtok": 5.0 }
   ],
 
+  "//jupyterhub": "SPEC §5.6. Empty leaves the kernel surface unserved. The token is ODE's JupyterHub *service* credential and must hold servers, tokens, access:servers and users:activity — startup fails if it does not. See deploy/jupyterhub/ for the values that grant them. The workspace path is relative to the singleuser server root and has to be inside the mounted PVC, which this chart puts at ~/data rather than over the whole home.",
+  "jupyterhub_url": "",
+  "jupyterhub_token": "",
+  "jupyterhub_username_claim": "preferred_username",
+  "jupyterhub_kernel": "python3",
+  "jupyterhub_profile": "",
+  "jupyterhub_workspace_path": "data/ode",
+  "jupyterhub_spawn_timeout": "180s",
+  "jupyterhub_request_timeout": "30s",
+  "jupyterhub_execute_timeout": "10m",
+  "jupyterhub_keepalive_interval": "5m",
+  "jupyterhub_idle_timeout": "2h",
+  "jupyterhub_token_ttl": "12h",
+  "jupyterhub_max_output_bytes": 1048576,
+
   "//tool_bounds": "The first two bound one projection; the next two bound a whole response. tool_quick_token_budget is what a ranked candidate list may cost the model, tool_profile_max_profiles how many full profiles one profile_series answer carries. Raise them and every tool call carries the difference for the rest of the turn.",
   "tool_profile_token_budget": 4000,
   "tool_profile_max_profiles": 4,
   "tool_quick_token_budget": 4000,
   "tool_preview_max_points": 500,
+  "//tool_run_code": "Far smaller than jupyterhub_max_output_bytes above, and for a different cost: that one bounds a developer's console, this one bounds what a cell's output costs in model context.",
+  "tool_run_code_max_output_bytes": 8000,
 
   "cors_origins": ["http://localhost:5173"]
 }

@@ -14,16 +14,19 @@
  * limitations under the License.
  */
 
-// Package api exposes ODE's REST surface. Every route except /health sits
-// behind auth.Middleware, so a handler can assume a validated token carrying
+// Package api exposes ODE's REST surface. Every route except /health and /doc
+// sits behind auth.Middleware, so a handler can assume a validated token carrying
 // the required realm role (SPEC §3.1).
 package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
+	ginmw "github.com/SENERGY-Platform/gin-middleware"
+	"github.com/SENERGY-Platform/go-service-base/struct-logger/attributes"
 	"github.com/SENERGY-Platform/models/go/models"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -32,6 +35,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/auth"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/mcp"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
@@ -60,18 +64,53 @@ type Deps struct {
 	// MCP is the tool surface over its second transport, mounted only when a
 	// provider that needs it is configured.
 	MCP http.Handler
+
+	// M4. Absent when no jupyterhub_url is configured, in which case the kernel
+	// routes are not served and run_code has no executor.
+	Kernel *kernel.Service
 }
 
 // NewRouter wires the ODE HTTP surface.
+//
+//	@title			Operator Development Environment
+//	@description	ODE helps a developer build a SENERGY analytics operator: it profiles
+//	@description	the series behind a device, resolves a semantic intent to concrete
+//	@description	series, and runs code in the developer's own kernel — with an LLM
+//	@description	assistant whose reach over platform data is bounded by an exposure
+//	@description	tier (SPEC §3.2).
+//	@description
+//	@description	Every route except /health and /doc requires a bearer token carrying
+//	@description	the configured realm role. The platform API gateway validates the
+//	@description	token; ODE authorises on it (SPEC §3.1, D5). Routes appear only when
+//	@description	the capability behind them is configured, so a deployment without a
+//	@description	timescale-wrapper answers 404 on the profiler rather than 500.
+//	@version		1.0
+//	@license.name	Apache 2.0
+//	@license.url	http://www.apache.org/licenses/LICENSE-2.0.html
+//	@basePath		/
+//
+//	@securityDefinitions.apikey	Bearer
+//	@in							header
+//	@name						Authorization
+//	@description				A Keycloak bearer token, as `Bearer <jwt>`.
 func NewRouter(cfg Config, deps Deps) *gin.Engine {
 	if !cfg.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
+	// Access logging and panic recovery come from gin-middleware, so both land in
+	// the structured log with the same attribute keys every other SENERGY service
+	// uses. Unlike the gin.Logger it replaces, this runs in every mode: a
+	// production deployment without a request log cannot answer "who called what,
+	// and did it 500".
+	//
+	// /health is skipped. It is the kubelet probe, it answers from memory, and
+	// logging it buries the traffic that carries information.
 	r := gin.New()
-	r.Use(gin.Recovery())
-	if cfg.Debug {
-		r.Use(gin.Logger())
-	}
+	logger := slog.Default()
+	r.Use(
+		ginmw.StructRecoveryHandler(logger, ginmw.DefaultRecoveryFunc),
+		ginmw.StructLoggerHandler(logger, attributes.Provider, []string{"/health"}, nil),
+	)
 	if len(cfg.CorsOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins:     cfg.CorsOrigins,
@@ -84,9 +123,10 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 
 	// Unauthenticated: liveness only. It must not touch the platform, or a
 	// device-repository outage would take ODE's pods down with it.
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	r.GET("/health", handleHealth())
+
+	// Unauthenticated for the reason given in doc.go.
+	r.GET("/doc", handleDoc())
 
 	secured := r.Group("/", auth.Middleware(cfg.RequiredRealmRole))
 
@@ -119,15 +159,15 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		ts.GET("/availability", handleAvailability(deps.Timeseries))
 		ts.GET("/usage", handleUsage(deps.Timeseries))
 	}
-	// The WebSocket is ODE's streaming surface: the profiler operations below, and
-	// the chat exchange of §5.7. Registered whenever either is configured, because a
-	// deployment may have one without the other.
+	// The WebSocket is ODE's streaming surface: the profiler operations below, the
+	// chat exchange of §5.7, and kernel execution (§5.6). Registered whenever any of
+	// them is configured, because a deployment may have one without the others.
 	//
 	// It is not behind auth.Middleware: a browser cannot set an Authorization header
 	// on a WebSocket handshake, so the handler reads the token from the subprotocol
 	// or the query and enforces the realm role itself. Everything else about §3.1 is
 	// unchanged — the gateway validates, ODE authorises.
-	if deps.Profiler != nil || deps.Chat != nil {
+	if deps.Profiler != nil || deps.Chat != nil || deps.Kernel != nil {
 		r.GET("/ws", handleWebSocket(cfg, deps))
 	}
 
@@ -165,6 +205,18 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		sessions.GET("/:id/tier-changes", handleTierAudit(deps.Chat))
 	}
 
+	// M4. The developer's own pod (§5.6). Executing is on the WebSocket, because a
+	// cell streams and outlives a request; everything that answers once is here.
+	if deps.Kernel != nil {
+		kern := secured.Group("/kernel")
+		kern.GET("", handleKernelStatus(deps.Kernel))
+		kern.POST("", handleKernelEnsure(deps.Kernel))
+		kern.DELETE("", handleKernelShutdown(deps.Kernel))
+		kern.POST("/restart", handleKernelRestart(deps.Kernel))
+		kern.POST("/interrupt", handleKernelInterrupt(deps.Kernel))
+		kern.GET("/files", handleKernelFiles(deps.Kernel))
+	}
+
 	if deps.Admin != nil {
 		// The realm role gate is on the group, so a route added here later cannot
 		// forget it.
@@ -187,12 +239,38 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 	return r
 }
 
+// handleHealth answers liveness.
+//
+//	@Summary		Liveness
+//	@Description	Answers from memory and never touches the platform, so that a
+//	@Description	device-repository outage does not take ODE's pods down with it.
+//	@Tags			meta
+//	@Produce		json
+//	@Success		200	{object}	map[string]string	"always {\"status\":\"ok\"}"
+//	@Router			/health [get]
+func handleHealth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+}
+
 // handleSession lets the SPA confirm who the backend thinks it is talking to,
 // and learn what this deployment can do.
 //
 // The exposure tier reported here is the *default* a new session starts at, plus
 // the ceiling this user may raise one to (§3.3). It is not a live tier: a tier is
 // session-scoped (§3.2), so the SPA reads the real one from the session itself.
+//
+//	@Summary		Who am I, and what can this deployment do
+//	@Description	Identity from the token, the realm roles behind it, which capabilities
+//	@Description	this deployment serves, and — when an admin service is configured —
+//	@Description	the caller's limits and spend so far (SPEC §3.3).
+//	@Tags			meta
+//	@Produce		json
+//	@Security		Bearer
+//	@Success		200	{object}	map[string]interface{}
+//	@Failure		401	{object}	map[string]string	"no token, or the required realm role is missing"
+//	@Router			/session [get]
 func handleSession(deps Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := auth.MustFromContext(c)
@@ -209,6 +287,7 @@ func handleSession(deps Deps) gin.HandlerFunc {
 				"selection": deps.Selection != nil,
 				"chat":      deps.Chat != nil,
 				"mcp":       deps.MCP != nil,
+				"kernel":    deps.Kernel != nil,
 			},
 		}
 
@@ -226,11 +305,28 @@ func handleSession(deps Deps) gin.HandlerFunc {
 		if deps.Chat != nil {
 			body["providers"] = deps.Chat.Providers().Describe()
 		}
+		if deps.Kernel != nil {
+			// The workspace path is reported so the SPA can say where a file it lists
+			// actually lives, which is the difference between "somewhere in the pod"
+			// and "on storage that survives the pod".
+			body["kernel"] = gin.H{
+				"workspace": deps.Kernel.Workspace(),
+				"kernel":    deps.Kernel.KernelName(),
+			}
+		}
 
 		c.JSON(http.StatusOK, body)
 	}
 }
 
+// @Summary		The aspect hierarchy as a tree
+// @Tags			ontology
+// @Produce		json
+// @Security		Bearer
+// @Success		200	{object}	map[string]interface{}
+// @Failure		401	{object}	map[string]string
+// @Failure		502	{object}	map[string]string	"the device repository could not be read"
+// @Router			/ontology/aspect-tree [get]
 func handleAspectTree(repo *ontology.Repository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		snap, err := repo.Snapshot(c.Request.Context(), auth.Bearer(c))
@@ -242,6 +338,14 @@ func handleAspectTree(repo *ontology.Repository) gin.HandlerFunc {
 	}
 }
 
+// @Summary		Aspect nodes, flat
+// @Tags			ontology
+// @Produce		json
+// @Security		Bearer
+// @Success		200	{object}	map[string][]models.AspectNode
+// @Failure		401	{object}	map[string]string
+// @Failure		502	{object}	map[string]string
+// @Router			/ontology/aspect-nodes [get]
 func handleAspectNodes(repo *ontology.Repository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		snap, err := repo.Snapshot(c.Request.Context(), auth.Bearer(c))
@@ -256,6 +360,19 @@ func handleAspectNodes(repo *ontology.Repository) gin.HandlerFunc {
 // handleFunctions serves measuring functions by default. Semantic selection
 // (§5.2) resolves an intent to a measuring function, so that is the list the
 // SPA needs first; ?rdf_type=controlling asks for the other.
+//
+//	@Summary		Functions, measuring by default
+//	@Description	Semantic selection resolves an intent to a measuring function (SPEC
+//	@Description	§5.2), so that is the default list.
+//	@Tags			ontology
+//	@Produce		json
+//	@Security		Bearer
+//	@Param			rdf_type	query		string	false	"which functions to return"	Enums(measuring, controlling, all)	default(measuring)
+//	@Success		200			{object}	map[string]interface{}
+//	@Failure		400			{object}	map[string]string	"unknown rdf_type"
+//	@Failure		401			{object}	map[string]string
+//	@Failure		502			{object}	map[string]string
+//	@Router			/ontology/functions [get]
 func handleFunctions(repo *ontology.Repository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		snap, err := repo.Snapshot(c.Request.Context(), auth.Bearer(c))
@@ -279,6 +396,14 @@ func handleFunctions(repo *ontology.Repository) gin.HandlerFunc {
 	}
 }
 
+// @Summary		Characteristics
+// @Tags			ontology
+// @Produce		json
+// @Security		Bearer
+// @Success		200	{object}	map[string]interface{}
+// @Failure		401	{object}	map[string]string
+// @Failure		502	{object}	map[string]string
+// @Router			/ontology/characteristics [get]
 func handleCharacteristics(repo *ontology.Repository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		snap, err := repo.Snapshot(c.Request.Context(), auth.Bearer(c))
@@ -290,6 +415,14 @@ func handleCharacteristics(repo *ontology.Repository) gin.HandlerFunc {
 	}
 }
 
+// @Summary		Concepts
+// @Tags			ontology
+// @Produce		json
+// @Security		Bearer
+// @Success		200	{object}	map[string][]models.Concept
+// @Failure		401	{object}	map[string]string
+// @Failure		502	{object}	map[string]string
+// @Router			/ontology/concepts [get]
 func handleConcepts(repo *ontology.Repository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		snap, err := repo.Snapshot(c.Request.Context(), auth.Bearer(c))
@@ -301,6 +434,14 @@ func handleConcepts(repo *ontology.Repository) gin.HandlerFunc {
 	}
 }
 
+// @Summary		Device classes
+// @Tags			ontology
+// @Produce		json
+// @Security		Bearer
+// @Success		200	{object}	map[string][]models.DeviceClass
+// @Failure		401	{object}	map[string]string
+// @Failure		502	{object}	map[string]string
+// @Router			/ontology/device-classes [get]
 func handleDeviceClasses(repo *ontology.Repository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		snap, err := repo.Snapshot(c.Request.Context(), auth.Bearer(c))
@@ -312,6 +453,20 @@ func handleDeviceClasses(repo *ontology.Repository) gin.HandlerFunc {
 	}
 }
 
+// @Summary		List the caller's devices
+// @Description	Read on behalf of the caller, never as a service account (SPEC D5), so
+// @Description	this returns exactly what that user may see.
+// @Tags			devices
+// @Produce		json
+// @Security		Bearer
+// @Param			search	query		string	false	"free-text filter"
+// @Param			limit	query		int		false	"page size"
+// @Param			offset	query		int		false	"page offset"
+// @Success		200		{object}	map[string]interface{}
+// @Failure		400		{object}	map[string]string	"unparseable list options"
+// @Failure		401		{object}	map[string]string
+// @Failure		502		{object}	map[string]string
+// @Router			/devices [get]
 func handleListDevices(svc *devices.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		opts, err := devices.ParseListOptions(c.Request.URL.Query())
@@ -329,6 +484,17 @@ func handleListDevices(svc *devices.Service) gin.HandlerFunc {
 	}
 }
 
+// @Summary		One device
+// @Tags			devices
+// @Produce		json
+// @Security		Bearer
+// @Param			id	path		string	true	"device id"
+// @Success		200	{object}	models.Device
+// @Failure		401	{object}	map[string]string
+// @Failure		403	{object}	map[string]string	"the platform refused this user the device"
+// @Failure		404	{object}	map[string]string
+// @Failure		502	{object}	map[string]string
+// @Router			/devices/{id} [get]
 func handleGetDevice(svc *devices.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		device, err := svc.Get(auth.Bearer(c), c.Param("id"), models.Read)

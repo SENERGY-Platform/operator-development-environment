@@ -266,6 +266,44 @@ func TestHealthNeedsNoToken(t *testing.T) {
 	}
 }
 
+// The platform's developer-swagger-api collects this without a developer token,
+// so it has to answer an anonymous caller — and it has to be the specification
+// this build actually serves, not a stub.
+func TestDocServesTheSpecificationWithoutAToken(t *testing.T) {
+	h := newHarness(t)
+	w := h.get(t, "/doc")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var spec struct {
+		Swagger string `json:"swagger"`
+		Info    struct {
+			Title string `json:"title"`
+		} `json:"info"`
+		Paths map[string]map[string]any `json:"paths"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("the body is not valid json: %v", err)
+	}
+	if spec.Swagger == "" {
+		t.Errorf("no swagger version in the specification")
+	}
+	if spec.Info.Title == "" {
+		t.Errorf("no title in the specification")
+	}
+	// A route from each milestone, so that a generation run which silently covered
+	// only part of pkg/api fails here rather than shipping a partial specification.
+	for _, path := range []string{
+		"/health", "/session", "/devices/{id}", "/selection", "/profiles",
+		"/chat/sessions", "/kernel", "/admin/limits", "/ws",
+	} {
+		if _, found := spec.Paths[path]; !found {
+			t.Errorf("%s is missing from the specification", path)
+		}
+	}
+}
+
 func TestOntologyRoutesRejectAnAnonymousCaller(t *testing.T) {
 	h := newHarness(t)
 	for _, path := range []string{

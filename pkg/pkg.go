@@ -34,6 +34,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/database"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/identifiers"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/mcp"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
@@ -86,7 +87,7 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 	// what that costs.
 	var db *database.DB
 	if config.PostgresUrl != "" {
-		db, err = database.Connect(ctx, config.PostgresUrl, database.Options{
+		db, err = database.Connect(ctx, config.PostgresUrl.Value(), database.Options{
 			MaxConns: int32(config.PostgresMaxConns),
 		})
 		if err != nil {
@@ -170,8 +171,17 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 	}
 	deps.Selection = resolver
 
+	// M4 before M3, because the tool surface is built inside startM3 and run_code
+	// needs the kernel service to exist by then. A deployment without a
+	// jupyterhub_url gets a nil service and the tool stays declared-but-unavailable.
+	kernelService, err := startM4(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	deps.Kernel = kernelService
+
 	// M3: providers, the tool surface, the dispatcher, chat and the admin controls.
-	if err := startM3(ctx, config, &deps, db, ontologyRepo, deviceService, timeseriesClient); err != nil {
+	if err := startM3(ctx, config, &deps, db, ontologyRepo, deviceService, timeseriesClient, kernelService); err != nil {
 		return nil, err
 	}
 
@@ -240,6 +250,7 @@ func startM3(
 	ontologyRepo *ontology.Repository,
 	deviceService *devices.Service,
 	timeseriesClient *timeseries.Client,
+	kernelService *kernel.Service,
 ) error {
 	pricing := llm.NewPricing(config.LlmCurrency, modelPrices(config.LlmPricing)...)
 
@@ -278,11 +289,14 @@ func startM3(
 		Profiler:           profilerOrNil(deps.Profiler),
 		Selection:          selectionOrNil(deps.Selection),
 		SelectionSink:      sink,
+		Kernel:             kernelOrNil(kernelService),
 		ProfileTokenBudget: int(config.ToolProfileTokenBudget),
 		ProfileMaxProfiles: int(config.ToolProfileMaxProfiles),
 		QuickTokenBudget:   int(config.ToolQuickTokenBudget),
 		PreviewMaxPoints:   int(config.ToolPreviewMaxPoints),
 		DeviceLimit:        config.SelectionDeviceLimit,
+
+		RunCodeMaxOutputBytes: int(config.ToolRunCodeMaxOutputBytes),
 	})
 	if err != nil {
 		return err
@@ -338,6 +352,117 @@ func startM3(
 	return nil
 }
 
+// startM4 wires the execution backend (§5.6).
+//
+// It returns a nil service when no jupyterhub_url is configured, which is the
+// same degradation the profiler and the LLM surface already do: the deployment
+// serves everything below the missing dependency and says what is absent.
+//
+// What it does not do is degrade a *misconfigured* Hub. A credential that cannot
+// spawn is a deployment fault, and the milestone was built on the decision that
+// it fails startup rather than surfacing as a 403 on someone's first cell.
+func startM4(ctx context.Context, config configuration.Config) (*kernel.Service, error) {
+	if config.JupyterhubUrl == "" {
+		slog.Warn("no jupyterhub_url configured: the kernel routes are not served and " +
+			"run_code has no executor")
+		return nil, nil
+	}
+	if config.JupyterhubToken == "" {
+		return nil, errors.New("config: jupyterhub_token is required when jupyterhub_url is set")
+	}
+
+	parse := func(name, value string) (time.Duration, error) {
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return 0, fmt.Errorf("config: %s: %w", name, err)
+		}
+		return parsed, nil
+	}
+
+	spawnTimeout, err := parse("jupyterhub_spawn_timeout", config.JupyterhubSpawnTimeout)
+	if err != nil {
+		return nil, err
+	}
+	requestTimeout, err := parse("jupyterhub_request_timeout", config.JupyterhubRequestTimeout)
+	if err != nil {
+		return nil, err
+	}
+	executeTimeout, err := parse("jupyterhub_execute_timeout", config.JupyterhubExecuteTimeout)
+	if err != nil {
+		return nil, err
+	}
+	keepalive, err := parse("jupyterhub_keepalive_interval", config.JupyterhubKeepaliveInterval)
+	if err != nil {
+		return nil, err
+	}
+	idleTimeout, err := parse("jupyterhub_idle_timeout", config.JupyterhubIdleTimeout)
+	if err != nil {
+		return nil, err
+	}
+	tokenTTL, err := parse("jupyterhub_token_ttl", config.JupyterhubTokenTtl)
+	if err != nil {
+		return nil, err
+	}
+
+	service, err := kernel.New(kernel.Options{
+		BaseURL:           config.JupyterhubUrl,
+		Token:             config.JupyterhubToken.Value(),
+		UsernameClaim:     config.JupyterhubUsernameClaim,
+		KernelName:        config.JupyterhubKernel,
+		Profile:           config.JupyterhubProfile,
+		WorkspacePath:     config.JupyterhubWorkspacePath,
+		SpawnTimeout:      spawnTimeout,
+		RequestTimeout:    requestTimeout,
+		ExecuteTimeout:    executeTimeout,
+		KeepaliveInterval: keepalive,
+		IdleTimeout:       idleTimeout,
+		TokenTTL:          tokenTTL,
+		MaxOutputBytes:    int(config.JupyterhubMaxOutputBytes),
+		// Handed to the pod so code there reaches the same platform ODE is
+		// configured against, rather than the developer restating the URLs.
+		Environment: kernelEnvironment(config),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// The scope check is a real request, so it is bounded: an unreachable Hub must
+	// fail startup with its own error rather than hanging the process.
+	checkCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
+	identity, warnings, err := service.CheckScopes(checkCtx)
+	if err != nil {
+		service.Close()
+		return nil, err
+	}
+	for _, warning := range warnings {
+		slog.Warn("jupyterhub credential: " + warning)
+	}
+
+	service.Start(ctx)
+	slog.Info("kernel surface ready",
+		"hub", config.JupyterhubUrl,
+		"credential", identity.Name,
+		"kind", identity.Kind,
+		"kernel", service.KernelName(),
+		"workspace", service.Workspace())
+	return service, nil
+}
+
+// kernelEnvironment is what a pod is told about the platform, beside the
+// developer's own token. Only URLs: no credential of ODE's own ever goes in.
+func kernelEnvironment(config configuration.Config) map[string]string {
+	environment := map[string]string{}
+	if config.DeviceRepoUrl != "" {
+		environment["SENERGY_DEVICE_REPO_URL"] = config.DeviceRepoUrl
+	}
+	if config.TimescaleWrapperUrl != "" {
+		environment["SENERGY_TIMESCALE_URL"] = config.TimescaleWrapperUrl
+	}
+	return environment
+}
+
 // buildProviders registers every configured provider, in the order §5.7 lists
 // them. The first registered is the default a session gets.
 func buildProviders(
@@ -350,7 +475,7 @@ func buildProviders(
 
 	if config.AnthropicApiKey != "" {
 		provider, err := llm.NewAnthropicProvider("anthropic", llm.AnthropicOptions{
-			APIKey:           config.AnthropicApiKey,
+			APIKey:           config.AnthropicApiKey.Value(),
 			BaseURL:          config.AnthropicBaseUrl,
 			Models:           config.AnthropicModels,
 			MaxTokens:        int(config.LlmMaxTokens),
@@ -367,7 +492,7 @@ func buildProviders(
 
 	if config.OpenaiApiKey != "" {
 		provider, err := llm.NewOpenAIProvider("openai", llm.OpenAIOptions{
-			APIKey:    config.OpenaiApiKey,
+			APIKey:    config.OpenaiApiKey.Value(),
 			BaseURL:   config.OpenaiBaseUrl,
 			Models:    config.OpenaiModels,
 			MaxTokens: int(config.LlmMaxTokens),
@@ -382,7 +507,7 @@ func buildProviders(
 
 	if config.CompatibleBaseUrl != "" {
 		provider, err := llm.NewOpenAICompatibleProvider(config.CompatibleName, llm.OpenAIOptions{
-			APIKey:    config.CompatibleApiKey,
+			APIKey:    config.CompatibleApiKey.Value(),
 			BaseURL:   config.CompatibleBaseUrl,
 			Models:    config.CompatibleModels,
 			MaxTokens: int(config.LlmMaxTokens),
@@ -486,6 +611,13 @@ func selectionOrNil(resolver *selection.Resolver) tools.Selection {
 	return resolver
 }
 
+func kernelOrNil(service *kernel.Service) tools.Kernel {
+	if service == nil {
+		return nil
+	}
+	return service
+}
+
 // rankerOrNil hands the resolver an interface that is actually nil when there is
 // no profiler.
 //
@@ -514,6 +646,10 @@ func validate(config configuration.Config) error {
 	}
 	if config.TimescaleWrapperUrl == "" {
 		slog.Warn("no timescale_wrapper_url configured: the timeseries and profiler routes are not served")
+	}
+	if config.JupyterhubUrl == "" {
+		slog.Warn("no jupyterhub_url configured: a developer cannot run code, and run_code " +
+			"is declared but not callable (SPEC §5.6, M4)")
 	}
 	if config.PostgresUrl == "" {
 		// Not a warning about tidiness. §3.3's per-user spend cap is computed from

@@ -81,10 +81,19 @@ type Limits struct {
 	// MaxConcurrentSessions caps live chat sessions per user.
 	MaxConcurrentSessions *int `json:"max_concurrent_sessions,omitempty"`
 
-	// Kernel and Ray caps are §3.3 fields whose enforcement points arrive with
-	// M4 and M7. They are carried and stored now so the settings surface and the
-	// schema do not change when those milestones land, and they are reported as
-	// declared-not-enforced rather than presented as active policy.
+	// Kernel and Ray caps are §3.3 fields ODE stores and does not enforce, and the
+	// two have different reasons now that M4 exists.
+	//
+	// The Ray cap waits for M7, as before. The kernel caps turned out not to be
+	// ODE's to apply at all: a pod's resources are set by KubeSpawner at spawn
+	// time, and the Hub API's spawn body selects a *profile* rather than carrying
+	// arbitrary overrides. A per-user memory limit therefore lives in the profile
+	// (values-ode-singleuser.yaml in rancher-2-defs) or in a Hub-side spawn hook —
+	// somewhere ODE cannot reach from here.
+	//
+	// They stay on the type because §3.3 lists them and an admin will look for
+	// them, and DeclaredFields is what stops an administrator setting one and
+	// assuming it binds.
 	KernelCPUDefault *string `json:"kernel_cpu_default,omitempty"`
 	KernelCPUMax     *string `json:"kernel_cpu_max,omitempty"`
 	KernelMemDefault *string `json:"kernel_mem_default,omitempty"`
@@ -103,11 +112,13 @@ func EnforcedFields() []string {
 }
 
 func DeclaredFields() map[string]string {
+	const kernelResources = "set on the KubeSpawner profile, not by ODE — " +
+		"see deploy/jupyterhub/README.md"
 	return map[string]string{
-		"kernel_cpu_default":      "M4 (kernel/, SPEC §5.6)",
-		"kernel_cpu_max":          "M4 (kernel/, SPEC §5.6)",
-		"kernel_mem_default":      "M4 (kernel/, SPEC §5.6)",
-		"kernel_mem_max":          "M4 (kernel/, SPEC §5.6)",
+		"kernel_cpu_default":      kernelResources,
+		"kernel_cpu_max":          kernelResources,
+		"kernel_mem_default":      kernelResources,
+		"kernel_mem_max":          kernelResources,
 		"max_concurrent_ray_jobs": "M7 (experiments/, SPEC §5.12)",
 	}
 }

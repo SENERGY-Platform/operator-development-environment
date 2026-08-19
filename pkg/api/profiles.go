@@ -57,6 +57,17 @@ const (
 	maxDeviceLimit = 200
 )
 
+// @Summary		Where a device has data
+// @Description	A thin passthrough to the timescale-wrapper, read as the caller.
+// @Tags			timeseries
+// @Produce		json
+// @Security		Bearer
+// @Param			device_id	query		string	true	"device id"
+// @Success		200			{object}	map[string]interface{}
+// @Failure		400			{object}	map[string]string	"device_id is missing"
+// @Failure		401			{object}	map[string]string
+// @Failure		502			{object}	map[string]string	"the timescale-wrapper could not be read"
+// @Router			/timeseries/availability [get]
 func handleAvailability(reader TimeseriesReader) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		deviceID := strings.TrimSpace(c.Query("device_id"))
@@ -73,6 +84,16 @@ func handleAvailability(reader TimeseriesReader) gin.HandlerFunc {
 	}
 }
 
+// @Summary		How much data devices hold
+// @Tags			timeseries
+// @Produce		json
+// @Security		Bearer
+// @Param			device_ids	query		string	true	"comma-separated device ids"
+// @Success			200			{object}	map[string][]timeseries.Usage
+// @Failure		400			{object}	map[string]string	"device_ids is missing"
+// @Failure		401			{object}	map[string]string
+// @Failure		502			{object}	map[string]string
+// @Router			/timeseries/usage [get]
 func handleUsage(reader TimeseriesReader) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		deviceIDs := splitCSV(c.Query("device_ids"))
@@ -92,6 +113,25 @@ func handleUsage(reader TimeseriesReader) gin.HandlerFunc {
 // handleQuickProfiles is the M1a surface: candidate series ranked from metadata
 // alone (§5.2, §5.4.2). The response carries the read counts, so "no value was
 // read" is verifiable from the answer rather than a claim about the code.
+//
+// @Summary		Candidate series, ranked from metadata alone
+// @Description	The M1a surface (§5.2, §5.4.2): every candidate series behind the
+// @Description	matching devices, ranked without reading a single value. The response
+// @Description	carries the read counts, so "no value was read" is verifiable from the
+// @Description	answer rather than a claim about the code.
+// @Tags			profiler
+// @Produce		json
+// @Security		Bearer
+// @Param			search					query		string	false	"free-text device filter"
+// @Param			limit					query		int		false	"how many devices to expand; the ceiling is 200"	default(10)
+// @Param			from					query		string	false	"window start, RFC3339"
+// @Param			to						query		string	false	"window end, RFC3339"
+// @Param			include_unqueryable		query		bool	false	"keep series the platform cannot serve"
+// @Success		200						{object}	map[string]interface{}
+// @Failure		400						{object}	map[string]string	"an unparseable window, limit or flag"
+// @Failure		401						{object}	map[string]string
+// @Failure		502						{object}	map[string]string
+// @Router			/quick-profiles [get]
 func handleQuickProfiles(deviceService *devices.Service, prof *profiler.Profiler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		window, err := parseWindowQuery(c)
@@ -207,6 +247,24 @@ type sessionBody struct {
 
 // handleCreateProfiles computes the full profile of every variable of one
 // service — the batched unit of work of D19, not one variable at a time.
+//
+// @Summary		Profile every variable of one service
+// @Description	The batched unit of work of D19: one request profiles all variables of
+// @Description	a service rather than one variable at a time. The raw pass reads the
+// @Description	smaller of the configured window bounds, anchored at the most recent
+// @Description	data (D25).
+// @Tags			profiler
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			request	body		profileRequestBody	true	"which service to profile, and over which windows"
+// @Success		200		{object}	map[string]interface{}
+// @Failure		400		{object}	map[string]string	"a malformed body or window"
+// @Failure		401		{object}	map[string]string
+// @Failure		403		{object}	map[string]string	"the platform refused this user the device"
+// @Failure		404		{object}	map[string]string	"no such device or service"
+// @Failure		502		{object}	map[string]string
+// @Router			/profiles [post]
 func handleCreateProfiles(deviceService *devices.Service, prof *profiler.Profiler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body profileRequestBody
@@ -229,6 +287,15 @@ func handleCreateProfiles(deviceService *devices.Service, prof *profiler.Profile
 	}
 }
 
+// @Summary		One computed profile
+// @Tags			profiler
+// @Produce		json
+// @Security		Bearer
+// @Param			id	path		string	true	"profile id"
+// @Success		200	{object}	profiler.SeriesProfile
+// @Failure		401	{object}	map[string]string
+// @Failure		404	{object}	map[string]string
+// @Router			/profiles/{id} [get]
 func handleGetProfile(prof *profiler.Profiler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		profile, found := prof.Profile(c.Param("id"))
@@ -243,6 +310,20 @@ func handleGetProfile(prof *profiler.Profiler) gin.HandlerFunc {
 // handleProjection serves the one model-facing view of a profile (D26). It is
 // exposed over HTTP because the SPA needs to show the developer exactly what the
 // LLM will be given, before M3 wires a model up to it.
+//
+// @Summary		The model-facing view of a profile
+// @Description	The one projection an LLM is ever given (D26), exposed over HTTP so the
+// @Description	SPA can show the developer exactly what the model will see.
+// @Tags			profiler
+// @Produce		json
+// @Security		Bearer
+// @Param			id				path		string	true	"profile id"
+// @Param			token_budget	query		int		false	"cap the projection; 0 or absent takes the configured budget"
+// @Success		200				{object}	map[string]interface{}
+// @Failure		400				{object}	map[string]string	"token_budget is not a non-negative integer"
+// @Failure		401				{object}	map[string]string
+// @Failure		404				{object}	map[string]string
+// @Router			/profiles/{id}/projection [get]
 func handleProjection(prof *profiler.Profiler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		profile, found := prof.Profile(c.Param("id"))
@@ -266,6 +347,24 @@ func handleProjection(prof *profiler.Profiler) gin.HandlerFunc {
 // handleSessions is the paginated session resource of D27. The profile carries
 // statistics and a handful of exemplars; the full list lives here, because two
 // years of washing-machine cycles is thousands of entries.
+//
+// @Summary		A profile's detected sessions, paginated
+// @Description	The paginated resource of D27. A profile carries session statistics and
+// @Description	a handful of exemplars; the full list is here, because two years of
+// @Description	washing-machine cycles is thousands of entries.
+// @Tags			profiler
+// @Produce		json
+// @Security		Bearer
+// @Param			id		path		string	true	"profile id"
+// @Param			cursor	query		string	false	"continuation cursor from a previous page"
+// @Param			from	query		string	false	"only sessions at or after this RFC3339 timestamp"
+// @Param			to		query		string	false	"only sessions before this RFC3339 timestamp"
+// @Param			limit	query		int		false	"page size"
+// @Success		200		{object}	profiler.SessionPage
+// @Failure		400		{object}	map[string]string	"an unparseable timestamp or limit"
+// @Failure		401		{object}	map[string]string
+// @Failure		404		{object}	map[string]string
+// @Router			/profiles/{id}/sessions [get]
 func handleSessions(prof *profiler.Profiler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		query := profiler.SessionQuery{Cursor: strings.TrimSpace(c.Query("cursor"))}
@@ -318,6 +417,24 @@ type overrideBody struct {
 // among the operations with no tool at all, so when the LLM surface lands in M3
 // it must not gain one: a model that can confirm its own inferred unit has
 // confirmed nothing.
+//
+// @Summary		Confirm or correct a derived field
+// @Description	Appends a developer confirmation to the override overlay (D21), which
+// @Description	§5.4.3 calls an empirical record. A developer action only: §5.8 lists
+// @Description	writing an override among the operations with no LLM tool at all,
+// @Description	because a model that can confirm its own inferred unit has confirmed
+// @Description	nothing.
+// @Tags			profiler
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			id		path		string			true	"profile id"
+// @Param			request	body		overrideBody	true	"which field, and what the developer says it is"
+// @Success		201		{object}	profiler.ProfileOverride
+// @Failure		400		{object}	map[string]string	"a malformed body, or a field that cannot be overridden"
+// @Failure		401		{object}	map[string]string
+// @Failure		404		{object}	map[string]string
+// @Router			/profiles/{id}/overrides [post]
 func handleCreateOverride(prof *profiler.Profiler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		profile, found := prof.Profile(c.Param("id"))

@@ -136,9 +136,15 @@ func (s *PostgresOverrides) Append(override ProfileOverride) (ProfileOverride, e
 // A read failure returns no overrides rather than an error, because the interface
 // has nowhere to put one. That is the wrong direction to fail in and it is worth
 // being explicit about: the profile would then be served without a confirmation
-// the developer had made. It is logged at error so it is visible rather than
-// silent, and the alternative — failing every profile read when the database
-// blips — would be worse for the developer in front of it.
+// the developer had made. It is logged so it is visible rather than silent, and
+// the alternative — failing every profile read when the database blips — would be
+// worse for the developer in front of it.
+//
+// The levels below follow the log guidelines rather than the severity of the
+// consequence: ERROR pages someone over Slack, so it is reserved for the one case
+// here that does not heal on its own — a stored override that cannot be decoded,
+// which stays broken until a human looks at the row. A query or a scan that fails
+// because the database is briefly unreachable is WARN: the next read recovers.
 func (s *PostgresOverrides) ForSeries(ref SeriesRef) []ProfileOverride {
 	ctx, cancel := context.WithTimeout(context.Background(), overrideQueryTimeout)
 	defer cancel()
@@ -149,7 +155,7 @@ func (s *PostgresOverrides) ForSeries(ref SeriesRef) []ProfileOverride {
 		ORDER BY created_at`,
 		ref.DeviceID, ref.ServiceID, ref.VariablePath)
 	if err != nil {
-		slog.Error("could not read the profile override overlay; the profile will be served "+
+		slog.Warn("could not read the profile override overlay; the profile will be served "+
 			"without the developer's confirmations", "series", ref.String(), "error", err)
 		return []ProfileOverride{}
 	}
@@ -159,7 +165,7 @@ func (s *PostgresOverrides) ForSeries(ref SeriesRef) []ProfileOverride {
 	for rows.Next() {
 		var encoded []byte
 		if err := rows.Scan(&encoded); err != nil {
-			slog.Error("could not scan a profile override", "series", ref.String(), "error", err)
+			slog.Warn("could not scan a profile override", "series", ref.String(), "error", err)
 			return out
 		}
 		var override ProfileOverride
@@ -170,7 +176,7 @@ func (s *PostgresOverrides) ForSeries(ref SeriesRef) []ProfileOverride {
 		out = append(out, override)
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("reading the profile override overlay failed part-way",
+		slog.Warn("reading the profile override overlay failed part-way",
 			"series", ref.String(), "error", err)
 	}
 	return out

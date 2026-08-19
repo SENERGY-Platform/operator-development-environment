@@ -19,12 +19,14 @@ package configuration
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/SENERGY-Platform/go-service-base/config-hdl/types"
 )
 
 type ConfigStruct struct {
@@ -75,32 +77,33 @@ type ConfigStruct struct {
 	// Empty runs the in-memory stores instead, which validate() warns about — a
 	// spend cap computed in memory resets on every restart.
 	//
-	// Marked secret so HandleEnvironmentVars does not print the DSN, which carries
-	// a password.
-	PostgresUrl      string `json:"postgres_url" config:"secret"`
-	PostgresMaxConns int64  `json:"postgres_max_conns"`
+	// types.Secret so the DSN, which carries a password, cannot reach a log or a
+	// JSON body by accident: its String and MarshalJSON return a random
+	// placeholder, and the real value is only available through Value().
+	PostgresUrl      types.Secret `json:"postgres_url"`
+	PostgresMaxConns int64        `json:"postgres_max_conns"`
 
 	// LLM providers (§5.7, D7). Each is configured independently and any subset may
 	// be present; a deployment with none serves M0–M2 and no chat.
 	//
 	// The API keys are the central key of D8, and are accounted per platform user
 	// rather than issued per user.
-	AnthropicApiKey  string   `json:"anthropic_api_key" config:"secret"`
-	AnthropicBaseUrl string   `json:"anthropic_base_url"`
-	AnthropicModels  []string `json:"anthropic_models"`
+	AnthropicApiKey  types.Secret `json:"anthropic_api_key"`
+	AnthropicBaseUrl string       `json:"anthropic_base_url"`
+	AnthropicModels  []string     `json:"anthropic_models"`
 
-	OpenaiApiKey  string   `json:"openai_api_key" config:"secret"`
-	OpenaiBaseUrl string   `json:"openai_base_url"`
-	OpenaiModels  []string `json:"openai_models"`
+	OpenaiApiKey  types.Secret `json:"openai_api_key"`
+	OpenaiBaseUrl string       `json:"openai_base_url"`
+	OpenaiModels  []string     `json:"openai_models"`
 
 	// The OpenAI-compatible row of §5.7: vLLM, Ollama, Azure. CompatibleTools says
 	// whether that server implements function calling, because ODE cannot find out
 	// without trying and a wrong assumption means tools that silently never fire.
-	CompatibleName    string   `json:"compatible_name"`
-	CompatibleBaseUrl string   `json:"compatible_base_url"`
-	CompatibleApiKey  string   `json:"compatible_api_key" config:"secret"`
-	CompatibleModels  []string `json:"compatible_models"`
-	CompatibleTools   bool     `json:"compatible_tools"`
+	CompatibleName    string       `json:"compatible_name"`
+	CompatibleBaseUrl string       `json:"compatible_base_url"`
+	CompatibleApiKey  types.Secret `json:"compatible_api_key"`
+	CompatibleModels  []string     `json:"compatible_models"`
+	CompatibleTools   bool         `json:"compatible_tools"`
 
 	// The local `claude` CLI, for development without an API key. Reaches ODE's
 	// tools over MCP, so PublicUrl has to be set for its tools to work.
@@ -143,6 +146,58 @@ type ConfigStruct struct {
 	// would hold a session's turn slot and a goroutine indefinitely.
 	ChatExchangeTimeout string `json:"chat_exchange_timeout"`
 
+	// JupyterHub (§5.6, M4). Empty jupyterhub_url leaves the kernel routes
+	// unserved, in the same way an absent timescale-wrapper leaves the profiler
+	// unserved: a deployment without an execution backend still serves everything
+	// below it.
+	//
+	// JupyterhubToken is ODE's service credential. It has to hold the scopes
+	// kernel.RequiredScopes lists, and startup fails if it does not - a partial
+	// grant is a deployment fault, and discovering it on a developer's first
+	// spawn would be worse than not starting.
+	JupyterhubUrl           string       `json:"jupyterhub_url"`
+	JupyterhubToken         types.Secret `json:"jupyterhub_token"`
+	JupyterhubUsernameClaim string       `json:"jupyterhub_username_claim"`
+	JupyterhubKernel        string       `json:"jupyterhub_kernel"`
+
+	// JupyterhubProfile is the KubeSpawner profile slug ODE spawns with. Empty
+	// takes the deployment's default. §5.6 item 1 ships the ODE image as an
+	// additional profile rather than replacing the default one, so a deployment
+	// that has built it has to name it here or developers get the plain image.
+	JupyterhubProfile string `json:"jupyterhub_profile"`
+
+	// JupyterhubWorkspacePath is the kernel's working directory, relative to the
+	// singleuser server's root. It must be inside the mounted PVC: only what is
+	// written there survives the pod being culled and respawned, which is what
+	// M4's "a file written in one session is present in the next" rests on.
+	//
+	// §5.11 suggests ~/ode/{repo}. The deployed chart mounts the PVC at
+	// ~/data rather than over the whole home, so the default is under that.
+	JupyterhubWorkspacePath string `json:"jupyterhub_workspace_path"`
+
+	// JupyterhubSpawnTimeout bounds a cold start, which §5.6 puts at 10-60s.
+	// JupyterhubExecuteTimeout bounds one cell; a cell that exceeds it is
+	// interrupted rather than abandoned, so the kernel stays usable.
+	JupyterhubSpawnTimeout   string `json:"jupyterhub_spawn_timeout"`
+	JupyterhubRequestTimeout string `json:"jupyterhub_request_timeout"`
+	JupyterhubExecuteTimeout string `json:"jupyterhub_execute_timeout"`
+
+	// JupyterhubKeepaliveInterval must stay comfortably below the cluster's cull
+	// timeout, or a developer thinking between cells loses their kernel state
+	// (§5.6 item 3). JupyterhubIdleTimeout is the other side of the same control:
+	// ODE stops keeping a pod alive once it has heard nothing for this long.
+	JupyterhubKeepaliveInterval string `json:"jupyterhub_keepalive_interval"`
+	JupyterhubIdleTimeout       string `json:"jupyterhub_idle_timeout"`
+	// JupyterhubTokenTtl is how long the per-user token ODE mints for a pod lives.
+	JupyterhubTokenTtl string `json:"jupyterhub_token_ttl"`
+	// JupyterhubMaxOutputBytes bounds what one execution streams to the developer.
+	JupyterhubMaxOutputBytes int64 `json:"jupyterhub_max_output_bytes"`
+
+	// ToolRunCodeMaxOutputBytes is the far smaller bound on what run_code returns
+	// to a model. Separate from the figure above because they answer to different
+	// costs: a developer's console is bounded by memory, a tool result by context.
+	ToolRunCodeMaxOutputBytes int64 `json:"tool_run_code_max_output_bytes"`
+
 	// Tool surface bounds (§5.8). ToolProfileTokenBudget caps the projection handed
 	// to the model (D26); ToolPreviewMaxPoints caps a tier-L2 preview, which is what
 	// keeps "downsampled preview" from becoming a raw series read (§4).
@@ -175,15 +230,16 @@ type Config = *ConfigStruct
 func Load(location string) (config Config, err error) {
 	file, err := os.Open(location)
 	if err != nil {
-		log.Println("error on config load: ", err)
-		return config, err
+		// Wrapped and returned rather than logged here: Load runs before main has
+		// installed the structured logger, and a package that both logs and returns
+		// an error gets the failure reported twice.
+		return config, fmt.Errorf("opening the configuration file %q: %w", location, err)
 	}
 	defer file.Close()
 	decoder := json.NewDecoder(file)
 	err = decoder.Decode(&config)
 	if err != nil {
-		log.Println("invalid config json: ", err)
-		return config, err
+		return config, fmt.Errorf("decoding the configuration file %q: %w", location, err)
 	}
 	HandleEnvironmentVars(config)
 	applyDefaults(config)
@@ -264,6 +320,39 @@ func applyDefaults(config Config) {
 	if config.ClaudeCliBinary == "" {
 		config.ClaudeCliBinary = "claude"
 	}
+	if config.JupyterhubUsernameClaim == "" {
+		config.JupyterhubUsernameClaim = "preferred_username"
+	}
+	if config.JupyterhubKernel == "" {
+		config.JupyterhubKernel = "python3"
+	}
+	if config.JupyterhubWorkspacePath == "" {
+		config.JupyterhubWorkspacePath = "data/ode"
+	}
+	if config.JupyterhubSpawnTimeout == "" {
+		config.JupyterhubSpawnTimeout = "180s"
+	}
+	if config.JupyterhubRequestTimeout == "" {
+		config.JupyterhubRequestTimeout = "30s"
+	}
+	if config.JupyterhubExecuteTimeout == "" {
+		config.JupyterhubExecuteTimeout = "10m"
+	}
+	if config.JupyterhubKeepaliveInterval == "" {
+		config.JupyterhubKeepaliveInterval = "5m"
+	}
+	if config.JupyterhubIdleTimeout == "" {
+		config.JupyterhubIdleTimeout = "2h"
+	}
+	if config.JupyterhubTokenTtl == "" {
+		config.JupyterhubTokenTtl = "12h"
+	}
+	if config.JupyterhubMaxOutputBytes <= 0 {
+		config.JupyterhubMaxOutputBytes = 1048576
+	}
+	if config.ToolRunCodeMaxOutputBytes <= 0 {
+		config.ToolRunCodeMaxOutputBytes = 8000
+	}
 }
 
 var camel = regexp.MustCompile("(^[^A-Z]*|[A-Z]*)([A-Z][^A-Z]+|$)")
@@ -287,14 +376,19 @@ func HandleEnvironmentVars(config Config) {
 	configType := configValue.Type()
 	for index := 0; index < configType.NumField(); index++ {
 		fieldName := configType.Field(index).Name
-		fieldConfig := configType.Field(index).Tag.Get("config")
 		envName := fieldNameToEnvName(fieldName)
 		envValue := os.Getenv(envName)
 		if envValue == "" {
 			continue
 		}
-		if !strings.Contains(fieldConfig, "secret") {
-			fmt.Println("use environment variable: ", envName, " = ", envValue)
+		isSecret := configType.Field(index).Type == reflect.TypeOf(types.Secret(""))
+		// The value is withheld for a secret field. The type already masks it on the
+		// way out, but there is no reason to hand it to the log in the first place.
+		if isSecret {
+			slog.Info("configuration overridden from the environment", "variable", envName)
+		} else {
+			slog.Info("configuration overridden from the environment", "variable", envName,
+				"value", envValue)
 		}
 		field := configValue.FieldByName(fieldName)
 		switch field.Kind() {

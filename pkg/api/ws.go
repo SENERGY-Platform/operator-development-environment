@@ -32,6 +32,7 @@ import (
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 )
@@ -65,6 +66,11 @@ const (
 	msgChatAttach  = "chat_attach"
 	msgChatCancel  = "chat_cancel"
 
+	// The kernel (§5.6). Bound to the connection rather than detached: cancelling
+	// one interrupts the cell, because a developer who closed the tab is not
+	// waiting for it.
+	msgKernelExecute = "kernel_execute"
+
 	// Message types, server to client.
 	msgAccepted  = "accepted"
 	msgResult    = "result"
@@ -89,6 +95,10 @@ const (
 	// outboundBuffer is how many results may queue for a slow client before the
 	// connection is dropped. Results are large, so this is deliberately shallow.
 	outboundBuffer = 8
+	// kernelRefreshTimeout bounds installing a refreshed platform token in a live
+	// kernel. Short: it is one hidden cell, and if the kernel is too busy to take
+	// it the next execution will push it anyway.
+	kernelRefreshTimeout = 30 * time.Second
 	// concurrentPerConnection caps the operations one connection may run at once.
 	// Each one reads from the platform, and a client that fires twenty profiles
 	// would otherwise turn into twenty concurrent platform reads.
@@ -110,6 +120,22 @@ type wsOutbound struct {
 }
 
 // handleWebSocket upgrades and serves one connection.
+//
+// @Summary		The streaming surface
+// @Description	One WebSocket carries everything that streams: profiler operations, the
+// @Description	chat exchange of §5.7, and kernel execution (§5.6). There is one
+// @Description	streaming mechanism rather than two, because an exchange can run for
+// @Description	minutes inside a single tool call and the connection has to survive it.
+// @Description
+// @Description	Not behind the usual middleware: a browser cannot set an Authorization
+// @Description	header on a handshake, so the token arrives in the Sec-WebSocket-Protocol
+// @Description	subprotocol or the query, and this handler enforces the realm role
+// @Description	itself. Everything else about §3.1 is unchanged.
+// @Tags			streaming
+// @Param			token	query	string	false	"bearer token, when the subprotocol cannot carry it"
+// @Success		101		"switching protocols"
+// @Failure		401		{object}	map[string]string	"no token, or the required realm role is missing"
+// @Router			/ws [get]
 func handleWebSocket(cfg Config, deps Deps) gin.HandlerFunc {
 	upgrader := websocket.Upgrader{
 		HandshakeTimeout: 15 * time.Second,
@@ -159,6 +185,7 @@ func handleWebSocket(cfg Config, deps Deps) gin.HandlerFunc {
 			profiler:      deps.Profiler,
 			selection:     deps.Selection,
 			chat:          deps.Chat,
+			kernel:        deps.Kernel,
 			outbound:      make(chan wsOutbound, outboundBuffer),
 			running:       map[string]context.CancelFunc{},
 			slots:         make(chan struct{}, concurrentPerConnection),
@@ -259,6 +286,7 @@ type wsSession struct {
 	profiler      *profiler.Profiler
 	selection     *selection.Resolver
 	chat          *chat.Engine
+	kernel        *kernel.Service
 
 	outbound chan wsOutbound
 
@@ -349,6 +377,8 @@ func (s *wsSession) readLoop(ctx context.Context) {
 			s.replaceToken(message)
 		case msgQuickProfiles, msgProfile, msgSelection:
 			s.start(ctx, message)
+		case msgKernelExecute:
+			s.startExecution(ctx, message)
 		case msgChatSend, msgChatConfirm, msgChatAttach:
 			s.startExchange(ctx, message)
 		case msgChatCancel:
@@ -535,6 +565,9 @@ func (s *wsSession) replaceToken(message wsInbound) {
 	}
 
 	s.token.replace(token)
+	// §5.6 item 4: spawn-time environment variables cannot be refreshed, so a
+	// live kernel is told about the new token by executing into it.
+	s.refreshKernelToken(token)
 	slog.Debug("websocket token replaced", "user", s.user)
 	s.send(wsOutbound{Type: msgResult, ID: message.ID, Payload: map[string]any{"authenticated": true}})
 }

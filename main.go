@@ -19,37 +19,62 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
+	structlogger "github.com/SENERGY-Platform/go-service-base/struct-logger"
+
 	"github.com/SENERGY-Platform/operator-development-environment/pkg"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/configuration"
 )
+
+// The two attributes the log guidelines require on every record, alongside the
+// level slog writes itself. struct-logger attaches them to the handler, so they
+// cannot be forgotten at a call site.
+const (
+	logOrganization = "github.com/SENERGY-Platform"
+	logProject      = "operator-development-environment"
+)
+
+// newLogger builds ODE's logger. JSON to stdout, timestamps in UTC — a cluster
+// collects stdout and correlates across pods in different zones.
+func newLogger(level string) *slog.Logger {
+	return structlogger.New(structlogger.Config{
+		Handler: structlogger.JsonHandlerSelector,
+		Level:   level,
+		TimeUtc: true,
+		AddMeta: true,
+	}, os.Stdout, logOrganization, logProject)
+}
 
 func main() {
 	configLocation := flag.String("config", "config.json", "configuration file")
 	flag.Parse()
 
+	// Installed before the configuration is read, so that loading it — which reports
+	// every environment override — logs like everything else. The level is not known
+	// until the file has been read, so debug is enabled in a second step below.
+	slog.SetDefault(newLogger(structlogger.LevelInfo))
+
 	config, err := configuration.Load(*configLocation)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("the configuration could not be loaded", "error", err)
+		os.Exit(1)
 	}
 
-	level := slog.LevelInfo
 	if config.Debug {
-		level = slog.LevelDebug
+		slog.SetDefault(newLogger(structlogger.LevelDebug))
 	}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	wg, err := pkg.Start(ctx, config)
 	if err != nil {
 		cancel()
-		log.Fatal(err)
+		slog.Error("ODE could not start", "error", err)
+		os.Exit(1)
 	}
 
 	go func() {

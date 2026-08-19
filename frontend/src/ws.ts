@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { ChatEvent } from "./api";
+import type { ChatEvent, KernelEvent } from "./api";
 import { token } from "./keycloak";
 
 /**
@@ -72,7 +72,7 @@ interface Pending {
  * whole turn before showing any of it, or resolving on the first event.
  */
 interface Stream {
-  onEvent: (event: ChatEvent) => void;
+  onEvent: (event: unknown) => void;
   resolve: (value: StreamOutcome) => void;
   reject: (reason: unknown) => void;
 }
@@ -239,7 +239,7 @@ export class OdeSocket {
       handlers.signal?.addEventListener("abort", onAbort, { once: true });
 
       this.streams.set(id, {
-        onEvent: handlers.onEvent,
+        onEvent: handlers.onEvent as (event: unknown) => void,
         resolve: (value) => {
           finish();
           resolve(value);
@@ -252,6 +252,61 @@ export class OdeSocket {
 
       try {
         socket.send(JSON.stringify({ type, id, payload }));
+      } catch (e: unknown) {
+        finish();
+        reject(e);
+      }
+    });
+  }
+
+  /**
+   * execute runs one cell in the developer's own pod and streams what it produces.
+   *
+   * The cancellation rule here is the opposite of the chat one above, deliberately.
+   * Aborting a chat stream detaches a view and leaves the turn running, because an
+   * answer nobody is watching is still worth having. Aborting an execution
+   * *interrupts the cell*, because a training loop nobody is watching is only
+   * costing the developer their own pod.
+   *
+   * The promise is not settled by the abort. The backend keeps relaying after the
+   * interrupt, so the final event — status `interrupted` — still arrives, and the
+   * developer sees how their cell ended rather than the UI simply going quiet.
+   */
+  async execute(
+    code: string,
+    handlers: { onEvent: (event: KernelEvent) => void; signal?: AbortSignal },
+  ): Promise<StreamOutcome> {
+    const id = `k${++this.sequence}`;
+    const socket = await this.ready();
+
+    return new Promise<StreamOutcome>((resolve, reject) => {
+      if (handlers.signal?.aborted) {
+        reject(new Cancelled());
+        return;
+      }
+
+      const finish = () => {
+        this.streams.delete(id);
+        handlers.signal?.removeEventListener("abort", onAbort);
+      };
+      // Interrupt only. The `done` frame that follows is what settles this.
+      const onAbort = () => this.trySend({ type: "cancel", id });
+      handlers.signal?.addEventListener("abort", onAbort, { once: true });
+
+      this.streams.set(id, {
+        onEvent: handlers.onEvent as (event: unknown) => void,
+        resolve: (value) => {
+          finish();
+          resolve(value);
+        },
+        reject: (reason) => {
+          finish();
+          reject(reason);
+        },
+      });
+
+      try {
+        socket.send(JSON.stringify({ type: "kernel_execute", id, payload: { code } }));
       } catch (e: unknown) {
         finish();
         reject(e);
@@ -427,7 +482,7 @@ export class OdeSocket {
     if (stream) {
       switch (frame.type) {
         case "event":
-          stream.onEvent(frame.payload as ChatEvent);
+          stream.onEvent(frame.payload);
           return;
         case "done":
           stream.resolve((frame.payload as StreamOutcome) ?? { attached: true });

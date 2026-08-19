@@ -1,0 +1,193 @@
+name: 'Singleuser Image'
+
+# The JupyterHub singleuser image of SPEC §5.6 item 1, built from
+# deploy/singleuser and published to ghcr.io.
+#
+# Deliberately not on every push to master, which is what prod.yml does for the
+# backend image. Nothing in this image comes from ODE's Go code, so rebuilding it
+# on a Go change would spend ten minutes and a gigabyte to publish an identical
+# image under a new tag. It rebuilds when its own files change, and on demand —
+# which is the trigger D15 actually names: "version alongside Operator Lib,
+# rebuild on release".
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'deploy/singleuser/**'
+      - '.github/workflows/singleuser.yml'
+  workflow_dispatch:
+    inputs:
+      operator_lib_ref:
+        description: 'Operator Lib ref to build against: a branch, tag or commit.'
+        required: false
+        default: 'master'
+      version:
+        description: 'An extra, human-chosen tag such as v0.1.0. Optional; the date-sha tag is published either way.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# One build at a time. Two concurrent runs would race to publish tags derived
+# from different commits, and the loser would be the one someone had already
+# pasted into the KubeSpawner profile.
+concurrency:
+  group: singleuser-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Operator Lib is installed from a git ref, so two builds of the same
+      # Dockerfile can contain different code. Resolving the ref to a commit here
+      # and passing that as the build argument makes the build reproducible and
+      # lets an image be traced back to the exact Operator Lib inside it.
+      #
+      # The commit rather than the package version, because the two disagree:
+      # master is tagged v1.3.4 while the installed operator_lib.__version__
+      # still reads v1.3.3. The commit is the only unambiguous answer to "what is
+      # in this image".
+      - name: Resolve the Operator Lib commit
+        id: operator_lib
+        run: |
+          ref='${{ inputs.operator_lib_ref }}'
+          ref="${ref:-master}"
+          url=https://github.com/SENERGY-Platform/analytics-operator-lib-python
+
+          # Annotated tags resolve to two lines; the ^{} one is the commit.
+          sha=$(git ls-remote "$url" "$ref" "refs/tags/$ref^{}" | tail -n1 | cut -f1)
+          if [ -z "$sha" ]; then
+            # Not a branch or a tag. A commit given directly is the only other
+            # thing it can be, and the build fails legibly if it is not.
+            sha="$ref"
+          fi
+
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Operator Lib $ref is $sha"
+
+      - name: Compute the tags
+        id: tags
+        run: |
+          # Immutable and legible, in the style the base image itself uses. There
+          # is deliberately no `latest`: the KubeSpawner profile pins an exact
+          # tag, and publishing a moving one invites somebody to pin that instead
+          # and have a developer's environment change under them mid-project.
+          primary="$(date -u +%Y-%m-%d)-$(git rev-parse --short HEAD)"
+          tags="ghcr.io/senergy-platform/ode-singleuser:${primary}"
+
+          version='${{ inputs.version }}'
+          if [ -n "$version" ]; then
+            tags="${tags}"$'\n'"ghcr.io/senergy-platform/ode-singleuser:${version}"
+          fi
+
+          echo "primary=$primary" >> "$GITHUB_OUTPUT"
+          {
+            echo 'list<<EOF'
+            echo "$tags"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Built and loaded first, tested, and only then pushed. The order is the
+      # point: this image is what every developer's pod runs, and Operator Lib is
+      # installed from a moving branch, so a broken publish would break spawning
+      # for everyone with no obvious cause. The push below is a cache hit.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./deploy/singleuser
+          load: true
+          tags: ode-singleuser:candidate
+          build-args: |
+            OPERATOR_LIB_REF=${{ steps.operator_lib.outputs.sha }}
+          # The same labels as the push below, so the image that is tested is the
+          # image that is published rather than one rebuilt around it. The layers
+          # would be identical either way; the metadata would not.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.primary }}
+            net.senergy.ode.operator-lib-ref=${{ steps.operator_lib.outputs.ref }}
+            net.senergy.ode.operator-lib-sha=${{ steps.operator_lib.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check the image does what the deployment needs
+        run: |
+          set -euo pipefail
+
+          # Everything §5.6 item 1 asks the image to carry.
+          docker run --rm ode-singleuser:candidate python -c "
+          import mlflow, numpy, pandas, ray, scipy
+          import operator_lib
+          print('operator_lib', getattr(operator_lib, '__version__', 'unknown'))
+          print('ray', ray.__version__, '| mlflow', mlflow.__version__, '| pandas', pandas.__version__)
+          "
+
+          # The helper this repository ships into the image, and the error it is
+          # supposed to give outside an ODE session.
+          docker run --rm ode-singleuser:candidate python -c "
+          import ode_platform
+          assert ode_platform.workspace() == 'data/ode', ode_platform.workspace()
+          try:
+              ode_platform.token()
+          except RuntimeError as e:
+              assert 'SENERGY_TOKEN' in str(e), e
+          else:
+              raise AssertionError('token() returned without a token in the environment')
+          print('ode_platform ok')
+          "
+
+          # ODE starts the kernelspec named by jupyterhub_kernel, which defaults
+          # to python3. An image whose kernel is named anything else fails every
+          # spawn, at the point where it looks like ODE's fault.
+          docker run --rm ode-singleuser:candidate jupyter kernelspec list | tee /dev/stderr | grep -qE '^\s+python3\s'
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.CR_PAT }}
+
+      - name: Push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./deploy/singleuser
+          push: true
+          tags: ${{ steps.tags.outputs.list }}
+          build-args: |
+            OPERATOR_LIB_REF=${{ steps.operator_lib.outputs.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.primary }}
+            net.senergy.ode.operator-lib-ref=${{ steps.operator_lib.outputs.ref }}
+            net.senergy.ode.operator-lib-sha=${{ steps.operator_lib.outputs.sha }}
+          cache-from: type=gha
+
+      - name: Summary
+        run: |
+          {
+            echo "### Singleuser image"
+            echo
+            echo '```'
+            echo '${{ steps.tags.outputs.list }}'
+            echo '```'
+            echo
+            echo "Operator Lib \`${{ steps.operator_lib.outputs.ref }}\` at \`${{ steps.operator_lib.outputs.sha }}\`."
+            echo
+            echo "To roll it out, set the tag in \`values-ode-singleuser.yaml\` in rancher-2-defs,"
+            echo "list that file in the jupyterhub Argo CD application, and set"
+            echo "\`jupyterhub_profile: \"ode\"\` in ODE's own configuration."
+          } >> "$GITHUB_STEP_SUMMARY"

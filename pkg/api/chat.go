@@ -46,6 +46,21 @@ import (
 // liveness and cancellation semantics, and the WebSocket already had the harder half
 // working.
 
+// @Summary		Open a chat session
+// @Description	An absent exposure_tier means L0, which §3.2 makes the default rather
+// @Description	than a choice the caller has to remember. A tier above the admin
+// @Description	ceiling for this user is refused, not silently clamped.
+// @Tags			chat
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			request	body		object{title=string,provider=string,model=string,exposure_tier=string}	false	"all fields optional; an empty body opens a default session"
+// @Success		201		{object}	chat.Session
+// @Failure		400		{object}	map[string]string	"an unknown tier, or a malformed body"
+// @Failure		401		{object}	map[string]string
+// @Failure		403		{object}	map[string]string	"the provider, model or tier is not permitted for this user"
+// @Failure		429		{object}	map[string]interface{}	"a limit from §3.3 was reached; the payload says which and when it resets"
+// @Router			/chat/sessions [post]
 func handleCreateChatSession(engine *chat.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
@@ -83,6 +98,14 @@ func handleCreateChatSession(engine *chat.Engine) gin.HandlerFunc {
 	}
 }
 
+// @Summary		The caller's chat sessions
+// @Tags			chat
+// @Produce		json
+// @Security		Bearer
+// @Param			limit	query		int	false	"maximum sessions; absent returns the store's default"
+// @Success		200		{object}	map[string][]chat.Session
+// @Failure		401		{object}	map[string]string
+// @Router			/chat/sessions [get]
 func handleListChatSessions(engine *chat.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		limit := 0
@@ -99,6 +122,15 @@ func handleListChatSessions(engine *chat.Engine) gin.HandlerFunc {
 	}
 }
 
+// @Summary		One session, its messages and anything awaiting confirmation
+// @Tags			chat
+// @Produce		json
+// @Security		Bearer
+// @Param			id	path		string	true	"session id"
+// @Success		200	{object}	map[string]interface{}
+// @Failure		401	{object}	map[string]string
+// @Failure		404	{object}	map[string]string	"no such session, or it belongs to another user"
+// @Router			/chat/sessions/{id} [get]
 func handleGetChatSession(engine *chat.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := auth.MustFromContext(c)
@@ -130,6 +162,15 @@ func handleGetChatSession(engine *chat.Engine) gin.HandlerFunc {
 	}
 }
 
+// @Summary		Delete a session
+// @Tags			chat
+// @Produce		json
+// @Security		Bearer
+// @Param			id	path	string	true	"session id"
+// @Success		204	"deleted"
+// @Failure		401	{object}	map[string]string
+// @Failure		404	{object}	map[string]string
+// @Router			/chat/sessions/{id} [delete]
 func handleDeleteChatSession(engine *chat.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := auth.MustFromContext(c)
@@ -143,6 +184,23 @@ func handleDeleteChatSession(engine *chat.Engine) gin.HandlerFunc {
 
 // handleSetTier is the developer's control from §3.2. There is deliberately no
 // LLM tool for this (tools.Denied), so this route is the only way it changes.
+//
+// @Summary		Set a session's exposure tier
+// @Description	The developer's control from §3.2. No LLM tool exists for this
+// @Description	(tools.Denied), so this route is the only way a tier changes. Every
+// @Description	change is written to the session's audit trail.
+// @Tags			chat
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			id		path		string					true	"session id"
+// @Param			request	body		object{exposure_tier=string}	true	"the tier to move to, e.g. L1"
+// @Success		200		{object}	chat.Session
+// @Failure		400		{object}	map[string]string	"an unknown tier"
+// @Failure		401		{object}	map[string]string
+// @Failure		403		{object}	map[string]string	"above the admin ceiling for this user"
+// @Failure		404		{object}	map[string]string
+// @Router			/chat/sessions/{id}/tier [put]
 func handleSetTier(engine *chat.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
@@ -168,6 +226,16 @@ func handleSetTier(engine *chat.Engine) gin.HandlerFunc {
 	}
 }
 
+// @Summary		A session's exposure-tier history
+// @Description	§3.2 requires every tier change to be logged. This is that record.
+// @Tags			chat
+// @Produce		json
+// @Security		Bearer
+// @Param			id	path		string	true	"session id"
+// @Success		200	{object}	map[string]interface{}
+// @Failure		401	{object}	map[string]string
+// @Failure		404	{object}	map[string]string
+// @Router			/chat/sessions/{id}/tier-changes [get]
 func handleTierAudit(engine *chat.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := auth.MustFromContext(c)
@@ -185,6 +253,19 @@ func handleTierAudit(engine *chat.Engine) gin.HandlerFunc {
 // Served to the SPA and to anyone reading the paper: every declared tool with its
 // minimum tier and confirmation requirement, which of them this deployment can
 // actually run, and the list of capabilities that deliberately have no tool.
+//
+// @Summary		The tool surface of §5.8
+// @Description	Every declared tool with its minimum tier and confirmation
+// @Description	requirement, which of them this deployment can actually run, what each
+// @Description	tier exposes, and the capabilities that deliberately have no tool.
+// @Description	Readable by any developer: knowing what the assistant may do is not
+// @Description	privileged information.
+// @Tags			chat
+// @Produce		json
+// @Security		Bearer
+// @Success		200	{object}	map[string]interface{}
+// @Failure		401	{object}	map[string]string
+// @Router			/llm/tools [get]
 func handleListTools(engine *chat.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		registry := engine.Registry()
@@ -225,6 +306,16 @@ func handleListTools(engine *chat.Engine) gin.HandlerFunc {
 
 // handleListProviders serves the configured providers and their capabilities,
 // including any that came up degraded (§5.7).
+//
+// @Summary		The configured LLM providers
+// @Description	Each provider with its models and capabilities, including any that came
+// @Description	up degraded (§5.7), plus which one is the default.
+// @Tags			chat
+// @Produce		json
+// @Security		Bearer
+// @Success		200	{object}	map[string]interface{}
+// @Failure		401	{object}	map[string]string
+// @Router			/llm/providers [get]
 func handleListProviders(engine *chat.Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{

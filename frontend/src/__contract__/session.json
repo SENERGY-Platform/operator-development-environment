@@ -3,6 +3,7 @@
   "exposure_tier": "L0",
   "features": {
     "chat": true,
+    "kernel": false,
     "mcp": false,
     "profiler": false,
     "selection": false
@@ -34,9 +35,9 @@
   ],
   "spend": {
     "cost": 0.0021,
-    "from": "2026-07-19T07:52:54.992526096Z",
+    "from": "2026-07-19T12:06:05.034715742Z",
     "requests": 2,
-    "to": "2026-08-18T07:52:54.99252689Z",
+    "to": "2026-08-18T12:06:05.034716067Z",
     "tokens": 173
   },
   "user_id": "user-123",

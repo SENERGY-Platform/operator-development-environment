@@ -17,8 +17,13 @@
 package configuration
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -94,6 +99,29 @@ func TestDefaultsFillTheUnsetOperationalValues(t *testing.T) {
 	}
 	if config.ProfilerLocalTimezone != "Europe/Berlin" {
 		t.Errorf("ProfilerLocalTimezone = %q, want Europe/Berlin", config.ProfilerLocalTimezone)
+	}
+	// SPEC §5.6. The username claim and the workspace path are the two that would
+	// be wrong quietly: a spawn addressed to the subject 404s for every developer,
+	// and a workspace outside the mounted PVC loses every file the first time the
+	// pod is culled.
+	if config.JupyterhubUsernameClaim != "preferred_username" {
+		t.Errorf("JupyterhubUsernameClaim = %q, want preferred_username",
+			config.JupyterhubUsernameClaim)
+	}
+	if config.JupyterhubWorkspacePath != "data/ode" {
+		t.Errorf("JupyterhubWorkspacePath = %q, want data/ode", config.JupyterhubWorkspacePath)
+	}
+	if config.JupyterhubKernel != "python3" {
+		t.Errorf("JupyterhubKernel = %q, want python3", config.JupyterhubKernel)
+	}
+	// The keep-alive has to stay well below the cluster's cull timeout, and ODE
+	// has to let go long before a pod is worth keeping for someone who left.
+	if config.JupyterhubKeepaliveInterval != "5m" || config.JupyterhubIdleTimeout != "2h" {
+		t.Errorf("keepalive = %q, idle timeout = %q, want 5m and 2h",
+			config.JupyterhubKeepaliveInterval, config.JupyterhubIdleTimeout)
+	}
+	if config.ToolRunCodeMaxOutputBytes != 8000 {
+		t.Errorf("ToolRunCodeMaxOutputBytes = %d, want 8000", config.ToolRunCodeMaxOutputBytes)
 	}
 }
 
@@ -189,5 +217,75 @@ func TestFieldNameToEnvName(t *testing.T) {
 		if got := fieldNameToEnvName(field); got != want {
 			t.Errorf("fieldNameToEnvName(%q) = %q, want %q", field, got, want)
 		}
+	}
+}
+
+// The point of types.Secret is that a careless print cannot leak the value. This
+// pins the property rather than the type: a future refactor that swaps the field
+// back to a plain string would compile and would fail here.
+func TestSecretsDoNotSurviveBeingPrintedOrMarshalled(t *testing.T) {
+	const key = "sk-ant-do-not-log-me"
+
+	config, err := Load(writeConfig(t, `{"api_port":"8080","anthropic_api_key":"`+key+`",
+		"postgres_url":"postgres://user:hunter2@localhost/ode",
+		"jupyterhub_token":"`+key+`","compatible_api_key":"`+key+`","openai_api_key":"`+key+`"}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// The real value is still reachable where it is needed.
+	if config.AnthropicApiKey.Value() != key {
+		t.Fatalf("AnthropicApiKey.Value() = %q, want %q", config.AnthropicApiKey.Value(), key)
+	}
+
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, rendering := range []string{
+		fmt.Sprintf("%v", config),
+		fmt.Sprintf("%+v", *config),
+		fmt.Sprint(config.AnthropicApiKey),
+		string(encoded),
+	} {
+		if strings.Contains(rendering, key) {
+			t.Errorf("an api key reached a rendering of the config: %s", rendering)
+		}
+		if strings.Contains(rendering, "hunter2") {
+			t.Errorf("the postgres password reached a rendering of the config: %s", rendering)
+		}
+	}
+}
+
+// An environment override of a secret must not put the value in the log either,
+// which is the one thing the old config:"secret" tag did and the type now does.
+func TestAnEnvironmentSuppliedSecretIsNotLogged(t *testing.T) {
+	const token = "hub-token-do-not-log-me"
+	t.Setenv("JUPYTERHUB_TOKEN", token)
+	t.Setenv("JUPYTERHUB_URL", "http://hub.example.org")
+
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
+	defer slog.SetDefault(previous)
+
+	config, err := Load(writeConfig(t, `{"api_port":"8080"}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if config.JupyterhubToken.Value() != token {
+		t.Fatalf("JupyterhubToken.Value() = %q, want %q", config.JupyterhubToken.Value(), token)
+	}
+
+	if strings.Contains(logged.String(), token) {
+		t.Errorf("the token reached the log: %s", logged.String())
+	}
+	// The non-secret override beside it is still reported in full, so the trace
+	// stays useful.
+	if !strings.Contains(logged.String(), "http://hub.example.org") {
+		t.Errorf("a non-secret override was not logged: %s", logged.String())
+	}
+	if !strings.Contains(logged.String(), "JUPYTERHUB_TOKEN") {
+		t.Errorf("the secret override was not reported at all: %s", logged.String())
 	}
 }

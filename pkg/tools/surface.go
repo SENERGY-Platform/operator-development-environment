@@ -24,6 +24,7 @@ import (
 	"github.com/SENERGY-Platform/models/go/models"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
@@ -66,6 +67,14 @@ type (
 	SelectionSink interface {
 		PutProposedSelection(ctx context.Context, sessionID string, proposal ProposedSelection) error
 	}
+
+	// Kernel runs code in the developer's own pod (§5.6). Narrowed to the two
+	// methods run_code needs: the token identifies the developer, so nothing here
+	// takes a user.
+	Kernel interface {
+		Run(ctx context.Context, bearer, code string) (<-chan kernel.ExecutionEvent, error)
+		Workspace() string
+	}
 )
 
 // Deps carries the services the executors need. Every field is optional: a
@@ -79,6 +88,7 @@ type Deps struct {
 	Profiler      Profiler
 	Selection     Selection
 	SelectionSink SelectionSink
+	Kernel        Kernel
 
 	// ProfileTokenBudget bounds the projection handed to the model (D26). The
 	// stored profile is unbounded; what an LLM reads never is.
@@ -99,6 +109,10 @@ type Deps struct {
 	// DeviceLimit bounds how many devices a tool expands, matching the ceiling the
 	// HTTP surface already applies.
 	DeviceLimit int64
+	// RunCodeMaxOutputBytes bounds what one execution returns to the model. Far
+	// smaller than the cap on the developer's own console: the two answer to
+	// different costs, memory there and context here.
+	RunCodeMaxOutputBytes int
 }
 
 const (
@@ -107,6 +121,7 @@ const (
 	defaultQuickTokenBudget   = 4000
 	defaultPreviewMaxPoints   = 500
 	defaultDeviceLimit        = 10
+	defaultRunCodeMaxOutput   = 8000
 )
 
 // NewSurface builds the registry of §5.8 against the services that are present.
@@ -131,6 +146,9 @@ func NewSurface(deps Deps) (*Registry, error) {
 	}
 	if deps.DeviceLimit <= 0 {
 		deps.DeviceLimit = defaultDeviceLimit
+	}
+	if deps.RunCodeMaxOutputBytes <= 0 {
+		deps.RunCodeMaxOutputBytes = defaultRunCodeMaxOutput
 	}
 
 	s := &surface{deps: deps}
@@ -410,13 +428,27 @@ func NewSurface(deps Deps) (*Registry, error) {
 			Unavailable: "M6 (repo/, SPEC §5.11)",
 		},
 		Definition{
-			Name:        "run_code",
-			Description: "Execute Python in the developer's own kernel.",
-			Effect:      "execute in kernel",
-			MinTier:     L0,
-			Confirm:     true,
-			Schema:      json.RawMessage(`{"type": "object", "properties": {"code": {"type": "string"}}}`),
-			Unavailable: "M4 (kernel/, SPEC §5.6)",
+			Name: "run_code",
+			Description: "Execute Python in the developer's own JupyterHub pod, with their own " +
+				"platform authorisation and nothing more. The developer must confirm each run. " +
+				"The kernel keeps its state between calls, so variables defined in one call are " +
+				"there in the next, and its working directory is a workspace on persistent " +
+				"storage — a file written there is still there in a later session. The " +
+				"developer's platform access token is in the SENERGY_TOKEN environment variable. " +
+				"Output is capped: print what you need rather than everything, and write large " +
+				"results to a file in the workspace instead of to stdout.",
+			Effect:  "execute in kernel",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "code": {"type": "string", "description": "Python source. Runs as one cell, so the value of the last expression comes back as the result."}
+			  },
+			  "required": ["code"]
+			}`),
+			Unavailable: "M4 — requires jupyterhub_url",
+			executor:    ifPresent(s.runCode, deps.Kernel),
 		},
 		Definition{
 			Name:        "launch_experiment",

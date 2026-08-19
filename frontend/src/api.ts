@@ -79,12 +79,15 @@ export interface Session {
     selection: boolean;
     chat: boolean;
     mcp: boolean;
+    kernel: boolean;
   };
   /** Present only when the LLM surface is configured (M3). */
   max_exposure_tier?: Tier;
   limits?: Limits;
   spend?: Spend;
   providers?: ProviderInfo[];
+  /** Present only when an execution backend is configured (M4). */
+  kernel?: { workspace: string; kernel: string };
 }
 
 export interface AspectTreeNode {
@@ -1103,6 +1106,56 @@ export interface ChatEvent {
   error?: string;
 }
 
+// --- M4: the developer's own pod (SPEC §5.6) ---
+
+export interface KernelStatus {
+  user: string;
+  server_ready: boolean;
+  /** "spawn" or "stop" while the Hub is working. A cold start takes up to a minute. */
+  server_pending?: string;
+  server_url?: string;
+  started?: string;
+  last_activity?: string;
+  kernel_id?: string;
+  kernel_name?: string;
+  profile?: string;
+  busy: boolean;
+  /** The persistent working directory. Only what is written here survives the pod. */
+  workspace: string;
+  workspace_ready: boolean;
+}
+
+export interface KernelFile {
+  name: string;
+  path: string;
+  type: string;
+  size: number;
+  last_modified: string | null;
+}
+
+export interface KernelFiles {
+  workspace: string;
+  path: string;
+  entries: KernelFile[];
+}
+
+/** One thing a running cell produced. The stream always ends with a `done`. */
+export interface KernelEvent {
+  kind: "stream" | "execute_result" | "display_data" | "error" | "status" | "execute_input" | "done";
+  stream?: string;
+  text?: string;
+  /** Renderings other than text/plain, keyed by media type. */
+  mime?: Record<string, string>;
+  execution_count?: number;
+  error_name?: string;
+  error_value?: string;
+  traceback?: string[];
+  state?: string;
+  status?: string;
+  truncated?: boolean;
+  error?: string;
+}
+
 export const api = {
   session: () => get<Session>("/session"),
   aspectTree: () => get<{ tree: AspectTreeNode[] }>("/ontology/aspect-tree"),
@@ -1177,4 +1230,20 @@ export const api = {
     ),
   adminToolCalls: (params: { sub?: string; period?: string; limit?: number } = {}) =>
     get<{ tool_calls: ToolCallRecord[]; period: string }>(`/admin/tool-calls${query(params)}`),
+
+  // --- M4 ---
+
+  /** Reads what is running. Starts nothing, so it is safe to poll. */
+  kernelStatus: () => get<KernelStatus>("/kernel"),
+  /**
+   * Spawns the pod, starts a kernel and installs the platform token. Called on
+   * pane open: a cold start is up to a minute, and §5.6 wants that spent while
+   * the developer is still reading rather than after they press run.
+   */
+  kernelEnsure: () => post<KernelStatus>("/kernel", {}),
+  kernelRestart: () => post<KernelStatus>("/kernel/restart", {}),
+  kernelInterrupt: () => post<{ interrupted: boolean }>("/kernel/interrupt", {}),
+  /** Ends the kernel. The pod stays: it is the developer's, and their files are on it. */
+  kernelShutdown: () => del("/kernel"),
+  kernelFiles: (path?: string) => get<KernelFiles>(`/kernel/files${query({ path })}`),
 };

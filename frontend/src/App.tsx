@@ -25,12 +25,13 @@ import {
 } from "./api";
 import { AdminView } from "./admin";
 import { ChatView } from "./chat";
+import { KernelView } from "./kernel";
 import { logout } from "./keycloak";
 import { ProfilerView } from "./profiler";
 import { SelectionView } from "./selection";
 import { Centered, Muted, Pane, describe, useLoad } from "./ui";
 
-type View = "chat" | "ontology" | "selection" | "profiler" | "admin";
+type View = "chat" | "ontology" | "selection" | "profiler" | "kernel" | "admin";
 
 /**
  * The shell through M3. The pane layout of SPEC §2 (Chat / Data / Exploration /
@@ -71,6 +72,7 @@ export default function App() {
       )}
       {current === "selection" && <SelectionView />}
       {current === "profiler" && <ProfilerView />}
+      {current === "kernel" && <KernelView />}
       {current === "admin" && <AdminView />}
     </div>
   );
@@ -93,6 +95,7 @@ function Header({
   tabs.push(["ontology", "Ontology"]);
   if (session.features.selection) tabs.push(["selection", "Selection"]);
   if (session.features.profiler) tabs.push(["profiler", "Profiler"]);
+  if (session.features.kernel) tabs.push(["kernel", "Kernel"]);
   // §3.3's settings surface, gated on the realm role at the router as well; hiding
   // the tab is a courtesy, not the enforcement.
   if (session.is_admin && session.features.chat) tabs.push(["admin", "Settings"]);

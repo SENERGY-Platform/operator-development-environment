@@ -20,6 +20,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+      # pkg/api imports the generated specification, which is not committed.
+      - name: Generate the openapi specification
+        run: go generate ./...
       - name: Vet
         run: go vet ./...
       - name: Test

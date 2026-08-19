@@ -16,6 +16,8 @@ import type {
   AvailabilityList,
   ChatSession,
   ChatSessionDetail,
+  KernelFiles,
+  KernelStatus,
   LLMProfileView,
   LimitsSurface,
   ProfileOverrideRecord,
@@ -42,6 +44,8 @@ import chatSession from "./chat_session.json";
 import chatSessions from "./chat_sessions.json";
 import chatTierChanges from "./chat_tier_changes.json";
 import chatTools from "./chat_tools.json";
+import kernelFiles from "./kernel_files.json";
+import kernelStatus from "./kernel_status.json";
 import override from "./override.json";
 import profile from "./profile.json";
 import profiles from "./profiles.json";
@@ -84,4 +88,9 @@ export const checked = {
   adminUsage: adminUsage.usage satisfies Loose<UsageRecord[]>,
   adminSpend: adminUsage.spend satisfies Loose<Spend>,
   adminToolCalls: adminToolCalls.tool_calls satisfies Loose<ToolCallRecord[]>,
+
+  // M4. Emitted by the API test harness against the in-memory JupyterHub of
+  // pkg/kernel/kerneltest, for the same reason as the M3 files above.
+  kernelStatus: kernelStatus satisfies Loose<KernelStatus>,
+  kernelFiles: kernelFiles satisfies Loose<KernelFiles>,
 };

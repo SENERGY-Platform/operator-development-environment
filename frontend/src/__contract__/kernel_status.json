@@ -1,0 +1,10 @@
+{
+  "busy": false,
+  "kernel_id": "kernel-1",
+  "kernel_name": "python3",
+  "server_ready": true,
+  "server_url": "/user/dev/",
+  "user": "dev",
+  "workspace": "data/ode",
+  "workspace_ready": true
+}

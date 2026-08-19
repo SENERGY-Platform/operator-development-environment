@@ -145,6 +145,23 @@ func trimAll(values []string) []string {
 // handleSelection resolves one intent. The response carries its own read counts,
 // so "this happened entirely at tier L0" is checkable from the answer rather than
 // being a claim about the code (§3.2).
+// @Summary		Resolve a semantic intent to concrete series
+// @Description	The M2 surface (§5.2). A free-text intent is matched lexically against
+// @Description	the ontology; explicit id lists bypass the matcher, which is how a
+// @Description	caller that has already read the ontology asks for exactly what it
+// @Description	means. Candidates are ranked by QuickProfile unless rank is false, and
+// @Description	ranking needs a timescale-wrapper — without one the resolution still
+// @Description	returns series, just unordered.
+// @Tags			selection
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			request	body		selectionBody	true	"the intent, or the ids to resolve"
+// @Success		200		{object}	map[string]interface{}
+// @Failure		400		{object}	map[string]string	"a malformed body, or neither an intent nor any ids"
+// @Failure		401		{object}	map[string]string
+// @Failure		502		{object}	map[string]string	"the device repository could not be read"
+// @Router			/selection [post]
 func handleSelection(resolver *selection.Resolver) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body selectionBody

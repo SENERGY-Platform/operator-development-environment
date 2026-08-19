@@ -1,0 +1,450 @@
+/*
+ * Copyright 2026 InfAI (CC SES)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Package kerneltest is a JupyterHub and one singleuser server, in memory.
+//
+// It lives outside the test files because two packages need it: pkg/kernel tests
+// the client against it, and pkg/api tests the routes and the WebSocket relay
+// that sit on top. Duplicating a few hundred lines of protocol double in both
+// would guarantee the two drift.
+package kerneltest
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+// Hub is a JupyterHub and one singleuser server, enough of both to run the
+// whole M4 path without a cluster.
+//
+// It speaks the real protocol rather than a simplification of it — a spawn that
+// is pending before it is ready, a scoped token, an execute that produces busy /
+// input / stream / reply / idle in that order — because the parts of pkg/kernel
+// worth testing are exactly the ones that depend on that ordering. Where it
+// diverges it says so.
+type Hub struct {
+	server *httptest.Server
+
+	mux sync.Mutex
+	// SpawnsBeforeReady is how many status reads after a spawn request still
+	// report it pending, so the poll loop is exercised rather than skipped.
+	SpawnsBeforeReady int
+	pollsSinceSpawn   int
+	spawned           bool
+	Ready             bool
+
+	// Scopes and Kind are what GET /hub/api/user reports. Set them, like Ready and
+	// SpawnsBeforeReady, before the first request.
+	Scopes []string
+	Kind   string
+
+	// Recorded for assertions.
+	StartedServers []string
+	SpawnProfiles  []string
+	MintedTokens   []MintedRequest
+	Activity       []string
+	CreatedKernels []CreatedKernel
+	Directories    []string
+	Interrupts     []string
+	DeletedKernels []string
+	Executed       []string
+	ServiceTokens  []string
+
+	// The knobs below change while the hub is serving, so they are set through
+	// methods rather than fields: a test goroutine writing a field a handler
+	// goroutine reads is a data race, whichever way the test is written.
+	nextKernelID    string
+	deadKernels     map[string]bool
+	failNextExecute bool
+	hangExecute     chan struct{}
+}
+
+type MintedRequest struct {
+	User      string
+	ExpiresIn int
+	Scopes    []string
+}
+
+type CreatedKernel struct {
+	User string
+	Name string
+	Path string
+}
+
+func NewHub(t testing.TB) *Hub {
+	t.Helper()
+	hub := &Hub{
+		Ready:        true,
+		Kind:         "service",
+		Scopes:       []string{"servers", "tokens", "access:servers", "users:activity", "read:users"},
+		nextKernelID: "kernel-1",
+		deadKernels:  map[string]bool{},
+	}
+	hub.server = httptest.NewServer(http.HandlerFunc(hub.route))
+	t.Cleanup(hub.server.Close)
+	return hub
+}
+
+func (f *Hub) URL() string { return f.server.URL }
+
+// ArmFailure makes the next cell raise a ValueError.
+func (f *Hub) ArmFailure() {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.failNextExecute = true
+}
+
+// Hang holds every execute_reply back until the channel is closed, which is how
+// a long-running cell is simulated. Pass nil to stop hanging.
+func (f *Hub) Hang(release chan struct{}) {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.hangExecute = release
+}
+
+// SetNextKernelID names the kernel the next create returns.
+func (f *Hub) SetNextKernelID(id string) {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.nextKernelID = id
+}
+
+// KillKernel makes a kernel answer 404, which is how a culled and respawned pod
+// looks to a client that remembers the old one.
+func (f *Hub) KillKernel(id string) {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.deadKernels[id] = true
+}
+
+// Calls is what the hub recorded, copied out under its lock.
+type Calls struct {
+	StartedServers []string
+	// SpawnProfiles is the KubeSpawner profile each spawn asked for, empty for
+	// the deployment default.
+	SpawnProfiles  []string
+	MintedTokens   []MintedRequest
+	Activity       []string
+	CreatedKernels []CreatedKernel
+	Directories    []string
+	Interrupts     []string
+	DeletedKernels []string
+	Executed       []string
+	ServiceTokens  []string
+}
+
+func (f *Hub) route(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.URL.Path == "/hub/api/user":
+		f.recordServiceToken(r)
+		f.writeJSON(w, map[string]any{
+			"name": "ode", "kind": f.Kind, "scopes": f.Scopes, "roles": []string{"ode"},
+		})
+
+	case strings.HasSuffix(r.URL.Path, "/server"):
+		f.recordServiceToken(r)
+		f.handleServer(w, r)
+
+	case strings.HasSuffix(r.URL.Path, "/tokens"):
+		f.recordServiceToken(r)
+		f.handleTokens(w, r)
+
+	case strings.HasSuffix(r.URL.Path, "/activity"):
+		f.recordServiceToken(r)
+		f.handleActivity(w, r)
+
+	case strings.HasPrefix(r.URL.Path, "/hub/api/users/"):
+		f.recordServiceToken(r)
+		f.handleUser(w, r)
+
+	case strings.Contains(r.URL.Path, "/api/kernels"):
+		f.handleKernels(w, r)
+
+	case strings.Contains(r.URL.Path, "/api/contents"):
+		f.handleContents(w, r)
+
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// recordServiceToken captures the credential the Hub calls arrived with, so a
+// test can assert ODE never sends a developer's token to the Hub API.
+func (f *Hub) recordServiceToken(r *http.Request) {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.ServiceTokens = append(f.ServiceTokens, r.Header.Get("Authorization"))
+}
+
+func (f *Hub) handleUser(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/hub/api/users/")
+
+	f.mux.Lock()
+	pending := ""
+	ready := f.Ready
+	if !ready && f.spawned {
+		f.pollsSinceSpawn++
+		if f.pollsSinceSpawn > f.SpawnsBeforeReady {
+			f.Ready, ready = true, true
+		} else {
+			pending = "spawn"
+		}
+	}
+	f.mux.Unlock()
+
+	server := map[string]any{"ready": ready, "url": "/user/" + name + "/"}
+	if pending != "" {
+		server["pending"] = pending
+	}
+	f.writeJSON(w, map[string]any{
+		"name": name, "servers": map[string]any{"": server},
+	})
+}
+
+func (f *Hub) handleServer(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/hub/api/users/"), "/server")
+	var options struct {
+		Profile string `json:"profile"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&options)
+
+	f.mux.Lock()
+	f.SpawnProfiles = append(f.SpawnProfiles, options.Profile)
+	f.StartedServers = append(f.StartedServers, name)
+	f.spawned = true
+	f.mux.Unlock()
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (f *Hub) handleTokens(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/hub/api/users/"), "/tokens")
+	var body struct {
+		ExpiresIn int      `json:"expires_in"`
+		Scopes    []string `json:"scopes"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	f.mux.Lock()
+	f.MintedTokens = append(f.MintedTokens, MintedRequest{
+		User: name, ExpiresIn: body.ExpiresIn, Scopes: body.Scopes,
+	})
+	count := len(f.MintedTokens)
+	f.mux.Unlock()
+
+	expiry := time.Now().Add(time.Duration(body.ExpiresIn) * time.Second)
+	f.writeJSON(w, map[string]any{
+		"token":      fmt.Sprintf("user-token-%d", count),
+		"id":         fmt.Sprintf("t%d", count),
+		"expires_at": expiry.UTC().Format(time.RFC3339),
+		"scopes":     body.Scopes,
+	})
+}
+
+func (f *Hub) handleActivity(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/hub/api/users/"), "/activity")
+	f.mux.Lock()
+	f.Activity = append(f.Activity, name)
+	f.mux.Unlock()
+	w.WriteHeader(http.StatusOK)
+}
+
+func (f *Hub) handleContents(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/user/")
+	_, path, _ = strings.Cut(path, "/api/contents")
+	path = strings.Trim(path, "/")
+
+	if r.Method == http.MethodPut {
+		f.mux.Lock()
+		f.Directories = append(f.Directories, path)
+		f.mux.Unlock()
+		f.writeJSON(w, map[string]any{"name": path, "path": path, "type": "directory"})
+		return
+	}
+	f.writeJSON(w, map[string]any{
+		"name": path, "path": path, "type": "directory",
+		"content": []map[string]any{
+			{"name": "marker.txt", "path": path + "/marker.txt", "type": "file", "size": 12},
+		},
+	})
+}
+
+func (f *Hub) handleKernels(w http.ResponseWriter, r *http.Request) {
+	user := strings.TrimPrefix(r.URL.Path, "/user/")
+	user, rest, _ := strings.Cut(user, "/api/kernels")
+	rest = strings.Trim(rest, "/")
+
+	switch {
+	case rest == "" && r.Method == http.MethodPost:
+		var body struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mux.Lock()
+		f.CreatedKernels = append(f.CreatedKernels, CreatedKernel{User: user, Name: body.Name, Path: body.Path})
+		id := f.nextKernelID
+		f.mux.Unlock()
+		f.writeJSON(w, map[string]any{"id": id, "name": body.Name, "execution_state": "idle"})
+
+	case strings.HasSuffix(rest, "/channels"):
+		f.serveChannels(w, r, strings.TrimSuffix(rest, "/channels"))
+
+	case strings.HasSuffix(rest, "/interrupt"):
+		f.mux.Lock()
+		f.Interrupts = append(f.Interrupts, strings.TrimSuffix(rest, "/interrupt"))
+		f.mux.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+
+	case r.Method == http.MethodDelete:
+		f.mux.Lock()
+		f.DeletedKernels = append(f.DeletedKernels, rest)
+		f.mux.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+
+	case r.Method == http.MethodGet:
+		f.mux.Lock()
+		dead := f.deadKernels[rest]
+		f.mux.Unlock()
+		if dead {
+			http.Error(w, `{"message":"Kernel does not exist"}`, http.StatusNotFound)
+			return
+		}
+		f.writeJSON(w, map[string]any{"id": rest, "name": "python3", "execution_state": "idle"})
+
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+// serveChannels is the kernel WebSocket: a message loop that answers
+// kernel_info_request and execute_request in the order a real kernel does.
+func (f *Hub) serveChannels(w http.ResponseWriter, r *http.Request, kernelID string) {
+	if !strings.HasPrefix(r.Header.Get("Authorization"), "token ") {
+		http.Error(w, `{"message":"Forbidden"}`, http.StatusForbidden)
+		return
+	}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	for {
+		var incoming map[string]any
+		if err := conn.ReadJSON(&incoming); err != nil {
+			return
+		}
+		header, _ := incoming["header"].(map[string]any)
+		msgType, _ := header["msg_type"].(string)
+		msgID, _ := header["msg_id"].(string)
+		content, _ := incoming["content"].(map[string]any)
+
+		switch msgType {
+		case "kernel_info_request":
+			f.reply(conn, msgID, "kernel_info_reply", "shell", map[string]any{"status": "ok"})
+
+		case "execute_request":
+			code, _ := content["code"].(string)
+			silent, _ := content["silent"].(bool)
+			f.mux.Lock()
+			f.Executed = append(f.Executed, code)
+			failing := f.failNextExecute
+			f.failNextExecute = false
+			hang := f.hangExecute
+			f.mux.Unlock()
+
+			f.reply(conn, msgID, "status", "iopub", map[string]any{"execution_state": "busy"})
+			if !silent {
+				f.reply(conn, msgID, "execute_input", "iopub",
+					map[string]any{"code": code, "execution_count": 1})
+			}
+
+			if hang != nil {
+				<-hang
+			}
+
+			if failing {
+				f.reply(conn, msgID, "error", "iopub", map[string]any{
+					"ename": "ValueError", "evalue": "deliberate",
+					"traceback": []string{"\x1b[31mValueError\x1b[0m: deliberate"},
+				})
+				f.reply(conn, msgID, "execute_reply", "shell",
+					map[string]any{"status": "error", "ename": "ValueError"})
+				f.reply(conn, msgID, "status", "iopub", map[string]any{"execution_state": "idle"})
+				continue
+			}
+
+			if !silent {
+				f.reply(conn, msgID, "stream", "iopub",
+					map[string]any{"name": "stdout", "text": "hello\n"})
+				f.reply(conn, msgID, "execute_result", "iopub", map[string]any{
+					"execution_count": 1,
+					"data": map[string]any{
+						"text/plain": "42",
+						"image/png":  base64.StdEncoding.EncodeToString([]byte("not-really-a-png")),
+					},
+				})
+			}
+			f.reply(conn, msgID, "execute_reply", "shell",
+				map[string]any{"status": "ok", "execution_count": 1})
+			f.reply(conn, msgID, "status", "iopub", map[string]any{"execution_state": "idle"})
+		}
+	}
+}
+
+func (f *Hub) reply(conn *websocket.Conn, parentID, msgType, channel string, content map[string]any) {
+	_ = conn.WriteJSON(map[string]any{
+		"header":        map[string]any{"msg_id": "reply-" + parentID, "msg_type": msgType},
+		"parent_header": map[string]any{"msg_id": parentID},
+		"metadata":      map[string]any{},
+		"content":       content,
+		"channel":       channel,
+	})
+}
+
+func (f *Hub) writeJSON(w http.ResponseWriter, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// Calls copies everything the hub recorded, under its lock.
+func (f *Hub) Calls() Calls {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	return Calls{
+		StartedServers: append([]string{}, f.StartedServers...),
+		SpawnProfiles:  append([]string{}, f.SpawnProfiles...),
+		MintedTokens:   append([]MintedRequest{}, f.MintedTokens...),
+		Activity:       append([]string{}, f.Activity...),
+		CreatedKernels: append([]CreatedKernel{}, f.CreatedKernels...),
+		Directories:    append([]string{}, f.Directories...),
+		Interrupts:     append([]string{}, f.Interrupts...),
+		DeletedKernels: append([]string{}, f.DeletedKernels...),
+		Executed:       append([]string{}, f.Executed...),
+		ServiceTokens:  append([]string{}, f.ServiceTokens...),
+	}
+}

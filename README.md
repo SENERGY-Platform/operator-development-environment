@@ -11,7 +11,7 @@ file only says how to run what exists.
 
 ## Status
 
-**M0, M1a, M1b, M2 and M3 of the build order in SPEC.md §6.** What works today:
+**M0, M1a, M1b, M2, M3 and M4 of the build order in SPEC.md §6.** What works today:
 
 - The `developer` realm role gate on every route. Token signature, expiry and
   audience are validated by the platform API gateway, not here.
@@ -47,7 +47,7 @@ file only says how to run what exists.
   the OpenAI API, any OpenAI-compatible server, and the local `claude` CLI, all
   normalised to one event stream. A session names a provider; nothing above
   `pkg/llm` mentions a concrete one.
-- **The tool surface of §5.8** — all eighteen tools declared, twelve implemented,
+- **The tool surface of §5.8** — all eighteen tools declared, thirteen implemented,
   every call dispatched through one gate that enforces the **exposure tier** before
   anything executes. The four capabilities §5.8 denies have no tool at all, and a
   test asserts they never gain one.
@@ -67,9 +67,28 @@ file only says how to run what exists.
   call and refusal visible, the tier control beside it, and the admin surface that
   says which limits it actually enforces.
 
-Not built yet: M4 onward — kernels, repositories, experiments and the exploration
-pane. There are no charts: the pane is M5, and it needs the chart-spec surface of
-§5.9 to draw anything.
+- **Execution in the developer's own JupyterHub pod** (§5.6): ODE registers as a
+  Hub service, spawns the pod, mints a per-user token narrowed to that one server,
+  starts a kernel in a workspace on the per-user PVC, and speaks the kernel
+  WebSocket protocol directly. The developer's platform token is pushed into the
+  kernel at session start and on every refresh, so code in the pod has exactly the
+  developer's own authorisation and nothing more. Keep-alives hold the idle culler
+  off while a session is live and stop when it is not.
+- **`run_code`**, the thirteenth tool of §5.8, behind the confirmation D11
+  requires. What comes back to the model is stdout, the result and the exception —
+  never a figure's bytes, and never the platform token, which is redacted from
+  what is persisted.
+- A **Kernel view in the SPA**: the pod's state while it spawns, a console with
+  streamed output and an interrupt, and the workspace listing beside it, which is
+  what makes "a file written in one session is present in the next" visible rather
+  than asserted.
+
+Not built yet: M5 onward — the exploration pane, relational profiling,
+repositories and experiments. There are no charts: the pane is M5, and it needs
+the chart-spec surface of §5.9 to draw anything. The NetworkPolicy on singleuser
+pods is M10 and is still the one hard security prerequisite before external
+users — M4 makes it concrete by running developer- and LLM-authored code in
+those pods, and does not close it.
 
 ## Architecture in one paragraph
 
@@ -97,11 +116,15 @@ pkg/chat/          sessions, the tool loop, tier changes with their audit trail,
                    held confirmations
 pkg/admin/         §3.3: effective limits, the pre-request check, accounting
 pkg/mcp/           the same tool registry over MCP, for the CLI provider
+pkg/kernel/        JupyterHub: service registration, spawn, per-user token, the
+                   kernel WebSocket protocol, workspace and keep-alive
 pkg/database/      pgx pool and the schema the above persist into
 pkg/identifiers/   unguessable ids for anything that appears in a URL
 pkg/api/           gin routes, plus the cancellable WebSocket in ws.go and the
                    operations both surfaces share in operations.go
 pkg/configuration/ config.json plus environment overrides
+deploy/            the JupyterHub values and singleuser image M4 needs, applied
+                   outside this repository — see deploy/README.md
 ```
 
 ## Running it locally
@@ -109,9 +132,17 @@ pkg/configuration/ config.json plus environment overrides
 ### Backend
 
 ```bash
+go generate ./...          # writes docs/, which pkg/api imports; only needed once
 go build -o ode .
 ./ode -config config.json
 ```
+
+The generate step produces the OpenAPI specification from the annotations on the
+handlers. It is not committed — generated artifacts do not belong in the
+repository — so a fresh clone has to run it once before the first build, and
+again after changing a route or an annotation. The Dockerfile and the test
+workflow both run it themselves. The result is served at `/doc`, unauthenticated,
+which is how the platform's developer-swagger-api collects it.
 
 Configuration is read from `config.json` and overridden by environment
 variables, using the platform's usual camel-case-to-`UPPER_SNAKE` mapping
@@ -138,6 +169,12 @@ variables, using the platform's usual camel-case-to-`UPPER_SNAKE` mapping
 | `tool_preview_max_points` | Caps a tier-L2 preview, default 500. This is what keeps "downsampled preview" from becoming a raw series read |
 | `profiler_read_timeout` | Bounds one *value-reading* request, default 300s, separately from `timeseries_request_timeout` above, which bounds a metadata probe and should fail fast |
 | `chat_exchange_timeout` | Ceiling on one detached turn, default 30m. It exists because an exchange no longer ends with its connection |
+| `jupyterhub_url` / `jupyterhub_token` | The Hub, and ODE's **service** credential for it. Empty leaves the kernel routes unserved and `run_code` declared but not callable. A token missing any of `servers`, `tokens`, `access:servers`, `users:activity` fails startup — see `deploy/jupyterhub/README.md` |
+| `jupyterhub_workspace_path` | The kernel's working directory, default `data/ode`. **It has to be inside the mounted PVC** or nothing a developer writes survives the pod |
+| `jupyterhub_profile` | The KubeSpawner profile to spawn with. Empty takes the deployment default, which is the plain notebook image — set it once the ODE image of §5.6 item 1 exists |
+| `jupyterhub_keepalive_interval` / `jupyterhub_idle_timeout` | How often an active session reports activity (default 5m, must stay below the cluster's cull timeout) and when ODE lets go of a session it has not heard from (default 2h) |
+| `jupyterhub_execute_timeout` / `jupyterhub_max_output_bytes` | Ceiling on one cell (default 10m, then it is interrupted rather than abandoned) and on what one cell may stream (default 1 MiB) |
+| `tool_run_code_max_output_bytes` | Far smaller, default 8000: what a cell's output costs in *model context*, as opposed to memory |
 | `cors_origins` | Only needed if the SPA is not served through the Vite proxy |
 
 ## Trying M1
@@ -384,12 +421,114 @@ curl -s -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applica
 ```
 
 Two things the settings surface tells you that a plain form would hide. Which
-fields this build actually enforces — the kernel and Ray caps of §3.3 are stored
-now and enforced from M4 and M7, and an administrator setting one should know that.
+fields this build actually enforces — the Ray cap of §3.3 is stored now and
+enforced from M7, and the kernel resource caps are stored and **never** enforced
+by ODE, because a pod's resources are KubeSpawner's and the Hub's spawn API
+selects a profile rather than carrying overrides. They belong in
+`values-ode-singleuser.yaml` in `rancher-2-defs`, and an administrator setting
+one here should know it does nothing.
 And whether a cost cap can bind at all: cost is estimated from `llm_pricing`, so a
 model with no configured price accrues zero and the cap silently does not apply to
 it. `GET /admin/usage` marks those requests `unpriced` rather than showing them as
 free.
+
+## Trying M4
+
+M4 needs a JupyterHub that shares this Keycloak instance and mounts a per-user
+PVC. [deploy/jupyterhub/README.md](deploy/jupyterhub/README.md) says what has to
+be configured there and why the service token cannot come from the chart's own
+`hub.services` mechanism; the short version is that ODE needs a service token
+holding `servers`, `tokens`, `access:servers` and `users:activity`, and refuses
+to start without all four.
+
+```json
+"jupyterhub_url": "http://proxy-public.jupyterhub.svc.cluster.local",
+"jupyterhub_token": "<the service token>",
+"jupyterhub_workspace_path": "data/ode"
+```
+
+Startup says what it got, including when the credential is narrower than it
+should be:
+
+```text
+WARN  jupyterhub credential: scope servers is restricted to user=jonah,
+      so ODE can only serve that user
+INFO  kernel surface ready  hub=… credential=ode kind=service
+      kernel=python3 workspace=data/ode
+```
+
+That warning is the honest report of the development shortcut: a developer's own
+Hub token holds exactly the four scopes, restricted to themselves, which is
+enough to try everything below without touching the Hub's configuration.
+
+Open the **Kernel** tab. The pod is spawned on open rather than on the first
+run — a cold start is up to a minute (§5.6) — and the pane says so while it
+happens. Then:
+
+```python
+import os
+open("marker.txt", "w").write("written in this session")
+print(os.getcwd())
+print("platform token bytes:", len(os.environ["SENERGY_TOKEN"]))
+```
+
+Three things in that output are the milestone.
+
+`os.getcwd()` is inside the **mounted PVC**, not the pod's home. Only that
+directory survives the pod being culled and respawned, so it is where the kernel
+runs and it is what the Workspace pane lists. Press **Restart**, run
+`print(open("marker.txt").read())`, and the file is there — the kernel that wrote
+it is gone and only the volume could be carrying it.
+
+`SENERGY_TOKEN` is the developer's own access token, pushed into the kernel by a
+hidden cell at session start and again on every refresh (§5.6 item 4, because
+spawn-time environment variables cannot be refreshed). Code in the pod therefore
+reaches exactly the data the developer may read — not more, and not less.
+
+And **Interrupt** stops the cell in the pod rather than only stopping the pane
+watching it. A cell left running would hold the kernel against the next one.
+
+### The kernel over HTTP and the WebSocket
+
+Executing streams, so it lives on `GET /ws` beside the profiler and chat
+operations. Everything that answers once is a route. None of them takes a user
+parameter: the pod is resolved from the caller's own token, which is the only
+thing stopping ODE's Hub credential from reaching anyone else's.
+
+| Route | Effect |
+| --- | --- |
+| `GET /kernel` | What is running. Starts nothing, so it is safe to poll |
+| `POST /kernel` | Spawn, start a kernel in the workspace, install the platform token. Idempotent |
+| `POST /kernel/restart` | A fresh kernel in the same pod. The workspace is untouched |
+| `POST /kernel/interrupt` | Stop the running cell, keeping the kernel's state |
+| `DELETE /kernel` | End the kernel. **Not** the pod: that is the developer's, and their files are on it |
+| `GET /kernel/files?path=` | The workspace listing. Read-only — the full tree with write access is §5.11, in M7 |
+
+Over the socket, `{"type":"kernel_execute","id":"…","payload":{"code":"…"}}`
+streams one `event` per thing the cell produced and ends with `done`. Sending
+`{"type":"cancel","id":"…"}` interrupts it — and the events keep coming until the
+final one says `interrupted`, because a pane that simply goes quiet reads like a
+lost connection rather than a stopped cell.
+
+That is the opposite of the chat rule two sections down, deliberately. Detaching
+from a chat turn leaves it running, because an answer nobody is watching is still
+worth having; detaching from a cell stops it, because a training loop nobody is
+watching is only costing the developer their own pod.
+
+### run_code, and what the tier does not cover
+
+`run_code` is tier **L0** with a confirmation, which is what §5.8's table says
+and is worth understanding rather than reading past. Confirmed code runs with the
+developer's own token, so it can reach values `preview_series` would refuse at
+L0. The control is the developer's confirmation, not the tier — the same control
+D11 puts on every other consequential action — and it is why every execution is
+a decision rather than a default.
+
+What ODE does do is keep the accidents out of the record: the platform token is
+redacted from what `run_code` returns, so a `print(os.environ)` while debugging
+does not put a live credential into a conversation that is persisted to Postgres.
+That is hygiene, not a boundary. Code that deliberately encodes the token defeats
+it, and nothing here pretends otherwise.
 
 ## The profiler over a WebSocket
 
@@ -494,6 +633,7 @@ plainly:
 ## Tests
 
 ```bash
+go generate ./...            # once, if docs/ is absent; pkg/api imports it
 go test -race ./...          # backend
 cd frontend && npm run build # frontend: type-check and bundle
 ```
@@ -506,7 +646,8 @@ run by catching four defects, and caught a fifth on the M3 pass — a `duration_
 field carrying nanoseconds. See the README in that directory, including how to
 recapture the fixtures when the shape changes on purpose.
 
-The M3 fixtures are regenerated from the API test harness rather than a platform:
+The M3 and M4 fixtures are regenerated from the API test harness rather than a
+platform:
 
 ```bash
 ODE_WRITE_CONTRACT=$PWD/frontend/src/__contract__ \
@@ -525,6 +666,31 @@ The MCP tests are the exception worth knowing about: they run a real MCP client
 against a real server over `httptest`, because the property being checked is that a
 second transport enforces the same gate, and a fake client would only prove the
 server agrees with itself.
+
+M4 has the same shape and one addition. `pkg/kernel/kerneltest` is a JupyterHub
+and one singleuser server in memory, speaking the real protocol rather than a
+simplification of it — a spawn that is pending before it is ready, a scoped
+token, an execute that produces busy / input / stream / reply / idle in that
+order — because everything worth testing in `pkg/kernel` depends on that
+ordering. It is a package rather than a test file because `pkg/api` needs it too,
+and two copies of a protocol double would drift.
+
+The addition is a handful of tests that do need a cluster, skipped unless it is
+there:
+
+```bash
+ODE_JUPYTERHUB_URL=http://proxy-public.jupyterhub.svc.cluster.local \
+ODE_JUPYTERHUB_TOKEN=... ODE_JUPYTERHUB_USER=... \
+  go test ./pkg/kernel/ -run Live -v
+```
+
+They exist because the parts of §5.6 most likely to be wrong are the ones a fake
+cannot check: whether the credential really holds the scopes, whether the
+WebSocket handshake races the kernel's channel bridge, and above all whether a
+file written in one session is present in the next. The last one restarts the
+kernel and reads the file back, which is the acceptance criterion itself. A
+mistyped Hub field — `progress_url` as an integer — was caught on their first
+run and would have passed every unit test in the package.
 
 Detector correctness is checked against fixtures with known answers rather than
 against the platform (SPEC §5.4.14): a synthesised 15-minute series with an
@@ -698,6 +864,37 @@ whole length — bounded by nothing but `llm_max_tool_iterations`. The cap is ch
 before each call and against spend already recorded, so it can be overshot by at
 most one request. Refusing on a prediction instead would refuse requests that would
 have fit.
+
+**Two details of §5.6 are not what the spec assumes, because the deployment is
+not.** Both were found by reading the running Hub rather than the chart, and both
+are configuration rather than code.
+
+- **The Hub username is `preferred_username`, not `sub`.** §5.6 says the Hub
+  username "derives from the same Keycloak subject", which is true of the identity
+  and not of the string: the deployed `GenericOAuthenticator` produces `jonah`,
+  and a spawn addressed to a UUID would 404 for every developer.
+  `jupyterhub_username_claim` picks between the two. No mapping table either way,
+  which was the actual point being made.
+- **The PVC is mounted at `~/data`, not over the home directory.** §5.11 suggests
+  `~/ode/{repo}`; here that path is on the pod's ephemeral filesystem and is gone
+  the first time the culler runs. `jupyterhub_workspace_path` defaults to
+  `data/ode` for that reason, and the Workspace pane names the path on screen
+  because a developer has no other way to tell which of their files will survive.
+
+**ODE spawns pods and never stops them.** Shutting down a kernel leaves the pod
+running, and the reaper that drops an idle session closes ODE's socket and stops
+its keep-alives rather than deleting anything. Both are the same judgement: the
+pod is the developer's, their files and their running processes are on it, and a
+respawn costs them a cold start. Reclaiming it is the cluster's idle culling —
+which ODE stops holding off precisely so that it can.
+
+**The kernel connection is persistent per developer, and that is not only an
+optimisation.** `jupyter_server` bridges the kernel's ZeroMQ sockets onto the
+WebSocket when the connection opens, and a request sent before that bridge exists
+loses its early `iopub` messages — the busy status, sometimes the first lines of
+output. Paying a `kernel_info` handshake once on connect closes the race for
+every cell after it. Reconnecting per cell would reopen it every time, which is
+the kind of bug that reproduces on a loaded cluster and nowhere else.
 
 ## Licence
 
