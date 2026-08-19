@@ -179,6 +179,14 @@ export interface Window {
 export interface RawWindow extends Window {
   source: "default" | "developer_override";
   truncated: boolean;
+  /**
+   * The row cap the read was actually made with — the configured point bound
+   * divided by the variables read, because the response carries one value per
+   * variable per row. Absent only on a profile captured before the field existed.
+   */
+  row_limit?: number;
+  /** The gateway refused the first attempt and it was retried with half the rows. */
+  limit_reduced?: boolean;
 }
 
 export interface ProvenanceEntry {

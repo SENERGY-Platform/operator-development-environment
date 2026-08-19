@@ -140,6 +140,10 @@ type fakeTimeseries struct {
 	usageErr     error
 	availErr     error
 	queryErr     error
+	// queryErrCall fails only the nth Query call, one-based. Zero fails every one.
+	// The two passes fail very differently — the raw one is fatal, the aggregated one
+	// degrades — so a test has to be able to break exactly one of them.
+	queryErrCall int
 	onQuery      func([]timeseries.QueryElement)
 }
 
@@ -168,7 +172,7 @@ func (f *fakeTimeseries) Query(_ context.Context, _ string, elements []timeserie
 		f.onQuery(elements)
 	}
 	f.queries = append(f.queries, elements)
-	if f.queryErr != nil {
+	if f.queryErr != nil && (f.queryErrCall == 0 || f.queryErrCall == len(f.queries)) {
 		return nil, f.queryErr
 	}
 	if len(f.results) == 0 {

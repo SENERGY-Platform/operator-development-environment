@@ -231,6 +231,34 @@ where the app lands. In order:
 The exposure tier in the header gates LLM tools, not this UI — which is why the
 profiler is reachable at L0. Enforcing it is M3.
 
+### What bounds the raw pass
+
+`profiler_raw_window_points` bounds the **response**, not the rows, and the
+difference matters on every real service. A raw read is one wide
+`SELECT "time", col1 … colN … LIMIT n` — one row per message, one value per
+variable — so the body costs rows times variables. An eleven-variable energy meter
+read at a hundred thousand rows is over a million values in one response, which the
+API gateway refuses with a 502 (`An invalid response was received from the upstream
+server`) rather than relays. So the configured figure is divided by the variables
+being read, floored at 2 000 rows, and the applied number is recorded in
+`raw_window.row_limit` and shown in the profile header — a raw window shorter than
+the one configured should be explicable without reading the source. A
+single-variable service is unaffected, which is why the arithmetic went unnoticed:
+it is exactly right for one column.
+
+A gateway refusal is retried **once**, with half the rows, and the retry is recorded
+as `raw_window.limit_reduced`. Once rather than twice because a second refusal is
+the platform saying no rather than a size to negotiate down, and a rejected
+*request* — a 400, or a 500 from the wrapper — is not retried at all, since halving
+the rows cannot make a bad column name good.
+
+When a read does fail, the error names the pass, the variables, the window and the
+bound it was made with, and for the status codes that mean the *response* was the
+problem it names that pass's own levers: fewer rows for the raw pass, a wider bucket
+for the aggregated one. The aggregated pass stays non-fatal either way — its fields
+report `read_failed` and the structural detectors still have the raw pass — so an
+error that reaches the caller is always the raw one.
+
 ### When the availability probe fails
 
 `GET /data-availability` derives its answer by regexing the `view_definition` of

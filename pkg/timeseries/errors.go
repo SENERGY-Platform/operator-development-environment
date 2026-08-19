@@ -19,6 +19,7 @@ package timeseries
 import (
 	"errors"
 	"fmt"
+	"net/http"
 )
 
 // ErrInvalidRequest is a request ODE refused to send, as opposed to one the
@@ -42,3 +43,24 @@ func (e *UpstreamError) Error() string {
 }
 
 func (e *UpstreamError) Unwrap() error { return e.Err }
+
+// Gateway reports a failure that happened between ODE and the service rather than
+// inside it: the gateway could not get a usable answer, or gave up waiting, or
+// refused the size.
+//
+// It matters because the two classes call for opposite responses. A 400 or a 500
+// from timescale-wrapper is about the request or about the service, and the
+// caller's own error text is the useful one. A 502, 503, 504 or 413 is about the
+// *response* — too large, too slow, or the upstream dropped — and the useful thing
+// to say is what to make smaller.
+func (e *UpstreamError) Gateway() bool {
+	switch e.Code {
+	case http.StatusRequestEntityTooLarge,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}

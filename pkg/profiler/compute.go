@@ -18,6 +18,7 @@ package profiler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -313,12 +314,42 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 		return result, nil
 	}
 
+	rowLimit := p.rawRowLimit(len(variables))
 	report(req.Progress, PhaseRawRead, fmt.Sprintf(
-		"reading raw points for %d variable(s) over %s", len(variables), raw.Window))
-	rawSet, rawTruncated, err := p.readRaw(ctx, token, device.Id, req.ServiceID, variables, raw, &result.Reads)
-	if err != nil {
-		return ProfileResult{}, err
+		"reading up to %d raw rows for %d variable(s) over %s", rowLimit, len(variables), raw.Window))
+
+	var rawSet timeseries.ResultSet
+	var rawTruncated bool
+	for {
+		rawSet, rawTruncated, err = p.readRaw(ctx, token, device.Id, req.ServiceID, variables, raw,
+			rowLimit, &result.Reads)
+		if err == nil {
+			break
+		}
+		// One retry, and only for the failures that are about the *response*. A
+		// gateway refusing a read this shape is refusing its size or its duration, and
+		// halving the rows halves both — whereas retrying a rejected request, or
+		// retrying twice, would only cost the platform the same expensive read again.
+		if !raw.LimitReduced && gatewayRefused(err) && rowLimit > minRawRowLimit {
+			reduced := rowLimit / 2
+			if reduced < minRawRowLimit {
+				reduced = minRawRowLimit
+			}
+			slog.WarnContext(ctx, "the gateway refused the raw read; retrying with fewer rows",
+				"device_id", device.Id, "service_id", req.ServiceID,
+				"variables", len(variables), "from_rows", rowLimit, "to_rows", reduced, "error", err)
+			rowLimit = reduced
+			raw.LimitReduced = true
+			continue
+		}
+		return ProfileResult{}, p.describeReadFailure(err, "raw", len(variables), raw.Window,
+			fmt.Sprintf("row limit %d, so up to %d values in one response",
+				rowLimit, rowLimit*len(variables)),
+			"narrow the raw window with the days field beside it, or lower profiler_raw_window_points — "+
+				"the response carries one row per message and one value per variable, so both bound it")
 	}
+	raw.RowLimit = rowLimit
+	result.RawWindow = raw
 	if rawTruncated && rawSet.Rows() > 0 {
 		// The point limit cut the window short, so the recorded window has to be
 		// the one actually read. Leaving the requested start in place would make
@@ -342,6 +373,12 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 	report(req.Progress, PhaseAggregated, fmt.Sprintf(
 		"reading aggregates at %s over %s", groupTime, analysis))
 	aggregated, err := p.readAggregated(ctx, token, device.Id, req.ServiceID, variables, analysis, groupTime, &result.Reads)
+	if err != nil {
+		err = p.describeReadFailure(err, "aggregated", numericCount(variables), analysis,
+			fmt.Sprintf("bucket %s, three elements for mean, minimum and maximum", groupTime),
+			"widen the bucket with group_time, or narrow the analysis window — this pass carries no row "+
+				"limit, and one query per variable is joined per element")
+	}
 	if err != nil {
 		// The aggregated pass is not fatal: every field it feeds carries
 		// not_computed with read_failed, and the structural detectors still have
@@ -437,14 +474,14 @@ func (p *Profiler) rawWindow(analysis Window, override Window) RawWindow {
 // DecodeResults sorts back into ascending order.
 func (p *Profiler) readRaw(
 	ctx context.Context, token, deviceID, serviceID string,
-	variables []Variable, raw RawWindow, reads *ReadCounts,
+	variables []Variable, raw RawWindow, rowLimit int, reads *ReadCounts,
 ) (timeseries.ResultSet, bool, error) {
 	columns := make([]timeseries.QueryColumn, 0, len(variables))
 	for _, variable := range variables {
 		columns = append(columns, timeseries.QueryColumn{Name: variable.Path})
 	}
 
-	limit := p.opts.RawWindowMaxPoints
+	limit := rowLimit
 	descending := timeseries.Direction(timeseries.OrderDescending)
 	orderIndex := 0
 	element := timeseries.QueryElement{
@@ -670,6 +707,93 @@ func intersect(requested, available Window) Window {
 		out.To = available.To
 	}
 	return out
+}
+
+// minRawRowLimit is the floor the response bound may not push the raw read below.
+//
+// A service wide enough to divide the configured cap into nothing still has to hand
+// the structural detectors something to work with: sampling regularity, gaps and
+// counter steps are all inter-arrival properties, and a couple of thousand
+// consecutive messages is enough to establish them while a few dozen is not.
+const minRawRowLimit = 2000
+
+// rawRowLimit turns the configured point cap into the row cap the request carries.
+//
+// The distinction is the whole of it. A raw read is one wide SELECT — one row per
+// message, one value per variable — so the response costs rows times variables, and
+// a cap applied to rows bounds nothing that the gateway between ODE and the
+// platform actually measures. An eleven-variable energy meter read at a hundred
+// thousand rows is over a million values in one body, which is refused rather than
+// returned.
+//
+// So the cap is divided by the variables being read, floored, and never raised
+// above the configured figure. A single-variable service is unaffected, which is
+// also why the arithmetic went unnoticed: it is exactly right for one column.
+func (p *Profiler) rawRowLimit(variables int) int {
+	limit := p.opts.RawWindowMaxPoints
+	if limit <= 0 {
+		limit = defaultRawWindowPoints
+	}
+	if variables <= 1 {
+		return limit
+	}
+	perRow := limit / variables
+	if perRow < minRawRowLimit {
+		perRow = minRawRowLimit
+	}
+	if perRow > limit {
+		perRow = limit
+	}
+	return perRow
+}
+
+// gatewayRefused says the failure was about the response rather than the request,
+// which is the only class worth retrying smaller.
+func gatewayRefused(err error) bool {
+	var upstream *timeseries.UpstreamError
+	return errors.As(err, &upstream) && upstream.Gateway()
+}
+
+// describeReadFailure says which pass failed and what it had asked for.
+//
+// It exists because the bare upstream error is unactionable on a real service. A
+// gateway answering "an invalid response was received from the upstream server"
+// says nothing about the request that provoked it — and the two passes provoke very
+// different ones: the raw pass is one wide row-limited SELECT whose response grows
+// with rows *times* variables, the aggregated pass is a per-variable join at a
+// bucket width. Naming the pass, the variables, the window and the bound is the
+// difference between a report someone can act on and one that only says the
+// platform said no.
+//
+// The levers are attached only for the status codes that mean the response, rather
+// than the request, was the problem — and they are the *pass's own*. A 502 on the
+// raw pass is answered by fewer rows; the aggregated pass has no row limit at all
+// and is answered by a wider bucket. Offering the wrong one would send a developer
+// turning a knob that cannot affect what failed.
+func (p *Profiler) describeReadFailure(
+	err error, pass string, variables int, window Window, bound string, levers string,
+) error {
+	described := fmt.Errorf("the %s pass failed for %d variable(s) over %s (%s): %w",
+		pass, variables, window.String(), bound, err)
+
+	var upstream *timeseries.UpstreamError
+	if errors.As(err, &upstream) && upstream.Gateway() {
+		return fmt.Errorf("%w — a response this size or a query this long is what a gateway "+
+			"refuses rather than a request it rejects: %s", described, levers)
+	}
+	return described
+}
+
+// numericCount is how many variables the aggregated pass actually reads: there is
+// no mean of a status string, so the non-numeric ones are left out of it.
+func numericCount(variables []Variable) int {
+	count := 0
+	for _, variable := range variables {
+		if variable.Numeric() {
+			count++
+		}
+	}
+	return count
 }
 
 func columnNames(variables []Variable) []string {

@@ -93,6 +93,23 @@ type RawWindow struct {
 	// is the oldest point actually read rather than the one requested. Without
 	// this the gap detector would report a gap that is only a missing read.
 	Truncated bool `json:"truncated"`
+	// RowLimit is the row cap the read was actually made with.
+	//
+	// It is not the configured figure: the raw read is one wide row per message
+	// carrying one value per variable, so the response costs rows times variables,
+	// and the cap that bounds it is divided by the variables being read. Recording
+	// the applied number is what makes a short raw window legible — a developer
+	// looking at four days where they configured fourteen should be able to see why
+	// without reading the source.
+	//
+	// omitempty for one reason worth knowing: a profile captured before this field
+	// existed still satisfies the shape. Any profile this build computes carries it.
+	RowLimit int `json:"row_limit,omitempty"`
+	// LimitReduced says the first attempt was refused by the gateway and the read
+	// was retried with fewer rows. A short raw window then has a third possible
+	// cause — neither retention nor the developer's setting — and guessing between
+	// them is exactly what D24 exists to prevent.
+	LimitReduced bool `json:"limit_reduced,omitempty"`
 }
 
 // --- profile body (§5.4.12) ---

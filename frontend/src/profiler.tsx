@@ -772,7 +772,16 @@ function ComputedHeader({
           {result.group_time && ` at ${result.group_time}`} · raw {date(result.raw_window.from)} to{" "}
           {date(result.raw_window.to)}
           {result.raw_window.source === "developer_override" && " (override)"}
-          {result.raw_window.truncated && " (truncated by the point limit)"}
+          {result.raw_window.truncated && " (truncated by the row limit)"}
+          {result.raw_window.row_limit !== undefined && (
+            <span className="muted-inline"> · {result.raw_window.row_limit.toLocaleString("en-GB")} rows
+              {" "}max, the point bound over the variables read</span>
+          )}
+          {result.raw_window.limit_reduced && (
+            <span className="warn">
+              {" "}· halved after the gateway refused the first read
+            </span>
+          )}
         </span>
         {result.from_cache.length > 0 && (
           <span className="tag" title={result.from_cache.join(", ")}>

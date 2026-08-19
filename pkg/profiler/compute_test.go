@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -201,6 +202,250 @@ func TestAFailingAvailabilityProbeStillNeedsAWindow(t *testing.T) {
 	}
 }
 
+// The row cap has to bound the *response*, which costs rows times variables.
+//
+// A raw read is one wide SELECT: one row per message, one value per variable. A cap
+// applied to rows therefore bounds nothing the gateway between ODE and the platform
+// measures — an eleven-variable meter at a hundred thousand rows is over a million
+// values in one body — and that is what a 502 with "an invalid response was received
+// from the upstream server" is.
+func TestTheRawRowLimitDividesByTheVariablesRead(t *testing.T) {
+	prof := newTestProfiler(t, meterFixture(), powerOntology(), computeNow)
+
+	// One column is the case the arithmetic was always right for, which is why it
+	// went unnoticed.
+	if got := prof.rawRowLimit(1); got != defaultRawWindowPoints {
+		t.Errorf("one variable = %d rows, want the configured %d", got, defaultRawWindowPoints)
+	}
+	if got := prof.rawRowLimit(10); got != defaultRawWindowPoints/10 {
+		t.Errorf("ten variables = %d rows, want %d so the response stays inside the cap",
+			got, defaultRawWindowPoints/10)
+	}
+	// The floor holds: a service wide enough to divide the cap into nothing still has
+	// to hand the structural detectors a usable run of consecutive messages.
+	if got := prof.rawRowLimit(500); got != minRawRowLimit {
+		t.Errorf("five hundred variables = %d rows, want the floor of %d", got, minRawRowLimit)
+	}
+	for _, variables := range []int{1, 2, 10, 500} {
+		if got := prof.rawRowLimit(variables); got > defaultRawWindowPoints {
+			t.Errorf("%d variables = %d rows, above the configured cap", variables, got)
+		}
+	}
+}
+
+// The applied limit reaches the profile, because a raw window shorter than the one
+// configured has to be explicable without reading the source.
+func TestTheProfileRecordsTheRowLimitItWasReadWith(t *testing.T) {
+	fake := meterFixture()
+	_, result := profileMeter(t, fake)
+
+	want := defaultRawWindowPoints / 2 // the meter fixture has two variables
+	if result.RawWindow.RowLimit != want {
+		t.Errorf("row_limit = %d, want %d", result.RawWindow.RowLimit, want)
+	}
+	if result.RawWindow.LimitReduced {
+		t.Error("limit_reduced is set although nothing was refused")
+	}
+	if got := profileFor(t, result, powerPath).RawWindow.RowLimit; got != want {
+		t.Errorf("the stored profile records %d, want %d", got, want)
+	}
+
+	// And the request carried exactly that.
+	element := fake.queries[0][0]
+	if element.Limit == nil || *element.Limit != want {
+		t.Errorf("the raw request asked for %v rows, want %d", element.Limit, want)
+	}
+}
+
+// A gateway refusal is retried once with half the rows, and the fact is recorded:
+// a short raw window then has a third possible cause, and guessing between it,
+// retention and the developer's own setting is what D24 exists to prevent.
+func TestAGatewayRefusalIsRetriedWithFewerRows(t *testing.T) {
+	fake := meterFixture()
+	fake.queryErr = &timeseries.UpstreamError{
+		Resource: "/queries/v2", Code: http.StatusBadGateway,
+		Err: errors.New("An invalid response was received from the upstream server"),
+	}
+	fake.queryErrCall = 1
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	result, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	})
+	if err != nil {
+		t.Fatalf("the retry did not save the profile: %v", err)
+	}
+	if !result.RawWindow.LimitReduced {
+		t.Error("limit_reduced is not set, so the shortened read has no visible cause")
+	}
+	want := defaultRawWindowPoints / 2 / 2
+	if result.RawWindow.RowLimit != want {
+		t.Errorf("row_limit = %d, want %d after halving", result.RawWindow.RowLimit, want)
+	}
+	if len(fake.queries) < 2 {
+		t.Fatalf("%d queries, want the refused raw read and its retry", len(fake.queries))
+	}
+	if fake.queries[1][0].Limit == nil || *fake.queries[1][0].Limit != want {
+		t.Errorf("the retry asked for %v rows, want %d", fake.queries[1][0].Limit, want)
+	}
+}
+
+// Once, not twice: a second refusal is the platform saying no rather than a size to
+// negotiate down, and retrying again only costs the same expensive read.
+func TestAGatewayRefusalIsRetriedOnlyOnce(t *testing.T) {
+	fake := meterFixture()
+	fake.queryErr = &timeseries.UpstreamError{
+		Resource: "/queries/v2", Code: http.StatusBadGateway, Err: errors.New("refused again"),
+	}
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	_, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	})
+	if err == nil {
+		t.Fatal("no error after two refusals")
+	}
+	if len(fake.queries) != 2 {
+		t.Errorf("%d raw attempts, want exactly two", len(fake.queries))
+	}
+	if !strings.Contains(err.Error(), "raw pass") {
+		t.Errorf("error = %q, want the pass named", err)
+	}
+}
+
+// A rejected *request* is not retried at all. Halving the rows cannot make a bad
+// column name good, and the second read would cost the platform the same work.
+func TestARejectedRequestIsNotRetried(t *testing.T) {
+	fake := meterFixture()
+	fake.queryErr = &timeseries.UpstreamError{
+		Resource: "/queries/v2", Code: http.StatusBadRequest, Err: errors.New("column does not exist"),
+	}
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	if _, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	}); err == nil {
+		t.Fatal("no error")
+	}
+	if len(fake.queries) != 1 {
+		t.Errorf("%d attempts, want one: a 400 is about the request", len(fake.queries))
+	}
+}
+
+// A read that fails has to say which pass failed and what it had asked for.
+//
+// The bare upstream text is unactionable: a gateway saying "an invalid response was
+// received from the upstream server" names neither the pass nor the request that
+// provoked it, and the raw pass is the one whose response grows with rows times
+// variables. This is the error a developer pastes into a bug report, so it has to
+// carry the two levers that make it go away.
+func TestAFailedRawPassNamesThePassAndTheBound(t *testing.T) {
+	fake := meterFixture()
+	// Every attempt fails, retry included: this test is about what the caller is
+	// told once there is nothing left to try.
+	fake.queryErr = &timeseries.UpstreamError{
+		Resource: "/queries/v2",
+		Code:     http.StatusBadGateway,
+		Err:      errors.New(`{"message":"An invalid response was received from the upstream server"}`),
+	}
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	_, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	})
+	if err == nil {
+		t.Fatal("a failed raw pass returned no error; the structural detectors have nothing to run on")
+	}
+
+	message := err.Error()
+	for _, want := range []string{"raw pass", "2 variable", "row limit", "values in one response"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("error = %q, want it to contain %q", message, want)
+		}
+	}
+	// The hint belongs on the codes that mean the response was the problem, and it
+	// has to name what a developer can actually change.
+	if !strings.Contains(message, "narrow the raw window") ||
+		!strings.Contains(message, "profiler_raw_window_points") {
+		t.Errorf("error = %q, want the two levers named", message)
+	}
+	// And the platform's own words survive, because they are what identifies the
+	// failure upstream.
+	if !strings.Contains(message, "invalid response was received") {
+		t.Errorf("error = %q, want the upstream body kept", message)
+	}
+	var upstream *timeseries.UpstreamError
+	if !errors.As(err, &upstream) {
+		t.Error("the upstream error is no longer unwrappable, so the API layer cannot classify it")
+	}
+}
+
+// A wrapper 500 is about the service or the request, not about the size of the
+// answer, so it must not carry advice about making the response smaller.
+func TestAFailedRawPassOnlyAdvisesShrinkingForGatewayFailures(t *testing.T) {
+	fake := meterFixture()
+	fake.queryErr = &timeseries.UpstreamError{
+		Resource: "/queries/v2",
+		Code:     http.StatusInternalServerError,
+		Err:      errors.New("column does not exist"),
+	}
+	fake.queryErrCall = 1
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	_, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	})
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if strings.Contains(err.Error(), "narrow the raw window") {
+		t.Errorf("error = %q, want no size advice for a 500: the response was not the problem", err)
+	}
+	if !strings.Contains(err.Error(), "raw pass") {
+		t.Errorf("error = %q, want the pass named even so", err)
+	}
+}
+
+// The aggregated pass is the milder half and stays non-fatal: its fields report
+// read_failed and the structural detectors still have the raw pass.
+func TestAFailedAggregatedPassStillYieldsAProfile(t *testing.T) {
+	fake := meterFixture()
+	fake.queryErr = &timeseries.UpstreamError{
+		Resource: "/queries/v2", Code: http.StatusGatewayTimeout, Err: errors.New("upstream timed out"),
+	}
+	fake.queryErrCall = 2
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	result, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	})
+	if err != nil {
+		t.Fatalf("a failed aggregated pass took the whole profile with it: %v", err)
+	}
+	profile := profileFor(t, result, powerPath)
+	if profile.ReadSummary.RawRows == 0 {
+		t.Error("the raw pass produced nothing, so this proves nothing about the aggregated one")
+	}
+	if profile.ReadSummary.AggregatedBuckets != 0 {
+		t.Errorf("aggregated_buckets = %d, want 0", profile.ReadSummary.AggregatedBuckets)
+	}
+	// Periodicity is the field that needs the aggregated pass and has no fallback, so
+	// it is the one that has to report a non-result rather than "no periodicity"
+	// (D24). The distribution deliberately does fall back to the raw window.
+	if profile.TemporalStructure.DominantPeriodsS.IsComputed() {
+		t.Error("periods were computed although the aggregated pass returned nothing")
+	}
+	if !profile.Distribution.IsComputed() {
+		t.Error("the distribution did not fall back to the raw window, which detect.go says it should")
+	}
+}
+
 // One profile per variable, from one batched read per pass (D19, §5.4.1).
 func TestOneServiceReadYieldsOneProfilePerVariable(t *testing.T) {
 	fake := meterFixture()
@@ -230,8 +475,11 @@ func TestTheRawPassIsUnbucketedBoundedAndTakesTheNewestPoints(t *testing.T) {
 	if raw[0].GroupTime != nil {
 		t.Errorf("groupTime = %v, want none on the raw pass", *raw[0].GroupTime)
 	}
-	if raw[0].Limit == nil || *raw[0].Limit != defaultRawWindowPoints {
-		t.Errorf("limit = %v, want the point bound", raw[0].Limit)
+	// The point bound divided by the two variables read: the response carries one
+	// value per variable per row, so bounding rows alone would bound nothing.
+	if want := defaultRawWindowPoints / 2; raw[0].Limit == nil || *raw[0].Limit != want {
+		t.Errorf("limit = %v, want %d — the point bound over the variables read",
+			derefInt(raw[0].Limit), want)
 	}
 	// Descending with a limit takes the newest points; the window is anchored at
 	// recent data and truncating from the far end would read the wrong fortnight.
@@ -848,4 +1096,13 @@ func TestAHealthyProfileCarriesTheReadCountsAndNoDiagnosis(t *testing.T) {
 	if summary.Diagnosis != "" {
 		t.Errorf("diagnosis = %q, want none when both passes returned data", summary.Diagnosis)
 	}
+}
+
+// derefInt renders an optional request field for an error message, so a failure
+// prints the value rather than the address of one.
+func derefInt(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }

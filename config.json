@@ -13,6 +13,7 @@
   "timeseries_request_timeout": "180s",
 
   "profiler_raw_window_days": 14,
+  "//profiler_raw_window_points": "Bounds the raw pass's response, not its rows: the read is one wide row per message carrying one value per variable, so this figure is divided by the variables read (floored at 2000 rows) and the applied number is recorded in the profile as raw_window.row_limit.",
   "profiler_raw_window_points": 100000,
   "profiler_coverage_window_days": 90,
   "profiler_concurrency": 4,
