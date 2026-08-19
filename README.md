@@ -146,7 +146,11 @@ which is how the platform's developer-swagger-api collects it.
 
 Configuration is read from `config.json` and overridden by environment
 variables, using the platform's usual camel-case-to-`UPPER_SNAKE` mapping
-(`device_repo_url` → `DEVICE_REPO_URL`). The settings that matter:
+(`device_repo_url` → `DEVICE_REPO_URL`). The VS Code **Backend** launch
+configuration reads those overrides from an untracked `.env` rather than
+carrying them itself, so nothing machine-specific and no credential sits in a
+committed file; copy `.env.example` and fill in what your machine needs. The
+settings that matter:
 
 | Key | Meaning |
 | --- | --- |

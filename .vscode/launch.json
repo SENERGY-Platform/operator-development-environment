@@ -9,10 +9,13 @@
       "program": "${workspaceFolder}",
       "cwd": "${workspaceFolder}",
       "args": ["-config", "config.json"],
+      // Anything machine-specific or secret — the Hub URL and its token —
+      // belongs in .env, which is untracked. Copy .env.example to get it.
+      "envFile": "${workspaceFolder}/.env",
       "env": {
         "DEBUG": "true",
         "API_PORT": "8080",
-        "CLAUDE_CLI_ENABLED": "true",
+        "CLAUDE_CLI_ENABLED": "true"
       }
     },
     {

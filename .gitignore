@@ -10,6 +10,9 @@ __debug_bin*
 config.local.json
 .env
 .env.*
+# The examples carry no values, and the READMEs tell you to copy them.
+!.env.example
+!frontend/.env.example
 
 # frontend
 frontend/node_modules/
