@@ -231,6 +231,40 @@ where the app lands. In order:
 The exposure tier in the header gates LLM tools, not this UI — which is why the
 profiler is reachable at L0. Enforcing it is M3.
 
+### When the availability probe fails
+
+`GET /data-availability` derives its answer by regexing the `view_definition` of
+each of a device's continuous aggregates
+(`timescale-wrapper/pkg/timescale/data-availabilty.go`), and one view it cannot
+parse fails the request for the **whole device** with a 500 — for example
+`unexpected type matches from view description`, which is its aggregate-name regex
+finding no match.
+
+ODE treats that as what it is: metadata it only reads. The probe is bounded
+metadata, while the reads a profile is made of are `POST /queries/v2` and are
+unaffected, so a profile is computed anyway — over the analysis window the
+developer set, since there is no available range to intersect with. What is lost is
+recorded rather than papered over: `read_summary.raw_available` comes back as an
+explicit **non-result** carrying the platform's own error, not as `false`, because
+read as a false it would send a reader looking for retention that is not the cause
+(D24).
+
+Two consequences worth knowing. **A window is required** in that state — the
+default lookback is anchored on the end of the *available* data, and anchoring it
+on nothing would invent a range and then report profiles computed over it as though
+it had been chosen (D25) — so a profile with no window asks for one and names the
+upstream error. And the **candidate list is unaffected**, because `QuickProfile`
+has always tolerated a failed probe per device; coverage and liveness simply arrive
+as non-results there.
+
+Charts do not use the endpoint at all: `charts.Data` needs device metadata, the
+ontology and one query, so a series on a device in this state can still be drawn
+and its unit confirmed.
+
+The fix belongs upstream — read the bucket and the aggregate from the
+`timescaledb_information.continuous_aggregates` columns instead of parsing
+generated SQL, and skip an unparsable view rather than failing the device.
+
 ## Trying M2
 
 Open the **Selection** tab and type what you want to model — `forecast PV

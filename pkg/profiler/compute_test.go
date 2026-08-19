@@ -128,6 +128,79 @@ func profileFor(t *testing.T, result ProfileResult, path string) ResolvedProfile
 	return ResolvedProfile{}
 }
 
+// A failing availability probe must not take the profile with it.
+//
+// The endpoint derives its answer by parsing view definitions and fails a whole
+// device on one aggregate it cannot parse, which is a fault in metadata ODE only
+// reads — while the reads that carry a profile are POST /queries/v2 and are
+// unaffected. QuickProfile has always tolerated this; the profile pass used to
+// refuse, which made one unparsable view enough to make a device unprofilable.
+func TestAFailingAvailabilityProbeDoesNotStopAProfile(t *testing.T) {
+	fake := meterFixture()
+	fake.availErr = errors.New("timescale-wrapper returned 500: unexpected type matches from view description")
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	requested := Window{From: computeNow.Add(-7 * 24 * time.Hour), To: computeNow}
+	result, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:         meterDevice(testDeviceID, testServiceID),
+		ServiceID:      testServiceID,
+		AnalysisWindow: requested,
+	})
+	if err != nil {
+		t.Fatalf("ProfileService: %v", err)
+	}
+
+	if !result.AnalysisWindow.From.Equal(requested.From) || !result.AnalysisWindow.To.Equal(requested.To) {
+		t.Errorf("analysis window = %s, want the requested %s — there is nothing to intersect it with",
+			result.AnalysisWindow.String(), requested.String())
+	}
+
+	summary := profileFor(t, result, powerPath).ReadSummary
+	available, known := summary.RawAvailable.Get()
+	if known {
+		t.Errorf("raw_available = %v as a computed value; the probe failed, so it is not known (D24)", available)
+	}
+	status := summary.RawAvailable.Status()
+	if status.Reason != ReasonReadFailed {
+		t.Errorf("reason = %q, want %q", status.Reason, ReasonReadFailed)
+	}
+	if !strings.Contains(status.Detail, "unexpected type matches") {
+		t.Errorf("detail = %q, want the platform's own error in it", status.Detail)
+	}
+
+	// And the two reads that matter did happen, which is the whole point.
+	if result.Reads.Values != 2 {
+		t.Errorf("value reads = %d, want the raw and the aggregated pass", result.Reads.Values)
+	}
+	if summary.RawRows == 0 || summary.AggregatedBuckets == 0 {
+		t.Errorf("summary = %+v, want both passes populated", summary)
+	}
+}
+
+// Without a window there is no range to profile over: the default lookback is
+// anchored on the end of the *available* data, and anchoring it on nothing would
+// invent a range and then report profiles computed over it as though it had been
+// chosen (D25).
+func TestAFailingAvailabilityProbeStillNeedsAWindow(t *testing.T) {
+	fake := meterFixture()
+	fake.availErr = errors.New("timescale-wrapper returned 500: unexpected type matches from view description")
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	_, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("error = %v, want ErrInvalidRequest", err)
+	}
+	if !strings.Contains(err.Error(), "unexpected type matches") {
+		t.Errorf("error = %v, want the upstream cause named in it", err)
+	}
+	if len(fake.queries) != 0 {
+		t.Error("values were read although there was no window to read them over")
+	}
+}
+
 // One profile per variable, from one batched read per pass (D19, §5.4.1).
 func TestOneServiceReadYieldsOneProfilePerVariable(t *testing.T) {
 	fake := meterFixture()
@@ -688,8 +761,9 @@ func TestAServiceWithOnlyAggregatedWindowsSaysWhyTheStructuralFieldsAreEmpty(t *
 	profile := profileFor(t, result, powerPath)
 
 	summary := profile.ReadSummary
-	if summary.RawAvailable {
-		t.Error("raw_available is true although the platform reported only aggregated windows")
+	if available, known := summary.RawAvailable.Get(); !known || available {
+		t.Errorf("raw_available = %v (known %v), want a computed false: the platform answered, "+
+			"and what it said was that only aggregated windows exist", available, known)
 	}
 	if summary.RawRows != 0 {
 		t.Errorf("raw_rows = %d, want 0", summary.RawRows)
@@ -764,8 +838,9 @@ func TestAHealthyProfileCarriesTheReadCountsAndNoDiagnosis(t *testing.T) {
 	profile := profileFor(t, result, powerPath)
 
 	summary := profile.ReadSummary
-	if !summary.RawAvailable {
-		t.Error("raw_available = false for a fixture with a raw window")
+	if available, known := summary.RawAvailable.Get(); !known || !available {
+		t.Errorf("raw_available = %v (known %v), want a computed true for a fixture with a raw window",
+			available, known)
 	}
 	if summary.RawRows == 0 || summary.ValuesPresent == 0 || summary.AggregatedBuckets == 0 {
 		t.Errorf("summary = %+v, want all three counts populated", summary)

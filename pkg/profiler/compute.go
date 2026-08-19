@@ -240,24 +240,56 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 	result := ProfileResult{Profiles: []ResolvedProfile{}, FromCache: []string{}}
 
 	report(req.Progress, PhaseAvailability, "asking the platform which window has data")
-	availability, err := p.ts.DataAvailability(ctx, token, device.Id)
+	availability, availabilityErr := p.ts.DataAvailability(ctx, token, device.Id)
 	result.Reads.Availability++
-	if err != nil {
-		return ProfileResult{}, err
+	if availabilityErr != nil {
+		// Not fatal, and this is the same judgement QuickProfile has always made
+		// (§5.3.3): the availability probe is metadata, and the reads that carry the
+		// profile are POST /queries/v2. A probe that 500s must not take a profile
+		// with it — the endpoint derives its answer by parsing view definitions and
+		// fails a whole device on one aggregate it cannot parse, which is a fault in
+		// something ODE only reads.
+		//
+		// What is lost is real and is recorded rather than papered over: the data
+		// window that would have bounded the request, and whether a raw window
+		// exists at all.
+		slog.WarnContext(ctx, "availability probe failed; profiling over the requested window instead",
+			"device_id", device.Id, "service_id", req.ServiceID, "error", availabilityErr)
 	}
+
 	dataWindow, rawAvailable, ok := serviceWindow(availability, req.ServiceID)
-	if !ok {
+	rawAvailability := Computed(rawAvailable)
+	switch {
+	case ok:
+		if !rawAvailable {
+			// Not an error: the aggregated pass still produces a useful profile, and
+			// refusing would be worse than a partial one. But it is worth a log line,
+			// because every structural field is about to report not_computed and the
+			// reason is upstream retention rather than anything in the data.
+			slog.WarnContext(ctx, "no raw window for this service; the structural detectors cannot run",
+				"device_id", device.Id, "service_id", req.ServiceID,
+				"hint", "retention has left only aggregated buckets")
+		}
+
+	case availabilityErr != nil:
+		// The probe failed, so the developer's own window is the only range there is.
+		// Requiring one is deliberate: the default lookback is anchored on the end of
+		// the *available* data, and anchoring it on nothing would invent a range and
+		// then report profiles computed over it as though it had been chosen.
+		if !req.AnalysisWindow.Valid() {
+			return ProfileResult{}, fmt.Errorf(
+				"%w: the platform's availability endpoint failed and no analysis window was requested, "+
+					"so there is no range to profile over — set one and the read proceeds without it: %v",
+				ErrInvalidRequest, availabilityErr)
+		}
+		dataWindow = req.AnalysisWindow
+		rawAvailability = Uncomputablef[bool](ReasonReadFailed,
+			"the availability probe failed, so whether this service has an unbucketed window is unknown: %v",
+			availabilityErr)
+
+	default:
 		return ProfileResult{}, fmt.Errorf("%w: the platform reports no data window for service %s",
 			ErrInvalidRequest, req.ServiceID)
-	}
-	if !rawAvailable {
-		// Not an error: the aggregated pass still produces a useful profile, and
-		// refusing would be worse than a partial one. But it is worth a log line,
-		// because every structural field is about to report not_computed and the
-		// reason is upstream retention rather than anything in the data.
-		slog.WarnContext(ctx, "no raw window for this service; the structural detectors cannot run",
-			"device_id", device.Id, "service_id", req.ServiceID,
-			"hint", "retention has left only aggregated buckets")
 	}
 
 	analysis := intersect(req.AnalysisWindow, dataWindow)
@@ -332,7 +364,7 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 		bucket:       bucket,
 		index:        index,
 		params:       req.SessionParams,
-		rawAvailable: rawAvailable,
+		rawAvailable: rawAvailability,
 	})
 
 	for _, item := range computed {

@@ -324,7 +324,13 @@ export interface UsageList {
  * one block that is always populated, so an empty profile can explain itself.
  */
 export interface ReadSummary {
-  raw_available: boolean;
+  /**
+   * Whether the platform holds unbucketed data for this service — and a
+   * non-result when the availability probe itself failed. A boolean could not tell
+   * the two apart, and read as a false, an unanswered probe sends a reader looking
+   * for retention that is not the cause (D24).
+   */
+  raw_available: Value<boolean>;
   raw_rows: number;
   values_present: number;
   null_rows: number;

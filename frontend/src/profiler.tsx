@@ -1391,7 +1391,11 @@ function ReadDiagnosis({ summary }: { summary: ReadSummary }) {
         {summary.values_present} with a value here · {summary.null_rows} null ·{" "}
         {summary.aggregated_buckets} aggregated bucket
         {summary.aggregated_buckets === 1 ? "" : "s"}
-        {!summary.raw_available && " · no raw window on the platform"}
+        {isNotComputed(summary.raw_available)
+          ? " · whether a raw window exists is unknown: the availability probe failed"
+          : summary.raw_available
+            ? ""
+            : " · no raw window on the platform"}
       </span>
       {!healthy && <span className="reads-diagnosis">{summary.diagnosis}</span>}
     </div>

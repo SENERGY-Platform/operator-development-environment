@@ -40,8 +40,9 @@ type detectionInput struct {
 	params    *SessionParams
 	// rawAvailable is what /data-availability said. False means retention has left
 	// only aggregated buckets, which is the difference between "this series is
-	// broken" and "there is nothing unbucketed left to read".
-	rawAvailable bool
+	// broken" and "there is nothing unbucketed left to read". Not computed means the
+	// probe itself failed, which is a third thing again (D24).
+	rawAvailable Value[bool]
 }
 
 type computedProfile struct {

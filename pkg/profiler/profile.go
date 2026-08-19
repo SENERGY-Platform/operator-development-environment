@@ -142,7 +142,14 @@ type ReadSummary struct {
 	// only aggregated buckets for this service, so there is no unbucketed data to
 	// read and every structural detector is dead on arrival. Retention causes this,
 	// and it is the first thing to check on an empty profile.
-	RawAvailable bool `json:"raw_available"`
+	//
+	// A Value rather than a bool because the endpoint can fail, and a bool cannot
+	// tell "the platform says there is no raw window" from "the platform could not
+	// be asked". That is precisely the distinction D24 exists to keep: read as a
+	// false, an unanswered probe would send a reader looking for retention that is
+	// not the cause. When it is not computed the reason is read_failed and the
+	// detail is the platform's own error.
+	RawAvailable Value[bool] `json:"raw_available"`
 	// RawRows is how many rows the raw pass returned for the whole service.
 	RawRows int `json:"raw_rows"`
 	// ValuesPresent is how many of those rows carried a value for *this* variable,
@@ -165,14 +172,23 @@ type ReadSummary struct {
 // variables — there is no mean of a status string — and reporting that as a
 // failure would send a developer looking for a fault that is a design decision.
 func (r ReadSummary) Diagnose(queryable bool, numeric bool, reason string) string {
+	rawAvailable, rawAvailabilityKnown := r.RawAvailable.Get()
 	switch {
 	case !queryable:
 		return "this variable is not readable as a scalar series: " + reason
+	case !rawAvailabilityKnown && r.RawRows == 0 && r.AggregatedBuckets == 0:
+		// The one case that must not be reported as retention. Both passes came back
+		// empty and the availability probe failed, so which of the two is the cause
+		// is unknown — and naming retention here would be the negation-for-absence
+		// mistake D24 is about.
+		return "both passes returned no rows, and the platform could not say whether this " +
+			"service has a raw window at all: " + r.RawAvailable.Status().Detail +
+			". The requested window may not overlap the stored data, or the read may have failed"
 	case !numeric && r.AggregatedBuckets == 0 && r.ValuesPresent > 0:
 		return "the aggregated pass skips this variable because it is not numeric, so the " +
 			"distribution and the temporal detectors do not apply. The structural detectors " +
 			"read the raw pass and did run"
-	case !r.RawAvailable && r.RawRows == 0:
+	case rawAvailabilityKnown && !rawAvailable && r.RawRows == 0:
 		return "the platform reports no raw window for this service, only aggregated buckets. " +
 			"Retention has aged the unbucketed data out, and the structural detectors need it — " +
 			"sampling, gaps, value kind, counter resets and sessions cannot be computed from buckets"
