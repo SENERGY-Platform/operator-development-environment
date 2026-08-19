@@ -63,7 +63,7 @@
   "jupyterhub_token": "",
   "jupyterhub_username_claim": "preferred_username",
   "jupyterhub_kernel": "python3",
-  "jupyterhub_profile": "",
+  "jupyterhub_profile": "ode",
   "jupyterhub_workspace_path": "data/ode",
   "jupyterhub_spawn_timeout": "180s",
   "jupyterhub_request_timeout": "30s",
