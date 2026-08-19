@@ -1,0 +1,162 @@
+{
+  "aligned": true,
+  "annotations": [
+    {
+      "annotation_id": "zuegxdxrgryhl3c645iqabggye",
+      "author": "profiler",
+      "confirmable": true,
+      "field_path": "recommendations.usable_range",
+      "from": "2026-05-19T00:00:00Z",
+      "label": "advised usable range",
+      "series_index": 0,
+      "severity": "info",
+      "source": "profiler.recommendations.usable_range",
+      "to": "2026-08-17T00:00:00Z",
+      "type": "span"
+    },
+    {
+      "annotation_id": "buqzyqtlx3lck4nmohkdu5hvxe",
+      "author": "profiler",
+      "confirmable": true,
+      "field_path": "activity_pattern.sessions",
+      "from": "2026-08-14T00:30:00Z",
+      "label": "session · 12.0h · peak 700.00",
+      "series_index": 0,
+      "severity": "info",
+      "source": "profiler.sessions",
+      "to": "2026-08-14T12:30:00Z",
+      "type": "span"
+    },
+    {
+      "annotation_id": "waekxf5bv6jlbwd5b4m5naeeza",
+      "author": "profiler",
+      "confirmable": true,
+      "field_path": "activity_pattern.sessions",
+      "from": "2026-08-15T00:30:00Z",
+      "label": "session · 12.0h · peak 700.00",
+      "series_index": 0,
+      "severity": "info",
+      "source": "profiler.sessions",
+      "to": "2026-08-15T12:30:00Z",
+      "type": "span"
+    },
+    {
+      "annotation_id": "iazy7mywvn3m4zbfwvfrp2uf7a",
+      "author": "profiler",
+      "confirmable": true,
+      "field_path": "activity_pattern.sessions",
+      "from": "2026-08-16T00:30:00Z",
+      "label": "session · 12.0h · peak 700.00",
+      "series_index": 0,
+      "severity": "info",
+      "source": "profiler.sessions",
+      "to": "2026-08-16T12:30:00Z",
+      "type": "span"
+    }
+  ],
+  "annotations_dropped": 0,
+  "caption": "the week the inverter was replaced",
+  "chart_id": "7wcrm733w3phscpodrjpvh3kfi",
+  "group_time": "6h",
+  "markers": [],
+  "notes": [],
+  "reads": {
+    "devices": 1,
+    "points": 12,
+    "queries": 1
+  },
+  "series": [
+    {
+      "confirmations": [],
+      "group_time": "6h",
+      "group_type": "mean",
+      "index": 0,
+      "label": "PV power",
+      "non_numeric_dropped": 0,
+      "notes": [],
+      "null_rows": 0,
+      "points": [
+        {
+          "t": "2026-08-14T00:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-14T06:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-14T12:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-14T18:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-15T00:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-15T06:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-15T12:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-15T18:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-16T00:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-16T06:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-16T12:00:00Z",
+          "v": 120.5
+        },
+        {
+          "t": "2026-08-16T18:00:00Z",
+          "v": 120.5
+        }
+      ],
+      "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+      "ref": {
+        "device_id": "urn:infai:ses:device:1",
+        "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+        "variable_path": "value.power"
+      },
+      "transform": "none",
+      "unit": {
+        "available_conversions": [],
+        "characteristic_id": "ch-watt",
+        "computed_unit": "W",
+        "confirmable": false,
+        "confirmed": false,
+        "unit": "W",
+        "unit_source": "characteristic"
+      }
+    }
+  ],
+  "title": "PV generation",
+  "window": {
+    "from": "2026-08-14T00:00:00Z",
+    "to": "2026-08-17T00:00:00Z"
+  },
+  "y_axis": {
+    "available_conversions": [],
+    "characteristic_id": "ch-watt",
+    "computed_unit": "W",
+    "confirmable": false,
+    "confirmed": false,
+    "from": "series",
+    "mixed": false,
+    "unit": "W",
+    "unit_source": "characteristic"
+  }
+}

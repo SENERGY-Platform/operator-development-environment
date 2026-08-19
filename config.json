@@ -78,6 +78,12 @@
   "tool_profile_max_profiles": 4,
   "tool_quick_token_budget": 4000,
   "tool_preview_max_points": 500,
+  "//charts": "SPEC §5.9. chart_max_points bounds one series of one chart: the aggregation bucket is widened until the window fits it, so this trades resolution against the size of the read and never truncates the window. chart_default_lookback is what a chart covers when neither the author nor a named profile says.",
+  "chart_max_points": 2000,
+  "chart_max_annotations": 200,
+  "chart_max_per_user": 100,
+  "chart_default_lookback": "168h",
+
   "//tool_run_code": "Far smaller than jupyterhub_max_output_bytes above, and for a different cost: that one bounds a developer's console, this one bounds what a cell's output costs in model context.",
   "tool_run_code_max_output_bytes": 8000,
 

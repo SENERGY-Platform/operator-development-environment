@@ -30,6 +30,7 @@ import {
   type SeriesProfile,
   type SessionPage,
 } from "./api";
+import { chartFromProfile } from "./exploration";
 import { profilerSocket, type SocketState } from "./ws";
 import {
   ConfidenceTag,
@@ -59,7 +60,17 @@ import {
  * compute, enough to check the acceptance criteria of both by hand — candidates
  * ranked with no value read, and a profile whose non-results say why.
  */
-export function ProfilerView() {
+export function ProfilerView({
+  onOpenChart,
+}: {
+  /**
+   * Charts the profile on screen in the exploration pane (M5). Absent when no
+   * exploration backend is configured. It belongs here because a chart of a
+   * profiled series is the one thing this view cannot show: a session boundary or
+   * a gap is a claim a developer has to see before confirming it (§5.10).
+   */
+  onOpenChart?: (chartId: string) => void;
+} = {}) {
   const [selected, setSelected] = useState<QuickProfile | null>(null);
   // The window lives here rather than in the filter that sets it, because both
   // panes mean the same thing by it: the range the developer cares about. It
@@ -85,7 +96,12 @@ export function ProfilerView() {
         analysisWindow={analysisWindow}
         onAnalysisWindow={setAnalysisWindow}
       />
-      <ProfilePane key={paneKey} candidate={selected} analysisWindow={analysisWindow} />
+      <ProfilePane
+        key={paneKey}
+        candidate={selected}
+        analysisWindow={analysisWindow}
+        onOpenChart={onOpenChart}
+      />
     </main>
   );
 }
@@ -504,9 +520,11 @@ const TABS: [Tab, string][] = [
 function ProfilePane({
   candidate,
   analysisWindow,
+  onOpenChart,
 }: {
   candidate: QuickProfile | null;
   analysisWindow: AppliedWindow;
+  onOpenChart?: (chartId: string) => void;
 }) {
   const [tab, setTab] = useState<Tab>("quick");
   const [computed, setComputed] = useState<ProfileResult | null>(null);
@@ -568,6 +586,27 @@ function ProfilePane({
     );
   }, []);
 
+  // The chart is built from the profile on screen, so its window is the window the
+  // detections were computed over — a chart whose bands all fell outside it would
+  // be worse than no chart.
+  const chart = useAction(
+    useCallback(
+      async (_signal: AbortSignal, viewed: SeriesProfile) => {
+        const chartId = await chartFromProfile({
+          deviceID: viewed.series_ref.device_id,
+          serviceID: viewed.series_ref.service_id,
+          variablePath: viewed.series_ref.variable_path,
+          profileID: viewed.profile_id,
+          label: viewed.series_ref.variable_path,
+          window: { from: viewed.analysis_window.from, to: viewed.analysis_window.to },
+        });
+        onOpenChart?.(chartId);
+        return chartId;
+      },
+      [onOpenChart],
+    ),
+  );
+
   if (!candidate) {
     return (
       <Pane title="Profile" subtitle="Pick a candidate on the left">
@@ -593,13 +632,24 @@ function ProfilePane({
         candidate.series_ref.service_id,
       )} · interaction ${candidate.interaction}`}
       actions={
-        <div className="tabs">
-          {TABS.map(([id, label]) => (
-            <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
-              {label}
+        <>
+          {profile && onOpenChart && (
+            <button
+              disabled={chart.pending}
+              title="Draws this profile in the exploration pane, with its detected sessions, gaps and advised ranges as confirmable annotations"
+              onClick={() => void chart.invoke(profile)}
+            >
+              {chart.pending ? "Charting…" : "Chart it"}
             </button>
-          ))}
-        </div>
+          )}
+          <div className="tabs">
+            {TABS.map(([id, label]) => (
+              <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
       }
     >
       {tab === "quick" && <QuickProfileDetail candidate={candidate} />}

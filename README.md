@@ -11,7 +11,7 @@ file only says how to run what exists.
 
 ## Status
 
-**M0, M1a, M1b, M2, M3 and M4 of the build order in SPEC.md §6.** What works today:
+**M0, M1a, M1b, M2, M3, M4 and M5 of the build order in SPEC.md §6.** What works today:
 
 - The `developer` realm role gate on every route. Token signature, expiry and
   audience are validated by the platform API gateway, not here.
@@ -47,7 +47,7 @@ file only says how to run what exists.
   the OpenAI API, any OpenAI-compatible server, and the local `claude` CLI, all
   normalised to one event stream. A session names a provider; nothing above
   `pkg/llm` mentions a concrete one.
-- **The tool surface of §5.8** — all eighteen tools declared, thirteen implemented,
+- **The tool surface of §5.8** — all eighteen tools declared, fourteen implemented,
   every call dispatched through one gate that enforces the **exposure tier** before
   anything executes. The four capabilities §5.8 denies have no tool at all, and a
   test asserts they never gain one.
@@ -83,12 +83,23 @@ file only says how to run what exists.
   what makes "a file written in one session is present in the next" visible rather
   than asserted.
 
-Not built yet: M5 onward — the exploration pane, relational profiling,
-repositories and experiments. There are no charts: the pane is M5, and it needs
-the chart-spec surface of §5.9 to draw anything. The NetworkPolicy on singleuser
-pods is M10 and is still the one hard security prerequisite before external
-users — M4 makes it concrete by running developer- and LLM-authored code in
-those pods, and does not close it.
+- **The exploration pane** (§5.9, §5.10): the assistant emits the declarative chart
+  specification of §5.9 — series, transforms, annotations, an axis — and the pane
+  draws it from the developer's own read. `render_chart` is the fourteenth tool of
+  §5.8 and returns **no values**, which is what lets a model at tier L1 demonstrate
+  a selection visually without a single value entering its context. Every transform
+  is evaluated by the platform: the bucket, the counter differencing, and the unit
+  conversion along the ontology's own conversion graph. A profile's detected
+  sessions, gaps, advised exclusions and counter resets arrive as annotations, each
+  attributed to whoever made the claim, and the confirmable ones are confirmed
+  where they are visible — into the same append-only overlay the profiler view
+  writes to, keyed by series, so a unit confirmed on a chart reaches the next
+  profile of that series.
+
+Not built yet: M6 onward — relational profiling, repositories and experiments. The
+NetworkPolicy on singleuser pods is M10 and is still the one hard security
+prerequisite before external users — M4 makes it concrete by running developer- and
+LLM-authored code in those pods, and does not close it.
 
 ## Architecture in one paragraph
 
@@ -118,6 +129,9 @@ pkg/admin/         §3.3: effective limits, the pre-request check, accounting
 pkg/mcp/           the same tool registry over MCP, for the CLI provider
 pkg/kernel/        JupyterHub: service registration, spawn, per-user token, the
                    kernel WebSocket protocol, workspace and keep-alive
+pkg/charts/        §5.9's chart specification: validation, the transform-to-query
+                   mapping, the profiler-derived annotations, and the
+                   confirmations §5.10 takes from a chart
 pkg/database/      pgx pool and the schema the above persist into
 pkg/identifiers/   unguessable ids for anything that appears in a URL
 pkg/api/           gin routes, plus the cancellable WebSocket in ws.go and the
@@ -534,6 +548,111 @@ does not put a live credential into a conversation that is persisted to Postgres
 That is hygiene, not a boundary. Code that deliberately encodes the token defeats
 it, and nothing here pretends otherwise.
 
+## Trying M5
+
+M5 needs nothing beyond a `timescale_wrapper_url`, and it is the first surface that
+puts values in front of a human rather than in front of a detector.
+
+Open the **Profiler** tab, compute a profile, and press **Chart it**. The
+exploration pane opens with that series drawn over the profile's own analysis
+window, and the profile's detections on top of it: sessions as bands, gaps in
+amber, advised exclusions in red, counter resets as marks. Each band says who
+claimed it — `profiler`, `llm` or `developer` — because those are three different
+kinds of claim and a chart that blurred them would be arguing on borrowed
+authority.
+
+Then the two things the milestone is accepted on.
+
+**The assistant proposes a selection and shows it.** In chat, at tier L1 or above,
+ask for a chart of what it has profiled. `render_chart` answers with a chart id, the
+resolved axis and nothing else:
+
+```json
+{"chart_id":"…","title":"PV generation","y_axis":{"unit":"W","unit_source":"characteristic"},
+ "values_read":0,
+ "note":"the specification is stored and the developer's pane draws it from their own read…"}
+```
+
+`values_read` is zero and is meant to be checked. The model wrote the
+specification; the browser fetched the data with the developer's token. That is why
+a tool which plainly produces a picture of data sits at **L1** rather than L2 — and
+why the tool result carries no `points` array for a model to read statistics out
+of, which §4 forbids.
+
+**The developer confirms an inferred unit.** Where the ontology answered the unit
+outright the pane says so and offers nothing: §5.10's point is that the ontology
+reduces how often a human is asked. Where it did not — no characteristic, a unit
+that travels in the message, or a characteristic whose concept contradicts the
+function's — the series shows *why* and offers confirm, correct or reject. A
+correction is appended to the profiler's overlay, and the axis relabels with the
+resolver's own value kept beside it:
+
+```json
+{"override":{"field_path":"value_semantics.unit","computed_value":"W",
+             "confirmed_value":"kW","action":"correct","created_by":"…"},
+ "series":{"unit":{"unit":"kW","computed_unit":"W","confirmed":true,"confirmed_by":"…"}}}
+```
+
+It is the same overlay `POST /profiles/{id}/overrides` writes to, keyed by series
+rather than by profile — so the confirmation survives a recomputation, reaches the
+next profile of that series, and can be made *before* anything has been profiled at
+all.
+
+Correcting the **characteristic** rather than the unit string is the stronger move,
+and the pane says so. A unit string cannot be converted; a characteristic can
+(D29). Once one resolves, the series offers the conversions the ontology can reach
+from it, and choosing one derives a new chart with a `convert:` transform — new,
+because a specification is an immutable artifact and the original stays as it was
+proposed.
+
+### The transforms, and where they run
+
+Every transform of §5.9 is a field of `POST /queries/v2`. Nothing in
+`pkg/charts` does arithmetic on a value.
+
+| Transform | Becomes |
+| --- | --- |
+| `none` | `groupType: mean` at the chart's bucket |
+| `resample:900s` | `groupTime: 15m` — and `90s` stays 90 seconds rather than rounding to a minute |
+| `diff` | `groupType: difference-last`, differenced server-side |
+| `rate` | the same, plus `math: /3600` for an hourly bucket |
+| `convert:<characteristic>` | `sourceCharacteristicId` → `targetCharacteristicId` with the `conceptId` the platform needs, refused up front when the target is not reachable through the concept's conversion graph |
+
+A `convert:` on a variable with no characteristic is refused rather than sent: a
+fabricated characteristic id would silently authorise a wrong conversion, which is
+the failure D29 names in as many words.
+
+The point cap widens the bucket; it never truncates the window. A chart of a year
+comes back at whatever bucket fits, and says that it did — a chart showing the first
+tenth of its window while claiming the whole of it is the misreading the cap exists
+to prevent.
+
+### The chart routes
+
+| Route | Effect |
+| --- | --- |
+| `POST /charts` | Validate a §5.9 specification, resolve it against the ontology, store it. Reads no values |
+| `GET /charts?session_id=&limit=` | The caller's charts, newest first |
+| `GET /charts/{id}` | One specification |
+| `GET /charts/{id}/data?from&to&group_time` | The values, read as the caller, with the annotations. The window and bucket overrides are how the pane zooms without minting a second chart |
+| `POST /charts/{id}/confirmations` | Append a confirmation to the profiler's overlay. Body: `series_index`, `field_path`, `action`, `confirmed_value`, `note` |
+| `DELETE /charts/{id}` | Discard a specification |
+
+Charts are owner-scoped and their ids are unguessable: another developer's chart
+answers 404 rather than 403, because an owner-scoped id must not distinguish
+"someone else's" from "does not exist".
+
+The data route is the only one in ODE that hands series values to a client, and it
+hands them to the developer. The exposure tier bounds what reaches an **LLM
+context** (§3.2); it was never a wall between a developer and their own permitted
+data.
+
+Specifications live in memory, bounded per developer. That follows the rule the
+rest of the repository uses rather than an omission: what a restart can recompute
+stays in memory — a specification is one sentence to re-emit — and what it cannot is
+persisted. The confirmations a chart produces are in the profiler's overlay, which
+is in Postgres when there is one.
+
 ## The profiler over a WebSocket
 
 The Profiler and Selection views run their slow operations over `GET /ws` rather
@@ -650,7 +769,7 @@ run by catching four defects, and caught a fifth on the M3 pass — a `duration_
 field carrying nanoseconds. See the README in that directory, including how to
 recapture the fixtures when the shape changes on purpose.
 
-The M3 and M4 fixtures are regenerated from the API test harness rather than a
+The M3, M4 and M5 fixtures are regenerated from the API test harness rather than a
 platform:
 
 ```bash

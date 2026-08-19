@@ -28,6 +28,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/auth"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/charts"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
@@ -544,6 +545,8 @@ func statusForError(err error) int {
 	switch {
 	case errors.Is(err, profiler.ErrInvalidRequest),
 		errors.Is(err, profiler.ErrNoVariables),
+		errors.Is(err, charts.ErrInvalidSpec),
+		errors.Is(err, charts.ErrNotConfirmable),
 		errors.Is(err, profiler.ErrInvalidOverride),
 		errors.Is(err, profiler.ErrInvalidCursor),
 		errors.Is(err, devices.ErrInvalidOption),
@@ -553,7 +556,8 @@ func statusForError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, profiler.ErrNoPermission):
 		return http.StatusForbidden
-	case errors.Is(err, profiler.ErrProfileNotFound):
+	case errors.Is(err, profiler.ErrProfileNotFound),
+		errors.Is(err, charts.ErrChartNotFound):
 		return http.StatusNotFound
 	default:
 		return 0

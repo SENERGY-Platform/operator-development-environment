@@ -29,6 +29,7 @@ import (
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/admin"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/api"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/charts"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/configuration"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/database"
@@ -155,6 +156,31 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		}
 		deps.Timeseries = timeseriesClient
 		deps.Profiler = profilerService
+
+		// M5. The exploration pane (§5.9). It shares the profiler's store rather than
+		// keeping one of its own: the annotations a chart draws are the profiler's
+		// detections, and a confirmation taken from a chart has to land in the same
+		// append-only overlay a confirmation taken from a profile does (§5.10). Two
+		// stores would mean two records of the same human decision.
+		lookback, err := time.ParseDuration(config.ChartDefaultLookback)
+		if err != nil {
+			return nil, fmt.Errorf("config: chart_default_lookback: %w", err)
+		}
+		chartService, err := charts.New(charts.Deps{
+			Timeseries:      timeseriesClient,
+			Devices:         deviceService,
+			Ontology:        ontologyIndex,
+			Profiles:        profileStore,
+			Store:           charts.NewMemoryStore(int(config.ChartMaxPerUser)),
+			IDs:             identifiers.New(),
+			MaxPoints:       int(config.ChartMaxPoints),
+			MaxAnnotations:  int(config.ChartMaxAnnotations),
+			DefaultLookback: lookback,
+		})
+		if err != nil {
+			return nil, err
+		}
+		deps.Charts = chartService
 	}
 
 	// Semantic selection (§5.2). The ranker is the profiler, which may be absent;
@@ -290,6 +316,7 @@ func startM3(
 		Selection:          selectionOrNil(deps.Selection),
 		SelectionSink:      sink,
 		Kernel:             kernelOrNil(kernelService),
+		Charts:             chartsOrNil(deps.Charts),
 		ProfileTokenBudget: int(config.ToolProfileTokenBudget),
 		ProfileMaxProfiles: int(config.ToolProfileMaxProfiles),
 		QuickTokenBudget:   int(config.ToolQuickTokenBudget),
@@ -625,6 +652,16 @@ func kernelOrNil(service *kernel.Service) tools.Kernel {
 // holding a nil pointer, and the resolver's "is there a ranker" check would pass
 // before dereferencing it. This is the one Go footgun in the wiring, so it is a
 // named function rather than an inline conditional.
+// chartsOrNil keeps render_chart declared-but-unavailable in a deployment without
+// a timescale-wrapper, for the reason ifPresent documents: a typed nil pointer in
+// an interface field is not nil as an interface, so the check has to happen here.
+func chartsOrNil(service *charts.Service) tools.Charts {
+	if service == nil {
+		return nil
+	}
+	return service
+}
+
 func rankerOrNil(prof *profiler.Profiler) selection.Ranker {
 	if prof == nil {
 		return nil

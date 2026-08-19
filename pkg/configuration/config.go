@@ -207,6 +207,17 @@ type ConfigStruct struct {
 	// carries, and ToolQuickTokenBudget caps the ranked candidate list of the L0
 	// tools. Without them a wide device set or a twenty-variable service answers
 	// with a payload many times the size of the budget above it.
+	// Chart bounds (§5.9, M5). ChartMaxPoints is the one that shapes what a
+	// developer sees: the bucket is widened until the charted window fits it, so a
+	// larger figure means a finer picture and a heavier read, never a truncated
+	// window. ChartMaxAnnotations bounds the bands one chart carries, because a
+	// session-based series over two years has thousands (D27) and what the cap drops
+	// is reported rather than hidden.
+	ChartMaxPoints       int64  `json:"chart_max_points"`
+	ChartMaxAnnotations  int64  `json:"chart_max_annotations"`
+	ChartMaxPerUser      int64  `json:"chart_max_per_user"`
+	ChartDefaultLookback string `json:"chart_default_lookback"`
+
 	ToolProfileTokenBudget int64 `json:"tool_profile_token_budget"`
 	ToolProfileMaxProfiles int64 `json:"tool_profile_max_profiles"`
 	ToolQuickTokenBudget   int64 `json:"tool_quick_token_budget"`
@@ -352,6 +363,18 @@ func applyDefaults(config Config) {
 	}
 	if config.ToolRunCodeMaxOutputBytes <= 0 {
 		config.ToolRunCodeMaxOutputBytes = 8000
+	}
+	if config.ChartMaxPoints <= 0 {
+		config.ChartMaxPoints = 2000
+	}
+	if config.ChartMaxAnnotations <= 0 {
+		config.ChartMaxAnnotations = 200
+	}
+	if config.ChartMaxPerUser <= 0 {
+		config.ChartMaxPerUser = 100
+	}
+	if config.ChartDefaultLookback == "" {
+		config.ChartDefaultLookback = "168h"
 	}
 }
 

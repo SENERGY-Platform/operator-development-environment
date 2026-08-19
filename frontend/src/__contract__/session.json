@@ -2,6 +2,7 @@
   "email": "dev@example.org",
   "exposure_tier": "L0",
   "features": {
+    "charts": false,
     "chat": true,
     "kernel": false,
     "mcp": false,
@@ -35,9 +36,9 @@
   ],
   "spend": {
     "cost": 0.0021,
-    "from": "2026-07-19T12:06:05.034715742Z",
+    "from": "2026-07-20T07:05:19.387498938Z",
     "requests": 2,
-    "to": "2026-08-18T12:06:05.034716067Z",
+    "to": "2026-08-19T07:05:19.387499204Z",
     "tokens": 173
   },
   "user_id": "user-123",

@@ -62,7 +62,18 @@ type Turn =
     }
   | { kind: "notice"; level: "info" | "warn" | "error"; text: string };
 
-export function ChatView({ session }: { session: Session }) {
+export function ChatView({
+  session,
+  onOpenChart,
+}: {
+  session: Session;
+  /**
+   * Opens a chart the assistant proposed in the exploration pane. Absent when no
+   * exploration backend is configured, in which case a render_chart result is
+   * shown as what it is — a stored specification nothing can draw here.
+   */
+  onOpenChart?: (chartId: string) => void;
+}) {
   const [sessions, setSessions] = useState<ChatSession[] | null>(null);
   const [current, setCurrent] = useState<ChatSession | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -155,6 +166,7 @@ export function ChatView({ session }: { session: Session }) {
           session={current}
           maxTier={session.max_exposure_tier ?? "L2"}
           surface={surface}
+          onOpenChart={onOpenChart}
           onSessionChange={(updated) => {
             setCurrent(updated);
             setSessions((existing) =>
@@ -298,11 +310,13 @@ function Conversation({
   maxTier,
   surface,
   onSessionChange,
+  onOpenChart,
 }: {
   session: ChatSession;
   maxTier: Tier;
   surface: ToolSurface | null;
   onSessionChange: (session: ChatSession) => void;
+  onOpenChart?: (chartId: string) => void;
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [pending, setPending] = useState<PendingConfirmation[]>([]);
@@ -485,7 +499,7 @@ function Conversation({
           </Muted>
         )}
         {turns.map((turn, index) => (
-          <TurnView key={index} turn={turn} />
+          <TurnView key={index} turn={turn} onOpenChart={onOpenChart} />
         ))}
         {busy && <div className="thinking">Working…</div>}
         <div ref={bottom} />
@@ -675,7 +689,13 @@ function ConfirmationPrompt({
   );
 }
 
-function TurnView({ turn }: { turn: Turn }) {
+function TurnView({
+  turn,
+  onOpenChart,
+}: {
+  turn: Turn;
+  onOpenChart?: (chartId: string) => void;
+}) {
   if (turn.kind === "notice") {
     return <div className={`notice notice-${turn.level}`}>{turn.text}</div>;
   }
@@ -687,7 +707,14 @@ function TurnView({ turn }: { turn: Turn }) {
     );
   }
   if (turn.kind === "tool") {
-    return <ToolTurn call={turn.call} result={turn.result} progress={turn.progress} />;
+    return (
+      <ToolTurn
+        call={turn.call}
+        result={turn.result}
+        progress={turn.progress}
+        onOpenChart={onOpenChart}
+      />
+    );
   }
 
   const { message } = turn;
@@ -713,13 +740,16 @@ function ToolTurn({
   call,
   result,
   progress,
+  onOpenChart,
 }: {
   call: { id: string; name: string; input: unknown };
   result?: ToolResult;
   progress?: string;
+  onOpenChart?: (chartId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const refusal = tierRefusal(result);
+  const chartID = chartFromResult(call.name, result);
 
   return (
     <div className={`tool-turn ${result?.is_error ? "tool-error" : ""}`}>
@@ -736,6 +766,20 @@ function ToolTurn({
           </span>
         )}
       </button>
+      {/*
+        A chart specification is the one tool result that is worth nothing as JSON:
+        §5.9 has the assistant emit a document and the pane draw it, and the values
+        are read there under the developer's own token — the model never sees them.
+        So the useful thing to offer here is the way in.
+      */}
+      {chartID && onOpenChart && (
+        <div className="tool-chart">
+          <button onClick={() => onOpenChart(chartID)}>Open in exploration</button>
+          <span className="muted-inline">
+            the assistant proposed a chart; the values behind it are read with your token
+          </span>
+        </div>
+      )}
       {open && (
         <div className="tool-body">
           <div className="tool-part">
@@ -752,6 +796,13 @@ function ToolTurn({
       )}
     </div>
   );
+}
+
+/** chartFromResult picks the chart id out of a render_chart result, if there is one. */
+function chartFromResult(tool: string, result?: ToolResult): string | null {
+  if (tool !== "render_chart" || !result || result.is_error) return null;
+  const content = result.content as { chart_id?: string } | null;
+  return content?.chart_id ?? null;
 }
 
 /** tierRefusal recognises §3.2's structured refusal so it can be shown as one. */

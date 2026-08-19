@@ -1,0 +1,53 @@
+{
+  "confirmable": {
+    "activity_pattern.active_threshold": "the idle/active split the session detector used",
+    "activity_pattern.classification": "continuous, session based, intermittent or status",
+    "activity_pattern.sessions": "detected session boundaries",
+    "recommendations.exclusions": "the ranges recommended for exclusion",
+    "recommendations.usable_range": "the range recommended as usable",
+    "sampling.gaps": "the classification of a detected gap",
+    "value_semantics.characteristic_id": "the canonical characteristic id",
+    "value_semantics.kind": "instantaneous, cumulative counter, binary, categorical or status",
+    "value_semantics.unit": "the resolved unit, where it was inferred, unknown or in conflict"
+  },
+  "override": {
+    "action": "correct",
+    "computed_value": "W",
+    "confirmed_value": "kW",
+    "created_at": "2026-08-17T00:00:00Z",
+    "created_by": "user-123",
+    "detector_version": "1.0.0",
+    "field_path": "value_semantics.unit",
+    "note": "the inverter reports kilowatts",
+    "override_id": "ovr-1",
+    "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+    "series_ref": {
+      "device_id": "urn:infai:ses:device:1",
+      "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+      "variable_path": "value.power"
+    }
+  },
+  "series": {
+    "index": 0,
+    "label": "PV power",
+    "notes": [],
+    "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+    "ref": {
+      "device_id": "urn:infai:ses:device:1",
+      "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+      "variable_path": "value.power"
+    },
+    "transform": "none",
+    "unit": {
+      "available_conversions": [],
+      "characteristic_id": "ch-watt",
+      "computed_unit": "W",
+      "confirmable": false,
+      "confirmed": true,
+      "confirmed_by": "user-123",
+      "note": "the unit is the developer's, not the ontology's",
+      "unit": "kW",
+      "unit_source": "characteristic"
+    }
+  }
+}

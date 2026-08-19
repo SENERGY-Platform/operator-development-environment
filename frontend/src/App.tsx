@@ -25,13 +25,14 @@ import {
 } from "./api";
 import { AdminView } from "./admin";
 import { ChatView } from "./chat";
+import { ExplorationView } from "./exploration";
 import { KernelView } from "./kernel";
 import { logout } from "./keycloak";
 import { ProfilerView } from "./profiler";
 import { SelectionView } from "./selection";
 import { Centered, Muted, Pane, describe, useLoad } from "./ui";
 
-type View = "chat" | "ontology" | "selection" | "profiler" | "kernel" | "admin";
+type View = "chat" | "ontology" | "selection" | "profiler" | "exploration" | "kernel" | "admin";
 
 /**
  * The shell through M3. The pane layout of SPEC §2 (Chat / Data / Exploration /
@@ -43,6 +44,18 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View | null>(null);
+  // A chart named from another pane — a render_chart result in chat, a profile in
+  // the profiler view. Held here because it is the one piece of state two panes
+  // hand to a third; cleared once the exploration pane has taken it, so returning
+  // to that tab later does not re-open the same chart over the developer's own
+  // selection.
+  const [chart, setChart] = useState<string | null>(null);
+
+  const openChart = useCallback((chartId: string) => {
+    setChart(chartId);
+    setView("exploration");
+  }, []);
+  const clearChart = useCallback(() => setChart(null), []);
 
   useEffect(() => {
     api
@@ -62,7 +75,9 @@ export default function App() {
   return (
     <div className="app">
       <Header session={session} view={current} onView={setView} />
-      {current === "chat" && <ChatView session={session} />}
+      {current === "chat" && (
+        <ChatView session={session} onOpenChart={session.features.charts ? openChart : undefined} />
+      )}
       {current === "ontology" && (
         <main className="panes">
           <AspectTreePane />
@@ -71,7 +86,10 @@ export default function App() {
         </main>
       )}
       {current === "selection" && <SelectionView />}
-      {current === "profiler" && <ProfilerView />}
+      {current === "profiler" && (
+        <ProfilerView onOpenChart={session.features.charts ? openChart : undefined} />
+      )}
+      {current === "exploration" && <ExplorationView focus={chart} onFocusHandled={clearChart} />}
       {current === "kernel" && <KernelView />}
       {current === "admin" && <AdminView />}
     </div>
@@ -95,6 +113,7 @@ function Header({
   tabs.push(["ontology", "Ontology"]);
   if (session.features.selection) tabs.push(["selection", "Selection"]);
   if (session.features.profiler) tabs.push(["profiler", "Profiler"]);
+  if (session.features.charts) tabs.push(["exploration", "Exploration"]);
   if (session.features.kernel) tabs.push(["kernel", "Kernel"]);
   // §3.3's settings surface, gated on the realm role at the router as well; hiding
   // the tab is a courtesy, not the enforcement.

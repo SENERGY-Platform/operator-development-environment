@@ -33,6 +33,7 @@ import (
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/admin"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/auth"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/charts"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
@@ -68,6 +69,11 @@ type Deps struct {
 	// M4. Absent when no jupyterhub_url is configured, in which case the kernel
 	// routes are not served and run_code has no executor.
 	Kernel *kernel.Service
+
+	// M5. The exploration pane (§5.9). Present whenever a timescale-wrapper is,
+	// because a chart is a read of series values plus the profiler's annotations
+	// over them.
+	Charts *charts.Service
 }
 
 // NewRouter wires the ODE HTTP surface.
@@ -184,6 +190,24 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		profiles.POST("/:id/overrides", handleCreateOverride(deps.Profiler))
 	}
 
+	// M5. The exploration pane (§5.9, §5.10). On HTTP rather than the WebSocket:
+	// one chart is one batched, point-capped query, so it answers in seconds and
+	// needs neither cancellation nor a second code path.
+	if deps.Charts != nil {
+		chartRoutes := secured.Group("/charts")
+		chartRoutes.POST("", handleCreateChart(deps.Charts))
+		chartRoutes.GET("", handleListCharts(deps.Charts))
+		chartRoutes.GET("/:id", handleGetChart(deps.Charts))
+		chartRoutes.DELETE("/:id", handleDeleteChart(deps.Charts))
+		// The only route that hands series values to a client, and it hands them to
+		// the developer under their own token. The exposure tier bounds an LLM
+		// context, not a developer's view of their own data (§3.2).
+		chartRoutes.GET("/:id/data", handleChartData(deps.Charts))
+		// Developer action only, never an LLM tool (§5.8, D21) — the same overlay
+		// the profiler route above writes to.
+		chartRoutes.POST("/:id/confirmations", handleConfirmChart(deps.Charts))
+	}
+
 	// M3. Chat, the tool surface and the admin controls (§3.2, §3.3, §5.7, §5.8).
 	if deps.Chat != nil {
 		secured.GET("/llm/providers", handleListProviders(deps.Chat))
@@ -288,6 +312,7 @@ func handleSession(deps Deps) gin.HandlerFunc {
 				"chat":      deps.Chat != nil,
 				"mcp":       deps.MCP != nil,
 				"kernel":    deps.Kernel != nil,
+				"charts":    deps.Charts != nil,
 			},
 		}
 

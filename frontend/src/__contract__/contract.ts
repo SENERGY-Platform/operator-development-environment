@@ -14,6 +14,10 @@
  */
 import type {
   AvailabilityList,
+  ChartCreated,
+  ChartData,
+  ChartSpec,
+  ChartConfirmation,
   ChatSession,
   ChatSessionDetail,
   KernelFiles,
@@ -39,6 +43,10 @@ import adminLimits from "./admin_limits.json";
 import adminToolCalls from "./admin_tool_calls.json";
 import adminUsage from "./admin_usage.json";
 import availability from "./availability.json";
+import chartConfirmation from "./chart_confirmation.json";
+import chartCreated from "./chart_created.json";
+import chartData from "./chart_data.json";
+import chartList from "./charts.json";
 import chatProviders from "./chat_providers.json";
 import chatSession from "./chat_session.json";
 import chatSessions from "./chat_sessions.json";
@@ -93,4 +101,12 @@ export const checked = {
   // pkg/kernel/kerneltest, for the same reason as the M3 files above.
   kernelStatus: kernelStatus satisfies Loose<KernelStatus>,
   kernelFiles: kernelFiles satisfies Loose<KernelFiles>,
+
+  // M5. Emitted by the API test harness too. The values are a fake's — the points
+  // are a constant — but the annotations are a real profiler run over the harness
+  // fixture, so the confirmable field paths in there are the backend's own.
+  chartCreated: chartCreated satisfies Loose<ChartCreated>,
+  charts: chartList.charts satisfies Loose<ChartSpec[]>,
+  chartData: chartData satisfies Loose<ChartData>,
+  chartConfirmation: chartConfirmation satisfies Loose<ChartConfirmation>,
 };

@@ -80,6 +80,7 @@ export interface Session {
     chat: boolean;
     mcp: boolean;
     kernel: boolean;
+    charts: boolean;
   };
   /** Present only when the LLM surface is configured (M3). */
   max_exposure_tier?: Tier;
@@ -1106,6 +1107,170 @@ export interface ChatEvent {
   error?: string;
 }
 
+// --- M5: the exploration pane (SPEC §5.9, §5.10) ---
+
+/**
+ * Who put an element on a chart. Stamped by the backend, never by a specification,
+ * so a band the profiler detected and a band a model wrote are told apart on
+ * screen — they are different kinds of claim.
+ */
+export type ChartAuthor = "developer" | "llm" | "profiler";
+
+/**
+ * What a chart axis is drawn against.
+ *
+ * More than a string on purpose (D29): the characteristic id is canonical and
+ * convertible, the unit string is derived and advisory. `confirmable` is what the
+ * pane offers §5.10's control on, and it is false where the ontology answered
+ * outright — the ontology reducing how often a human is asked is part of the
+ * design argument, not a gap in it.
+ */
+export interface ChartUnit {
+  unit: string;
+  unit_source: string;
+  characteristic_id: string | null;
+  available_conversions: Conversion[];
+  confirmable: boolean;
+  confirmed: boolean;
+  /** What the resolver said before the developer spoke, so the two stay diffable. */
+  computed_unit?: string;
+  confirmed_by?: string;
+  note?: string;
+}
+
+export interface ChartAxis extends ChartUnit {
+  /** The series do not share a unit, so the label would be a lie. */
+  mixed: boolean;
+  from: string;
+}
+
+export interface ChartAnnotation {
+  annotation_id: string;
+  type: string;
+  from: string;
+  to: string;
+  label: string;
+  severity: "info" | "warn" | "error";
+  source?: string;
+  confirmable: boolean;
+  /** The profile field confirming this writes to. Present when confirmable. */
+  field_path?: string;
+  series_index?: number;
+  author: ChartAuthor;
+}
+
+export interface ChartMarker {
+  marker_id: string;
+  at: string;
+  label: string;
+  source?: string;
+  series_index?: number;
+  author: ChartAuthor;
+}
+
+export interface ChartSeriesSpec {
+  ref: SeriesRef;
+  /** none | diff | rate | resample:<interval> | convert:<characteristic id> */
+  transform?: string;
+  label?: string;
+  /** The profile whose detections are drawn as annotations. */
+  profile_id?: string;
+}
+
+export interface ChartSpec {
+  chart_id: string;
+  title: string;
+  caption?: string;
+  series: ChartSeriesSpec[];
+  annotations: ChartAnnotation[];
+  markers: ChartMarker[];
+  y_axis: { unit?: string; unit_source?: string };
+  window: Window;
+  group_time?: string;
+  author: ChartAuthor;
+  created_by: string;
+  created_at: string;
+  session_id?: string;
+}
+
+export interface ChartSeriesResolution {
+  index: number;
+  ref: SeriesRef;
+  label: string;
+  transform: string;
+  profile_id?: string;
+  unit: ChartUnit;
+  notes: string[];
+}
+
+export interface ChartCreated {
+  spec: ChartSpec;
+  series: ChartSeriesResolution[];
+  y_axis: ChartAxis;
+  notes: string[];
+}
+
+export interface ChartPoint {
+  t: string;
+  v: number;
+}
+
+export interface ChartSeriesData extends ChartSeriesResolution {
+  group_time: string;
+  group_type: string;
+  math?: string;
+  points: ChartPoint[];
+  non_numeric_dropped: number;
+  null_rows: number;
+  /** The override overlay for this series: what the developer has already decided. */
+  confirmations: ProfileOverrideRecord[];
+}
+
+export interface ChartData {
+  chart_id: string;
+  title: string;
+  caption?: string;
+  window: Window;
+  group_time: string;
+  /** Every series shares one bucket, so points at the same x are the same interval. */
+  aligned: boolean;
+  series: ChartSeriesData[];
+  annotations: ChartAnnotation[];
+  markers: ChartMarker[];
+  y_axis: ChartAxis;
+  annotations_dropped: number;
+  reads: { devices: number; queries: number; points: number };
+  notes: string[];
+}
+
+export interface ChartRequest {
+  session_id?: string;
+  title?: string;
+  caption?: string;
+  series: ChartSeriesSpec[];
+  annotations?: Partial<ChartAnnotation>[];
+  markers?: Partial<ChartMarker>[];
+  y_axis?: { unit?: string; unit_source?: string };
+  window?: { from?: string; to?: string };
+  group_time?: string;
+}
+
+export interface ChartConfirmRequest {
+  series_index: number;
+  field_path: string;
+  action: "confirm" | "correct" | "reject";
+  computed_value?: unknown;
+  confirmed_value?: unknown;
+  note?: string;
+}
+
+export interface ChartConfirmation {
+  override: ProfileOverrideRecord;
+  /** The series as it resolves *after* the confirmation, so the axis can relabel. */
+  series: ChartSeriesResolution;
+  confirmable: Record<string, string>;
+}
+
 // --- M4: the developer's own pod (SPEC §5.6) ---
 
 export interface KernelStatus {
@@ -1246,4 +1411,30 @@ export const api = {
   /** Ends the kernel. The pod stays: it is the developer's, and their files are on it. */
   kernelShutdown: () => del("/kernel"),
   kernelFiles: (path?: string) => get<KernelFiles>(`/kernel/files${query({ path })}`),
+
+  // --- M5 ---
+
+  /** Validates and stores a specification. Reads no values (§5.9). */
+  createChart: (body: ChartRequest) => post<ChartCreated>("/charts", body),
+  charts: (params: { sessionId?: string; limit?: number } = {}) =>
+    get<{ charts: ChartSpec[]; count: number }>(
+      `/charts${query({ session_id: params.sessionId, limit: params.limit })}`,
+    ),
+  chart: (id: string) => get<ChartSpec>(`/charts/${encodeURIComponent(id)}`),
+  /**
+   * The values behind a chart, read as the developer. The window and bucket
+   * overrides are how the pane zooms without minting a second chart.
+   */
+  chartData: (id: string, params: { from?: string; to?: string; groupTime?: string } = {}) =>
+    get<ChartData>(
+      `/charts/${encodeURIComponent(id)}/data${query({
+        from: params.from,
+        to: params.to,
+        group_time: params.groupTime,
+      })}`,
+    ),
+  /** §5.10, into the profiler's overlay. There is no LLM tool for this (§5.8). */
+  confirmChart: (id: string, body: ChartConfirmRequest) =>
+    post<ChartConfirmation>(`/charts/${encodeURIComponent(id)}/confirmations`, body),
+  deleteChart: (id: string) => del(`/charts/${encodeURIComponent(id)}`),
 };

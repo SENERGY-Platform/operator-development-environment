@@ -23,6 +23,7 @@ import (
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/charts"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
@@ -68,6 +69,13 @@ type (
 		PutProposedSelection(ctx context.Context, sessionID string, proposal ProposedSelection) error
 	}
 
+	// Charts is the exploration pane's backend (§5.9). render_chart writes a
+	// specification here and reads back how it resolved; it never reads values,
+	// which is why a tool that plainly produces a picture of data sits at L1.
+	Charts interface {
+		Create(ctx context.Context, token string, req charts.CreateRequest) (charts.Created, error)
+	}
+
 	// Kernel runs code in the developer's own pod (§5.6). Narrowed to the two
 	// methods run_code needs: the token identifies the developer, so nothing here
 	// takes a user.
@@ -89,6 +97,7 @@ type Deps struct {
 	Selection     Selection
 	SelectionSink SelectionSink
 	Kernel        Kernel
+	Charts        Charts
 
 	// ProfileTokenBudget bounds the projection handed to the model (D26). The
 	// stored profile is unbounded; what an LLM reads never is.
@@ -412,12 +421,97 @@ func NewSurface(deps Deps) (*Registry, error) {
 			Unavailable: "M6 (relations/, SPEC §5.5)",
 		},
 		Definition{
-			Name:        "render_chart",
-			Description: "Emit a declarative chart specification for the exploration pane to render.",
-			Effect:      "emit chart spec",
-			MinTier:     L1,
-			Schema:      json.RawMessage(`{"type": "object", "properties": {"chart_id": {"type": "string"}, "series": {"type": "array", "items": {"type": "object"}}}}`),
-			Unavailable: "M5 (exploration pane, SPEC §5.9)",
+			Name: "render_chart",
+			Description: "Emit a declarative chart specification for the developer's exploration pane " +
+				"to draw. This is how you demonstrate a claim about data visually: you name the series, " +
+				"the transform and the annotations, and the pane renders them from the developer's own " +
+				"read. You never receive the values — this returns the resolved axis, the units and the " +
+				"chart id only. Transforms are evaluated by the platform, including unit conversion, so " +
+				"never compute one yourself. Annotate what you want the developer to check, and mark an " +
+				"annotation confirmable when it is a claim they should confirm or correct.",
+			Effect:  "emit chart spec",
+			MinTier: L1,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "title": {"type": "string"},
+			    "caption": {"type": "string", "description": "What the developer should take from the chart."},
+			    "series": {
+			      "type": "array",
+			      "description": "Up to eight series, drawn on one axis.",
+			      "items": {
+			        "type": "object",
+			        "properties": {
+			          "device_id": {"type": "string"},
+			          "service_id": {"type": "string"},
+			          "variable_path": {"type": "string"},
+			          "label": {"type": "string"},
+			          "transform": {
+			            "type": "string",
+			            "description": "one of: none | diff | rate | resample:<interval, e.g. 900s or 15m> | convert:<target characteristic id>. diff and rate are for cumulative counters; convert needs a target reachable through the ontology conversion graph, which profile_series reports as available_conversions."
+			          },
+			          "profile_id": {
+			            "type": "string",
+			            "description": "The profile whose detected sessions, gaps, exclusions and counter resets should be drawn as annotations. Omit and the chart carries only the annotations you write yourself."
+			          }
+			        },
+			        "required": ["device_id", "service_id", "variable_path"]
+			      }
+			    },
+			    "annotations": {
+			      "type": "array",
+			      "description": "Labelled time ranges. Use them to point at what you want looked at.",
+			      "items": {
+			        "type": "object",
+			        "properties": {
+			          "from": {"type": "string", "description": "RFC3339."},
+			          "to": {"type": "string", "description": "RFC3339."},
+			          "label": {"type": "string"},
+			          "severity": {"type": "string", "description": "info | warn | error"},
+			          "source": {"type": "string", "description": "Where the claim comes from, e.g. \"profile.quality_flags\"."},
+			          "series_index": {"type": "integer", "description": "Which series it applies to; required when confirmable."},
+			          "confirmable": {"type": "boolean", "description": "Ask the developer to confirm, correct or reject this. Requires field_path."},
+			          "field_path": {"type": "string", "description": "The profile field a confirmation writes to, e.g. activity_pattern.sessions or sampling.gaps."}
+			        },
+			        "required": ["from", "to", "label"]
+			      }
+			    },
+			    "markers": {
+			      "type": "array",
+			      "description": "Labelled instants.",
+			      "items": {
+			        "type": "object",
+			        "properties": {
+			          "at": {"type": "string", "description": "RFC3339."},
+			          "label": {"type": "string"},
+			          "source": {"type": "string"},
+			          "series_index": {"type": "integer"}
+			        },
+			        "required": ["at", "label"]
+			      }
+			    },
+			    "y_axis": {
+			      "type": "object",
+			      "description": "Optional. Omit it and the axis is resolved from the ontology, which is the better answer — state one only when you mean to override that.",
+			      "properties": {
+			        "unit": {"type": "string"},
+			        "unit_source": {"type": "string"}
+			      }
+			    },
+			    "window": {
+			      "type": "object",
+			      "description": "The charted range. Omit it and the analysis window of a named profile is used, or the last seven days.",
+			      "properties": {"from": {"type": "string"}, "to": {"type": "string"}}
+			    },
+			    "group_time": {
+			      "type": "string",
+			      "description": "Aggregation bucket for every series, e.g. \"15m\". Omit it and one is derived that fits the point cap."
+			    }
+			  },
+			  "required": ["series"]
+			}`),
+			Unavailable: "M5 — requires timescale_wrapper_url",
+			executor:    ifPresent(s.renderChart, deps.Charts),
 		},
 		Definition{
 			Name:        "write_file",

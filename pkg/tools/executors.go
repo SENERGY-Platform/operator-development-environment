@@ -26,6 +26,7 @@ import (
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/charts"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
@@ -622,7 +623,7 @@ func (s *surface) previewSeries(ctx context.Context, req Request) (any, error) {
 	if groupType == "" {
 		groupType = timeseries.GroupMean
 	}
-	if !validGroupType(groupType) {
+	if !timeseries.ValidGroupType(groupType) {
 		return nil, fmt.Errorf("%w: group_type %q is not accepted by the platform", ErrInvalidInput, groupType)
 	}
 
@@ -740,6 +741,162 @@ func (s *surface) proposeDataSelection(ctx context.Context, req Request) (any, e
 	}, nil
 }
 
+// ---- render_chart (L1) ----
+
+type renderChartInput struct {
+	Title       string                  `json:"title"`
+	Caption     string                  `json:"caption"`
+	Series      []renderChartSeries     `json:"series"`
+	Annotations []renderChartAnnotation `json:"annotations"`
+	Markers     []renderChartMarker     `json:"markers"`
+	YAxis       struct {
+		Unit       string `json:"unit"`
+		UnitSource string `json:"unit_source"`
+	} `json:"y_axis"`
+	Window struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	} `json:"window"`
+	GroupTime string `json:"group_time"`
+}
+
+type renderChartSeries struct {
+	DeviceID     string `json:"device_id"`
+	ServiceID    string `json:"service_id"`
+	VariablePath string `json:"variable_path"`
+	Label        string `json:"label"`
+	Transform    string `json:"transform"`
+	ProfileID    string `json:"profile_id"`
+}
+
+type renderChartAnnotation struct {
+	Type        string `json:"type"`
+	From        string `json:"from"`
+	To          string `json:"to"`
+	Label       string `json:"label"`
+	Severity    string `json:"severity"`
+	Source      string `json:"source"`
+	Confirmable bool   `json:"confirmable"`
+	FieldPath   string `json:"field_path"`
+	SeriesIndex *int   `json:"series_index"`
+}
+
+type renderChartMarker struct {
+	At          string `json:"at"`
+	Label       string `json:"label"`
+	Source      string `json:"source"`
+	SeriesIndex *int   `json:"series_index"`
+}
+
+// renderChart emits a §5.9 chart specification for the exploration pane.
+//
+// The result deliberately carries no values, and that is what makes the tier
+// assignment coherent rather than lax. render_chart is L1 because a chart shows
+// values and the developer will see them — but the model gets the chart id, the
+// resolved units and the notes, and the browser fetches the data itself with the
+// developer's token. So a model at L1 can demonstrate a selection visually without
+// a single value entering its context, which is the property M5 is accepted on.
+//
+// values_read is reported for the same reason QuickProfile reports its read counts:
+// the claim is then checkable from the answer rather than from a promise.
+func (s *surface) renderChart(ctx context.Context, req Request) (any, error) {
+	var in renderChartInput
+	if err := decode(req.Input, &in); err != nil {
+		return nil, err
+	}
+	if len(in.Series) == 0 {
+		return nil, fmt.Errorf("%w: a chart needs at least one series", ErrInvalidInput)
+	}
+
+	window, err := parseWindow(in.Window.From, in.Window.To)
+	if err != nil {
+		return nil, err
+	}
+
+	series := make([]charts.SeriesSpec, 0, len(in.Series))
+	for i, entry := range in.Series {
+		if entry.DeviceID == "" || entry.ServiceID == "" || entry.VariablePath == "" {
+			return nil, fmt.Errorf(
+				"%w: series %d is not fully addressed; a series is {device_id, service_id, variable_path}",
+				ErrInvalidInput, i)
+		}
+		series = append(series, charts.SeriesSpec{
+			Ref: profiler.SeriesRef{
+				DeviceID: entry.DeviceID, ServiceID: entry.ServiceID, VariablePath: entry.VariablePath,
+			},
+			Label:     entry.Label,
+			Transform: entry.Transform,
+			ProfileID: entry.ProfileID,
+		})
+	}
+
+	annotations := make([]charts.Annotation, 0, len(in.Annotations))
+	for i, entry := range in.Annotations {
+		from, err := parseTime(entry.From, fmt.Sprintf("annotations[%d].from", i))
+		if err != nil {
+			return nil, err
+		}
+		to, err := parseTime(entry.To, fmt.Sprintf("annotations[%d].to", i))
+		if err != nil {
+			return nil, err
+		}
+		annotations = append(annotations, charts.Annotation{
+			Type: entry.Type, From: from, To: to, Label: entry.Label, Severity: entry.Severity,
+			Source: entry.Source, Confirmable: entry.Confirmable, FieldPath: entry.FieldPath,
+			SeriesIndex: entry.SeriesIndex,
+		})
+	}
+
+	markers := make([]charts.Marker, 0, len(in.Markers))
+	for i, entry := range in.Markers {
+		at, err := parseTime(entry.At, fmt.Sprintf("markers[%d].at", i))
+		if err != nil {
+			return nil, err
+		}
+		markers = append(markers, charts.Marker{
+			At: at, Label: entry.Label, Source: entry.Source, SeriesIndex: entry.SeriesIndex,
+		})
+	}
+
+	created, err := s.deps.Charts.Create(ctx, req.Token, charts.CreateRequest{
+		UserSub:   req.UserSub,
+		SessionID: req.SessionID,
+		// Stamped here, not read from the input: an author cannot claim to be the
+		// developer, and the pane shows who put each element on screen.
+		Author:      charts.AuthorLLM,
+		Title:       in.Title,
+		Caption:     in.Caption,
+		Series:      series,
+		Annotations: annotations,
+		Markers:     markers,
+		YAxis:       charts.YAxis{Unit: in.YAxis.Unit, UnitSource: in.YAxis.UnitSource},
+		Window:      window,
+		GroupTime:   in.GroupTime,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := map[string]any{
+		"chart_id":    created.Spec.ChartID,
+		"title":       created.Spec.Title,
+		"window":      created.Spec.Window,
+		"group_time":  created.Spec.GroupTime,
+		"series":      created.Series,
+		"y_axis":      created.Axis,
+		"annotations": len(created.Spec.Annotations),
+		"markers":     len(created.Spec.Markers),
+		"values_read": 0,
+		"note": "the specification is stored and the developer's pane draws it from their own read. " +
+			"You do not receive the values. If a unit is reported as not settled, ask the developer to " +
+			"confirm it rather than assuming one.",
+	}
+	if len(created.Notes) > 0 {
+		out["notes"] = created.Notes
+	}
+	return out, nil
+}
+
 // ---- helpers ----
 
 func decode(input json.RawMessage, into any) error {
@@ -780,71 +937,13 @@ func parseTime(value, field string) (time.Time, error) {
 	return parsed.UTC(), nil
 }
 
-// previewBucket widens the aggregation bucket until the window fits the point cap.
+// previewBucket picks the aggregation bucket for a preview.
 //
-// Returning fewer points than asked for by truncating would be worse than
-// widening: a truncated preview shows the first fraction of the window and looks
-// like the whole of it, which is precisely the misreading a model cannot recover
-// from.
+// The widening itself is timeseries.Bucket, shared with the exploration pane's
+// chart reads (§5.9): both have to answer "how coarse must this be to fit" the
+// same way, or the same series would be shown at two different resolutions.
 func previewBucket(requested string, window profiler.Window, maxPoints int) (bucket string, widened bool) {
-	span := window.Duration()
-	if span <= 0 || maxPoints <= 0 {
-		if requested != "" {
-			return requested, false
-		}
-		return "1h", false
-	}
-
-	if requested != "" {
-		if parsed, err := time.ParseDuration(requested); err == nil && parsed > 0 {
-			if int(span/parsed) <= maxPoints {
-				return requested, false
-			}
-		} else {
-			// An unparseable bucket is not rejected: timescale-wrapper accepts forms
-			// Go's parser does not (a day, for instance). It is passed through and
-			// the point cap still applies on decode.
-			return requested, false
-		}
-	}
-
-	// The smallest bucket from a conventional ladder that fits the cap. A ladder
-	// rather than span/maxPoints because "17m23s" is a legal bucket and a useless
-	// one to read on an axis.
-	ladder := []time.Duration{
-		time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute,
-		time.Hour, 3 * time.Hour, 6 * time.Hour, 12 * time.Hour,
-		24 * time.Hour, 7 * 24 * time.Hour, 30 * 24 * time.Hour,
-	}
-	for _, candidate := range ladder {
-		if int(span/candidate) <= maxPoints {
-			return formatBucket(candidate), requested != ""
-		}
-	}
-	return formatBucket(ladder[len(ladder)-1]), requested != ""
-}
-
-func formatBucket(d time.Duration) string {
-	switch {
-	case d%(24*time.Hour) == 0:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	case d%time.Hour == 0:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	}
-}
-
-func validGroupType(groupType string) bool {
-	switch groupType {
-	case timeseries.GroupMean, timeseries.GroupSum, timeseries.GroupCount,
-		timeseries.GroupMedian, timeseries.GroupMin, timeseries.GroupMax,
-		timeseries.GroupFirst, timeseries.GroupLast,
-		timeseries.GroupDiffMean, timeseries.GroupDiffSum, timeseries.GroupDiffLast,
-		timeseries.GroupTWMean:
-		return true
-	}
-	return false
+	return timeseries.Bucket(requested, window.Duration(), maxPoints)
 }
 
 func stringPtr(s string) *string { return &s }

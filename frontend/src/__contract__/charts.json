@@ -1,0 +1,59 @@
+{
+  "charts": [
+    {
+      "annotations": [],
+      "author": "developer",
+      "caption": "the week the inverter was replaced",
+      "chart_id": "7wcrm733w3phscpodrjpvh3kfi",
+      "created_at": "2026-08-17T00:00:00Z",
+      "created_by": "user-123",
+      "markers": [],
+      "series": [
+        {
+          "label": "PV power",
+          "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+          "ref": {
+            "device_id": "urn:infai:ses:device:1",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "transform": "none"
+        }
+      ],
+      "title": "PV generation",
+      "window": {
+        "from": "2026-05-19T00:00:00Z",
+        "to": "2026-08-17T00:00:00Z"
+      },
+      "y_axis": {}
+    },
+    {
+      "annotations": [],
+      "author": "developer",
+      "caption": "the week the inverter was replaced",
+      "chart_id": "6wrejjfelv33yn4jucwncbh4ki",
+      "created_at": "2026-08-17T00:00:00Z",
+      "created_by": "user-123",
+      "markers": [],
+      "series": [
+        {
+          "label": "PV power",
+          "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+          "ref": {
+            "device_id": "urn:infai:ses:device:1",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "transform": "none"
+        }
+      ],
+      "title": "PV generation",
+      "window": {
+        "from": "2026-05-19T00:00:00Z",
+        "to": "2026-08-17T00:00:00Z"
+      },
+      "y_axis": {}
+    }
+  ],
+  "count": 2
+}

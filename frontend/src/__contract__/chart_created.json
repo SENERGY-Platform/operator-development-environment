@@ -1,0 +1,64 @@
+{
+  "notes": [],
+  "series": [
+    {
+      "index": 0,
+      "label": "PV power",
+      "notes": [],
+      "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+      "ref": {
+        "device_id": "urn:infai:ses:device:1",
+        "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+        "variable_path": "value.power"
+      },
+      "transform": "none",
+      "unit": {
+        "available_conversions": [],
+        "characteristic_id": "ch-watt",
+        "computed_unit": "W",
+        "confirmable": false,
+        "confirmed": false,
+        "unit": "W",
+        "unit_source": "characteristic"
+      }
+    }
+  ],
+  "spec": {
+    "annotations": [],
+    "author": "developer",
+    "caption": "the week the inverter was replaced",
+    "chart_id": "6wrejjfelv33yn4jucwncbh4ki",
+    "created_at": "2026-08-17T00:00:00Z",
+    "created_by": "user-123",
+    "markers": [],
+    "series": [
+      {
+        "label": "PV power",
+        "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+        "ref": {
+          "device_id": "urn:infai:ses:device:1",
+          "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+          "variable_path": "value.power"
+        },
+        "transform": "none"
+      }
+    ],
+    "title": "PV generation",
+    "window": {
+      "from": "2026-05-19T00:00:00Z",
+      "to": "2026-08-17T00:00:00Z"
+    },
+    "y_axis": {}
+  },
+  "y_axis": {
+    "available_conversions": [],
+    "characteristic_id": "ch-watt",
+    "computed_unit": "W",
+    "confirmable": false,
+    "confirmed": false,
+    "from": "series",
+    "mixed": false,
+    "unit": "W",
+    "unit_source": "characteristic"
+  }
+}
