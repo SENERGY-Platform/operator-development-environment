@@ -32,6 +32,7 @@ package kernel
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -318,6 +319,18 @@ func (s *Service) Files(ctx context.Context, bearer, path string) ([]FileEntry, 
 		}
 		target = s.opts.WorkspacePath + "/" + clean
 	}
+	entries, err := s.serverAPIFor(server, token).listDirectory(ctx, target)
+	if err == nil || !s.serverGoneLocked(ctx, session, err) {
+		return entries, err
+	}
+	// The same stale route as in ensureLocked, reached without a kernel: the pane
+	// that lists the workspace is often the first thing to notice the pod is gone.
+	slog.InfoContext(ctx, "the remembered singleuser server is gone; spawning a new one",
+		"user", session.user.Name, "error", err)
+	s.dropServerLocked(session)
+	if server, err = s.ensureServerLocked(ctx, session); err != nil {
+		return nil, err
+	}
 	return s.serverAPIFor(server, token).listDirectory(ctx, target)
 }
 
@@ -347,8 +360,31 @@ func (s *Service) RefreshPlatformToken(ctx context.Context, bearer string) error
 // ---- The locked helpers the operations above are assembled from ----
 
 // ensureLocked is the whole session bring-up, idempotent and cheap when
-// everything is already there.
+// everything is already there — and willing to do it twice.
+//
+// Everything below the server is addressed through the route ODE remembers, and
+// that route is only good for as long as the pod behind it lives. Once the pod is
+// gone — culled, or stopped from JupyterLab while ODE still held the session —
+// /user/{name}/ falls back to the Hub itself, which answers an API POST with its
+// own 403 page: the Hub applies XSRF protection to its handlers, and a token
+// authenticated client sends no _xsrf. Reporting that is useless, so a failure
+// the Hub confirms is a gone server is retried once from a fresh spawn.
 func (s *Service) ensureLocked(
+	ctx context.Context, session *userSession, bearer string,
+) (KernelHandle, error) {
+	handle, err := s.bringUpLocked(ctx, session, bearer)
+	if err == nil || !s.serverGoneLocked(ctx, session, err) {
+		return handle, err
+	}
+	slog.InfoContext(ctx, "the remembered singleuser server is gone; spawning a new one",
+		"user", session.user.Name, "error", err)
+	s.dropServerLocked(session)
+	return s.bringUpLocked(ctx, session, bearer)
+}
+
+// bringUpLocked is one attempt at the bring-up, in the order the pieces depend on
+// each other.
+func (s *Service) bringUpLocked(
 	ctx context.Context, session *userSession, bearer string,
 ) (KernelHandle, error) {
 	server, err := s.ensureServerLocked(ctx, session)
@@ -378,6 +414,48 @@ func (s *Service) ensureLocked(
 		KernelID:  session.kernelID,
 		Name:      s.opts.KernelName,
 	}, nil
+}
+
+// serverGoneLocked asks the Hub whether a failed step failed because the pod ODE
+// was addressing is no longer there.
+//
+// The Hub is asked rather than the response inspected, because the failure looks
+// different at every step — a 404 on the remembered kernel, a 403 page on the
+// next create, a refused WebSocket — while the state behind all of them is the
+// one thing worth knowing. Only a remembered route qualifies: a bring-up that
+// spawned in this very call has already had the Hub's answer, and asking again
+// would turn one genuine failure into two.
+func (s *Service) serverGoneLocked(
+	ctx context.Context, session *userSession, err error,
+) bool {
+	if session.serverURL == "" || ctx.Err() != nil {
+		return false
+	}
+	// Refusals of ODE's own making, which a new pod would refuse just as well.
+	if errors.Is(err, ErrInvalidRequest) || errors.Is(err, ErrBusy) ||
+		errors.Is(err, ErrSpawnTimeout) {
+		return false
+	}
+	state, stateErr := s.hub.ServerState(ctx, session.user.Name)
+	if stateErr != nil {
+		slog.WarnContext(ctx, "could not ask the hub whether the server is still up",
+			"user", session.user.Name, "error", stateErr)
+		return false
+	}
+	return !state.Ready
+}
+
+// dropServerLocked forgets the pod without ending the developer's session.
+//
+// The kernel and the socket go with it; they lived in that pod. The minted token
+// does not, because it is scoped to the user rather than to one server, so the
+// pod that replaces this one accepts it. The workspace has to be checked again:
+// the directory is on the PVC and will still be there, but "already ensured" was
+// a statement about a server that no longer exists.
+func (s *Service) dropServerLocked(session *userSession) {
+	s.dropKernelLocked(session)
+	session.serverURL = ""
+	session.workspaceReady = false
 }
 
 func (s *Service) ensureServerLocked(ctx context.Context, session *userSession) (string, error) {

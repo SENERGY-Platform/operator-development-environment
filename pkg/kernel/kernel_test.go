@@ -490,6 +490,95 @@ func TestAKernelThatVanishedIsReplacedRatherThanReported(t *testing.T) {
 	}
 }
 
+func TestAStoppedPodIsRespawnedRatherThanReportedAsA403(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, nil)
+	bearer := unsignedToken("jonah")
+
+	if _, err := service.Ensure(context.Background(), bearer); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	// The developer stopped their own server from the JupyterHub UI, or the idle
+	// culler did. ODE still remembers the route, and there is no longer a pod
+	// behind it - the Hub answers instead, with a page.
+	hub.StopServer()
+	hub.SetNextKernelID("kernel-2")
+
+	status, err := service.Ensure(context.Background(), bearer)
+	if err != nil {
+		t.Fatalf("Ensure after the pod was stopped: %v", err)
+	}
+	if status.KernelID != "kernel-2" {
+		t.Errorf("kernel = %q, want one from the new pod", status.KernelID)
+	}
+
+	// One spawn, for the replacement: the first bring-up found a server already up.
+	calls := hub.Calls()
+	if len(calls.StartedServers) != 1 || calls.StartedServers[0] != "jonah" {
+		t.Errorf("started servers = %v, want one spawn for the replacement pod",
+			calls.StartedServers)
+	}
+	// The workspace directory is on the PVC and survives, but "already ensured" was
+	// a statement about a server that no longer exists - so both of its segments are
+	// created again on the new pod.
+	if len(calls.Directories) != 4 {
+		t.Errorf("workspace segments created = %v, want each of the two on each pod",
+			calls.Directories)
+	}
+
+	// And the session works, rather than merely reporting that it does.
+	events, err := service.Run(context.Background(), bearer, "print('hello')")
+	if err != nil {
+		t.Fatalf("Run on the replacement pod: %v", err)
+	}
+	if got := collect(t, events); got.stdout != "hello\n" {
+		t.Errorf("stdout = %q, want the cell to have run", got.stdout)
+	}
+}
+
+func TestTheWorkspaceListingSurvivesThePodBeingStopped(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, nil)
+	bearer := unsignedToken("jonah")
+
+	if _, err := service.Ensure(context.Background(), bearer); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	hub.StopServer()
+
+	entries, err := service.Files(context.Background(), bearer, "")
+	if err != nil {
+		t.Fatalf("Files after the pod was stopped: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name != "marker.txt" {
+		t.Errorf("entries = %+v, want the workspace of the replacement pod", entries)
+	}
+}
+
+func TestAHubPageIsReportedAsOneRatherThanAsFourKilobytesOfMarkup(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, nil)
+	bearer := unsignedToken("jonah")
+
+	if _, err := service.Ensure(context.Background(), bearer); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	// A spawn the Hub calls ready while the route to it still answers with a page.
+	// ODE cannot recover from that, so what it says is all the developer gets.
+	hub.StopServerAndStayStopped()
+
+	_, err := service.Ensure(context.Background(), bearer)
+	if err == nil {
+		t.Fatal("Ensure succeeded against a server that answers with a hub page")
+	}
+	if strings.Contains(err.Error(), "<") {
+		t.Errorf("the error carries the hub's markup: %v", err)
+	}
+	if !strings.Contains(err.Error(), "html page") {
+		t.Errorf("error = %v, want it to say the answer was a page", err)
+	}
+}
+
 func TestKeepaliveReportsActivityWhileASessionIsHeld(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, func(o *kernel.Options) {

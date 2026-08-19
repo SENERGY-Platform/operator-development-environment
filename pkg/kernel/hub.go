@@ -361,5 +361,18 @@ func hubMessage(response *http.Response) error {
 	if text == "" {
 		return errors.New(http.StatusText(response.StatusCode))
 	}
+	if looksLikePage(text) {
+		// A rendered page rather than an API answer, which is what a /user/{name}/
+		// request gets when there is no pod behind that route and the Hub answers
+		// instead. Four kilobytes of markup buries that; the fact that it is a page
+		// at all is the diagnosis.
+		return fmt.Errorf("%s (jupyterhub served an html page, not an api answer)",
+			http.StatusText(response.StatusCode))
+	}
 	return errors.New(text)
+}
+
+// looksLikePage tells a rendered HTML page from a message meant to be read.
+func looksLikePage(text string) bool {
+	return strings.HasPrefix(text, "<")
 }

@@ -77,6 +77,9 @@ type Hub struct {
 	// goroutine reads is a data race, whichever way the test is written.
 	nextKernelID    string
 	deadKernels     map[string]bool
+	issuedKernels   []string
+	stopped         bool
+	keepStopped     bool
 	failNextExecute bool
 	hangExecute     chan struct{}
 }
@@ -139,6 +142,49 @@ func (f *Hub) KillKernel(id string) {
 	f.deadKernels[id] = true
 }
 
+// StopServer models the pod going away underneath ODE: culled by the idle
+// culler, or shut down from the JupyterHub UI while ODE still holds the session.
+//
+// The Hub keeps answering, and that is the point. With no pod behind
+// /user/{name}/, the proxy's fallback route is the Hub itself, which serves a
+// rendered page rather than an API answer — 403 to anything that changes state,
+// because the Hub applies XSRF protection to its own handlers and an API client
+// sends no _xsrf. Divergence: the real Hub redirects a GET to /hub/user/{name}/
+// first, and this answers it where it arrives.
+//
+// The next spawn clears it, which is what a respawn looks like from here.
+func (f *Hub) StopServer() {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.stopped = true
+	f.Ready = false
+	f.spawned = false
+	f.pollsSinceSpawn = 0
+	// The kernels lived in that pod, so nothing that was in it answers any more.
+	for _, id := range f.issuedKernels {
+		f.deadKernels[id] = true
+	}
+}
+
+// StopServerAndStayStopped is StopServer, plus a spawn that reports the server
+// ready again while /user/{name}/ still has nothing behind it.
+//
+// That combination is real, if normally brief: the Hub marks a server ready
+// before the proxy route to it is in place. Here it is permanent, which is what
+// makes the error ODE reports observable instead of something a respawn hides.
+func (f *Hub) StopServerAndStayStopped() {
+	f.StopServer()
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.keepStopped = true
+}
+
+func (f *Hub) serverStopped() bool {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	return f.stopped
+}
+
 // Calls is what the hub recorded, copied out under its lock.
 type Calls struct {
 	StartedServers []string
@@ -178,6 +224,9 @@ func (f *Hub) route(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/hub/api/users/"):
 		f.recordServiceToken(r)
 		f.handleUser(w, r)
+
+	case strings.HasPrefix(r.URL.Path, "/user/") && f.serverStopped():
+		f.serveHubPage(w, r)
 
 	case strings.Contains(r.URL.Path, "/api/kernels"):
 		f.handleKernels(w, r)
@@ -234,6 +283,9 @@ func (f *Hub) handleServer(w http.ResponseWriter, r *http.Request) {
 	f.SpawnProfiles = append(f.SpawnProfiles, options.Profile)
 	f.StartedServers = append(f.StartedServers, name)
 	f.spawned = true
+	if !f.keepStopped {
+		f.stopped = false
+	}
 	f.mux.Unlock()
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -305,6 +357,10 @@ func (f *Hub) handleKernels(w http.ResponseWriter, r *http.Request) {
 		f.mux.Lock()
 		f.CreatedKernels = append(f.CreatedKernels, CreatedKernel{User: user, Name: body.Name, Path: body.Path})
 		id := f.nextKernelID
+		f.issuedKernels = append(f.issuedKernels, id)
+		// A kernel that is handed out now is alive, whatever became of the one that
+		// carried this id before a StopServer.
+		delete(f.deadKernels, id)
 		f.mux.Unlock()
 		f.writeJSON(w, map[string]any{"id": id, "name": body.Name, "execution_state": "idle"})
 
@@ -336,6 +392,19 @@ func (f *Hub) handleKernels(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// serveHubPage is the Hub answering for a route that has no pod behind it.
+func (f *Hub) serveHubPage(w http.ResponseWriter, r *http.Request) {
+	status := http.StatusServiceUnavailable
+	if r.Method != http.MethodGet {
+		status = http.StatusForbidden
+	}
+	w.Header().Set("Content-Type", "text/html")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprint(w, "<!DOCTYPE HTML>\n<html lang=\"en\">\n<head>\n<title>JupyterHub</title>\n"+
+		"<link rel=\"stylesheet\" href=\"/hub/static/css/style.min.css\" type=\"text/css\"/>\n</head>\n"+
+		"<body>\n<div class=\"ajax-error\">'_xsrf' argument missing from POST</div>\n</body>\n</html>\n")
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
