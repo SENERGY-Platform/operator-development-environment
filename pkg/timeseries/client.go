@@ -277,9 +277,17 @@ func do[T any](ctx context.Context, c *Client, token, method, path string, query
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	// Timed so a failure can say how long it took. That is the only thing that
+	// separates a gateway refusing a large response from one reporting an upstream
+	// that fell over, and the two call for opposite responses — see
+	// UpstreamError.Immediate.
+	started := time.Now()
+
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return result, &UpstreamError{Resource: path, Code: 0, Err: err}
+		return result, &UpstreamError{
+			Resource: path, Code: 0, Err: err, Elapsed: time.Since(started),
+		}
 	}
 	defer resp.Body.Close()
 
@@ -289,6 +297,7 @@ func do[T any](ctx context.Context, c *Client, token, method, path string, query
 			Resource: path,
 			Code:     resp.StatusCode,
 			Err:      fmt.Errorf("%s", strings.TrimSpace(string(detail))),
+			Elapsed:  time.Since(started),
 		}
 	}
 
@@ -299,7 +308,11 @@ func do[T any](ctx context.Context, c *Client, token, method, path string, query
 	// a frozen-sensor flag would happily report as a finding.
 	decoder.UseNumber()
 	if err := decoder.Decode(&result); err != nil {
-		return result, &UpstreamError{Resource: path, Code: resp.StatusCode, Err: fmt.Errorf("decoding response: %w", err)}
+		return result, &UpstreamError{
+			Resource: path, Code: resp.StatusCode,
+			Err:     fmt.Errorf("decoding response: %w", err),
+			Elapsed: time.Since(started),
+		}
 	}
 	return result, nil
 }

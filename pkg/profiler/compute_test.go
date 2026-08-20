@@ -20,11 +20,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SENERGY-Platform/models/go/models"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
@@ -312,6 +315,171 @@ func TestAGatewayRefusalIsRetriedOnlyOnce(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "raw pass") {
 		t.Errorf("error = %q, want the pass named", err)
+	}
+}
+
+// The incident these two tests come from, in the shape the field logs recorded it:
+// /data-availability answered 502 and /queries/v2 answered 502 thirty-four
+// milliseconds later. No volume of rows explains a 502 from an endpoint that returns
+// a handful of metadata rows, so the size hypothesis is wrong — and telling a
+// developer to narrow their window while the service is unwell sends them turning a
+// knob that cannot help.
+func TestAGatewayRefusalIsNotBlamedOnSizeWhenTheProbeFailedTheSameWay(t *testing.T) {
+	fake := meterFixture()
+	// Both endpoints refused at the gateway, which is what the field logs showed.
+	fake.availErr = &timeseries.UpstreamError{
+		Resource: "/data-availability", Code: http.StatusBadGateway,
+		Err:     errors.New("An invalid response was received from the upstream server"),
+		Elapsed: 20 * time.Millisecond,
+	}
+	fake.queryErr = &timeseries.UpstreamError{
+		Resource: "/queries/v2", Code: http.StatusBadGateway,
+		Err:     errors.New(`{"message":"An invalid response was received from the upstream server"}`),
+		Elapsed: 34 * time.Millisecond,
+	}
+
+	// An explicit window, because that is the only way the pass gets this far once the
+	// probe has failed — and it is what the field caller did: the log line reads
+	// "profiling over the requested window instead".
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	_, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:         meterDevice(testDeviceID, testServiceID),
+		ServiceID:      testServiceID,
+		AnalysisWindow: Window{From: analysisFrom, To: computeNow},
+	})
+	if err == nil {
+		t.Fatal("no error after both attempts failed")
+	}
+
+	message := err.Error()
+	// The pass and the bound are still named: that part was never the problem.
+	if !strings.Contains(message, "raw pass") {
+		t.Errorf("error = %q, want the pass named", message)
+	}
+	// But the size levers must not be offered, because they cannot fix this.
+	if strings.Contains(message, "narrow the raw window") ||
+		strings.Contains(message, "profiler_raw_window_points") {
+		t.Errorf("error = %q, want no size levers: the availability probe returned 502 too, "+
+			"and its response cannot be too large", message)
+	}
+	if !strings.Contains(message, "Asking for less will not help") {
+		t.Errorf("error = %q, want it to say the size remedy does not apply", message)
+	}
+	if !strings.Contains(message, "availability probe failed the same way") {
+		t.Errorf("error = %q, want the evidence it went on", message)
+	}
+
+	// The retry still happens — one read, and a transient fault may have passed — so
+	// the behaviour is unchanged and only the diagnosis is honest.
+	if len(fake.queries) != 2 {
+		t.Errorf("%d raw attempts, want the read and its one retry", len(fake.queries))
+	}
+}
+
+// "4 variable(s)" is not enough to act on when one service fails and others succeed.
+// The column the upstream choked on is in the list ODE sent, so the failure names them
+// with their declared types.
+func TestAFailedRawPassNamesTheColumnsItAskedFor(t *testing.T) {
+	fake := meterFixture()
+	fake.queryErr = &timeseries.UpstreamError{
+		Resource: "/queries/v2", Code: http.StatusBadGateway,
+		Err:     errors.New("An invalid response was received from the upstream server"),
+		Elapsed: 58 * time.Millisecond,
+	}
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	_, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	})
+	if err == nil {
+		t.Fatal("no error")
+	}
+	message := err.Error()
+	for _, want := range []string{powerPath, totalPath} {
+		if !strings.Contains(message, want) {
+			t.Errorf("error = %q, want it to name the column %q", message, want)
+		}
+	}
+	// The declared type comes with it: a column the query builder cannot handle is
+	// usually recognisable by its type. Trimmed to the readable part — the model
+	// carries it as a schema.org URI.
+	if !strings.Contains(message, "(Float)") {
+		t.Errorf("error = %q, want the declared types beside the columns", message)
+	}
+	if strings.Contains(message, "schema.org") {
+		t.Errorf("error = %q, want the type trimmed rather than the whole URI", message)
+	}
+}
+
+// A wide service must not turn one failure into an unreadable log line.
+func TestTheColumnListInAFailureIsBounded(t *testing.T) {
+	wide := make([]Variable, 0, 20)
+	for i := 0; i < 20; i++ {
+		wide = append(wide, Variable{Path: fmt.Sprintf("value.c%d", i), Type: models.Float})
+	}
+
+	described := describeColumns(wide)
+	if !strings.Contains(described, "and 12 more") {
+		t.Errorf("described = %q, want the elision counted", described)
+	}
+	if strings.Contains(described, "value.c19") {
+		t.Errorf("described = %q, want the tail elided rather than dumped", described)
+	}
+	// And the short case is complete, with no elision note to read past.
+	if got := describeColumns(wide[:2]); got != "value.c0 (Float), value.c1 (Float)" {
+		t.Errorf("described = %q, want both columns and no elision", got)
+	}
+}
+
+// The same judgement without the corroborating probe: a 502 that comes back in
+// milliseconds never assembled a response worth refusing.
+func TestAnImmediateGatewayFailureIsNotBlamedOnSize(t *testing.T) {
+	fake := meterFixture()
+	fake.queryErr = &timeseries.UpstreamError{
+		Resource: "/queries/v2", Code: http.StatusBadGateway,
+		Err:     errors.New("An invalid response was received from the upstream server"),
+		Elapsed: 34 * time.Millisecond,
+	}
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	_, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	})
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if strings.Contains(err.Error(), "narrow the raw window") {
+		t.Errorf("error = %q, want no size levers for a failure that took 34ms", err)
+	}
+	if !strings.Contains(err.Error(), "too fast") {
+		t.Errorf("error = %q, want it to say the failure was too fast to be about the response", err)
+	}
+}
+
+// And the mirror case, so the fix does not simply suppress the size advice
+// everywhere: a slow refusal is exactly what a response too large looks like, and
+// there the levers are the useful thing to say.
+func TestASlowGatewayRefusalStillOffersTheSizeLevers(t *testing.T) {
+	fake := meterFixture()
+	fake.queryErr = &timeseries.UpstreamError{
+		Resource: "/queries/v2", Code: http.StatusBadGateway,
+		Err:     errors.New("An invalid response was received from the upstream server"),
+		Elapsed: 45 * time.Second,
+	}
+
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+	_, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	})
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if !strings.Contains(err.Error(), "narrow the raw window") {
+		t.Errorf("error = %q, want the size levers: a 45s refusal is what a response too large "+
+			"looks like", err)
 	}
 }
 

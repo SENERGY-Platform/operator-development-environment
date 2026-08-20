@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"time"
 
 	// The zone database is embedded rather than read from the host. ODE ships on
@@ -327,26 +328,41 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 			break
 		}
 		// One retry, and only for the failures that are about the *response*. A
-		// gateway refusing a read this shape is refusing its size or its duration, and
-		// halving the rows halves both — whereas retrying a rejected request, or
+		// gateway refusing a read this shape may be refusing its size or its duration,
+		// and halving the rows halves both — whereas retrying a rejected request, or
 		// retrying twice, would only cost the platform the same expensive read again.
 		if !raw.LimitReduced && gatewayRefused(err) && rowLimit > minRawRowLimit {
 			reduced := rowLimit / 2
 			if reduced < minRawRowLimit {
 				reduced = minRawRowLimit
 			}
-			slog.WarnContext(ctx, "the gateway refused the raw read; retrying with fewer rows",
-				"device_id", device.Id, "service_id", req.ServiceID,
-				"variables", len(variables), "from_rows", rowLimit, "to_rows", reduced, "error", err)
+			// Which of the two a 502 means decides what to say, and saying the wrong one is
+			// worse than saying nothing: a developer told to narrow their window while the
+			// service is unwell turns a knob that cannot help. The retry happens either way —
+			// it is one read and a transient fault may well have passed — but it is logged as
+			// the hypothesis it is acting on.
+			if unhealthy, why := upstreamLooksUnhealthy(err, availabilityErr); unhealthy {
+				slog.WarnContext(ctx, "the raw read failed in a way that does not look like a "+
+					"response too large; retrying once with fewer rows anyway",
+					"device_id", device.Id, "service_id", req.ServiceID,
+					"variables", len(variables), "columns", describeColumns(variables),
+					"from_rows", rowLimit, "to_rows", reduced,
+					"hypothesis", why, "error", err)
+			} else {
+				slog.WarnContext(ctx, "the gateway refused the raw read; retrying with fewer rows",
+					"device_id", device.Id, "service_id", req.ServiceID,
+					"variables", len(variables), "from_rows", rowLimit, "to_rows", reduced, "error", err)
+			}
 			rowLimit = reduced
 			raw.LimitReduced = true
 			continue
 		}
 		return ProfileResult{}, p.describeReadFailure(err, "raw", len(variables), raw.Window,
-			fmt.Sprintf("row limit %d, so up to %d values in one response",
-				rowLimit, rowLimit*len(variables)),
+			fmt.Sprintf("row limit %d, so up to %d values in one response; columns %s",
+				rowLimit, rowLimit*len(variables), describeColumns(variables)),
 			"narrow the raw window with the days field beside it, or lower profiler_raw_window_points — "+
-				"the response carries one row per message and one value per variable, so both bound it")
+				"the response carries one row per message and one value per variable, so both bound it",
+			availabilityErr)
 	}
 	raw.RowLimit = rowLimit
 	result.RawWindow = raw
@@ -377,7 +393,8 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 		err = p.describeReadFailure(err, "aggregated", numericCount(variables), analysis,
 			fmt.Sprintf("bucket %s, three elements for mean, minimum and maximum", groupTime),
 			"widen the bucket with group_time, or narrow the analysis window — this pass carries no row "+
-				"limit, and one query per variable is joined per element")
+				"limit, and one query per variable is joined per element",
+			availabilityErr)
 	}
 	if err != nil {
 		// The aggregated pass is not fatal: every field it feeds carries
@@ -772,16 +789,62 @@ func gatewayRefused(err error) bool {
 // turning a knob that cannot affect what failed.
 func (p *Profiler) describeReadFailure(
 	err error, pass string, variables int, window Window, bound string, levers string,
+	availabilityErr error,
 ) error {
 	described := fmt.Errorf("the %s pass failed for %d variable(s) over %s (%s): %w",
 		pass, variables, window.String(), bound, err)
 
 	var upstream *timeseries.UpstreamError
-	if errors.As(err, &upstream) && upstream.Gateway() {
-		return fmt.Errorf("%w — a response this size or a query this long is what a gateway "+
-			"refuses rather than a request it rejects: %s", described, levers)
+	if !errors.As(err, &upstream) || !upstream.Gateway() {
+		return described
 	}
-	return described
+	// The levers are for the case they can actually fix. Where the failure looks like
+	// an unwell service instead, offering them would be worse than saying nothing:
+	// they read as a diagnosis, and a developer narrowing their window against a
+	// service that is down learns nothing except that ODE was confident and wrong.
+	if unhealthy, why := upstreamLooksUnhealthy(err, availabilityErr); unhealthy {
+		return fmt.Errorf("%w — this does not look like a response too large for the gateway: %s. "+
+			"Asking for less will not help. If it repeats for this service while reads of other "+
+			"services succeed, the fault is specific to this one rather than an outage, and the "+
+			"columns above are what provoked it", described, why)
+	}
+	return fmt.Errorf("%w — a response this size or a query this long is what a gateway "+
+		"refuses rather than a request it rejects: %s", described, levers)
+}
+
+// upstreamLooksUnhealthy separates the two things a gateway 5xx can mean, and says
+// which evidence it went on.
+//
+// The status class alone cannot do it. A 502 covers both "the response was too large
+// to pass on" and "the upstream errored or dropped the connection", and the remedies
+// are opposite — ask for less, versus ask again later. Two pieces of evidence settle
+// it, and both are already to hand:
+//
+//   - **How fast it failed.** A gateway that refused a response for its size had to
+//     wait for the upstream to produce it. One reporting a broken upstream answers in
+//     milliseconds (UpstreamError.Immediate).
+//   - **Whether the availability probe failed the same way.** That endpoint answers
+//     from metadata — a handful of rows — so its response cannot be too large for
+//     anything. A gateway 5xx on it and on the value read in the same pass is a
+//     statement about the service, not about either request.
+//
+// The second is what the field logs actually showed: /data-availability and
+// /queries/v2 both returned 502 within 34ms of each other, which no volume of rows
+// explains.
+func upstreamLooksUnhealthy(readErr, availabilityErr error) (bool, string) {
+	var probe *timeseries.UpstreamError
+	if errors.As(availabilityErr, &probe) && probe.Gateway() {
+		return true, fmt.Sprintf("the availability probe failed the same way (%d) in this pass, "+
+			"and that endpoint answers from metadata, so its response cannot have been too large",
+			probe.Code)
+	}
+
+	var upstream *timeseries.UpstreamError
+	if errors.As(readErr, &upstream) && upstream.Immediate() {
+		return true, fmt.Sprintf("it failed after %s, which is too fast to have assembled a "+
+			"response worth refusing", upstream.Elapsed.Round(time.Millisecond))
+	}
+	return false, ""
 }
 
 // numericCount is how many variables the aggregated pass actually reads: there is
@@ -802,6 +865,52 @@ func columnNames(variables []Variable) []string {
 		out = append(out, variable.Path)
 	}
 	return out
+}
+
+// maxDescribedColumns bounds the column list in a failure. Enough to see a service's
+// shape; short of dumping a forty-variable inverter into a log line.
+const maxDescribedColumns = 8
+
+// describeColumns names the columns a failed read asked for, with their declared
+// types.
+//
+// It is in the failure because "4 variable(s)" is not enough to act on when a read
+// fails for one service and succeeds for others. A 502 that comes back in
+// milliseconds is the upstream refusing to build this particular query, and the
+// column it choked on is in this list — so naming them, with the types the device
+// type declares, is the difference between "that service is broken" and a developer
+// who can point at the column and go and look at it.
+func describeColumns(variables []Variable) string {
+	shown := variables
+	elided := 0
+	if len(shown) > maxDescribedColumns {
+		elided = len(shown) - maxDescribedColumns
+		shown = shown[:maxDescribedColumns]
+	}
+	parts := make([]string, 0, len(shown))
+	for _, variable := range shown {
+		if variable.Type != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", variable.Path, shortType(variable.Type)))
+			continue
+		}
+		parts = append(parts, variable.Path)
+	}
+	described := strings.Join(parts, ", ")
+	if elided > 0 {
+		described += fmt.Sprintf(" and %d more", elided)
+	}
+	return described
+}
+
+// shortType trims a declared type to the part worth reading. models.Type is a
+// schema.org URI, and "https://schema.org/Float" in a log line is thirty characters
+// saying what "Float" says.
+func shortType(declared models.Type) string {
+	text := string(declared)
+	if index := strings.LastIndex(text, "/"); index >= 0 && index+1 < len(text) {
+		return text[index+1:]
+	}
+	return text
 }
 
 func stringPtr(s string) *string { return &s }

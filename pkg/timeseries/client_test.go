@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
@@ -166,6 +167,68 @@ func TestUpstreamStatusIsCarriedOnTheError(t *testing.T) {
 	}
 	if upstream.Code != http.StatusForbidden {
 		t.Errorf("code = %d, want 403 so the API layer can forward the platform's verdict", upstream.Code)
+	}
+}
+
+// A failed request records how long it took, which is the only thing that separates
+// the two meanings of a gateway 502: a response refused for its size had to be
+// produced first, and a broken upstream answers immediately.
+func TestAFailedRequestRecordsHowLongItTook(t *testing.T) {
+	client, _ := serve(t, http.StatusBadGateway, `An invalid response was received from the upstream server`)
+
+	_, err := client.DataAvailability(context.Background(), "Bearer caller", "d1")
+	var upstream *timeseries.UpstreamError
+	if !errors.As(err, &upstream) {
+		t.Fatalf("error = %v, want an UpstreamError", err)
+	}
+	if upstream.Elapsed <= 0 {
+		t.Error("elapsed is zero, so nothing downstream can tell a fast 502 from a slow one")
+	}
+	if !upstream.Gateway() {
+		t.Error("a 502 is a gateway failure")
+	}
+	// A local httptest server answers in microseconds, which is the point: this one
+	// never assembled a response worth refusing.
+	if !upstream.Immediate() {
+		t.Errorf("a 502 after %s is not reported as immediate", upstream.Elapsed)
+	}
+	if !strings.Contains(err.Error(), "after") {
+		t.Errorf("error = %q, want the elapsed time in the text a human reads", err)
+	}
+}
+
+// Immediate is a judgement about the response, so the two codes that already say
+// something definite about it are exempt.
+func TestImmediateIgnoresTheCodesThatSpeakForThemselves(t *testing.T) {
+	cases := map[string]struct {
+		err  *timeseries.UpstreamError
+		want bool
+	}{
+		"a fast 502 never produced a large response": {
+			err:  &timeseries.UpstreamError{Code: http.StatusBadGateway, Elapsed: 34 * time.Millisecond},
+			want: true,
+		},
+		"a slow 502 is what a response too large looks like": {
+			err:  &timeseries.UpstreamError{Code: http.StatusBadGateway, Elapsed: 45 * time.Second},
+			want: false,
+		},
+		"a 413 said outright that the entity was too large": {
+			err:  &timeseries.UpstreamError{Code: http.StatusRequestEntityTooLarge, Elapsed: time.Millisecond},
+			want: false,
+		},
+		"a gateway timeout is by definition not immediate": {
+			err:  &timeseries.UpstreamError{Code: http.StatusGatewayTimeout, Elapsed: time.Millisecond},
+			want: false,
+		},
+		"an untimed error carries no evidence either way": {
+			err:  &timeseries.UpstreamError{Code: http.StatusBadGateway},
+			want: false,
+		},
+	}
+	for name, test := range cases {
+		if got := test.err.Immediate(); got != test.want {
+			t.Errorf("%s: Immediate() = %v, want %v", name, got, test.want)
+		}
 	}
 }
 

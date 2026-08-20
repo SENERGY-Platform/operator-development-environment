@@ -259,6 +259,86 @@ for the aggregated one. The aggregated pass stays non-fatal either way — its f
 report `read_failed` and the structural detectors still have the raw pass — so an
 error that reaches the caller is always the raw one.
 
+**A 502 has two meanings, and the levers only fix one of them.** The status class says
+the gateway could not get a usable answer, which covers both "the response was too
+large to relay" and "the upstream errored or dropped the connection". The remedies are
+opposite — ask for less, versus ask again later — so advising the first while the
+second is true sends a developer turning a knob that cannot help. Two pieces of
+evidence separate them, and ODE has both to hand:
+
+- **How fast it failed.** A gateway refusing a response for its size had to wait for
+  the upstream to produce it; one reporting a broken upstream answers in
+  milliseconds. Every `UpstreamError` therefore records its elapsed time, and it is
+  in the log line.
+- **Whether the availability probe failed the same way.** That endpoint answers from
+  metadata, so *its* response cannot be too large for anything. A gateway 5xx on it
+  and on the value read in the same pass is a statement about the service.
+
+This came out of a real incident, and the log is the clearest way to show it:
+
+```json
+{"level":"WARN","msg":"availability probe failed; profiling over the requested window instead",
+ "error":"timeseries: /data-availability: timescale-wrapper returned 502: An invalid response…"}
+{"level":"WARN","msg":"the gateway refused the raw read; retrying with fewer rows",
+ "variables":4,"from_rows":25000,"to_rows":12500,
+ "error":"timeseries: /queries/v2: timescale-wrapper returned 502: An invalid response…"}
+```
+
+Both 502s, 34 milliseconds apart, one of them from an endpoint that returns a handful
+of metadata rows. No volume of rows explains that, so the size hypothesis was wrong —
+and the second line, as written then, blamed the size. It now says which hypothesis it
+is acting on, and on final failure it says *"asking for less will not help"* with the
+evidence rather than offering `profiler_raw_window_points`. The retry still happens
+either way: it is one read, and a transient fault may well have passed.
+
+An error with no recorded elapsed time is treated as the size case, which is the
+conservative default — the diagnosis only changes when there is evidence for it.
+
+**"Unwell" is not the same as "transient", and the next run showed the difference.**
+The same 502s came back a quarter of an hour later against the *same service id* on two
+different devices — while the availability probe for one of those devices succeeded, so
+the wrapper was plainly answering other requests. A fault that reproduces on one
+service while its neighbours are read fine is not an outage to wait out; it is
+something about that service. So the failure names the **columns** it asked for, with
+their declared types:
+
+```text
+row limit 25000, so up to 50000 values in one response;
+columns value.power (Float), value.total (Float)
+```
+
+That is the list the upstream choked on, and it is what turns "that service is broken"
+into a column somebody can go and look at. The list is capped at eight with the
+remainder counted, so a forty-variable inverter does not fill the log line.
+
+### The bug behind those 502s, and why the retry is shaped as it is
+
+Those 502s were not about size at all: `timescale-wrapper` was **crashing**. Its own
+pod logs said so, and the number is the giveaway.
+
+```text
+panic: runtime error: slice bounds out of range [:25000] with capacity 1706
+  timescale-wrapper/pkg/api.formatResponse … queries_postprocessing.go:101
+```
+
+`25000` was ODE's row limit and `1706` the rows that service had. The slice to the
+requested limit was unguarded, so **any** read whose limit exceeded the rows available
+killed the process — and the process is shared: in the thirty seconds before that
+crash it had served 192 device-command lookups and 99 connection-log checks, all of
+which died with it.
+
+**Fixed upstream in `timescale-wrapper v0.1.2`**, which guards the slice (and rejects a
+negative limit while it is there):
+
+```go
+if limit := request[seriesIndex].Limit; limit != nil && *limit >= 0 && len(results[seriesIndex]) > *limit {
+```
+
+ODE briefly carried a workaround — dropping the row limit on the retry rather than
+halving it — and it was removed once v0.1.2 was deployed. What stayed is the part that
+was never a workaround: the **classification**, because a 502 genuinely has two
+meanings and this incident is why ODE now tells them apart rather than assuming.
+
 ### When the availability probe fails
 
 `GET /data-availability` derives its answer by regexing the `view_definition` of
