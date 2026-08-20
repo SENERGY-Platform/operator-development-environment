@@ -25,6 +25,7 @@ import (
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 )
 
@@ -209,5 +210,49 @@ func runProfile(
 		RawWindow:      input.RawWindow,
 		GroupTime:      input.GroupTime,
 		SessionParams:  input.SessionParams,
+	})
+}
+
+// RelationInput is one relational pass (§5.5, M6).
+type RelationInput struct {
+	Members     []relations.SeriesMember
+	Window      profiler.Window
+	GridSeconds float64
+	Params      relations.RuleParams
+	// Conditioning is a pointer so that a caller who names nothing gets both
+	// dimensions rather than neither: a zero Conditioning is "condition on nothing",
+	// which is a legitimate request and never the default.
+	Conditioning   *relations.Conditioning
+	CandidateSetID string
+
+	// Progress is forwarded to the service. The WebSocket sets it; the HTTP route
+	// leaves it nil, because a single response has nowhere to put a phase.
+	Progress func(relations.Phase)
+}
+
+// runRelation is the operation both surfaces call.
+//
+// Thin, unlike runQuickProfiles and runSelection: there is no device limit to clamp
+// here, because the members are named explicitly and the service caps how many of
+// them a pass may carry. It exists so the two transports cannot drift, which is the
+// same reason the three above do.
+func runRelation(
+	ctx context.Context,
+	token string,
+	service *relations.Service,
+	input RelationInput,
+) (relations.RelationProfile, error) {
+	if service == nil {
+		return relations.RelationProfile{}, fmt.Errorf("%w: relational profiling is not configured",
+			relations.ErrInvalidRequest)
+	}
+	return service.Relate(ctx, token, relations.Request{
+		Members:        input.Members,
+		Window:         input.Window,
+		GridSeconds:    input.GridSeconds,
+		Params:         input.Params,
+		Conditioning:   input.Conditioning,
+		CandidateSetID: input.CandidateSetID,
+		Progress:       input.Progress,
 	})
 }

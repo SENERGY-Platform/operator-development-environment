@@ -1,0 +1,327 @@
+{
+  "aspect_id": "kitchen",
+  "aspect_name": "Kitchen",
+  "candidate_devices": [
+    {
+      "connection_state": "online",
+      "device_id": "urn:infai:ses:device:1",
+      "device_type_id": "dt-meter",
+      "device_type_name": "Meter",
+      "name": "Oven",
+      "permissions": {
+        "administrate": false,
+        "execute": true,
+        "read": true,
+        "write": false
+      },
+      "series": 1
+    },
+    {
+      "connection_state": "online",
+      "device_id": "urn:infai:ses:device:2",
+      "device_type_id": "dt-meter",
+      "device_type_name": "Meter",
+      "name": "Kitchen lights",
+      "permissions": {
+        "administrate": false,
+        "execute": true,
+        "read": true,
+        "write": false
+      },
+      "series": 1
+    }
+  ],
+  "include_descendants": false,
+  "notes": [
+    "ranking was skipped on request: the candidates are the ontology's, unordered by availability"
+  ],
+  "ontology_gaps": [],
+  "reads": {
+    "aligned": 0,
+    "devices": 1,
+    "profiles": 0,
+    "values": 0
+  },
+  "sets": [
+    {
+      "devices": 2,
+      "graph_id": "urn:infai:ses:graph:1",
+      "graph_name": "Kitchen sub-metering",
+      "graph_node": "n-circuit",
+      "members": [
+        {
+          "aspect_id": "kitchen",
+          "aspect_name": "Kitchen",
+          "characteristic_id": "ch-watt",
+          "connection_state": "online",
+          "device_name": "Kitchen lights",
+          "device_type_name": "Meter",
+          "from_aspect": true,
+          "function_id": "fn-power",
+          "graph": {
+            "depth": 3,
+            "graph_id": "urn:infai:ses:graph:1",
+            "graph_name": "Kitchen sub-metering",
+            "role": "sibling",
+            "via": "n-circuit",
+            "via_name": "Kitchen circuit",
+            "weight": 100
+          },
+          "label": "Kitchen lights power",
+          "ref": {
+            "device_id": "urn:infai:ses:device:2",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "service_name": "readings",
+          "unit": "W",
+          "unit_source": "characteristic"
+        },
+        {
+          "aspect_id": "kitchen",
+          "aspect_name": "Kitchen",
+          "characteristic_id": "ch-watt",
+          "connection_state": "online",
+          "device_name": "Oven",
+          "device_type_name": "Meter",
+          "from_aspect": true,
+          "function_id": "fn-power",
+          "graph": {
+            "depth": 3,
+            "graph_id": "urn:infai:ses:graph:1",
+            "graph_name": "Kitchen sub-metering",
+            "role": "sibling",
+            "via": "n-circuit",
+            "via_name": "Kitchen circuit",
+            "weight": 100
+          },
+          "label": "Oven power",
+          "ref": {
+            "device_id": "urn:infai:ses:device:1",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "service_name": "readings",
+          "unit": "W",
+          "unit_source": "characteristic"
+        }
+      ],
+      "name": "Kitchen circuit",
+      "notes": [],
+      "origin": "graph_siblings",
+      "rationale": "all 2 devices feed Kitchen circuit in the graph Kitchen sub-metering, so they are metered together rather than merely sharing a label — the topology says where they meet",
+      "set_id": "set-2796f6e1133b7e6ef97f",
+      "truncated": false
+    },
+    {
+      "devices": 3,
+      "graph_id": "urn:infai:ses:graph:1",
+      "graph_name": "Kitchen sub-metering",
+      "graph_node": "n-circuit",
+      "members": [
+        {
+          "aspect_id": "kitchen",
+          "characteristic_id": "ch-watt",
+          "connection_state": "online",
+          "device_name": "Site meter",
+          "device_type_name": "Meter",
+          "from_aspect": false,
+          "function_id": "fn-power",
+          "graph": {
+            "depth": 1,
+            "graph_id": "urn:infai:ses:graph:1",
+            "graph_name": "Kitchen sub-metering",
+            "role": "downstream",
+            "via": "n-circuit",
+            "via_name": "Kitchen circuit"
+          },
+          "label": "Site meter power",
+          "ref": {
+            "device_id": "urn:infai:ses:device:3",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "service_name": "readings",
+          "unit": "W",
+          "unit_source": "characteristic"
+        },
+        {
+          "aspect_id": "kitchen",
+          "aspect_name": "Kitchen",
+          "characteristic_id": "ch-watt",
+          "connection_state": "online",
+          "device_name": "Oven",
+          "device_type_name": "Meter",
+          "from_aspect": true,
+          "function_id": "fn-power",
+          "graph": {
+            "depth": 3,
+            "graph_id": "urn:infai:ses:graph:1",
+            "graph_name": "Kitchen sub-metering",
+            "role": "upstream",
+            "via": "n-circuit",
+            "via_name": "Kitchen circuit",
+            "weight": 100
+          },
+          "label": "Oven power",
+          "ref": {
+            "device_id": "urn:infai:ses:device:1",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "service_name": "readings",
+          "unit": "W",
+          "unit_source": "characteristic"
+        },
+        {
+          "aspect_id": "kitchen",
+          "aspect_name": "Kitchen",
+          "characteristic_id": "ch-watt",
+          "connection_state": "online",
+          "device_name": "Kitchen lights",
+          "device_type_name": "Meter",
+          "from_aspect": true,
+          "function_id": "fn-power",
+          "graph": {
+            "depth": 3,
+            "graph_id": "urn:infai:ses:graph:1",
+            "graph_name": "Kitchen sub-metering",
+            "role": "upstream",
+            "via": "n-circuit",
+            "via_name": "Kitchen circuit",
+            "weight": 100
+          },
+          "label": "Kitchen lights power",
+          "ref": {
+            "device_id": "urn:infai:ses:device:2",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "service_name": "readings",
+          "unit": "W",
+          "unit_source": "characteristic"
+        }
+      ],
+      "name": "Kitchen circuit (flow)",
+      "notes": [
+        "a sub-meter is active whenever what it feeds is active, which is arithmetic rather than a finding — the lift filter rejects that rule. What this set is for is the reverse: a device drawing while what it feeds reads idle is a metering or wiring fault, and that is the anomaly a rule here defines."
+      ],
+      "origin": "graph_flow",
+      "rationale": "the graph Kitchen sub-metering has 2 device(s) feeding Kitchen circuit and 1 measuring it, so this is containment rather than a shared location: one side is a sub-meter of the other",
+      "set_id": "set-25d2b2c00ca65073029a",
+      "truncated": false
+    },
+    {
+      "device_group_id": "urn:infai:ses:device-group:1",
+      "devices": 2,
+      "members": [
+        {
+          "aspect_id": "kitchen",
+          "aspect_name": "Kitchen",
+          "characteristic_id": "ch-watt",
+          "connection_state": "online",
+          "device_name": "Kitchen lights",
+          "device_type_name": "Meter",
+          "from_aspect": true,
+          "function_id": "fn-power",
+          "label": "Kitchen lights power",
+          "ref": {
+            "device_id": "urn:infai:ses:device:2",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "service_name": "readings",
+          "unit": "W",
+          "unit_source": "characteristic"
+        },
+        {
+          "aspect_id": "kitchen",
+          "aspect_name": "Kitchen",
+          "characteristic_id": "ch-watt",
+          "connection_state": "online",
+          "device_name": "Oven",
+          "device_type_name": "Meter",
+          "from_aspect": true,
+          "function_id": "fn-power",
+          "label": "Oven power",
+          "ref": {
+            "device_id": "urn:infai:ses:device:1",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "service_name": "readings",
+          "unit": "W",
+          "unit_source": "characteristic"
+        }
+      ],
+      "name": "Kitchen appliances",
+      "notes": [],
+      "origin": "device_group",
+      "rationale": "an existing device group on the platform, which is a stronger grouping than a shared aspect",
+      "set_id": "set-5934e34d1a9cf7a37372",
+      "truncated": false
+    },
+    {
+      "aspect_id": "kitchen",
+      "aspect_name": "Kitchen",
+      "aspect_path": [
+        "Kitchen"
+      ],
+      "devices": 2,
+      "members": [
+        {
+          "aspect_id": "kitchen",
+          "aspect_name": "Kitchen",
+          "characteristic_id": "ch-watt",
+          "connection_state": "online",
+          "device_name": "Kitchen lights",
+          "device_type_name": "Meter",
+          "from_aspect": true,
+          "function_id": "fn-power",
+          "label": "Kitchen lights power",
+          "ref": {
+            "device_id": "urn:infai:ses:device:2",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "service_name": "readings",
+          "unit": "W",
+          "unit_source": "characteristic"
+        },
+        {
+          "aspect_id": "kitchen",
+          "aspect_name": "Kitchen",
+          "characteristic_id": "ch-watt",
+          "connection_state": "online",
+          "device_name": "Oven",
+          "device_type_name": "Meter",
+          "from_aspect": true,
+          "function_id": "fn-power",
+          "label": "Oven power",
+          "ref": {
+            "device_id": "urn:infai:ses:device:1",
+            "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+            "variable_path": "value.power"
+          },
+          "service_name": "readings",
+          "unit": "W",
+          "unit_source": "characteristic"
+        }
+      ],
+      "name": "Kitchen",
+      "notes": [],
+      "origin": "aspect_node",
+      "rationale": "both devices report under the aspect Kitchen",
+      "set_id": "set-ab56cbbb27a6bd7d0531",
+      "truncated": false
+    }
+  ],
+  "subtree": [
+    {
+      "depth": 0,
+      "id": "kitchen",
+      "name": "Kitchen",
+      "parent_id": "building"
+    }
+  ]
+}

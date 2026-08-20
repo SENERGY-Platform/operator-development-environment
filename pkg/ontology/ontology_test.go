@@ -54,6 +54,22 @@ type fakeClient struct {
 	selectablePrefix string
 	selectableAll    bool
 
+	// groupCalls records every device-group listing, which is how the tests check
+	// that §5.5's "prefer an existing grouping" asks with a device filter rather
+	// than enumerating the platform.
+	groupCalls []model.DeviceGroupListOptions
+	groups     []models.DeviceGroup
+	groupErr   error
+	groupCode  int
+
+	// graphCalls records every graph listing. §5.5 asks for the device relationship
+	// graph to be consulted, and the filter it is asked with is what keeps that from
+	// enumerating the platform's whole topology.
+	graphCalls []model.GraphListOptions
+	graphs     []models.Graph
+	graphErr   error
+	graphCode  int
+
 	// delay lets a test hold a load open while other goroutines pile up.
 	delay time.Duration
 }
@@ -111,6 +127,32 @@ func (f *fakeClient) GetDeviceTypeSelectablesV2(
 		return nil, f.selectableErr, f.selectableCode
 	}
 	return f.selectables, nil, 200
+}
+
+func (f *fakeClient) ListDeviceGroups(
+	_ string, options model.DeviceGroupListOptions,
+) ([]models.DeviceGroup, int64, error, int) {
+	f.mux.Lock()
+	f.groupCalls = append(f.groupCalls, options)
+	f.mux.Unlock()
+
+	if f.groupErr != nil {
+		return nil, 0, f.groupErr, f.groupCode
+	}
+	return f.groups, int64(len(f.groups)), nil, 200
+}
+
+func (f *fakeClient) ListGraphs(
+	_ string, options model.GraphListOptions,
+) ([]models.Graph, int64, error, int) {
+	f.mux.Lock()
+	f.graphCalls = append(f.graphCalls, options)
+	f.mux.Unlock()
+
+	if f.graphErr != nil {
+		return nil, 0, f.graphErr, f.graphCode
+	}
+	return f.graphs, int64(len(f.graphs)), nil, 200
 }
 
 func (f *fakeClient) GetLastUpdateTimestamps(string, string) ([]model.LastUpdateTimestamp, error, int) {

@@ -1,0 +1,28 @@
+{
+  "action": "confirm",
+  "computed": {
+    "anomaly": "the oven active while the kitchen lights idle",
+    "confidence": 0.8571,
+    "exceptions": [
+      {
+        "bucket": "06:00-12:00",
+        "confidence": 0,
+        "dimension": "hour_of_day",
+        "drop": 0.8571,
+        "from_hour": 6,
+        "samples": 60,
+        "to_hour": 12
+      }
+    ],
+    "lift": 6.8571,
+    "statement": "the oven active → the kitchen lights active",
+    "support": 0.125
+  },
+  "created_at": "2026-08-17T00:00:00Z",
+  "created_by": "user-123",
+  "decision_id": "6j7nyq66ldg452562e5bzrur5e",
+  "detector_version": "1.0.0",
+  "note": "matches how the kitchen is used",
+  "relation_id": "8bfed85a8066205f14d5fa90c9511c62b0275096a60618919db01529de13ae00",
+  "rule_id": "rule-0c29b1557e8c1ecf9405a12f"
+}

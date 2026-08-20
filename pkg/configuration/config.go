@@ -218,10 +218,28 @@ type ConfigStruct struct {
 	ChartMaxPerUser      int64  `json:"chart_max_per_user"`
 	ChartDefaultLookback string `json:"chart_default_lookback"`
 
+	// Relational bounds (§5.5, M6). RelationMaxMembers is the one that shapes the
+	// answer: the pair count grows with the square of the members and the rule count
+	// with four times that, so a generous figure buys breadth at the cost of a rule
+	// list nobody reads to the end. RelationMaxBuckets bounds the aligned grid, which
+	// is widened rather than the window truncated. RelationMaxRules bounds the
+	// candidate list and what it drops is stated in the profile's notes.
+	RelationMaxMembers         int64  `json:"relation_max_members"`
+	RelationMaxGraphNeighbours int64  `json:"relation_max_graph_neighbours"`
+	RelationMaxBuckets         int64  `json:"relation_max_buckets"`
+	RelationMaxRules           int64  `json:"relation_max_rules"`
+	RelationMaxStored          int64  `json:"relation_max_stored"`
+	RelationDefaultLookback    string `json:"relation_default_lookback"`
+
 	ToolProfileTokenBudget int64 `json:"tool_profile_token_budget"`
 	ToolProfileMaxProfiles int64 `json:"tool_profile_max_profiles"`
 	ToolQuickTokenBudget   int64 `json:"tool_quick_token_budget"`
 	ToolPreviewMaxPoints   int64 `json:"tool_preview_max_points"`
+	// The relational tool bounds (§5.5, M6). The same two-part shape as the profile
+	// bounds above: a token budget per document, and a cap on how many candidate rules
+	// one response carries, because a per-item budget cannot bound a list.
+	ToolRelationTokenBudget int64 `json:"tool_relation_token_budget"`
+	ToolRelationMaxRules    int64 `json:"tool_relation_max_rules"`
 
 	CorsOrigins []string `json:"cors_origins"`
 }
@@ -375,6 +393,32 @@ func applyDefaults(config Config) {
 	}
 	if config.ChartDefaultLookback == "" {
 		config.ChartDefaultLookback = "168h"
+	}
+	if config.ToolRelationTokenBudget <= 0 {
+		config.ToolRelationTokenBudget = 4000
+	}
+	if config.ToolRelationMaxRules <= 0 {
+		config.ToolRelationMaxRules = 12
+	}
+	if config.RelationMaxMembers <= 0 {
+		config.RelationMaxMembers = 6
+	}
+	if config.RelationMaxGraphNeighbours <= 0 {
+		config.RelationMaxGraphNeighbours = 12
+	}
+	if config.RelationMaxBuckets <= 0 {
+		config.RelationMaxBuckets = 20000
+	}
+	if config.RelationMaxRules <= 0 {
+		config.RelationMaxRules = 100
+	}
+	if config.RelationMaxStored <= 0 {
+		config.RelationMaxStored = 200
+	}
+	if config.RelationDefaultLookback == "" {
+		// A month, not a week. An exception "at certain times of day" needs several
+		// samples in each hour bucket of each weekday, and a week does not hold them.
+		config.RelationDefaultLookback = "720h"
 	}
 }
 

@@ -40,6 +40,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/mcp"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
@@ -74,6 +75,11 @@ type Deps struct {
 	// because a chart is a read of series values plus the profiler's annotations
 	// over them.
 	Charts *charts.Service
+
+	// M6. Multi-device conditional patterns (§5.5). Needs the profiler for the
+	// activity_pattern every state series comes from and the resolver for the
+	// aspect-scoped proposals, so it is present whenever both are.
+	Relations *relations.Service
 }
 
 // NewRouter wires the ODE HTTP surface.
@@ -166,14 +172,14 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		ts.GET("/usage", handleUsage(deps.Timeseries))
 	}
 	// The WebSocket is ODE's streaming surface: the profiler operations below, the
-	// chat exchange of §5.7, and kernel execution (§5.6). Registered whenever any of
+	// relational pass of §5.5, the chat exchange of §5.7, and kernel execution (§5.6). Registered whenever any of
 	// them is configured, because a deployment may have one without the others.
 	//
 	// It is not behind auth.Middleware: a browser cannot set an Authorization header
 	// on a WebSocket handshake, so the handler reads the token from the subprotocol
 	// or the query and enforces the realm role itself. Everything else about §3.1 is
 	// unchanged — the gateway validates, ODE authorises.
-	if deps.Profiler != nil || deps.Chat != nil || deps.Kernel != nil {
+	if deps.Profiler != nil || deps.Chat != nil || deps.Kernel != nil || deps.Relations != nil {
 		r.GET("/ws", handleWebSocket(cfg, deps))
 	}
 
@@ -206,6 +212,22 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		// Developer action only, never an LLM tool (§5.8, D21) — the same overlay
 		// the profiler route above writes to.
 		chartRoutes.POST("/:id/confirmations", handleConfirmChart(deps.Charts))
+	}
+
+	// M6. Multi-device conditional patterns (§5.5). Proposing sets is metadata and
+	// answers in seconds, so it is HTTP; the pass itself is also on the WebSocket as
+	// `relate`, because it profiles every participating service before it reads.
+	if deps.Relations != nil {
+		relationRoutes := secured.Group("/relations")
+		// Static segments before the :id wildcard, so gin does not have to choose
+		// between them.
+		relationRoutes.GET("/candidate-sets", handleCandidateSets(deps.Relations))
+		relationRoutes.GET("/rule-decisions", handleRuleDecisions(deps.Relations))
+		relationRoutes.POST("", handleCreateRelation(deps.Relations))
+		relationRoutes.GET("/:id", handleGetRelation(deps.Relations))
+		// Developer action only, never an LLM tool (§5.8, D21) — the same boundary the
+		// profiler's override route and the chart's confirmation route sit behind.
+		relationRoutes.POST("/:id/rule-decisions", handleDecideRule(deps.Relations))
 	}
 
 	// M3. Chat, the tool surface and the admin controls (§3.2, §3.3, §5.7, §5.8).
@@ -313,6 +335,7 @@ func handleSession(deps Deps) gin.HandlerFunc {
 				"mcp":       deps.MCP != nil,
 				"kernel":    deps.Kernel != nil,
 				"charts":    deps.Charts != nil,
+				"relations": deps.Relations != nil,
 			},
 		}
 

@@ -53,6 +53,13 @@ type Client interface {
 	// listed among the tokenless reads for the same reason as the rest: it
 	// authenticates through the client's auth closure, not through an argument.
 	GetDeviceTypeSelectablesV2(query []model.FilterCriteria, pathPrefix string, includeModified bool, servicesMustMatchAllCriteria bool) ([]model.DeviceTypeSelectable, error, int)
+	// ListDeviceGroups and ListGraphs are the exceptions to the note above: both take
+	// the token as an argument and set the header themselves. They are here because
+	// §5.5 asks for existing groupings to be preferred over constructed ones — a device
+	// group records which devices belong together, and a graph records how they are
+	// wired, which is the stronger statement of the two.
+	ListDeviceGroups(token string, options model.DeviceGroupListOptions) ([]models.DeviceGroup, int64, error, int)
+	ListGraphs(token string, options model.GraphListOptions) ([]models.Graph, int64, error, int)
 }
 
 // Snapshot is one consistent read of the ontology.

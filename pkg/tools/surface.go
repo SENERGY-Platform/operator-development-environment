@@ -28,6 +28,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
@@ -76,6 +77,17 @@ type (
 		Create(ctx context.Context, token string, req charts.CreateRequest) (charts.Created, error)
 	}
 
+	// Relations is the multi-device conditional pattern surface (§5.5). Narrowed to
+	// the two operations §5.8 gives a tool: proposing sets from an aspect, which
+	// reads only the ontology, and computing a relation, which reads values. Deciding
+	// a rule is absent on purpose — it is a developer action and there is no tool for
+	// it, the same boundary that keeps ProfileOverride out of this interface.
+	Relations interface {
+		ProposeRelatedSets(ctx context.Context, token string, req relations.ProposalRequest) (relations.Proposal, error)
+		Relate(ctx context.Context, token string, req relations.Request) (relations.RelationProfile, error)
+		MaxMembers() int
+	}
+
 	// Kernel runs code in the developer's own pod (§5.6). Narrowed to the two
 	// methods run_code needs: the token identifies the developer, so nothing here
 	// takes a user.
@@ -98,6 +110,7 @@ type Deps struct {
 	SelectionSink SelectionSink
 	Kernel        Kernel
 	Charts        Charts
+	Relations     Relations
 
 	// ProfileTokenBudget bounds the projection handed to the model (D26). The
 	// stored profile is unbounded; what an LLM reads never is.
@@ -111,6 +124,15 @@ type Deps struct {
 	// rule as ProfileTokenBudget, applied to breadth rather than depth: ranking a
 	// shortlist must not cost more context than reading the profiles would.
 	QuickTokenBudget int
+	// RelationTokenBudget bounds what one relate_series response costs in context.
+	// Same rule as ProfileTokenBudget: the stored relation profile is unbounded — a
+	// pair count grows with the square of the members and each pair carries a table
+	// per conditioning bucket — and what a model reads never is.
+	RelationTokenBudget int
+	// RelationMaxRules caps how many candidate rules one response carries, strongest
+	// first. Breadth rather than depth, and the same reason ProfileMaxProfiles exists:
+	// a per-item budget cannot bound a list.
+	RelationMaxRules int
 	// PreviewMaxPoints caps a tier-L2 preview. A "downsampled preview" that
 	// returned fifty thousand points would be a raw series read with a friendlier
 	// name, and would put the core design rule of §4 in question.
@@ -131,6 +153,8 @@ const (
 	defaultPreviewMaxPoints   = 500
 	defaultDeviceLimit        = 10
 	defaultRunCodeMaxOutput   = 8000
+	defaultRelationBudget     = 4000
+	defaultRelationMaxRules   = 12
 )
 
 // NewSurface builds the registry of §5.8 against the services that are present.
@@ -158,6 +182,12 @@ func NewSurface(deps Deps) (*Registry, error) {
 	}
 	if deps.RunCodeMaxOutputBytes <= 0 {
 		deps.RunCodeMaxOutputBytes = defaultRunCodeMaxOutput
+	}
+	if deps.RelationTokenBudget <= 0 {
+		deps.RelationTokenBudget = defaultRelationBudget
+	}
+	if deps.RelationMaxRules <= 0 {
+		deps.RelationMaxRules = defaultRelationMaxRules
 	}
 
 	s := &surface{deps: deps}
@@ -295,6 +325,45 @@ func NewSurface(deps Deps) (*Registry, error) {
 			executor:    ifPresent(s.quickProfile, deps.Profiler, deps.Devices),
 		},
 
+		Definition{
+			Name: "propose_related_sets",
+			Description: "Propose multi-device sets related through the aspect hierarchy and the " +
+				"platform's device relationship graphs. Give it an aspect node — a room, a " +
+				"subsystem — and it answers with sets of series from the devices reporting under " +
+				"it, so you never have to guess which devices belong together. Reads no values. " +
+				"Use it before relate_series: the set it returns is what you pass there, and its " +
+				"candidate_set_id records where the members came from.\n\n" +
+				"The `origin` of a set says how much the grouping is worth trusting, strongest " +
+				"first. `graph_siblings` means the devices converge on one node of a wiring or " +
+				"aggregation graph — they are metered together, and `graph.via_name` says where " +
+				"they meet. `graph_flow` is a sub-metering pair: one side measures what the other " +
+				"feeds, which is **containment rather than co-occurrence** — do not report " +
+				"\"the sub-meter runs whenever the main meter runs\" as a finding, because that is " +
+				"arithmetic; the fault case is the reverse. `device_group` is an asserted grouping " +
+				"without the topology, and `aspect_node` or `aspect_subtree` only a shared label. " +
+				"A member with `from_aspect: false` was reached through a graph and sits outside " +
+				"the aspect you asked about, which is normal for a meter one level up.",
+			Effect:  "read ontology",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "aspect_id": {
+			      "type": "string",
+			      "description": "The aspect node to propose from, as search_ontology returns it."
+			    },
+			    "include_descendants": {
+			      "type": "boolean",
+			      "description": "Keep series declared against nodes below the requested one. Use it when the devices you want sit on sibling nodes — an oven on \"Kitchen\" and lights on \"Kitchen Ceiling\"."
+			    },
+			    "limit": {"type": "integer", "description": "How many devices to expand."}
+			  },
+			  "required": ["aspect_id"]
+			}`),
+			Unavailable: "requires a timescale-wrapper URL (the relational profiler needs the profiler)",
+			executor:    ifPresent(s.proposeRelatedSets, deps.Relations),
+		},
+
 		// ---- L1: computed statistics. Aggregates are still data (§3.2). ----
 		Definition{
 			Name: "profile_series",
@@ -341,6 +410,50 @@ func NewSurface(deps Deps) (*Registry, error) {
 			}`),
 			Unavailable: "M1b — requires timescale_wrapper_url",
 			executor:    ifPresent(s.getSessions, deps.Profiler),
+		},
+
+		Definition{
+			Name: "relate_series",
+			Description: "Compute a RelationProfile over several series: which of them are active at " +
+				"the same time, how reliably, and under which conditions that stops holding. Each " +
+				"series is turned into idle/active using the profiler's own detected threshold, then " +
+				"all of them are read onto one aligned grid, then every pair is tabulated and " +
+				"conditioned on hour of day and weekday/weekend. What comes back are candidate " +
+				"rules with support, confidence, lift and explicit exception windows — for example " +
+				"\"while the oven is active the kitchen lights are active, except 06:00-12:00\". " +
+				"Returns no series values. **The rules are candidates.** They are not anomaly " +
+				"definitions and nothing downstream reads them: only the developer can confirm one, " +
+				"and you have no tool for that. Propose them, explain the numbers, and ask.",
+			Effect:  "compute + read",
+			MinTier: L1,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "series": {
+			      "type": "array",
+			      "description": "Two or more series, from at most a handful of devices. A pattern across two devices is the point; a set of eight channels of one meter is not.",
+			      "items": {
+			        "type": "object",
+			        "properties": {
+			          "device_id": {"type": "string"},
+			          "service_id": {"type": "string"},
+			          "variable_path": {"type": "string"},
+			          "label": {"type": "string", "description": "What to call this series in a rule statement, e.g. \"the oven\". Omit and a device name is used."}
+			        },
+			        "required": ["device_id", "service_id", "variable_path"]
+			      }
+			    },
+			    "from": {"type": "string", "description": "RFC3339. Omit for the default lookback, which is a month — an exception at certain times of day needs more than a week of samples."},
+			    "to": {"type": "string", "description": "RFC3339."},
+			    "candidate_set_id": {"type": "string", "description": "The set_id propose_related_sets gave you, so a confirmed rule can be traced back to the aspect that suggested the devices."},
+			    "min_confidence": {"type": "number", "description": "How reliably a pattern must hold to be proposed, 0 to 1. Default 0.7. Raise it to narrow a long rule list rather than reading a truncated one."},
+			    "min_lift": {"type": "number", "description": "How much more often the pair must co-occur than independent base rates predict. Default 1.2. This is what separates a finding from a device that is simply always on."},
+			    "hour_buckets": {"type": "integer", "description": "How many equal parts the day is split into for conditioning. Default 4."}
+			  },
+			  "required": ["series"]
+			}`),
+			Unavailable: "requires a timescale-wrapper URL (the relational profiler needs the profiler)",
+			executor:    ifPresent(s.relateSeries, deps.Relations),
 		},
 
 		// ---- L2: actual values. ----
@@ -403,23 +516,6 @@ func NewSurface(deps Deps) (*Registry, error) {
 			executor:    ifPresent(s.proposeDataSelection, deps.SelectionSink),
 		},
 
-		// ---- Declared, not yet built. Named with the milestone that fills them. ----
-		Definition{
-			Name:        "propose_related_sets",
-			Description: "Propose multi-device sets related through the aspect hierarchy.",
-			Effect:      "read ontology",
-			MinTier:     L0,
-			Schema:      json.RawMessage(`{"type": "object", "properties": {"aspect_id": {"type": "string"}}}`),
-			Unavailable: "M6 (relations/, SPEC §5.5)",
-		},
-		Definition{
-			Name:        "relate_series",
-			Description: "Compute a RelationProfile: conditional patterns across several devices.",
-			Effect:      "compute + read",
-			MinTier:     L1,
-			Schema:      json.RawMessage(`{"type": "object", "properties": {"series": {"type": "array", "items": {"type": "object"}}}}`),
-			Unavailable: "M6 (relations/, SPEC §5.5)",
-		},
 		Definition{
 			Name: "render_chart",
 			Description: "Emit a declarative chart specification for the developer's exploration pane " +
@@ -519,7 +615,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			Effect:      "write repo working copy",
 			MinTier:     L0,
 			Schema:      json.RawMessage(`{"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}`),
-			Unavailable: "M6 (repo/, SPEC §5.11)",
+			Unavailable: "M7 (repo/, SPEC §5.11)",
 		},
 		Definition{
 			Name: "run_code",
@@ -551,7 +647,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			MinTier:     L0,
 			Confirm:     true,
 			Schema:      json.RawMessage(`{"type": "object", "properties": {"entrypoint": {"type": "string"}}}`),
-			Unavailable: "M7 (experiments/, SPEC §5.12)",
+			Unavailable: "M8 (experiments/, SPEC §5.12)",
 		},
 		Definition{
 			Name:        "get_experiment_results",
@@ -559,7 +655,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			Effect:      "read MLflow",
 			MinTier:     L0,
 			Schema:      json.RawMessage(`{"type": "object", "properties": {"run_id": {"type": "string"}}}`),
-			Unavailable: "M7 (experiments/, SPEC §5.12)",
+			Unavailable: "M8 (experiments/, SPEC §5.12)",
 		},
 	)
 }

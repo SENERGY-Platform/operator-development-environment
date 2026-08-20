@@ -1,5 +1,6 @@
 {
   "denied": {
+    "decide_relation_rule": "confirming, correcting or rejecting a candidate relational rule is a developer action; a model that could do it would be confirming its own findings (§5.5, D21)",
     "delete_platform_data": "no tool deletes platform data",
     "deploy_to_production": "promotion to a production pipeline is a developer decision, never an autonomous one",
     "modify_evaluation_criteria": "the developer defines the evaluation criteria; that is the human-in-the-loop premise of the whole system",

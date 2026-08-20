@@ -29,10 +29,19 @@ import { ExplorationView } from "./exploration";
 import { KernelView } from "./kernel";
 import { logout } from "./keycloak";
 import { ProfilerView } from "./profiler";
+import { RelationsView } from "./relations";
 import { SelectionView } from "./selection";
 import { Centered, Muted, Pane, describe, useLoad } from "./ui";
 
-type View = "chat" | "ontology" | "selection" | "profiler" | "exploration" | "kernel" | "admin";
+type View =
+  | "chat"
+  | "ontology"
+  | "selection"
+  | "profiler"
+  | "exploration"
+  | "relations"
+  | "kernel"
+  | "admin";
 
 /**
  * The shell through M3. The pane layout of SPEC §2 (Chat / Data / Exploration /
@@ -90,6 +99,7 @@ export default function App() {
         <ProfilerView onOpenChart={session.features.charts ? openChart : undefined} />
       )}
       {current === "exploration" && <ExplorationView focus={chart} onFocusHandled={clearChart} />}
+      {current === "relations" && <RelationsView />}
       {current === "kernel" && <KernelView />}
       {current === "admin" && <AdminView />}
     </div>
@@ -114,6 +124,7 @@ function Header({
   if (session.features.selection) tabs.push(["selection", "Selection"]);
   if (session.features.profiler) tabs.push(["profiler", "Profiler"]);
   if (session.features.charts) tabs.push(["exploration", "Exploration"]);
+  if (session.features.relations) tabs.push(["relations", "Relations"]);
   if (session.features.kernel) tabs.push(["kernel", "Kernel"]);
   // §3.3's settings surface, gated on the realm role at the router as well; hiding
   // the tab is a courtesy, not the enforcement.

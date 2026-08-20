@@ -1,0 +1,241 @@
+{
+  "buckets": 2880,
+  "cache_key": "8bfed85a8066205f14d5fa90c9511c62b0275096a60618919db01529de13ae00",
+  "candidate_rules": [
+    {
+      "advisory": "candidate only: not a configured rule, not an anomaly definition, and never read by an operator or a training job until a developer confirms it (§5.5, D28)",
+      "anomaly": "the kitchen lights active while the oven idle",
+      "antecedent": {
+        "label": "the kitchen lights",
+        "member": 1,
+        "state": "active"
+      },
+      "confidence": 1,
+      "consequent": {
+        "label": "the oven",
+        "member": 0,
+        "state": "active"
+      },
+      "exceptions": [],
+      "lift": 6.8587,
+      "rule_id": "rule-3b17a4969da6d658297fde4e",
+      "samples": 360,
+      "statement": "the kitchen lights active → the oven active",
+      "strength": "likely",
+      "support": 0.125,
+      "violations": 0
+    },
+    {
+      "advisory": "candidate only: not a configured rule, not an anomaly definition, and never read by an operator or a training job until a developer confirms it (§5.5, D28)",
+      "anomaly": "the oven active while the kitchen lights idle",
+      "antecedent": {
+        "label": "the oven",
+        "member": 0,
+        "state": "active"
+      },
+      "confidence": 0.8571,
+      "consequent": {
+        "label": "the kitchen lights",
+        "member": 1,
+        "state": "active"
+      },
+      "exceptions": [
+        {
+          "bucket": "06:00-12:00",
+          "confidence": 0,
+          "dimension": "hour_of_day",
+          "drop": 0.8571,
+          "from_hour": 6,
+          "samples": 60,
+          "to_hour": 12
+        }
+      ],
+      "lift": 6.8571,
+      "rule_id": "rule-0c29b1557e8c1ecf9405a12f",
+      "samples": 420,
+      "statement": "the oven active → the kitchen lights active",
+      "strength": "likely",
+      "support": 0.125,
+      "violations": 60
+    }
+  ],
+  "computed_at": "2026-08-17T00:00:00Z",
+  "conditioning": {
+    "hour_of_day": true,
+    "weekday_weekend": true
+  },
+  "detector_version": "1.0.0",
+  "grid_seconds": 900,
+  "group_time": "15m",
+  "members": [
+    {
+      "device_name": "Oven",
+      "kind": "instantaneous",
+      "label": "the oven",
+      "profile_id": "f4b3d2e7cd393bc287a5b533956ced7318009a3cdec4f081a35277e228999672",
+      "ref": {
+        "device_id": "urn:infai:ses:device:1",
+        "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+        "variable_path": "value.power"
+      },
+      "service_name": "readings",
+      "state": {
+        "active_buckets": 420,
+        "classification": "session_based",
+        "duty_cycle": 0.1458,
+        "idle_buckets": 2460,
+        "method": "activity_threshold",
+        "observed_buckets": 2880,
+        "threshold": 1023.9726,
+        "threshold_source": "detector",
+        "unknown_buckets": 0,
+        "usable": true
+      },
+      "unit": "W"
+    },
+    {
+      "device_name": "Kitchen lights",
+      "kind": "instantaneous",
+      "label": "the kitchen lights",
+      "profile_id": "cb06a1ef73c6cb30bb5326b81e2cd770dbf32b61bcfadd85807a55973a19aeb0",
+      "ref": {
+        "device_id": "urn:infai:ses:device:2",
+        "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
+        "variable_path": "value.power"
+      },
+      "service_name": "readings",
+      "state": {
+        "active_buckets": 360,
+        "classification": "session_based",
+        "duty_cycle": 0.125,
+        "idle_buckets": 2520,
+        "method": "activity_threshold",
+        "observed_buckets": 2880,
+        "threshold": 32.1135,
+        "threshold_source": "detector",
+        "unknown_buckets": 0,
+        "usable": true
+      },
+      "unit": "W"
+    }
+  ],
+  "notes": [
+    "the grid follows the coarsest member's sampling interval (900s of [900s 900s])"
+  ],
+  "observed": 2880,
+  "pairs": [
+    {
+      "a": 0,
+      "b": 1,
+      "conditions": [
+        {
+          "bucket": "00:00-06:00",
+          "contingency": {
+            "active_active": 0,
+            "active_idle": 0,
+            "active_rate_a": 0,
+            "active_rate_b": 0,
+            "idle_active": 0,
+            "idle_idle": 720,
+            "observed": 720
+          },
+          "dimension": "hour_of_day"
+        },
+        {
+          "bucket": "06:00-12:00",
+          "contingency": {
+            "active_active": 0,
+            "active_idle": 60,
+            "active_rate_a": 0.0833,
+            "active_rate_b": 0,
+            "idle_active": 0,
+            "idle_idle": 660,
+            "observed": 720
+          },
+          "dimension": "hour_of_day"
+        },
+        {
+          "bucket": "12:00-18:00",
+          "contingency": {
+            "active_active": 0,
+            "active_idle": 0,
+            "active_rate_a": 0,
+            "active_rate_b": 0,
+            "idle_active": 0,
+            "idle_idle": 720,
+            "observed": 720
+          },
+          "dimension": "hour_of_day"
+        },
+        {
+          "bucket": "18:00-00:00",
+          "contingency": {
+            "active_active": 360,
+            "active_idle": 0,
+            "active_rate_a": 0.5,
+            "active_rate_b": 0.5,
+            "idle_active": 0,
+            "idle_idle": 360,
+            "observed": 720
+          },
+          "dimension": "hour_of_day"
+        },
+        {
+          "bucket": "weekday",
+          "contingency": {
+            "active_active": 240,
+            "active_idle": 40,
+            "active_rate_a": 0.1458,
+            "active_rate_b": 0.125,
+            "idle_active": 0,
+            "idle_idle": 1640,
+            "observed": 1920
+          },
+          "dimension": "weekday_weekend"
+        },
+        {
+          "bucket": "weekend",
+          "contingency": {
+            "active_active": 120,
+            "active_idle": 20,
+            "active_rate_a": 0.1458,
+            "active_rate_b": 0.125,
+            "idle_active": 0,
+            "idle_idle": 820,
+            "observed": 960
+          },
+          "dimension": "weekday_weekend"
+        }
+      ],
+      "overall": {
+        "active_active": 360,
+        "active_idle": 60,
+        "active_rate_a": 0.1458,
+        "active_rate_b": 0.125,
+        "idle_active": 0,
+        "idle_idle": 2460,
+        "observed": 2880
+      }
+    }
+  ],
+  "params": {
+    "exception_drop": 0.25,
+    "hour_buckets": 4,
+    "min_confidence": 0.7,
+    "min_lift": 1.2,
+    "min_samples": 20,
+    "min_support": 0.01
+  },
+  "reads": {
+    "aligned": 1,
+    "devices": 2,
+    "profiles": 4,
+    "values": 5
+  },
+  "relation_id": "8bfed85a8066205f14d5fa90c9511c62b0275096a60618919db01529de13ae00",
+  "tier": "L1",
+  "window": {
+    "from": "2026-07-18T00:00:00Z",
+    "to": "2026-08-17T00:00:00Z"
+  }
+}

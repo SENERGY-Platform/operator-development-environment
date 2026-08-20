@@ -121,6 +121,8 @@ export class OdeSocket {
   private connecting: Promise<WebSocket> | null = null;
   private readonly pending = new Map<string, Pending>();
   private readonly streams = new Map<string, Stream>();
+  /** Progress handlers for in-flight requests, keyed by operation id. */
+  private readonly phases = new Map<string, (phase: unknown) => void>();
   private sequence = 0;
   /** The access token the backend currently holds for this connection. */
   private socketToken: string | undefined;
@@ -150,14 +152,22 @@ export class OdeSocket {
    * The AbortSignal is the whole point: aborting sends a cancel for this id, so
    * the backend stops its platform reads rather than finishing work nobody will
    * look at.
+   *
+   * onPhase receives the operation's progress frames. Optional, and dropping one
+   * costs a progress line rather than part of the answer — unlike a chat stream,
+   * where the events *are* the answer. M6's relational pass is what needs it: it
+   * profiles every participating service before it aligns them, so it is the longest
+   * thing a developer waits on.
    */
   async request<T>(
-    type: "quick_profiles" | "profile" | "resolve_selection",
+    type: "quick_profiles" | "profile" | "resolve_selection" | "relate",
     payload: unknown,
     signal?: AbortSignal,
+    onPhase?: (phase: OperationPhase) => void,
   ): Promise<T> {
     const id = `r${++this.sequence}`;
     const socket = await this.ready();
+    if (onPhase) this.phases.set(id, onPhase as (phase: unknown) => void);
 
     return new Promise<T>((resolve, reject) => {
       if (signal?.aborted) {
@@ -180,7 +190,10 @@ export class OdeSocket {
       };
       signal?.addEventListener("abort", onAbort, { once: true });
 
-      const settle = () => signal?.removeEventListener("abort", onAbort);
+      const settle = () => {
+        this.phases.delete(id);
+        signal?.removeEventListener("abort", onAbort);
+      };
       const wrapped = this.pending.get(id);
       if (wrapped) {
         this.pending.set(id, {
@@ -505,6 +518,11 @@ export class OdeSocket {
       case "pong":
         // Acknowledgement only; the result is what settles the promise.
         return;
+      case "event":
+        // A progress frame for a request. Ignored when nobody asked for phases,
+        // which is every operation but the relational pass.
+        this.phases.get(frame.id)?.(frame.payload);
+        return;
       case "result":
         this.pending.delete(frame.id);
         waiting?.resolve(frame.payload);
@@ -553,6 +571,12 @@ export class OdeSocket {
     this.streams.clear();
     for (const entry of streams) entry.reject(reason);
   }
+}
+
+/** One step of a long-running operation, as the backend reports it. */
+export interface OperationPhase {
+  stage: string;
+  detail: string;
 }
 
 export type SocketState = "idle" | "connecting" | "open" | "reconnecting" | "closed";

@@ -33,12 +33,12 @@
 //     those by refusing at dispatch time would be weaker: the tool would still
 //     be advertised, and the model would keep asking.
 //
-// The registry declares all eighteen tools of §5.8 even though this milestone
-// implements twelve of them. The declaration is the tier table — one source of
-// truth for the paper, the settings UI and the tests — while only a tool with an
-// executor is advertised to a provider. An unbuilt tool therefore cannot be
-// called and never appears in tools/list; it appears in the documented surface
-// with the milestone that will fill it in.
+// The registry declares all eighteen tools of §5.8; fifteen have an executor as of
+// M6, and the three that do not belong to M7 and M8. The declaration is the tier
+// table — one source of truth for the paper, the settings UI and the tests — while
+// only a tool with an executor is advertised to a provider. An unbuilt tool
+// therefore cannot be called and never appears in tools/list; it appears in the
+// documented surface with the milestone that will fill it in.
 package tools
 
 import (
@@ -268,9 +268,14 @@ func Denied() map[string]string { return deniedSet() }
 
 func deniedSet() map[string]string {
 	return map[string]string{
-		"set_exposure_tier":          "the exposure tier is the developer's control over what the LLM may see; a tool to raise it would defeat §3.2 entirely",
-		"set_admin_limits":           "admin limits bound the LLM's own spend, so the LLM must not be able to move them (§3.3)",
-		"write_profile_override":     "a ProfileOverride is a human confirmation of derived semantics and an empirical record; an LLM-written one would be fabricated ground truth (D21, D11)",
+		"set_exposure_tier":      "the exposure tier is the developer's control over what the LLM may see; a tool to raise it would defeat §3.2 entirely",
+		"set_admin_limits":       "admin limits bound the LLM's own spend, so the LLM must not be able to move them (§3.3)",
+		"write_profile_override": "a ProfileOverride is a human confirmation of derived semantics and an empirical record; an LLM-written one would be fabricated ground truth (D21, D11)",
+		// Not in §5.8's own list, because the relational rule arrives with M6 and the
+		// list predates it. It is here by the same reasoning as write_profile_override
+		// above and belongs beside it: a candidate rule is a finding the model proposed,
+		// so a tool to confirm one would let it grade its own work (§5.5, §5.10).
+		"decide_relation_rule":       "confirming, correcting or rejecting a candidate relational rule is a developer action; a model that could do it would be confirming its own findings (§5.5, D21)",
 		"promote_recommendation":     "recommendations are strictly advisory and become binding only by explicit developer promotion (D28)",
 		"modify_evaluation_criteria": "the developer defines the evaluation criteria; that is the human-in-the-loop premise of the whole system",
 		"modify_operator_lib":        "the shared Operator Lib is platform code, out of scope for a session",

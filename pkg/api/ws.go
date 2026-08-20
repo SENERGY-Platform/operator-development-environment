@@ -34,6 +34,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 )
 
@@ -52,8 +53,13 @@ const (
 	msgQuickProfiles = "quick_profiles"
 	msgProfile       = "profile"
 	msgSelection     = "resolve_selection"
-	msgCancel        = "cancel"
-	msgPing          = "ping"
+	// msgRelate is M6's relational pass (§5.5). Here for the same reason a profile
+	// is: it profiles every participating service before it aligns them, so it is the
+	// longest read ODE makes, and cancelling it has to stop those reads rather than
+	// only the waiting.
+	msgRelate = "relate"
+	msgCancel = "cancel"
+	msgPing   = "ping"
 	// msgAuth replaces the connection's token. A handshake happens once and the
 	// connection then lives as long as the tab; the access token does not.
 	msgAuth = "auth"
@@ -184,6 +190,7 @@ func handleWebSocket(cfg Config, deps Deps) gin.HandlerFunc {
 			deviceService: deps.Devices,
 			profiler:      deps.Profiler,
 			selection:     deps.Selection,
+			relations:     deps.Relations,
 			chat:          deps.Chat,
 			kernel:        deps.Kernel,
 			outbound:      make(chan wsOutbound, outboundBuffer),
@@ -285,6 +292,7 @@ type wsSession struct {
 	deviceService *devices.Service
 	profiler      *profiler.Profiler
 	selection     *selection.Resolver
+	relations     *relations.Service
 	chat          *chat.Engine
 	kernel        *kernel.Service
 
@@ -375,7 +383,7 @@ func (s *wsSession) readLoop(ctx context.Context) {
 			s.cancelOperation(message.ID)
 		case msgAuth:
 			s.replaceToken(message)
-		case msgQuickProfiles, msgProfile, msgSelection:
+		case msgQuickProfiles, msgProfile, msgSelection, msgRelate:
 			s.start(ctx, message)
 		case msgKernelExecute:
 			s.startExecution(ctx, message)
@@ -495,6 +503,23 @@ func (s *wsSession) run(ctx context.Context, message wsInbound) (any, error) {
 			return nil, err
 		}
 		return runSelection(ctx, s.token.Bearer(), s.selection, input)
+
+	case msgRelate:
+		var body relationBody
+		if err := decodePayload(message.Payload, &body); err != nil {
+			return nil, err
+		}
+		input, err := body.toInput()
+		if err != nil {
+			return nil, err
+		}
+		// The phases are relayed with send rather than sendStream: a dropped phase
+		// costs a progress line and the result still arrives, whereas waiting for room
+		// inside the pass would let a slow client stall a platform read.
+		input.Progress = func(phase relations.Phase) {
+			s.send(wsOutbound{Type: msgEvent, ID: message.ID, Payload: phase})
+		}
+		return runRelation(ctx, s.token.Bearer(), s.relations, input)
 
 	default:
 		return nil, errors.New("unknown message type " + message.Type)

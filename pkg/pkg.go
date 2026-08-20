@@ -40,6 +40,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/mcp"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
@@ -197,6 +198,48 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 	}
 	deps.Selection = resolver
 
+	// M6. The relational profiler (§5.5). It needs both halves: the profiler for the
+	// activity_pattern every state series is derived from, and the resolver for the
+	// aspect-scoped proposals. A deployment without a timescale-wrapper has no
+	// profiler, so the routes stay off the router and both M6 tools stay
+	// declared-but-unavailable — the same degradation the rest of ODE does.
+	if deps.Profiler != nil {
+		relationLookback, err := time.ParseDuration(config.RelationDefaultLookback)
+		if err != nil {
+			return nil, fmt.Errorf("config: relation_default_lookback: %w", err)
+		}
+		readTimeout, err := time.ParseDuration(config.ProfilerReadTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("config: profiler_read_timeout: %w", err)
+		}
+		relationService, err := relations.New(relations.Deps{
+			Timeseries: timeseriesClient,
+			Devices:    deviceService,
+			Ontology:   ontologyRepo,
+			Selection:  resolver,
+			Profiler:   deps.Profiler,
+			// The same index selection and the profiler use. A graph reaches devices the
+			// aspect resolution never saw, and their units have to come from somewhere.
+			OntologyIndex: ontologyIndex,
+			// The decision log goes to Postgres when there is one, for the reason the
+			// override overlay does (§5.4.3): a relation profile is recomputable and a
+			// developer's verdict on a rule is not.
+			Store:              relationStore(db, int(config.RelationMaxStored)),
+			IDs:                identifiers.New(),
+			MaxMembers:         int(config.RelationMaxMembers),
+			MaxBuckets:         int(config.RelationMaxBuckets),
+			MaxRules:           int(config.RelationMaxRules),
+			MaxGraphNeighbours: int(config.RelationMaxGraphNeighbours),
+			DefaultLookback:    relationLookback,
+			ReadTimeout:        readTimeout,
+			DeviceLimit:        config.SelectionDeviceLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		deps.Relations = relationService
+	}
+
 	// M4 before M3, because the tool surface is built inside startM3 and run_code
 	// needs the kernel service to exist by then. A deployment without a
 	// jupyterhub_url gets a nil service and the tool stays declared-but-unavailable.
@@ -265,6 +308,19 @@ func profilerStore(db *database.DB) profiler.Store {
 	return profiler.NewOverlayStore(profiler.NewMemoryStore(), profiler.NewPostgresOverrides(db))
 }
 
+// relationStore picks the store for the relational profiler.
+//
+// Relation profiles stay in memory either way; only the rule decision log moves to
+// Postgres. The same split the profiler makes, for the same reason: a profile is a
+// reproducible artifact and a decision is an empirical record (§5.4.3, §5.10).
+func relationStore(db *database.DB, maxStored int) relations.Store {
+	memory := relations.NewMemoryStore(maxStored)
+	if db == nil {
+		return memory
+	}
+	return relations.NewOverlayStore(memory, relations.NewPostgresDecisions(db))
+}
+
 // startM3 wires the LLM surface. It is a function rather than inline because the
 // wiring has real branching: any subset of four providers may be configured, and
 // a deployment with none serves M0–M2 unchanged.
@@ -309,19 +365,22 @@ func startM3(
 	sink := &selectionSink{}
 
 	registry, err := tools.NewSurface(tools.Deps{
-		Ontology:           ontologyRepo,
-		Devices:            deviceService,
-		Timeseries:         timeseriesOrNil(timeseriesClient),
-		Profiler:           profilerOrNil(deps.Profiler),
-		Selection:          selectionOrNil(deps.Selection),
-		SelectionSink:      sink,
-		Kernel:             kernelOrNil(kernelService),
-		Charts:             chartsOrNil(deps.Charts),
-		ProfileTokenBudget: int(config.ToolProfileTokenBudget),
-		ProfileMaxProfiles: int(config.ToolProfileMaxProfiles),
-		QuickTokenBudget:   int(config.ToolQuickTokenBudget),
-		PreviewMaxPoints:   int(config.ToolPreviewMaxPoints),
-		DeviceLimit:        config.SelectionDeviceLimit,
+		Ontology:            ontologyRepo,
+		Devices:             deviceService,
+		Timeseries:          timeseriesOrNil(timeseriesClient),
+		Profiler:            profilerOrNil(deps.Profiler),
+		Selection:           selectionOrNil(deps.Selection),
+		SelectionSink:       sink,
+		Kernel:              kernelOrNil(kernelService),
+		Charts:              chartsOrNil(deps.Charts),
+		Relations:           relationsOrNil(deps.Relations),
+		ProfileTokenBudget:  int(config.ToolProfileTokenBudget),
+		ProfileMaxProfiles:  int(config.ToolProfileMaxProfiles),
+		QuickTokenBudget:    int(config.ToolQuickTokenBudget),
+		PreviewMaxPoints:    int(config.ToolPreviewMaxPoints),
+		RelationTokenBudget: int(config.ToolRelationTokenBudget),
+		RelationMaxRules:    int(config.ToolRelationMaxRules),
+		DeviceLimit:         config.SelectionDeviceLimit,
 
 		RunCodeMaxOutputBytes: int(config.ToolRunCodeMaxOutputBytes),
 	})
@@ -656,6 +715,16 @@ func kernelOrNil(service *kernel.Service) tools.Kernel {
 // a timescale-wrapper, for the reason ifPresent documents: a typed nil pointer in
 // an interface field is not nil as an interface, so the check has to happen here.
 func chartsOrNil(service *charts.Service) tools.Charts {
+	if service == nil {
+		return nil
+	}
+	return service
+}
+
+// relationsOrNil does the same for the two M6 tools: a deployment without a
+// timescale-wrapper has no profiler and therefore no relational profiler, and both
+// tools stay declared-but-unavailable rather than registered and broken.
+func relationsOrNil(service *relations.Service) tools.Relations {
 	if service == nil {
 		return nil
 	}

@@ -89,6 +89,45 @@ func (fakeOntologyClient) GetDeviceClasses() ([]models.DeviceClass, error, int) 
 	return []models.DeviceClass{{Id: "dc-meter", Name: "Meter"}}, nil, 200
 }
 
+// ListDeviceGroups answers the "prefer an existing grouping" step of §5.5 with one
+// group naming both kitchen devices, which is what lets a test tell an
+// aspect-derived set from a group-derived one.
+func (fakeOntologyClient) ListDeviceGroups(
+	_ string, _ drmodel.DeviceGroupListOptions,
+) ([]models.DeviceGroup, int64, error, int) {
+	return []models.DeviceGroup{{
+		Id:        kitchenGroupID,
+		Name:      "Kitchen appliances",
+		DeviceIds: []string{testDeviceID, lightsDeviceID},
+	}}, 1, nil, 200
+}
+
+// ListGraphs answers with the sub-metering topology of §5.5: the two kitchen devices
+// meet at a circuit, and a site meter downstream of it is deliberately *not* under the
+// Kitchen aspect — which is the cross-level pair a graph exists to surface.
+func (fakeOntologyClient) ListGraphs(
+	_ string, _ drmodel.GraphListOptions,
+) ([]models.Graph, int64, error, int) {
+	return []models.Graph{{
+		Id:         kitchenGraphID,
+		Owner:      "user-123",
+		Attributes: []models.Attribute{{Key: "name", Value: "Kitchen sub-metering"}},
+		Nodes: []models.Node{
+			{Id: "n-oven", ResourceType: models.GraphResourceTypeDevice, ResourceId: testDeviceID},
+			{Id: "n-lights", ResourceType: models.GraphResourceTypeDevice, ResourceId: lightsDeviceID},
+			{Id: "n-circuit", Attributes: []models.Attribute{{Key: "name", Value: "Kitchen circuit"}}},
+			{Id: "n-site", ResourceType: models.GraphResourceTypeDevice, ResourceId: siteDeviceID},
+			{Id: "n-grid", Attributes: []models.Attribute{{Key: "name", Value: "Grid connection"}}},
+		},
+		Edges: []models.Edge{
+			{Id: "e-1", FromNodeId: "n-oven", ToNodeId: "n-circuit", Weight: 100},
+			{Id: "e-2", FromNodeId: "n-lights", ToNodeId: "n-circuit", Weight: 100},
+			{Id: "e-3", FromNodeId: "n-circuit", ToNodeId: "n-site", Weight: 100},
+			{Id: "e-4", FromNodeId: "n-site", ToNodeId: "n-grid", Weight: 100},
+		},
+	}}, 1, nil, 200
+}
+
 func (fakeOntologyClient) GetLastUpdateTimestamps(string, string) ([]drmodel.LastUpdateTimestamp, error, int) {
 	return []drmodel.LastUpdateTimestamp{{Collection: "aspects", UnixTimestamp: 1000}}, nil, 200
 }
@@ -140,6 +179,11 @@ type fakeDeviceClient struct {
 	// serve overrides the canned single device, for the tests that need a device
 	// carrying its type and permissions.
 	serve []models.ExtendedDevice
+	// list narrows what a *listing* returns, while a read still reaches everything in
+	// serve. M6 needs the two to differ: a device relationship graph reaches devices
+	// the aspect resolution never listed, and a fixture where listing and reading
+	// answered the same set could not show that.
+	list []models.ExtendedDevice
 	// gotListOptions and gotAction record what the handler asked for, which is how
 	// the Read-versus-Execute distinction of §5.1 is checked.
 	gotListOptions drmodel.ExtendedDeviceListOptions
@@ -164,6 +208,9 @@ func (f *fakeDeviceClient) ListExtendedDevices(token string, options drmodel.Ext
 	f.gotListOptions = options
 	if f.err != nil {
 		return nil, 0, f.err, f.code
+	}
+	if f.list != nil {
+		return f.list, int64(len(f.list)), nil, 200
 	}
 	if f.serve != nil {
 		return f.serve, int64(len(f.serve)), nil, 200

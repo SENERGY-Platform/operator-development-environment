@@ -300,4 +300,25 @@ CREATE TABLE IF NOT EXISTS ode_profile_overrides (
 		sql: `CREATE INDEX IF NOT EXISTS ode_profile_overrides_series_idx
               ON ode_profile_overrides (device_id, service_id, variable_path, created_at)`,
 	},
+	{
+		name: "ode_relation_rule_decisions",
+		sql: `
+-- The rule decision log of §5.5 and §5.10: append-only, keyed by a fingerprint of
+-- what the rule *says* rather than by the relation profile it was seen in, which is
+-- what lets a verdict survive the same rule being recomputed over a different window
+-- by a later detector. Relation profiles themselves stay in memory — losing one costs
+-- a recomputation, losing a developer's judgement destroys evidence.
+CREATE TABLE IF NOT EXISTS ode_relation_rule_decisions (
+    id         TEXT PRIMARY KEY,
+    rule_id    TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    decision   JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+	},
+	{
+		name: "ode_relation_rule_decisions_by_rule",
+		sql: `CREATE INDEX IF NOT EXISTS ode_relation_rule_decisions_rule_idx
+              ON ode_relation_rule_decisions (rule_id, created_at)`,
+	},
 }

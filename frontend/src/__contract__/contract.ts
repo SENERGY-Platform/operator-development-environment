@@ -28,6 +28,9 @@ import type {
   ProfileResult,
   ProviderInfo,
   QuickProfileList,
+  RelationProfile,
+  RelationProposal,
+  RuleDecision,
   SelectionResult,
   SeriesProfile,
   Session,
@@ -59,6 +62,10 @@ import profile from "./profile.json";
 import profiles from "./profiles.json";
 import projection from "./projection.json";
 import quick from "./quick.json";
+import relation from "./relation.json";
+import relationDecision from "./relation_decision.json";
+import relationDecisions from "./relation_decisions.json";
+import relationSets from "./relation_sets.json";
 import selection from "./selection.json";
 import platformSession from "./session.json";
 import sessions from "./sessions.json";
@@ -109,4 +116,13 @@ export const checked = {
   charts: chartList.charts satisfies Loose<ChartSpec[]>,
   chartData: chartData satisfies Loose<ChartData>,
   chartConfirmation: chartConfirmation satisfies Loose<ChartConfirmation>,
+
+  // M6. Emitted by the API test harness over the *real* profiler: the fixture is two
+  // synthetic power series a room apart, so the thresholds, the contingency counts and
+  // the exception window in here are the detectors' own rather than a fake's. Only the
+  // series behind them is synthetic.
+  relationSets: relationSets satisfies Loose<RelationProposal>,
+  relation: relation satisfies Loose<RelationProfile>,
+  relationDecision: relationDecision satisfies Loose<RuleDecision>,
+  relationDecisions: relationDecisions.decisions satisfies Loose<RuleDecision[]>,
 };

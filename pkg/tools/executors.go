@@ -30,6 +30,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
@@ -572,6 +573,184 @@ func (s *surface) getSessions(ctx context.Context, req Request) (any, error) {
 		return nil, err
 	}
 	return page, nil
+}
+
+// ---- propose_related_sets (L0) ----
+
+type proposeRelatedSetsInput struct {
+	AspectID           string `json:"aspect_id"`
+	IncludeDescendants bool   `json:"include_descendants"`
+	Limit              int64  `json:"limit"`
+}
+
+// proposeRelatedSets is the aspect-scoped half of §5.5, and it reads no values.
+//
+// It sits at L0 for a reason worth stating: the hardest part of a multi-device
+// pattern is knowing which devices to look at, and the ontology answers that on its
+// own. A model at the default tier can therefore get all the way to "the oven and
+// the kitchen lights are the pair to examine" before any value is read at all — the
+// same property that makes semantic selection substantive at L0 (§3.2).
+func (s *surface) proposeRelatedSets(ctx context.Context, req Request) (any, error) {
+	var in proposeRelatedSetsInput
+	if err := decode(req.Input, &in); err != nil {
+		return nil, err
+	}
+	if in.AspectID == "" {
+		return nil, fmt.Errorf("%w: aspect_id is required; search_ontology lists the aspect nodes",
+			ErrInvalidInput)
+	}
+
+	limit := in.Limit
+	if limit <= 0 {
+		limit = s.deps.DeviceLimit
+	}
+	req.Progress("propose", "resolving the aspect subtree to devices")
+	proposal, err := s.deps.Relations.ProposeRelatedSets(ctx, req.Token, relations.ProposalRequest{
+		AspectID:           in.AspectID,
+		IncludeDescendants: in.IncludeDescendants,
+		DeviceLimit:        limit,
+		MaxMembers:         s.deps.Relations.MaxMembers(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	note := "these sets come from the ontology and no value was read, which the reads block " +
+		"shows. Pass one set's members to relate_series to find the conditional patterns in it. " +
+		"An empty sets list is not evidence that the devices are unrelated — read notes for why."
+	if len(proposal.Sets) == 0 {
+		note = "no set could be proposed, and notes says why. Do not conclude that these devices " +
+			"have no relationship: the cause is more often an ontology gap or a permission than an " +
+			"absence of pattern."
+	}
+	return map[string]any{
+		"aspect_id":           proposal.AspectID,
+		"aspect_name":         proposal.AspectName,
+		"include_descendants": proposal.IncludeDescendants,
+		"sets":                proposal.Sets,
+		"candidate_devices":   proposal.CandidateDevices,
+		"ontology_gaps":       proposal.OntologyGaps,
+		"reads":               proposal.Reads,
+		"notes":               proposal.Notes,
+		"note":                note,
+	}, nil
+}
+
+// ---- relate_series (L1) ----
+
+type relateSeriesInput struct {
+	Series         []relateSeriesMember `json:"series"`
+	From           string               `json:"from"`
+	To             string               `json:"to"`
+	CandidateSetID string               `json:"candidate_set_id"`
+	MinConfidence  float64              `json:"min_confidence"`
+	MinLift        float64              `json:"min_lift"`
+	HourBuckets    int                  `json:"hour_buckets"`
+}
+
+type relateSeriesMember struct {
+	DeviceID     string `json:"device_id"`
+	ServiceID    string `json:"service_id"`
+	VariablePath string `json:"variable_path"`
+	Label        string `json:"label"`
+}
+
+// relateSeries is the computed half of §5.5.
+//
+// L1 rather than L2, and the distinction is exact: the pass reads values, and what
+// comes back is contingency counts, ratios and bucket durations. Not one value of
+// any series appears in the projection — a state is a comparison against a threshold
+// the profiler already published, so the model learns that the oven was on without
+// learning what it drew.
+//
+// Only the three thresholds a model has a reason to move are exposed. min_support and
+// the exception drop stay at their defaults deliberately: a model lowering the support
+// floor to find something to say is the failure mode this whole surface is shaped
+// against, and a developer who needs to move them has the HTTP route.
+func (s *surface) relateSeries(ctx context.Context, req Request) (any, error) {
+	var in relateSeriesInput
+	if err := decode(req.Input, &in); err != nil {
+		return nil, err
+	}
+	if len(in.Series) < 2 {
+		return nil, fmt.Errorf("%w: relate_series needs at least two series; a conditional pattern "+
+			"is a statement about a pair", ErrInvalidInput)
+	}
+	window, err := parseWindow(in.From, in.To)
+	if err != nil {
+		return nil, err
+	}
+
+	members := make([]relations.SeriesMember, 0, len(in.Series))
+	for i, member := range in.Series {
+		if member.DeviceID == "" || member.ServiceID == "" || member.VariablePath == "" {
+			return nil, fmt.Errorf("%w: series[%d] needs a device_id, a service_id and a variable_path",
+				ErrInvalidInput, i)
+		}
+		members = append(members, relations.SeriesMember{
+			Ref: profiler.SeriesRef{
+				DeviceID:     member.DeviceID,
+				ServiceID:    member.ServiceID,
+				VariablePath: member.VariablePath,
+			},
+			Label: member.Label,
+		})
+	}
+
+	profile, err := s.deps.Relations.Relate(ctx, req.Token, relations.Request{
+		Members:        members,
+		Window:         window,
+		CandidateSetID: in.CandidateSetID,
+		Params: relations.RuleParams{
+			MinConfidence: in.MinConfidence,
+			MinLift:       in.MinLift,
+			HourBuckets:   in.HourBuckets,
+		},
+		// The pass profiles every participating service before it aligns them, so this
+		// is the slowest tool on the surface. Forwarding its phases is what lets the
+		// developer watching the chat see that it is alive.
+		Progress: func(phase relations.Phase) {
+			req.Progress(phase.Stage, phase.Detail)
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	view := relations.Project(profile, s.deps.RelationMaxRules, s.deps.RelationTokenBudget)
+	note := "every rule here is a candidate. It is not an anomaly definition, nothing downstream " +
+		"reads it, and you have no tool to confirm one — only the developer can, and the numbers " +
+		"are what you should put to them. `confidence` is P(consequent | antecedent) and `lift` is " +
+		"how much that exceeds the consequent's own base rate; a high confidence with a lift near 1 " +
+		"means the consequent is simply usually true. A member whose state block says usable false " +
+		"took part in no rule, and the reason there is what to fix."
+	if len(view.CandidateRules) == 0 {
+		note = "no pattern cleared the thresholds. That is a result, not a failure, and it is not " +
+			"evidence that the devices are unrelated: check each member's state block first, because " +
+			"a member that yielded no state series could not contribute to any rule."
+	}
+	if decided := decidedRules(view.CandidateRules); decided > 0 {
+		note += fmt.Sprintf(" %d of these rules already carry a developer decision — read it before "+
+			"proposing the rule again.", decided)
+	}
+
+	return map[string]any{
+		"relation":         view,
+		"candidate_set_id": profile.CandidateSetID,
+		"note":             note,
+	}, nil
+}
+
+// decidedRules counts the rules a developer has already ruled on, so the note can
+// say so rather than leaving a model to notice.
+func decidedRules(rules []relations.CandidateRule) int {
+	count := 0
+	for _, rule := range rules {
+		if rule.Decision != nil {
+			count++
+		}
+	}
+	return count
 }
 
 // ---- preview_series (L2) ----

@@ -81,6 +81,7 @@ export interface Session {
     mcp: boolean;
     kernel: boolean;
     charts: boolean;
+    relations: boolean;
   };
   /** Present only when the LLM surface is configured (M3). */
   max_exposure_tier?: Tier;
@@ -1285,6 +1286,291 @@ export interface ChartConfirmation {
   confirmable: Record<string, string>;
 }
 
+
+// --- M6: multi-device conditional patterns (SPEC §5.5) ---
+
+export type MemberState = "active" | "idle" | "unknown";
+
+/**
+ * How a set was arrived at, strongest first. A graph carries direction and share as
+ * well as membership, which is more than a device group asserts and far more than a
+ * shared aspect label.
+ */
+export type SetOrigin =
+  | "graph_siblings"
+  | "graph_flow"
+  | "device_group"
+  | "aspect_node"
+  | "aspect_subtree";
+
+/** Where a member sits in the graph that proposed it (SPEC §5.5). */
+export interface GraphPlacement {
+  graph_id: string;
+  graph_name?: string;
+  /** "sibling", "upstream" or "downstream". */
+  role: string;
+  via?: string;
+  via_name?: string;
+  /**
+   * The share of this device's own output attributed along the edge, not a
+   * contribution share: the platform requires each node's outgoing weights to sum to
+   * 100, so a device feeding one node always reads 100 and says nothing. Below that
+   * means its flow is split across several downstream nodes.
+   */
+  weight?: number;
+  /** Edges between this member and the graph's sink. Equal depth means same level. */
+  depth: number;
+}
+
+export interface CandidateSetMember {
+  ref: SeriesRef;
+  label: string;
+  device_name: string;
+  device_type_name?: string;
+  service_name?: string;
+  function_id?: string;
+  aspect_id?: string;
+  aspect_name?: string;
+  connection_state?: string;
+  characteristic_id: string | null;
+  unit: string;
+  unit_source: string;
+  /** Absent for a member the aspect hierarchy proposed rather than a graph. */
+  graph?: GraphPlacement;
+  /**
+   * False for a member reached through a graph rather than through the requested
+   * aspect — a site meter is not in the kitchen, and that is the pair a sub-metering
+   * question is about.
+   */
+  from_aspect: boolean;
+}
+
+export interface CandidateSet {
+  set_id: string;
+  origin: SetOrigin;
+  name: string;
+  rationale: string;
+  aspect_id?: string;
+  aspect_name?: string;
+  aspect_path?: string[];
+  device_group_id?: string;
+  graph_id?: string;
+  graph_name?: string;
+  graph_node?: string;
+  members: CandidateSetMember[];
+  devices: number;
+  truncated: boolean;
+  notes: string[];
+}
+
+export interface AspectRef {
+  id: string;
+  name: string;
+  parent_id?: string;
+  depth: number;
+}
+
+export interface RelationProposal {
+  aspect_id: string;
+  aspect_name: string;
+  include_descendants: boolean;
+  subtree: AspectRef[];
+  sets: CandidateSet[];
+  candidate_devices: CandidateDevice[];
+  ontology_gaps: OntologyGap[];
+  reads: RelationReads;
+  notes: string[];
+}
+
+export interface RelationReads {
+  aligned: number;
+  profiles: number;
+  /**
+   * Metadata reads: one per service a pass profiles, one per graph neighbour a
+   * proposal resolves from outside the aspect. Apart from `values` because a device
+   * read does not touch the exposure tier — but counted, so a proposal that made a
+   * dozen of them does not look free.
+   */
+  devices: number;
+  values: number;
+}
+
+/**
+ * How idle and active were decided for one member. `usable: false` carries the
+ * reason instead, and a member that reads unusable took part in no rule — which is
+ * the first thing to check when an expected rule is missing.
+ */
+export interface RelationStateSummary {
+  usable: boolean;
+  reason?: NotComputed;
+  method: string;
+  threshold: number;
+  /** "detector" or "confirmed": a rule computed against a corrected threshold is a different claim. */
+  threshold_source: string;
+  classification: "continuous" | "session_based" | "intermittent" | "status" | "";
+  active_buckets: number;
+  idle_buckets: number;
+  unknown_buckets: number;
+  duty_cycle: number;
+  /**
+   * How many aligned buckets carried a value, populated whether or not a state series
+   * could be derived. It is what separates "the read came back empty" from "the read
+   * came back full and no idle/active split was found in it" — both otherwise report
+   * every bucket unknown.
+   */
+  observed_buckets: number;
+}
+
+export interface RelationMember {
+  ref: SeriesRef;
+  label: string;
+  device_name?: string;
+  service_name?: string;
+  aspect_id?: string;
+  aspect_name?: string;
+  profile_id: string;
+  unit: string;
+  kind: ValueKind | "";
+  state: RelationStateSummary;
+}
+
+/** The 2×2 table for a pair, with the four counts that make the ratios checkable. */
+export interface Contingency {
+  active_active: number;
+  active_idle: number;
+  idle_active: number;
+  idle_idle: number;
+  observed: number;
+  active_rate_a: number;
+  active_rate_b: number;
+}
+
+export interface ConditionedContingency {
+  dimension: string;
+  bucket: string;
+  contingency: Contingency;
+}
+
+export interface PairRelation {
+  a: number;
+  b: number;
+  overall: Contingency;
+  conditions: ConditionedContingency[];
+}
+
+export interface RuleTerm {
+  member: number;
+  label: string;
+  state: MemberState;
+}
+
+/** A condition under which a rule demonstrably does not hold (§5.5). */
+export interface RuleException {
+  dimension: string;
+  bucket: string;
+  from_hour?: number;
+  to_hour?: number;
+  samples: number;
+  confidence: number;
+  drop: number;
+}
+
+export interface RuleDecision {
+  decision_id: string;
+  created_at: string;
+  created_by: string;
+  rule_id: string;
+  relation_id: string;
+  detector_version?: string;
+  action: "confirm" | "correct" | "reject";
+  computed: DecidedRule;
+  confirmed?: DecidedRule;
+  note?: string;
+}
+
+export interface DecidedRule {
+  statement: string;
+  anomaly?: string;
+  support?: number;
+  confidence?: number;
+  lift?: number;
+  exceptions: RuleException[];
+}
+
+/**
+ * A candidate rule. Never a configured rule and never an anomaly definition until
+ * the developer confirms it (§5.5, D28) — which is what the advisory field says in
+ * the document itself.
+ */
+export interface CandidateRule {
+  rule_id: string;
+  antecedent: RuleTerm;
+  consequent: RuleTerm;
+  statement: string;
+  anomaly: string;
+  support: number;
+  confidence: number;
+  lift: number;
+  samples: number;
+  violations: number;
+  /** Ordinal, and never "certain": that level is reserved for confirmed values (D23). */
+  strength: Confidence;
+  exceptions: RuleException[];
+  decision?: RuleDecision;
+  advisory: string;
+}
+
+export interface RuleParams {
+  min_support: number;
+  min_confidence: number;
+  min_lift: number;
+  min_samples: number;
+  hour_buckets: number;
+  exception_drop: number;
+}
+
+export interface RelationConditioning {
+  hour_of_day: boolean;
+  weekday_weekend: boolean;
+}
+
+export interface RelationProfile {
+  relation_id: string;
+  detector_version: string;
+  cache_key: string;
+  computed_at: string;
+  tier: string;
+  window: Window;
+  group_time: string;
+  grid_seconds: number;
+  buckets: number;
+  observed: number;
+  members: RelationMember[];
+  params: RuleParams;
+  conditioning: RelationConditioning;
+  pairs: PairRelation[];
+  candidate_rules: CandidateRule[];
+  candidate_set_id?: string;
+  reads: RelationReads;
+  notes: string[];
+}
+
+export interface RelationRequest {
+  members: { device_id: string; service_id: string; variable_path: string; label?: string }[];
+  window?: { from: string; to: string };
+  grid_seconds?: number;
+  params?: Partial<RuleParams>;
+  conditioning?: RelationConditioning;
+  candidate_set_id?: string;
+}
+
+export interface RuleDecisionRequest {
+  rule_id: string;
+  action: "confirm" | "correct" | "reject";
+  confirmed?: DecidedRule;
+  note?: string;
+}
+
 // --- M4: the developer's own pod (SPEC §5.6) ---
 
 export interface KernelStatus {
@@ -1451,4 +1737,36 @@ export const api = {
   confirmChart: (id: string, body: ChartConfirmRequest) =>
     post<ChartConfirmation>(`/charts/${encodeURIComponent(id)}/confirmations`, body),
   deleteChart: (id: string) => del(`/charts/${encodeURIComponent(id)}`),
+
+  // --- M6 ---
+
+  /** Sets proposed from an aspect node. Reads no values, so this is tier L0 (§5.5). */
+  candidateSets: (params: {
+    aspectId: string;
+    includeDescendants?: boolean;
+    limit?: number;
+    maxMembers?: number;
+  }) =>
+    get<RelationProposal>(
+      `/relations/candidate-sets${query({
+        aspect_id: params.aspectId,
+        include_descendants: params.includeDescendants,
+        limit: params.limit,
+        max_members: params.maxMembers,
+      })}`,
+    ),
+  /**
+   * The HTTP form of a relational pass. The pane uses the WebSocket instead: this
+   * profiles every participating service before it aligns them, which is the longest
+   * read ODE makes, and the socket can cancel it.
+   */
+  createRelation: (body: RelationRequest) => post<RelationProfile>("/relations", body),
+  relation: (id: string) => get<RelationProfile>(`/relations/${encodeURIComponent(id)}`),
+  /** §5.10. Developer action only; there is no LLM tool for it (§5.8). */
+  decideRule: (id: string, body: RuleDecisionRequest) =>
+    post<RuleDecision>(`/relations/${encodeURIComponent(id)}/rule-decisions`, body),
+  ruleDecisions: (ruleId: string) =>
+    get<{ rule_id: string; decisions: RuleDecision[] }>(
+      `/relations/rule-decisions${query({ rule_id: ruleId })}`,
+    ),
 };

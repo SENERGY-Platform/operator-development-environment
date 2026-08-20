@@ -11,7 +11,8 @@ file only says how to run what exists.
 
 ## Status
 
-**M0, M1a, M1b, M2, M3, M4 and M5 of the build order in SPEC.md §6.** What works today:
+**M0, M1a, M1b, M2, M3, M4, M5 and M6 of the build order in SPEC.md §6.** What works
+today:
 
 - The `developer` realm role gate on every route. Token signature, expiry and
   audience are validated by the platform API gateway, not here.
@@ -47,9 +48,9 @@ file only says how to run what exists.
   the OpenAI API, any OpenAI-compatible server, and the local `claude` CLI, all
   normalised to one event stream. A session names a provider; nothing above
   `pkg/llm` mentions a concrete one.
-- **The tool surface of §5.8** — all eighteen tools declared, fourteen implemented,
+- **The tool surface of §5.8** — all eighteen tools declared, fifteen implemented,
   every call dispatched through one gate that enforces the **exposure tier** before
-  anything executes. The four capabilities §5.8 denies have no tool at all, and a
+  anything executes. The nine capabilities §5.8 denies have no tool at all, and a
   test asserts they never gain one.
 - **An MCP server** carrying the same registry over a second transport, for the CLI
   provider. Same dispatcher, same tier gate — not a second, weaker door.
@@ -96,7 +97,29 @@ file only says how to run what exists.
   writes to, keyed by series, so a unit confirmed on a chart reaches the next
   profile of that series.
 
-Not built yet: M6 onward — relational profiling, repositories and experiments. The
+- **Multi-device conditional patterns** (§5.5): an aspect node becomes candidate
+  device sets from all three grouping sources the platform has — the **device
+  relationship graphs** of `/graphs` first, because a graph says how devices are
+  *wired* and not merely that they belong together, then `/device-groups`, then the
+  aspect hierarchy itself — with **no value read at all**, so the hardest part of a
+  relational question is answered at tier L0. A graph distinguishes devices *metered
+  together* from a *sub-metering* pair, which are different relationships and would
+  be nonsense conflated; and it reaches the meter one level up, which no aspect
+  contains. A pass over one of those sets profiles
+  every participating service, aligns the members with **one batched query at one
+  bucket**, derives idle and active from each profile's own `activity_pattern`, and
+  proposes **candidate rules** with support, confidence, lift and explicit exception
+  windows. `propose_related_sets` and `relate_series` gain their executors here, so
+  fifteen of §5.8's eighteen tools are implemented and the three that are not belong
+  to M7 and M8.
+- A **Relations view in the SPA**: the aspect picker, the proposed sets with the
+  reason for each, the members with how their idle/active split was decided and
+  whether the threshold was the detector's or a developer's, then every candidate
+  rule beside a **confirm, correct and reject**. Decisions are keyed by a fingerprint
+  of what the rule *says*, so one survives the rule being recomputed next month over
+  a different window by a sharper detector.
+
+Not built yet: M7 onward — repositories, experiments and result interpretation. The
 NetworkPolicy on singleuser pods is M10 and is still the one hard security
 prerequisite before external users — M4 makes it concrete by running developer- and
 LLM-authored code in those pods, and does not close it.
@@ -113,7 +136,8 @@ own per-user permissions.
 ```text
 pkg/auth/          claim reading, developer-role gate, on-behalf-of token
 pkg/ontology/      cached snapshot facade over the device repository, the aspect
-                   tree, the selectables query and the lexical intent matcher
+                   tree, the selectables query, the per-user device groups and
+                   wiring graphs, and the lexical intent matcher
 pkg/devices/       per-user device reads, never cached across users
 pkg/timeseries/    timescale-wrapper client: availability, usage, batched reads
 pkg/profiler/      QuickProfile, SeriesProfile, detectors, store, projection
@@ -132,6 +156,10 @@ pkg/kernel/        JupyterHub: service registration, spawn, per-user token, the
 pkg/charts/        §5.9's chart specification: validation, the transform-to-query
                    mapping, the profiler-derived annotations, and the
                    confirmations §5.10 takes from a chart
+pkg/relations/     §5.5: candidate sets from the aspect tree, the device groups and
+                   the wiring graphs, one-query alignment, the idle/active state
+                   series, pairwise contingency with its conditioning, and the
+                   append-only rule decision log
 pkg/database/      pgx pool and the schema the above persist into
 pkg/identifiers/   unguessable ids for anything that appears in a URL
 pkg/api/           gin routes, plus the cancellable WebSocket in ws.go and the
@@ -461,7 +489,7 @@ Startup logs what came up:
 
 ```json
 {"level":"INFO","msg":"llm surface ready","providers":["claude-cli"],
- "tools_declared":18,"tools_available_at_l0":8,"persistent":false}
+ "tools_declared":18,"tools_available_at_l0":9,"persistent":false}
 ```
 
 `tools_declared` is §5.8's whole table; `tools_available_at_l0` is what a session
@@ -482,7 +510,8 @@ curl -s -H "Authorization: Bearer $TOKEN" $BASE/llm/tools | jq '{
 ```
 
 `denied` is §5.8's "no tool exists" list — changing the exposure tier, changing
-admin limits, writing a `ProfileOverride`, promoting a recommendation. They are
+admin limits, writing a `ProfileOverride`, promoting a recommendation, deciding a
+relational rule (M6's addition, by the same reasoning as the override). They are
 absent from the registry rather than refused at dispatch, and `NewRegistry` refuses
 to register one. A refusal would still advertise the capability and invite the model
 to argue with it.
@@ -795,6 +824,209 @@ stays in memory — a specification is one sentence to re-emit — and what it c
 persisted. The confirmations a chart produces are in the profiler's overlay, which
 is in Postgres when there is one.
 
+## Trying M6
+
+M6 needs nothing beyond a `timescale_wrapper_url` either, and it is the milestone
+where the ontology earns its keep twice over: once to decide *which devices* a
+question is about, and once so the answer needs no second detector of its own.
+
+Open the **Relations** tab and pick an aspect — a room, a subsystem. What comes back
+is device sets, and the order is a claim about how much each grouping is worth
+trusting:
+
+```json
+{"aspect_name":"Kitchen","sets":[
+  {"origin":"graph_siblings","name":"Kitchen circuit","devices":2,
+   "graph_name":"Kitchen sub-metering","graph_node":"n-circuit",
+   "rationale":"all 2 devices feed Kitchen circuit in the graph Kitchen sub-metering, so they are
+                metered together rather than merely sharing a label — the topology says where they meet"},
+  {"origin":"graph_flow","name":"Kitchen circuit (flow)","devices":3,
+   "rationale":"the graph Kitchen sub-metering has 2 device(s) feeding Kitchen circuit and 1 measuring
+                it, so this is containment rather than a shared location: one side is a sub-meter of the other"},
+  {"origin":"device_group","name":"Kitchen appliances","devices":2,
+   "rationale":"an existing device group on the platform, which is a stronger grouping than a shared aspect"},
+  {"origin":"aspect_node","name":"Kitchen","devices":2,
+   "rationale":"both devices report under the aspect Kitchen"}],
+ "reads":{"aligned":0,"profiles":0,"values":0}}
+```
+
+`values` is zero and is meant to be checked, exactly as it is for a `QuickProfile`.
+Nothing has been read: this is selectables, a device list, a device-group list, a
+graph list and one device read per graph neighbour — all metadata. The neighbour reads
+are counted under `reads.devices` rather than left uncounted, because a proposal that
+quietly read a dozen devices should not look free even when none of them cost a value.
+
+### Why a graph outranks a device group
+
+§5.5 asks for existing groupings to be preferred over constructed ones, and there are
+two of those. `/device-groups` says which devices somebody grouped. `/graphs` says how
+they are **wired**, which is a stronger statement, and `models.Graph.Valid` is what
+makes it precise: a directed acyclic graph whose outgoing edge weights sum to 100 per
+node, with exactly one node that has no outputs and may not be a device. That is a
+flow topology — sub-metering or aggregation — and the intermediate nodes are whatever
+the site is structured by: a busbar, a location, a business unit.
+
+So one graph answers two different questions, and conflating them would produce
+confident nonsense in one of the two cases:
+
+| Origin | What the topology says | What a rule over it means |
+| --- | --- | --- |
+| `graph_siblings` | these devices converge on one node | a genuine co-occurrence question — they are metered together, and `graph.via_name` says where |
+| `graph_flow` | one device measures what the others feed | **containment.** "The sub-meter runs whenever the main meter runs" is arithmetic, not a finding |
+
+The flow set is still proposed, for the case that is not arithmetic: a device drawing
+while what it feeds reads idle is a metering or wiring fault, and that is exactly the
+anomaly a rule in that direction defines. The set says so in its own notes rather
+than leaving a developer to work it out, and the lift filter rejects the degenerate
+direction on its own — a main meter is almost always active, so a rule with it as
+consequent scores a lift near 1.
+
+**A graph legitimately reaches outside the aspect, and that is the point.** A site
+meter is not "in the kitchen", so intersecting a graph with the aspect's own devices —
+the way a device group is intersected — would drop precisely the cross-level pair a
+sub-metering question is about. Those neighbours are resolved on their own instead:
+one device read each under `Execute`, their series enumerated from the device type and
+their units from the ontology index, bounded by `relation_max_graph_neighbours`
+because a graph of a whole site names hundreds of devices. A member reached that way
+carries `from_aspect: false`, and the pane marks it, because a device from outside the
+room you asked about is otherwise a puzzle.
+
+One field is easy to misread. `graph.weight` is an **output split**, not a
+contribution share: the validator requires each node's outgoing weights to sum to 100,
+so a device feeding exactly one node always reads 100 and says nothing. Below 100
+means its flow is allocated across several downstream nodes — one meter split 60/40
+across two business units — and only then is the figure a fact about that edge.
+
+Then take a set and press **Relate**. Four things happen in an order that matters:
+
+1. **Every participating service is profiled.** Not a second threshold invented
+   here — `activity_pattern.active_threshold` is a confirmable field (§5.10), so a
+   developer who already corrected the idle/active split for a series has corrected
+   it for every rule that series takes part in. The member row says `detector` or
+   `confirmed`, because a rule computed against a corrected threshold is a different
+   claim.
+2. **The members are aligned by one batched query at one bucket**, and the bucket
+   comes from the *coarsest* member. That direction is the whole point and is easy to
+   get backwards: a grid finer than the slowest series leaves it with empty buckets
+   between its arrivals, and an empty bucket is not an idle device.
+3. **Each series becomes idle and active**, with the profiler's hysteresis band. A
+   bucket with no reading is `unknown` rather than idle — the one mistake that would
+   make every rule here wrong in the same direction.
+4. **Every pair is tabulated and conditioned** on hour of day and weekday/weekend.
+
+What comes out is the sentence §5.5 opens with:
+
+```json
+{"statement":"the oven active → the kitchen lights active",
+ "anomaly":"the oven active while the kitchen lights idle",
+ "confidence":0.8571,"lift":6.8571,"support":0.125,
+ "samples":420,"violations":60,"strength":"likely",
+ "exceptions":[{"dimension":"hour_of_day","bucket":"06:00-12:00",
+                "from_hour":6,"to_hour":12,"confidence":0,"drop":0.8571,"samples":60}],
+ "advisory":"candidate only: not a configured rule, not an anomaly definition, and never
+             read by an operator or a training job until a developer confirms it (§5.5, D28)"}
+```
+
+Read the three figures together, because each answers a question the others cannot.
+`confidence` is P(consequent | antecedent). `lift` is how far that exceeds the
+consequent's own base rate — and it is what rejects the most common false finding in
+association mining, a consequent that is simply usually true: a light left on all
+year scores a confidence near 1.0 against every antecedent and a lift of 1.0 against
+all of them. `samples` and `violations` are the evidence, because a confidence of 1.0
+over three buckets and one over three thousand are the same number and not the same
+finding.
+
+`strength` is separate from `confidence` and ordinal, and the distinction is
+deliberate rather than pedantic. `confidence` is a ratio with a definition;
+`strength` is the detector's own certainty, which D23 says must not be dressed as a
+number. It never reads `certain` — that level is reserved for ontology-derived and
+developer-confirmed values, and a detected co-occurrence is neither until somebody
+confirms it.
+
+### Both directions, and why an idle antecedent is not examined
+
+Each pair yields up to four directed rules, because "the oven runs, so the lights
+are on" and "the lights are on, so the oven runs" are different claims and only one
+of them may be a finding. In the fixture above the reverse holds at confidence 1.0
+with no exceptions: lights on with the oven off is an ordinary evening, lights on
+*only* while the oven runs is a pattern.
+
+An **idle** antecedent is deliberately not examined at all. "While the oven is idle
+the lights are idle" is true most of the night in any kitchen, it holds at high
+confidence for reasons that have nothing to do with the pair, and lift alone is not
+enough of a filter to keep a rule list a human will read to the end.
+
+### Confirming a rule
+
+Every candidate ends beside a confirm, a correct and a reject, and the decision goes
+into an append-only log:
+
+```json
+{"action":"confirm","created_by":"…","rule_id":"rule-0c29b1557e8c1ecf9405a12f",
+ "computed":{"statement":"the oven active → the kitchen lights active","confidence":0.8571,
+             "exceptions":[{"bucket":"06:00-12:00","confidence":0,"drop":0.8571}]},
+ "note":"matches how the kitchen is used"}
+```
+
+`rule_id` is a fingerprint of what the rule **says** — the two series, their states
+and the direction — and deliberately not of the window, the grid or the detector
+version. Relate the same pair next month over a longer window with a sharper
+detector and the relation id changes while the rule id does not, so the decision is
+still attached to it. That is the same reasoning that keys a `ProfileOverride` by
+series rather than by profile (D21), and the acceptance test for it recomputes over a
+different window and asserts the verdict comes back.
+
+Correcting rather than confirming records **both** forms, which is the point: "the
+detector said 0.86 and the developer narrowed it to evenings" is a finding, and a
+mutable document would destroy it (§5.4.3).
+
+**No LLM tool writes one of these.** `decide_relation_rule` is in the denied set
+beside `write_profile_override`, so `NewRegistry` refuses to register it and the
+surface cannot gain one by accident — a model that could confirm the rules it
+proposed would be grading its own work.
+
+### What a missing rule means
+
+The pane keeps a member on screen even when it yielded no state series, with the
+reason, because that is the first thing to check when an expected rule is absent:
+
+- `wrong_kind` on a **continuous** series — active more than half the time, so it is
+  one population with variation and an idle state would be a property of the
+  threshold rather than of the device.
+- `wrong_kind` on a **status or categorical** series — it has states, not sessions,
+  and inventing an ordering over category labels would be the wrong answer
+  confidently.
+- `insufficient_coverage` — fewer than twenty observed buckets, so there is nothing
+  to conclude from.
+- `read_failed` — the service could not be profiled at all. One service failing does
+  not end the pass: the oven-and-lights finding does not depend on the third device
+  having usable data.
+
+An empty rule list with two usable members is a result. An empty rule list with one
+usable member is a different thing entirely, and reading the second as the first is
+the D24 mistake one level up from a field.
+
+### The relation routes
+
+| Route | Effect |
+| --- | --- |
+| `GET /relations/candidate-sets?aspect_id=&include_descendants=&limit=&max_members=` | Sets proposed from an aspect, its device groups and its graphs. Reads no values |
+| `POST /relations` | Run a pass. Body: `members[]`, `window`, `params`, `conditioning`, `candidate_set_id` |
+| `GET /relations/{id}` | The stored document, with the decision log as it stands now |
+| `POST /relations/{id}/rule-decisions` | Confirm, correct or reject one rule. Body: `rule_id`, `action`, `confirmed`, `note` |
+| `GET /relations/rule-decisions?rule_id=` | Every verdict recorded against a fingerprint, oldest first |
+
+A pass is also `relate` on the WebSocket, and that is the route the pane uses. It
+profiles every participating service before it aligns them, which makes it the
+longest read ODE makes, and the socket both reports its phases and cancels it —
+closing the tab stops paying for it.
+
+Relation profiles live in memory, bounded; the decision log goes to Postgres when
+there is one. The same split the profiler makes and for the same reason: a relation
+profile is a reproducible artifact whose loss costs a recomputation, and a
+developer's judgement on a rule is an empirical record whose loss destroys evidence
+that cannot be regenerated.
+
 ## The profiler over a WebSocket
 
 The Profiler and Selection views run their slow operations over `GET /ws` rather
@@ -911,7 +1143,7 @@ run by catching four defects, and caught a fifth on the M3 pass — a `duration_
 field carrying nanoseconds. See the README in that directory, including how to
 recapture the fixtures when the shape changes on purpose.
 
-The M3, M4 and M5 fixtures are regenerated from the API test harness rather than a
+The M3 to M6 fixtures are regenerated from the API test harness rather than a
 platform:
 
 ```bash
@@ -956,6 +1188,17 @@ file written in one session is present in the next. The last one restarts the
 kernel and reads the file back, which is the acceptance criterion itself. A
 mistyped Hub field — `progress_url` as an integer — was caught on their first
 run and would have passed every unit test in the package.
+
+M6 has the same shape and is worth one note. Its API tests run the **real** profiler
+over two synthetic power series a room apart, rather than faking the
+`activity_pattern` the relational pass rests on. A fake pattern would let the two
+halves agree with each other while disagreeing with what a developer sees in the
+profiler view, and the thing being checked is precisely that they do not — the
+thresholds, the contingency counts and the exception window in `relation.json` are
+the detectors' own. The rule logic itself is checked separately in `pkg/relations`
+against a fixture built so every figure in it can be worked out by hand: an oven that
+runs 19:00–22:00 nightly and 10:00–10:30 each morning, lights that follow only the
+evening run, and therefore a confidence of exactly 6/7 with a 06:00–12:00 exception.
 
 Detector correctness is checked against fixtures with known answers rather than
 against the platform (SPEC §5.4.14): a synthesised 15-minute series with an

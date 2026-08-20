@@ -1592,3 +1592,377 @@ svg.chart .marker polygon {
   flex-wrap: wrap;
   padding: 0.4rem 0.6rem 0.2rem;
 }
+
+/*
+ * M6: multi-device conditional patterns (SPEC §5.5, §5.10).
+ *
+ * The aspect pane and the relation pane sit side by side because the work moves one
+ * way between them — a set proposed on the left is related on the right — and a
+ * developer confirming a rule needs the members it rests on still in view.
+ */
+.panes.relations {
+  grid-template-columns: minmax(0, 4fr) minmax(0, 6fr);
+  align-items: start;
+  height: 100%;
+}
+
+.panes.relations .pane {
+  max-height: 100%;
+}
+
+/* A proposed set: what it is, why these devices, and the series it offers. */
+.set-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  margin-top: 0.6rem;
+}
+
+.set-card.active {
+  border-color: var(--accent);
+}
+
+.set-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.set-head h3 {
+  margin: 0;
+  font-size: 1em;
+  font-weight: 600;
+}
+
+.set-rationale {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.set-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/*
+ * The origin is a claim about how much the grouping is worth trusting, so the
+ * platform's own grouping is the one that gets the accent (§5.5).
+ */
+.origin {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.8em;
+  color: var(--muted);
+}
+
+.origin-device_group {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.set-members {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.set-members li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.15rem 0;
+  flex-wrap: wrap;
+}
+
+.set-members label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.member-label {
+  font-weight: 500;
+}
+
+/* The series taken into the pass, so the right-hand pane says what it will read. */
+.chosen {
+  list-style: none;
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.6rem;
+  padding: 0;
+}
+
+.chosen li {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  background: var(--raised);
+}
+
+.chosen-label {
+  font-size: 0.9em;
+}
+
+/* The pass reports phases because it is the longest read ODE makes. */
+.phase {
+  margin: 0.5rem 0 0;
+  font-size: 0.9em;
+}
+
+.members {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.members th,
+.members td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.35rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.members thead th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.85em;
+}
+
+/*
+ * A member that yielded no state series stays on screen rather than being dropped:
+ * it is the first thing to check when an expected rule is missing, and hiding it
+ * would turn an explained absence into an unexplained one (D24).
+ */
+.members tr.unusable .member-label {
+  color: var(--muted);
+}
+
+.source.confirmed {
+  color: var(--online);
+}
+
+/* A candidate rule, and the three things a developer can do about it (§5.10). */
+.rule-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  margin-top: 0.6rem;
+}
+
+.rule-card.decided-confirm {
+  border-left: 3px solid var(--online);
+}
+
+.rule-card.decided-reject {
+  border-left: 3px solid var(--offline);
+}
+
+.rule-card.decided-correct {
+  border-left: 3px solid var(--warn);
+}
+
+.rule-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.rule-statement {
+  margin: 0;
+  font-weight: 600;
+}
+
+.rule-anomaly {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.rule-stats {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0 0;
+}
+
+.rule-stats dt {
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+.rule-stats dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The "except at certain times of day" of the motivating case (§5.5). */
+.exceptions {
+  margin-top: 0.5rem;
+  border-left: 2px solid var(--warn);
+  padding-left: 0.6rem;
+}
+
+.exceptions-title {
+  color: var(--warn);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.exceptions ul {
+  margin: 0.2rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.9em;
+}
+
+.decision-record {
+  margin: 0.5rem 0 0;
+  font-size: 0.9em;
+}
+
+/*
+ * The advisory travels in the document itself, and it is rendered rather than
+ * trusted to be remembered: a rule is a candidate until the developer says
+ * otherwise, and this is the surface where that gets decided (D28).
+ */
+.advisory {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.8em;
+  font-style: italic;
+}
+
+.rule-edit {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.rule-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.rule-actions > input {
+  flex: 1;
+  min-width: 8rem;
+}
+
+/* The counts every ratio above rests on, collapsed by default. */
+.pair h4 {
+  margin: 0.6rem 0 0.3rem;
+  font-size: 0.95em;
+}
+
+.contingency,
+.conditions {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.contingency th,
+.contingency td,
+.conditions th,
+.conditions td {
+  border: 1px solid var(--border);
+  padding: 0.2rem 0.45rem;
+  text-align: right;
+}
+
+.contingency th,
+.conditions th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.85em;
+  text-align: left;
+}
+
+.conditions {
+  margin-top: 0.4rem;
+  width: 100%;
+}
+
+/*
+ * M6, graph-derived sets. A graph says more than a device group does — direction and
+ * share, not just membership — so the origin chip and the per-member role are what
+ * make a sub-metering pair distinguishable from a shared label at a glance.
+ */
+.origin-graph_siblings,
+.origin-graph_flow {
+  border-color: var(--online);
+  color: var(--online);
+}
+
+.set-graph {
+  margin: 0.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.role {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  margin-left: 0.4rem;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+/* The measured end of a sub-metering pair: the one a containment is read against. */
+.role-downstream {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+/*
+ * A member the graph reached from outside the requested aspect. Not a warning: a
+ * meter one level up is not in the room, and it is the whole point of consulting the
+ * topology.
+ */
+.outside {
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  margin-left: 0.4rem;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+/*
+ * When no member yielded a state series the reasons are the whole answer, and six
+ * collapsed tags in a table are the wrong place for them.
+ */
+.no-members {
+  border-left: 2px solid var(--warn);
+  padding: 0.1rem 0 0.1rem 0.7rem;
+  margin: 0.6rem 0;
+}
+
+.no-members p {
+  margin: 0.2rem 0;
+}
+
+.no-members ul {
+  margin: 0.3rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.9em;
+}
+
+.no-members li {
+  padding: 0.15rem 0;
+}
