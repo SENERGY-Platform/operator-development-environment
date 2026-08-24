@@ -8,8 +8,8 @@ github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERo
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/SENERGY-Platform/developer-notifications v0.0.5 h1:x66XZgLxiwzWTaUXE9xcWI2zlW9reS6Moizc93nuQSs=
 github.com/SENERGY-Platform/developer-notifications v0.0.5/go.mod h1:4zJM5bicd+k3cijxUz81U63dyRqtBWQpHAkcXb2KWSw=
-github.com/SENERGY-Platform/device-repository v0.2.51 h1:dw2SiZ4hiZaFesVKrUxFxvAGINg4f7eKljX3VIIjjQQ=
-github.com/SENERGY-Platform/device-repository v0.2.51/go.mod h1:/qWsw+57HV+4f5Eq2tigGyTaO5ReBzYKylutgoi8uJ0=
+github.com/SENERGY-Platform/device-repository v0.2.53 h1:KMXrOAxvnsm7/rYkcKaYUmqKcxsJa9CpFoI7L6aEI2M=
+github.com/SENERGY-Platform/device-repository v0.2.53/go.mod h1:spl0q/hV2pIR5jJqa0/lp1wS+cNLzJebPl5p9l/dJ2o=
 github.com/SENERGY-Platform/gin-middleware v0.14.1 h1:o2le7do9++e377ixtnFXbobAJP5CSMQXW7d1dUSAwFU=
 github.com/SENERGY-Platform/gin-middleware v0.14.1/go.mod h1:+9dhC08w9tpnjnFC8gYO0+0Po5TKfeUGt+5a1jUVfqI=
 github.com/SENERGY-Platform/go-env-loader v0.5.3 h1:sNM/psxYBs3DeDCw8P8gWM2hvySijwy9t2DdSGdhF1c=
@@ -24,10 +24,10 @@ github.com/SENERGY-Platform/models/go v0.0.0-20260710115411-5b8e00d6e038 h1:7yEu
 github.com/SENERGY-Platform/models/go v0.0.0-20260710115411-5b8e00d6e038/go.mod h1:5B2cSnYKuAmeco4mJPhY5eVO+oMqXLmnl9wxh1G7e9E=
 github.com/SENERGY-Platform/permissions-v2 v0.0.45 h1:o8w+6zA8lRH00fXYxrMs2EEX9vR5BSO7T+e3dJXbwhI=
 github.com/SENERGY-Platform/permissions-v2 v0.0.45/go.mod h1:TTM/9lOE9d+JHhnEQR7aFgWRGOtYBRZIyA9v12/ofjA=
-github.com/SENERGY-Platform/service-commons v0.0.0-20260507090252-155b04bb4c46 h1:ixK0PRFd4WvBPvBIAjT9p0D6F/XggR5kxovEJcEKv6U=
-github.com/SENERGY-Platform/service-commons v0.0.0-20260507090252-155b04bb4c46/go.mod h1:ZPgM4x+iVHVh4YfeUS9GVMMv3v9ieec566fhzNfERpc=
-github.com/SENERGY-Platform/timescale-wrapper v0.1.0 h1:HGytuQ5gtHfADQYOnIV4MbkzMsHnPFMf8g3CmveYbRc=
-github.com/SENERGY-Platform/timescale-wrapper v0.1.0/go.mod h1:hXPFVgwJQlzGO5glqaUQcsPJuoKRLX3kwROMryzQMvE=
+github.com/SENERGY-Platform/service-commons v0.0.0-20260821114734-3e4578ac2358 h1:RGgwqd2PKoBCbW2aBdl43OO5O7JNC2LKE452Ihi4TdM=
+github.com/SENERGY-Platform/service-commons v0.0.0-20260821114734-3e4578ac2358/go.mod h1:k1Jia3JItpaM26/SY1ZGyoGhBE8EA5zQrkwSaiFZKGQ=
+github.com/SENERGY-Platform/timescale-wrapper v0.1.2 h1:WMO1pD/QZXTsGYxSnn09Az1PDkp9NTfJByuRDFzyDBY=
+github.com/SENERGY-Platform/timescale-wrapper v0.1.2/go.mod h1:hXPFVgwJQlzGO5glqaUQcsPJuoKRLX3kwROMryzQMvE=
 github.com/anthropics/anthropic-sdk-go v1.63.1 h1:M9dIoZzUWB453ulVpBkQp3FX0769udzrTscDrsJk1w4=
 github.com/anthropics/anthropic-sdk-go v1.63.1/go.mod h1:3EfIfmFqxH6rbiLcIP4tPFyXL/IHakx2wDG4OU+TIEI=
 github.com/bahlo/generic-list-go v0.2.0 h1:5sz/EEAK+ls5wF+NeqDpk5+iNdMDXrh3z3nPnH1Wvgk=
@@ -221,8 +221,8 @@ github.com/pb33f/ordered-map/v2 v2.3.1 h1:5319HDO0aw4DA4gzi+zv4FXU9UlSs3xGZ40wcP
 github.com/pb33f/ordered-map/v2 v2.3.1/go.mod h1:qxFQgd0PkVUtOMCkTapqotNgzRhMPL7VvaHKbd1HnmQ=
 github.com/pelletier/go-toml/v2 v2.3.1 h1:MYEvvGnQjeNkRF1qUuGolNtNExTDwct51yp7olPtrEc=
 github.com/pelletier/go-toml/v2 v2.3.1/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
-github.com/pierrec/lz4/v4 v4.1.25 h1:kocOqRffaIbU5djlIBr7Wh+cx82C0vtFb0fOurZHqD0=
-github.com/pierrec/lz4/v4 v4.1.25/go.mod h1:EoQMVJgeeEOMsCqCzqFm2O0cJvljX2nGZjcRIPL34O4=
+github.com/pierrec/lz4/v4 v4.1.27 h1:+PhzhWDrjRj89TH2sw43nE3+4+W8lSxIuQadEHZyjUk=
+github.com/pierrec/lz4/v4 v4.1.27/go.mod h1:EoQMVJgeeEOMsCqCzqFm2O0cJvljX2nGZjcRIPL34O4=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
