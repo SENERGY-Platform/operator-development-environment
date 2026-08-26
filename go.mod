@@ -3,13 +3,13 @@ module github.com/SENERGY-Platform/operator-development-environment
 go 1.26.5
 
 require (
-	github.com/SENERGY-Platform/device-repository v0.2.51
+	github.com/SENERGY-Platform/device-repository v0.2.53
 	github.com/SENERGY-Platform/gin-middleware v0.14.1
 	github.com/SENERGY-Platform/go-service-base/config-hdl v1.2.0
 	github.com/SENERGY-Platform/go-service-base/struct-logger v0.8.0
 	github.com/SENERGY-Platform/models/go v0.0.0-20260710115411-5b8e00d6e038
-	github.com/SENERGY-Platform/service-commons v0.0.0-20260507090252-155b04bb4c46
-	github.com/SENERGY-Platform/timescale-wrapper v0.1.0
+	github.com/SENERGY-Platform/service-commons v0.0.0-20260821114734-3e4578ac2358
+	github.com/SENERGY-Platform/timescale-wrapper v0.1.2
 	github.com/anthropics/anthropic-sdk-go v1.63.1
 	github.com/gin-contrib/cors v1.7.7
 	github.com/gin-gonic/gin v1.12.0
@@ -17,6 +17,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/openai/openai-go/v3 v3.52.0
+	github.com/swaggo/swag v1.16.6
 	gonum.org/v1/gonum v0.17.0
 )
 
@@ -75,7 +76,7 @@ require (
 	github.com/montanaflynn/stats v0.9.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.1 // indirect
-	github.com/pierrec/lz4/v4 v4.1.25 // indirect
+	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
@@ -85,7 +86,6 @@ require (
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
 	github.com/swaggo/files v1.0.1 // indirect
 	github.com/swaggo/http-swagger v1.3.4 // indirect
-	github.com/swaggo/swag v1.16.6 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
