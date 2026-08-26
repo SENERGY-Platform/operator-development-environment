@@ -1,0 +1,6271 @@
+basePath: /
+definitions:
+  admin.Limits:
+    properties:
+      allowed_models:
+        items:
+          type: string
+        type: array
+      allowed_providers:
+        description: |-
+          AllowedProviders and AllowedModels narrow what may be used. Empty means "no
+          restriction beyond what the providers themselves declare", which is the
+          permissive default a fresh deployment wants.
+        items:
+          type: string
+        type: array
+      cost_cap:
+        type: number
+      global_cost_cap:
+        description: |-
+          GlobalCostCap is the spend cap across every user. Meaningful only on the
+          global record; ignored on a per-user one, because a single user cannot own
+          the whole deployment's ceiling.
+        type: number
+      kernel_cpu_default:
+        description: |-
+          Kernel and Ray caps are §3.3 fields ODE stores and does not enforce, and the
+          two have different reasons now that M4 exists.
+
+          The Ray cap waits for M7, as before. The kernel caps turned out not to be
+          ODE's to apply at all: a pod's resources are set by KubeSpawner at spawn
+          time, and the Hub API's spawn body selects a *profile* rather than carrying
+          arbitrary overrides. A per-user memory limit therefore lives in the
+          KubeSpawner profile itself, or in a Hub-side spawn hook — somewhere ODE
+          cannot reach from here.
+
+          They stay on the type because §3.3 lists them and an admin will look for
+          them, and DeclaredFields is what stops an administrator setting one and
+          assuming it binds.
+        type: string
+      kernel_cpu_max:
+        type: string
+      kernel_mem_default:
+        type: string
+      kernel_mem_max:
+        type: string
+      max_concurrent_ray_jobs:
+        type: integer
+      max_concurrent_sessions:
+        description: MaxConcurrentSessions caps live chat sessions per user.
+        type: integer
+      max_tier:
+        allOf:
+        - $ref: '#/definitions/tools.Tier'
+        description: |-
+          MaxTier is the highest exposure tier this subject may raise a session to
+          (§3.3: "Maximum exposure tier permitted per user or globally"). Absent means
+          L2, the highest that exists.
+      period:
+        description: |-
+          Period is the window a cap applies over, as a Go duration ("720h"). Empty
+          means the default.
+        type: string
+      soft_warn_fraction:
+        description: |-
+          SoftWarnFraction is where a warning is raised, as a fraction of the hard cap
+          (0.8 = warn at four fifths). A warning changes nothing about whether the
+          request runs; it is surfaced so a developer is not cut off without notice.
+        type: number
+      token_cap:
+        description: |-
+          TokenCap and CostCap are hard caps: a request that would exceed one is
+          refused. CostCap is in the pricing currency.
+        type: integer
+    type: object
+  api.chartBody:
+    properties:
+      annotations:
+        items:
+          $ref: '#/definitions/charts.Annotation'
+        type: array
+      caption:
+        type: string
+      group_time:
+        type: string
+      markers:
+        items:
+          $ref: '#/definitions/charts.Marker'
+        type: array
+      series:
+        items:
+          $ref: '#/definitions/charts.SeriesSpec'
+        type: array
+      session_id:
+        type: string
+      title:
+        type: string
+      window:
+        $ref: '#/definitions/api.windowBody'
+      y_axis:
+        $ref: '#/definitions/charts.YAxis'
+    type: object
+  api.chartConfirmBody:
+    properties:
+      action:
+        type: string
+      computed_value: {}
+      confirmed_value: {}
+      field_path:
+        type: string
+      note:
+        type: string
+      series_index:
+        type: integer
+    type: object
+  api.commitBody:
+    properties:
+      message:
+        type: string
+      paths:
+        items:
+          type: string
+        type: array
+    type: object
+  api.connectBody:
+    properties:
+      code:
+        type: string
+      state:
+        type: string
+    type: object
+  api.createBody:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      organisation:
+        type: string
+      private:
+        type: boolean
+      scaffold:
+        description: |-
+          Scaffold defaults to true, which is why it is a pointer: an absent field and
+          an explicit false have to be told apart, and a created repository with no
+          scaffold is not what anyone asked for.
+        type: boolean
+    type: object
+  api.decisionBody:
+    properties:
+      action:
+        type: string
+      confirmed:
+        allOf:
+        - $ref: '#/definitions/relations.DecidedRule'
+        description: |-
+          Confirmed is the developer's own form of the rule, required for a correction —
+          a narrowed statement, exceptions they added, exceptions they struck out.
+      note:
+        type: string
+      rule_id:
+        type: string
+    type: object
+  api.discardBody:
+    properties:
+      confirm:
+        type: boolean
+    type: object
+  api.launchBody:
+    properties:
+      entrypoint:
+        description: Entrypoint is the command Ray runs. Empty takes the deployment's
+          default.
+        type: string
+      env_vars:
+        additionalProperties:
+          type: string
+        description: |-
+          EnvVars are extra environment variables for the job, validated at the service
+          boundary: bounded in count and size, and unable to override what ODE sets.
+        type: object
+      run_name:
+        type: string
+      session_id:
+        description: |-
+          SessionID ties the run to a chat session, so §5.13's summary can be injected
+          back into the conversation it came from.
+        type: string
+    type: object
+  api.makeDirBody:
+    properties:
+      path:
+        type: string
+    type: object
+  api.overrideBody:
+    properties:
+      action:
+        type: string
+      computed_value: {}
+      confirmed_value: {}
+      field_path:
+        type: string
+      note:
+        type: string
+    type: object
+  api.profileRequestBody:
+    properties:
+      analysis_window:
+        $ref: '#/definitions/api.windowBody'
+      device_id:
+        type: string
+      group_time:
+        type: string
+      raw_window:
+        $ref: '#/definitions/api.windowBody'
+      service_id:
+        type: string
+      session_params:
+        $ref: '#/definitions/api.sessionBody'
+    type: object
+  api.proposalDecisionBody:
+    properties:
+      decision:
+        description: Decision is "accepted", "edited" or "rejected" — §5.13's three
+          answers.
+        type: string
+      edited:
+        description: Edited is the developer's own form of the adjustment, required
+          for an edit.
+        type: string
+      note:
+        type: string
+      proposal_id:
+        description: |-
+          ProposalID is what the developer was looking at. Required, and checked against
+          the proposal that currently stands: deciding on a stale one is answered with a
+          409 rather than recorded as agreement with something else.
+        type: string
+    type: object
+  api.pushBody:
+    properties:
+      branch:
+        type: string
+    type: object
+  api.relationBody:
+    properties:
+      candidate_set_id:
+        type: string
+      conditioning:
+        $ref: '#/definitions/relations.Conditioning'
+      grid_seconds:
+        type: number
+      members:
+        items:
+          $ref: '#/definitions/api.relationMemberBody'
+        type: array
+      params:
+        $ref: '#/definitions/relations.RuleParams'
+      window:
+        $ref: '#/definitions/api.windowBody'
+    type: object
+  api.relationMemberBody:
+    properties:
+      device_id:
+        type: string
+      label:
+        type: string
+      service_id:
+        type: string
+      variable_path:
+        type: string
+    type: object
+  api.selectBody:
+    properties:
+      full_name:
+        type: string
+      scaffold:
+        type: boolean
+    type: object
+  api.selectionBody:
+    properties:
+      aspect_ids:
+        items:
+          type: string
+        type: array
+      device_class_ids:
+        items:
+          type: string
+        type: array
+      function_ids:
+        description: |-
+          The explicit id lists bypass the lexical matcher. They are how a caller that
+          has already read the ontology — an LLM in M3 — asks for exactly what it
+          means, and how a developer pins one half of a query.
+        items:
+          type: string
+        type: array
+      include_controlling:
+        type: boolean
+      intent:
+        type: string
+      interaction:
+        type: string
+      limit:
+        type: integer
+      match_limit:
+        type: integer
+      min_score:
+        type: number
+      rank:
+        description: |-
+          Rank defaults to true when absent, which is why it is a pointer: §5.2 ranks
+          candidates by QuickProfile rather than returning them unordered. Sending
+          false asks for the ontology resolution alone, which costs no per-device
+          round trip.
+        type: boolean
+      window:
+        $ref: '#/definitions/api.windowBody'
+    type: object
+  api.sessionBody:
+    properties:
+      hysteresis_frac:
+        type: number
+      merge_gap_s:
+        type: number
+      min_duration_s:
+        type: number
+    type: object
+  api.stashBody:
+    properties:
+      message:
+        type: string
+    type: object
+  api.windowBody:
+    properties:
+      from:
+        type: string
+      to:
+        type: string
+    type: object
+  api.writeFileBody:
+    properties:
+      content:
+        type: string
+      path:
+        type: string
+    type: object
+  charts.Annotation:
+    properties:
+      annotation_id:
+        description: |-
+          AnnotationID is minted by ODE, not by the spec author: it is what a
+          confirmation refers back to, so it has to be unforgeable within a chart.
+        type: string
+      author:
+        allOf:
+        - $ref: '#/definitions/charts.Author'
+        description: |-
+          Author is stamped by ODE. A derived annotation is profiler-authored and is
+          added at read time, so it cannot be forged in a spec.
+      confirmable:
+        description: |-
+          Confirmable marks an annotation the developer may confirm, correct or reject
+          into the override overlay (§5.10). It requires FieldPath, because a
+          confirmation with nowhere to go is theatre.
+        type: boolean
+      field_path:
+        type: string
+      from:
+        type: string
+      label:
+        type: string
+      series_index:
+        description: |-
+          SeriesIndex is which series the annotation belongs to, or nil for the whole
+          chart. A confirmation needs it: the overlay is keyed by series reference.
+        type: integer
+      severity:
+        type: string
+      source:
+        description: Source is the free-text provenance of §5.9 ("profiler.sessions").
+        type: string
+      to:
+        type: string
+      type:
+        type: string
+    type: object
+  charts.Author:
+    enum:
+    - developer
+    - llm
+    - profiler
+    type: string
+    x-enum-varnames:
+    - AuthorDeveloper
+    - AuthorLLM
+    - AuthorProfiler
+  charts.Axis:
+    properties:
+      available_conversions:
+        items:
+          $ref: '#/definitions/profiler.Conversion'
+        type: array
+      characteristic_id:
+        description: |-
+          CharacteristicID is nil where none resolved. Never fabricated: a made-up id
+          would silently authorise a wrong server-side conversion (D29).
+        type: string
+      computed_unit:
+        type: string
+      confirmable:
+        description: |-
+          Confirmable says the developer's confirmation would add something: the unit
+          was inferred, is unknown, is in conflict, or travels in the message. Where
+          the ontology answered it outright there is nothing to confirm, which is
+          §5.10's own point — the ontology reduces how often confirmation is needed.
+        type: boolean
+      confirmed:
+        description: |-
+          Confirmed and the two fields under it are the override overlay made visible.
+          ComputedUnit is what the resolver said before the developer spoke, so the
+          pane can show "W → kW, confirmed by …" rather than only the answer (§5.4.3).
+        type: boolean
+      confirmed_by:
+        type: string
+      from:
+        description: |-
+          From records where the label came from: the specification's own y_axis, the
+          resolved series, or nothing that agreed.
+        type: string
+      mixed:
+        description: |-
+          Mixed says the series do not share a unit. The chart still draws — comparing
+          a power series with a temperature is a legitimate thing to want to look at —
+          but the axis label would be a lie, so the pane says so instead.
+        type: boolean
+      note:
+        description: |-
+          Note explains an unusual state — a conflict, a rejection, a unit that only
+          exists per message.
+        type: string
+      unit:
+        type: string
+      unit_source:
+        $ref: '#/definitions/profiler.UnitSource'
+    type: object
+  charts.Confirmed:
+    properties:
+      confirmable:
+        additionalProperties:
+          type: string
+        description: |-
+          Confirmable is the closed set of paths, echoed for the same reason the
+          profiler route echoes it: the backend is authoritative and a client that has
+          drifted should be able to see it.
+        type: object
+      override:
+        $ref: '#/definitions/profiler.ProfileOverride'
+      series:
+        $ref: '#/definitions/charts.SeriesResolution'
+    type: object
+  charts.Created:
+    properties:
+      notes:
+        items:
+          type: string
+        type: array
+      series:
+        items:
+          $ref: '#/definitions/charts.SeriesResolution'
+        type: array
+      spec:
+        $ref: '#/definitions/charts.Spec'
+      y_axis:
+        $ref: '#/definitions/charts.Axis'
+    type: object
+  charts.Data:
+    properties:
+      aligned:
+        type: boolean
+      annotations:
+        items:
+          $ref: '#/definitions/charts.Annotation'
+        type: array
+      annotations_dropped:
+        description: |-
+          AnnotationsDropped is how many bands the cap removed. Never silent: a chart
+          showing fifty of four hundred sessions looks like a chart of fifty.
+        type: integer
+      caption:
+        type: string
+      chart_id:
+        type: string
+      group_time:
+        description: |-
+          GroupTime is the chart-wide bucket; Aligned says whether every series shares
+          it.
+        type: string
+      markers:
+        items:
+          $ref: '#/definitions/charts.Marker'
+        type: array
+      notes:
+        items:
+          type: string
+        type: array
+      reads:
+        $ref: '#/definitions/charts.Reads'
+      series:
+        items:
+          $ref: '#/definitions/charts.SeriesData'
+        type: array
+      title:
+        type: string
+      window:
+        $ref: '#/definitions/profiler.Window'
+      y_axis:
+        $ref: '#/definitions/charts.Axis'
+    type: object
+  charts.Marker:
+    properties:
+      at:
+        type: string
+      author:
+        $ref: '#/definitions/charts.Author'
+      label:
+        type: string
+      marker_id:
+        type: string
+      series_index:
+        type: integer
+      source:
+        type: string
+    type: object
+  charts.Point:
+    properties:
+      t:
+        type: string
+      v:
+        type: number
+    type: object
+  charts.Reads:
+    properties:
+      devices:
+        type: integer
+      points:
+        type: integer
+      queries:
+        type: integer
+    type: object
+  charts.SeriesData:
+    properties:
+      confirmations:
+        description: |-
+          Confirmations is the override overlay for this series, so the pane can show
+          what the developer has already decided next to what the detectors said.
+        items:
+          $ref: '#/definitions/profiler.ProfileOverride'
+        type: array
+      group_time:
+        type: string
+      group_type:
+        type: string
+      index:
+        type: integer
+      label:
+        type: string
+      math:
+        type: string
+      non_numeric_dropped:
+        description: |-
+          NonNumeric is how many returned values were not numbers, and NullRows how
+          many rows carried nothing for this variable. Both are reported rather than
+          dropped quietly: a line with half its points missing looks like a sparse
+          series, and the cause matters (D24's distinction again).
+        type: integer
+      notes:
+        description: |-
+          Notes carries anything the resolution had to say about this series — a
+          widened bucket, a refused conversion, a unit that needs confirming.
+        items:
+          type: string
+        type: array
+      null_rows:
+        type: integer
+      points:
+        items:
+          $ref: '#/definitions/charts.Point'
+        type: array
+      profile_id:
+        type: string
+      ref:
+        $ref: '#/definitions/profiler.SeriesRef'
+      transform:
+        type: string
+      unit:
+        $ref: '#/definitions/charts.Unit'
+    type: object
+  charts.SeriesResolution:
+    properties:
+      index:
+        type: integer
+      label:
+        type: string
+      notes:
+        description: |-
+          Notes carries anything the resolution had to say about this series — a
+          widened bucket, a refused conversion, a unit that needs confirming.
+        items:
+          type: string
+        type: array
+      profile_id:
+        type: string
+      ref:
+        $ref: '#/definitions/profiler.SeriesRef'
+      transform:
+        type: string
+      unit:
+        $ref: '#/definitions/charts.Unit'
+    type: object
+  charts.SeriesSpec:
+    properties:
+      label:
+        type: string
+      profile_id:
+        description: |-
+          ProfileID names the profile the profiler-derived annotations come from
+          (§5.10). Optional: a chart of a series nobody has profiled still draws, it
+          just carries no detected sessions or gaps.
+        type: string
+      ref:
+        $ref: '#/definitions/profiler.SeriesRef'
+      transform:
+        type: string
+    type: object
+  charts.Spec:
+    properties:
+      annotations:
+        items:
+          $ref: '#/definitions/charts.Annotation'
+        type: array
+      author:
+        $ref: '#/definitions/charts.Author'
+      caption:
+        type: string
+      chart_id:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      group_time:
+        description: |-
+          GroupTime is the chart-wide aggregation bucket. Empty means "derive one that
+          fits the point cap", which is the normal case: a spec author knows the shape
+          they want to see, not how many points a browser should draw.
+
+          One bucket for the whole chart rather than one per series is §5.3.1 item 4:
+          alignment across series is a property of the request. A series may still
+          override it with resample:, and the response says when that has cost
+          alignment.
+        type: string
+      markers:
+        items:
+          $ref: '#/definitions/charts.Marker'
+        type: array
+      series:
+        items:
+          $ref: '#/definitions/charts.SeriesSpec'
+        type: array
+      session_id:
+        description: |-
+          SessionID ties a chart the model proposed to the conversation it was
+          proposed in, so the pane can list "the charts of this session". Empty for a
+          chart the developer built themselves.
+        type: string
+      title:
+        type: string
+      window:
+        allOf:
+        - $ref: '#/definitions/profiler.Window'
+        description: Window is the range the chart covers. Absolute, and resolved
+          at creation.
+      y_axis:
+        $ref: '#/definitions/charts.YAxis'
+    type: object
+  charts.Unit:
+    properties:
+      available_conversions:
+        items:
+          $ref: '#/definitions/profiler.Conversion'
+        type: array
+      characteristic_id:
+        description: |-
+          CharacteristicID is nil where none resolved. Never fabricated: a made-up id
+          would silently authorise a wrong server-side conversion (D29).
+        type: string
+      computed_unit:
+        type: string
+      confirmable:
+        description: |-
+          Confirmable says the developer's confirmation would add something: the unit
+          was inferred, is unknown, is in conflict, or travels in the message. Where
+          the ontology answered it outright there is nothing to confirm, which is
+          §5.10's own point — the ontology reduces how often confirmation is needed.
+        type: boolean
+      confirmed:
+        description: |-
+          Confirmed and the two fields under it are the override overlay made visible.
+          ComputedUnit is what the resolver said before the developer spoke, so the
+          pane can show "W → kW, confirmed by …" rather than only the answer (§5.4.3).
+        type: boolean
+      confirmed_by:
+        type: string
+      note:
+        description: |-
+          Note explains an unusual state — a conflict, a rejection, a unit that only
+          exists per message.
+        type: string
+      unit:
+        type: string
+      unit_source:
+        $ref: '#/definitions/profiler.UnitSource'
+    type: object
+  charts.YAxis:
+    properties:
+      unit:
+        type: string
+      unit_source:
+        type: string
+    type: object
+  chat.Session:
+    properties:
+      created_at:
+        type: string
+      exposure_tier:
+        allOf:
+        - $ref: '#/definitions/tools.Tier'
+        description: Tier is the exposure tier (§3.2). Default L0.
+      id:
+        type: string
+      message_count:
+        description: MessageCount lets a listing show session size without loading
+          every message.
+        type: integer
+      model:
+        type: string
+      provider:
+        type: string
+      selection:
+        allOf:
+        - $ref: '#/definitions/tools.ProposedSelection'
+        description: |-
+          Selection is the data selection the developer has confirmed, if any (§5.2's
+          last step). Stored on the session because §5.10 says confirmations persist as
+          session overrides.
+      title:
+        type: string
+      updated_at:
+        type: string
+      user_sub:
+        description: |-
+          UserSub owns the session. Every read checks it: a session id in a URL must
+          not be enough to read someone else's conversation.
+        type: string
+    type: object
+  experiments.Credential:
+    properties:
+      expires_in_seconds:
+        description: |-
+          ExpiresIn is how long the job's token is good for, as the issuer reported it.
+          Zero when unknown, which is the honest answer for a session token: ODE does
+          not validate tokens (§3.1 step 2) and does not read their expiry.
+        type: integer
+      expires_with_session:
+        description: |-
+          ExpiresWithSession is the limitation, stated. True means a run outliving the
+          developer's session will lose its platform access partway through.
+        type: boolean
+      note:
+        description: |-
+          Note is the sentence a pane or a model shows. Written here rather than at
+          each call site so both say the same thing.
+        type: string
+      source:
+        description: |-
+          Source is "exchanged" — a token minted for this job through the Keycloak
+          token exchange — or "session", the caller's own.
+        type: string
+    type: object
+  experiments.Criterion:
+    properties:
+      goal:
+        description: |-
+          Goal is "minimise" or "maximise", and GoalStated says whether the file said so
+          or whether it was inferred from the metric's name. The pair is here for the
+          reason MetricDelta carries LowerIsBetter: a verdict whose rule is invisible
+          reads as a judgement, and "assuming lower rmse is better" is a sentence a
+          model should be able to say.
+        type: string
+      goal_stated:
+        type: boolean
+      lower_is_better:
+        type: boolean
+      met:
+        allOf:
+        - $ref: '#/definitions/experiments.Verdict'
+        description: Met is true, false, or a not_computed object naming the reason.
+      metric:
+        type: string
+      source:
+        description: |-
+          Source names where the criterion came from — the developer's file at a commit,
+          or the run's own tags — so nobody reads the verdict as ODE's own opinion.
+        type: string
+      threshold:
+        description: |-
+          Threshold is a pointer for the reason Value is: `omitempty` on a float64 would
+          hide a threshold of exactly zero, which is what §5.11 item 3's scaffold ships,
+          while a plain float64 put `"threshold": 0` into every criterion that has none —
+          a number the developer never wrote, in the document a model reads.
+        type: number
+      value:
+        description: |-
+          Value is what the run logged for the metric. A pointer because a metric of
+          exactly zero is a real reading and `omitempty` on a float64 would hide it,
+          while a metric the run never logged has to be visibly absent.
+        type: number
+    type: object
+  experiments.EmbedProbe:
+    properties:
+      embeddable:
+        type: string
+      probed_at:
+        type: string
+      reason:
+        description: |-
+          Reason is the header that decided it, or why nothing did. Carried because
+          "no" without the header is not actionable by whoever has to change it.
+        type: string
+      service:
+        description: Service is "ray" or "mlflow".
+        type: string
+      status:
+        description: |-
+          Status is the HTTP status the probe got. Zero when the service could not be
+          reached at all.
+        type: integer
+      url:
+        type: string
+    type: object
+  experiments.EmbedReport:
+    properties:
+      as_of:
+        type: string
+      cached:
+        description: Cached says this answer came from the TTL cache rather than a
+          fresh probe.
+        type: boolean
+      services:
+        items:
+          $ref: '#/definitions/experiments.EmbedProbe'
+        type: array
+      ttl:
+        type: string
+    type: object
+  experiments.Experiment:
+    properties:
+      branch:
+        type: string
+      commit_sha:
+        type: string
+      ended_at:
+        type: string
+      entrypoint:
+        type: string
+      experiment_id:
+        description: |-
+          ID is ODE's own identifier, the one that appears in URLs. Separate from
+          SubmissionID because the two have different owners: a Ray cluster may be
+          replaced, and a developer's own list of what they ran should survive that.
+        type: string
+      message:
+        description: Message is Ray's own, for a job that failed. Never a log.
+        type: string
+      mlflow_experiment_id:
+        type: string
+      mlflow_experiment_name:
+        type: string
+      mlflow_run_id:
+        description: RunID and MLflowExperimentID are the run ODE created before submitting.
+        type: string
+      package_bytes:
+        type: integer
+      package_reused:
+        description: |-
+          PackageReused says the archive was already on the cluster and was not
+          uploaded again. Two launches from the same commit produce the same bytes.
+        type: boolean
+      package_uri:
+        description: |-
+          PackageURI is the gcs:// URI of the working directory Ray unpacks, and
+          PackageBytes its size — reported because it is the one number a developer can
+          act on when a launch is refused for exceeding the cap.
+        type: string
+      repository:
+        description: Repository is owner/name, and CommitSHA the state the package
+          was built from.
+        type: string
+      scoped_credential:
+        description: |-
+          ScopedCredential says whether the job carries a token of its own (§3.1 item
+          6) or the caller's session token. False is a supported deployment and a
+          stated limitation, not a fault — see Credential.
+        type: boolean
+      session_id:
+        description: |-
+          SessionID is the chat session this was launched from, when it was. One of the
+          four metadata keys §5.12 names.
+        type: string
+      started_at:
+        type: string
+      status:
+        type: string
+      submission_id:
+        description: |-
+          SubmissionID is what Ray was asked to call the job. ODE mints it rather than
+          letting Ray, so a resubmission of the same request cannot silently become two
+          jobs: Ray rejects a duplicate submission id.
+        type: string
+      submitted_at:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  experiments.LaunchResult:
+    properties:
+      branch:
+        type: string
+      commit_sha:
+        type: string
+      credential:
+        $ref: '#/definitions/experiments.Credential'
+      ended_at:
+        type: string
+      entrypoint:
+        type: string
+      experiment_id:
+        description: |-
+          ID is ODE's own identifier, the one that appears in URLs. Separate from
+          SubmissionID because the two have different owners: a Ray cluster may be
+          replaced, and a developer's own list of what they ran should survive that.
+        type: string
+      message:
+        description: Message is Ray's own, for a job that failed. Never a log.
+        type: string
+      mlflow_experiment_id:
+        type: string
+      mlflow_experiment_name:
+        type: string
+      mlflow_run_id:
+        description: RunID and MLflowExperimentID are the run ODE created before submitting.
+        type: string
+      mlflow_tracking_uri:
+        description: |-
+          TrackingURI is what the job was told MLflow is, so a developer can open the
+          run without knowing ODE's configuration.
+        type: string
+      package_bytes:
+        type: integer
+      package_reused:
+        description: |-
+          PackageReused says the archive was already on the cluster and was not
+          uploaded again. Two launches from the same commit produce the same bytes.
+        type: boolean
+      package_uri:
+        description: |-
+          PackageURI is the gcs:// URI of the working directory Ray unpacks, and
+          PackageBytes its size — reported because it is the one number a developer can
+          act on when a launch is refused for exceeding the cap.
+        type: string
+      repository:
+        description: Repository is owner/name, and CommitSHA the state the package
+          was built from.
+        type: string
+      scoped_credential:
+        description: |-
+          ScopedCredential says whether the job carries a token of its own (§3.1 item
+          6) or the caller's session token. False is a supported deployment and a
+          stated limitation, not a fault — see Credential.
+        type: boolean
+      session_id:
+        description: |-
+          SessionID is the chat session this was launched from, when it was. One of the
+          four metadata keys §5.12 names.
+        type: string
+      started_at:
+        type: string
+      status:
+        type: string
+      submission_id:
+        description: |-
+          SubmissionID is what Ray was asked to call the job. ODE mints it rather than
+          letting Ray, so a resubmission of the same request cannot silently become two
+          jobs: Ray rejects a duplicate submission id.
+        type: string
+      submitted_at:
+        type: string
+      updated_at:
+        type: string
+      warnings:
+        description: |-
+          Warnings are things that did not stop the launch but that the developer
+          should read — a token exchange that answered with a shorter lifetime than the
+          deployment asked for, for instance.
+        items:
+          type: string
+        type: array
+    type: object
+  experiments.LogPage:
+    properties:
+      logs:
+        type: string
+      submission_id:
+        type: string
+      truncated:
+        type: boolean
+    type: object
+  experiments.MetricDelta:
+    properties:
+      current:
+        type: number
+      delta:
+        type: number
+      direction:
+        description: |-
+          Direction is §5.13's "better|worse", and LowerIsBetter is how it was decided.
+
+          The two are separate on purpose. Whether a smaller number is an improvement
+          is a property of the metric, and without the developer's evaluation criteria
+          ODE can only go by the name — loss, error, mae, rmse and mape count down,
+          everything else counts up. Carrying the rule beside the verdict means a model
+          reading this can say "assuming lower rmse is better" instead of asserting an
+          improvement it inferred from a naming convention.
+        type: string
+      lower_is_better:
+        type: boolean
+      metric:
+        type: string
+      previous:
+        type: number
+    type: object
+  experiments.ResourceUsage:
+    properties:
+      duration_s:
+        type: number
+      peak_memory_mb:
+        type: number
+      peak_memory_source:
+        description: |-
+          PeakMemorySource is empty when the job reported no memory metric, which is
+          the normal case. Present rather than a silent zero, for D24's reason: a zero
+          read as "used no memory" would be a fabricated finding.
+        type: string
+    type: object
+  experiments.Summary:
+    properties:
+      commit_sha:
+        type: string
+      comparison_to_previous:
+        description: |-
+          ComparisonToPrevious is this run against the previous finished run of the
+          same MLflow experiment — which, per D17, is the same developer on the same
+          repository. Empty when there is no previous run, and that is worth reading as
+          "first run" rather than "no change".
+        items:
+          $ref: '#/definitions/experiments.MetricDelta'
+        type: array
+      ended_at:
+        type: string
+      entrypoint:
+        type: string
+      evaluation_criteria:
+        allOf:
+        - $ref: '#/definitions/experiments.Criterion'
+        description: |-
+          EvaluationCriteria is §5.13's block: the developer's own criterion, from their
+          `evaluation.yaml` at the run's commit, graded against what the run logged.
+
+          **Always present, never absent.** A run with no criteria file, a file ODE
+          could not read, a summary built before the developer was back — each is a
+          criterion whose `met` is an explicit non-result with a reason, not a criterion
+          that is missing. Absence would be read as "there was nothing to meet"; D24 is
+          the same rule the profiler applies to a detector's field, and it applies here
+          for the same reason.
+      experiment_id:
+        type: string
+      finished:
+        description: |-
+          Finished says the run is in a state it will not leave, so a model can tell a
+          final metric from a snapshot of one still moving.
+        type: boolean
+      metrics:
+        additionalProperties:
+          format: float64
+          type: number
+        type: object
+      note:
+        description: |-
+          Note carries what a reader would otherwise have to infer: that a run is still
+          going, that there was nothing to compare against, that Ray and MLflow
+          disagreed.
+        type: string
+      params:
+        additionalProperties:
+          type: string
+        type: object
+      previous_run_id:
+        description: |-
+          PreviousRunID names what the comparison is against, so a claim about an
+          improvement can be checked.
+        type: string
+      repository:
+        type: string
+      resource_usage:
+        $ref: '#/definitions/experiments.ResourceUsage'
+      run_id:
+        type: string
+      secondary_criteria:
+        description: |-
+          SecondaryCriteria are the other metrics the file asks to watch. Beyond §5.13's
+          literal shape, and here because §5.11 item 3's scaffold has a
+          `secondary_metrics` key and silently dropping what a developer wrote there
+          would make the summary a partial reading of their own file.
+        items:
+          $ref: '#/definitions/experiments.Criterion'
+        type: array
+      started_at:
+        type: string
+      status:
+        description: |-
+          Status is the run's, which is Ray's job status reconciled with MLflow's own.
+          Where they disagree Ray wins for a job still running and MLflow for a
+          finished one — see reconcile.
+        type: string
+      submission_id:
+        type: string
+      tags:
+        additionalProperties:
+          type: string
+        type: object
+    type: object
+  experiments.Verdict:
+    type: object
+  interpret.Interpretation:
+    properties:
+      decision:
+        allOf:
+        - $ref: '#/definitions/interpret.ProposalDecision'
+        description: |-
+          Decision is the developer's answer, if they have given one. The latest record
+          in the log, merged at read time — never written into this document, for the
+          reason §5.4.3 gives about the override overlay: the computed artifact and the
+          human judgement stay separable, and "the assistant proposed X and the developer
+          rejected it" is the finding.
+      decisions:
+        description: |-
+          Decisions is the whole log for this proposal, oldest first. A developer who
+          changed their mind added a record rather than replacing one.
+        items:
+          $ref: '#/definitions/interpret.ProposalDecision'
+        type: array
+      experiment_id:
+        type: string
+      interpretation:
+        description: |-
+          Interpretation is what the assistant said, in full. Empty until the turn has
+          run, which is what InterpretedAt being zero means.
+        type: string
+      interpreted_at:
+        type: string
+      proposal:
+        allOf:
+        - $ref: '#/definitions/interpret.Proposal'
+        description: Proposal is the concrete next adjustment, or an explicit non-result.
+      run_id:
+        type: string
+      session_id:
+        type: string
+      summary:
+        allOf:
+        - $ref: '#/definitions/experiments.Summary'
+        description: Summary is §5.13's structured document, as it was injected.
+      summary_at:
+        description: |-
+          SummaryAt is when it was built, which is when the run became terminal — not
+          when the developer came back to it.
+        type: string
+    type: object
+  interpret.Proposal:
+    properties:
+      detail:
+        type: string
+      proposal_id:
+        description: |-
+          ID is a fingerprint of what was proposed, for this experiment.
+
+          Keyed on the text rather than on the interpretation it appeared in, which is
+          what makes a decision survive a recomputation — the same choice
+          relations.RuleDecision makes for the same reason. Re-interpreting a run that
+          produces the same proposal produces the same id, so a rejection still stands;
+          a materially different proposal is a different id and is asked about again.
+        type: string
+      reason:
+        type: string
+      status:
+        description: |-
+          Status is empty when there is a proposal, and "not_computed" with a reason
+          when the assistant named none.
+        type: string
+      text:
+        description: Text is the adjustment, in the assistant's own words.
+        type: string
+    type: object
+  interpret.ProposalDecision:
+    properties:
+      binding:
+        description: |-
+          Binding is always false, and is serialised rather than omitted so that a
+          reader meets D28 rather than having to know it: accepting a proposal records
+          agreement and changes nothing. Promoting a value into evaluation.yaml or the
+          operator config is a separate act the developer performs themselves, and §5.8
+          has no tool for it either.
+        type: boolean
+      created_at:
+        type: string
+      created_by:
+        type: string
+      decision:
+        type: string
+      decision_id:
+        type: string
+      edited:
+        description: |-
+          Edited is the developer's own form of the adjustment. Required for an edit and
+          empty otherwise, because an edit whose content was not recorded is a rejection
+          with extra steps.
+        type: string
+      experiment_id:
+        type: string
+      note:
+        type: string
+      proposal_id:
+        description: ProposalID is what the decision is keyed by — see Proposal.ID.
+        type: string
+      proposed:
+        description: |-
+          Proposed is the assistant's own wording, copied in rather than referenced.
+          The record has to stay readable after the interpretation it came from has been
+          evicted from memory, and "what was actually proposed" is half the finding.
+        type: string
+      run_id:
+        description: |-
+          RunID records which MLflow run the proposal was about, so the log is readable
+          after ODE's own record of the experiment is gone.
+        type: string
+    type: object
+  kernel.Node:
+    properties:
+      children:
+        description: Children is set on a directory when the listing was recursive.
+        items:
+          $ref: '#/definitions/kernel.Node'
+        type: array
+      elided:
+        description: |-
+          Elided says this directory holds more entries than the walk was allowed to
+          report. Reported rather than silently cut, for the reason D26 gives about
+          projections: a truncated tree read as a complete one is the failure.
+        type: integer
+      modified:
+        type: string
+      name:
+        type: string
+      path:
+        description: Path is relative to the workspace root, with forward slashes.
+        type: string
+      size:
+        type: integer
+      type:
+        description: '"file" | "directory"'
+        type: string
+    type: object
+  kernel.Status:
+    properties:
+      busy:
+        description: Busy is true while an execution ODE started is still running.
+        type: boolean
+      kernel_id:
+        type: string
+      kernel_name:
+        type: string
+      last_activity:
+        type: string
+      profile:
+        description: Profile is the KubeSpawner profile ODE spawns with, empty for
+          the default.
+        type: string
+      server_pending:
+        type: string
+      server_ready:
+        type: boolean
+      server_url:
+        type: string
+      started:
+        type: string
+      user:
+        type: string
+      workspace:
+        description: Workspace is the persistent working directory the kernel runs
+          in.
+        type: string
+      workspace_ready:
+        description: WorkspaceReady says the directory exists on the PVC.
+        type: boolean
+    type: object
+  models.AspectNode:
+    properties:
+      ancestor_ids:
+        items:
+          type: string
+        type: array
+      child_ids:
+        items:
+          type: string
+        type: array
+      descendent_ids:
+        items:
+          type: string
+        type: array
+      id:
+        type: string
+      name:
+        type: string
+      parent_id:
+        type: string
+      root_id:
+        type: string
+    type: object
+  models.Attribute:
+    properties:
+      key:
+        type: string
+      origin:
+        type: string
+      value:
+        type: string
+    type: object
+  models.Concept:
+    properties:
+      base_characteristic_id:
+        type: string
+      characteristic_ids:
+        items:
+          type: string
+        type: array
+      conversions:
+        items:
+          $ref: '#/definitions/models.ConverterExtension'
+        type: array
+      id:
+        type: string
+      name:
+        type: string
+    type: object
+  models.ConverterExtension:
+    properties:
+      distance:
+        type: integer
+      formula:
+        type: string
+      from:
+        type: string
+      placeholder_name:
+        type: string
+      to:
+        type: string
+    type: object
+  models.Device:
+    properties:
+      attributes:
+        items:
+          $ref: '#/definitions/models.Attribute'
+        type: array
+      device_type_id:
+        type: string
+      id:
+        type: string
+      local_id:
+        type: string
+      name:
+        type: string
+      owner_id:
+        type: string
+    type: object
+  models.DeviceClass:
+    properties:
+      id:
+        type: string
+      image:
+        type: string
+      name:
+        type: string
+    type: object
+  models.Permissions:
+    properties:
+      administrate:
+        type: boolean
+      execute:
+        type: boolean
+      read:
+        type: boolean
+      write:
+        type: boolean
+    type: object
+  profiler.ActivityClassification:
+    enum:
+    - continuous
+    - session_based
+    - intermittent
+    - status
+    type: string
+    x-enum-varnames:
+    - ActivityContinuous
+    - ActivitySessionBased
+    - ActivityIntermittent
+    - ActivityStatus
+  profiler.Confidence:
+    enum:
+    - certain
+    - likely
+    - uncertain
+    type: string
+    x-enum-varnames:
+    - Certain
+    - Likely
+    - Uncertain
+  profiler.Conversion:
+    properties:
+      distance:
+        type: integer
+      to_characteristic_id:
+        type: string
+      to_unit:
+        type: string
+    type: object
+  profiler.DeclaredRange:
+    properties:
+      max:
+        $ref: '#/definitions/profiler.Value-float64'
+      min:
+        $ref: '#/definitions/profiler.Value-float64'
+    type: object
+  profiler.Exclusion:
+    properties:
+      from:
+        type: string
+      reason:
+        type: string
+      to:
+        type: string
+    type: object
+  profiler.NotComputed:
+    properties:
+      detail:
+        type: string
+      reason:
+        $ref: '#/definitions/profiler.NotComputedReason'
+      status:
+        type: string
+    type: object
+  profiler.NotComputedReason:
+    enum:
+    - insufficient_coverage
+    - insufficient_span
+    - wrong_kind
+    - read_failed
+    - out_of_scope
+    type: string
+    x-enum-varnames:
+    - ReasonInsufficientCoverage
+    - ReasonInsufficientSpan
+    - ReasonWrongKind
+    - ReasonReadFailed
+    - ReasonOutOfScope
+  profiler.OverrideAction:
+    enum:
+    - confirm
+    - correct
+    - reject
+    type: string
+    x-enum-varnames:
+    - ActionConfirm
+    - ActionCorrect
+    - ActionReject
+  profiler.ProfileOverride:
+    properties:
+      action:
+        $ref: '#/definitions/profiler.OverrideAction'
+      computed_value: {}
+      confirmed_value: {}
+      created_at:
+        type: string
+      created_by:
+        type: string
+      detector_version:
+        type: string
+      field_path:
+        type: string
+      note:
+        type: string
+      override_id:
+        type: string
+      profile_id:
+        type: string
+      series_ref:
+        allOf:
+        - $ref: '#/definitions/profiler.SeriesRef'
+        description: |-
+          SeriesRef is what an override is keyed by. ProfileID records which profile
+          the developer was looking at, and DetectorVersion which detectors produced
+          it, so a confirmation made against an old detector can be reviewed rather
+          than silently carried forward — but neither is used for lookup, because a
+          recomputation changes both and the confirmation has to survive it.
+    type: object
+  profiler.Provenance:
+    additionalProperties:
+      $ref: '#/definitions/profiler.ProvenanceEntry'
+    type: object
+  profiler.ProvenanceEntry:
+    properties:
+      detector:
+        type: string
+      group_time:
+        type: string
+      note:
+        type: string
+      read_mode:
+        $ref: '#/definitions/profiler.ReadMode'
+      ref:
+        type: string
+      source:
+        $ref: '#/definitions/profiler.Source'
+      window:
+        $ref: '#/definitions/profiler.Window'
+    type: object
+  profiler.QualityFlag:
+    properties:
+      confidence:
+        $ref: '#/definitions/profiler.Confidence'
+      evidence:
+        additionalProperties: {}
+        type: object
+      flag:
+        type: string
+    type: object
+  profiler.RawWindow:
+    properties:
+      from:
+        type: string
+      limit_reduced:
+        description: |-
+          LimitReduced says the first attempt was refused by the gateway and the read
+          was retried with fewer rows. A short raw window then has a third possible
+          cause — neither retention nor the developer's setting — and guessing between
+          them is exactly what D24 exists to prevent.
+        type: boolean
+      row_limit:
+        description: |-
+          RowLimit is the row cap the read was actually made with.
+
+          It is not the configured figure: the raw read is one wide row per message
+          carrying one value per variable, so the response costs rows times variables,
+          and the cap that bounds it is divided by the variables being read. Recording
+          the applied number is what makes a short raw window legible — a developer
+          looking at four days where they configured fourteen should be able to see why
+          without reading the source.
+
+          omitempty for one reason worth knowing: a profile captured before this field
+          existed still satisfies the shape. Any profile this build computes carries it.
+        type: integer
+      source:
+        $ref: '#/definitions/profiler.WindowSource'
+      to:
+        type: string
+      truncated:
+        description: |-
+          Truncated says the point limit cut the window short, in which case From
+          is the oldest point actually read rather than the one requested. Without
+          this the gap detector would report a gap that is only a missing read.
+        type: boolean
+    type: object
+  profiler.ReadMode:
+    enum:
+    - raw
+    - aggregated
+    - none
+    type: string
+    x-enum-varnames:
+    - ReadRaw
+    - ReadAggregated
+    - ReadNone
+  profiler.ReadSummary:
+    properties:
+      aggregated_buckets:
+        description: AggregatedBuckets is how many buckets the aggregated pass returned.
+        type: integer
+      diagnosis:
+        description: |-
+          Diagnosis names the cause when there is one to name, in the terms a reader
+          can act on. Empty when both passes returned data.
+        type: string
+      null_rows:
+        type: integer
+      raw_available:
+        allOf:
+        - $ref: '#/definitions/profiler.Value-bool'
+        description: |-
+          RawAvailable is what /data-availability says: false means the platform holds
+          only aggregated buckets for this service, so there is no unbucketed data to
+          read and every structural detector is dead on arrival. Retention causes this,
+          and it is the first thing to check on an empty profile.
+
+          A Value rather than a bool because the endpoint can fail, and a bool cannot
+          tell "the platform says there is no raw window" from "the platform could not
+          be asked". That is precisely the distinction D24 exists to keep: read as a
+          false, an unanswered probe would send a reader looking for retention that is
+          not the cause. When it is not computed the reason is read_failed and the
+          detail is the platform's own error.
+      raw_rows:
+        description: RawRows is how many rows the raw pass returned for the whole
+          service.
+        type: integer
+      values_present:
+        description: |-
+          ValuesPresent is how many of those rows carried a value for *this* variable,
+          and NullRows how many did not. A service can report while one of its channels
+          stays silent, which looks identical to a dead read from inside a single
+          variable's profile.
+        type: integer
+    type: object
+  profiler.Recommendations:
+    properties:
+      advisory:
+        type: boolean
+      exclusions:
+        items:
+          $ref: '#/definitions/profiler.Exclusion'
+        type: array
+      interpolation_strategy:
+        $ref: '#/definitions/profiler.Value-string'
+      resample_to_s:
+        $ref: '#/definitions/profiler.Value-float64'
+      usable_range:
+        $ref: '#/definitions/profiler.Value-profiler_Window'
+    type: object
+  profiler.Relationship:
+    properties:
+      confidence:
+        $ref: '#/definitions/profiler.Confidence'
+      evidence:
+        $ref: '#/definitions/profiler.RelationshipEvidence'
+      other_path:
+        type: string
+      type:
+        $ref: '#/definitions/profiler.RelationshipType'
+    type: object
+  profiler.RelationshipEvidence:
+    properties:
+      correlation:
+        type: number
+      implied_scale:
+        description: |-
+          ImpliedScale is the factor that best maps the other series onto this one.
+          For a counter against a rate it is the unit ratio, so a value near 3600
+          says watt-hours against watts and a value near 1 says watt-seconds — which
+          is how a unit error shows up as a number rather than as a failed check.
+        type: number
+      overlap_points:
+        type: integer
+      residual_ratio:
+        type: number
+    type: object
+  profiler.RelationshipType:
+    enum:
+    - integral_of
+    - derivative_of
+    - redundant_with
+    - inconsistent_with
+    type: string
+    x-enum-varnames:
+    - RelationIntegralOf
+    - RelationDerivativeOf
+    - RelationRedundantWith
+    - RelationInconsistentWith
+  profiler.SeriesProfile:
+    properties:
+      activity_pattern:
+        $ref: '#/definitions/profiler.Value-profiler_ActivityPattern'
+      analysis_window:
+        $ref: '#/definitions/profiler.Window'
+      cache_key:
+        description: |-
+          CacheKey is carried in the body as well as being the store's key, so a
+          profile handed around outside the store can still be checked for staleness.
+        type: string
+      computed_at:
+        type: string
+      coverage:
+        $ref: '#/definitions/profiler.Value-profiler_Coverage'
+      detector_version:
+        type: string
+      distribution:
+        $ref: '#/definitions/profiler.Value-profiler_Distribution'
+      profile_id:
+        type: string
+      provenance:
+        $ref: '#/definitions/profiler.Provenance'
+      quality_flags:
+        items:
+          $ref: '#/definitions/profiler.QualityFlag'
+        type: array
+      raw_window:
+        $ref: '#/definitions/profiler.RawWindow'
+      read_summary:
+        allOf:
+        - $ref: '#/definitions/profiler.ReadSummary'
+        description: |-
+          ReadSummary says what the two passes actually returned for this variable.
+
+          It exists because a profile full of not_computed is otherwise a puzzle: the
+          fields report their own reason honestly, but "no sampling interval" is the
+          symptom, and the cause — nothing came back, or rows came back with no value
+          in this column, or there is no raw data to read at all — lives one level
+          down where nobody can see it. This is the one block that is always populated.
+      recommendations:
+        $ref: '#/definitions/profiler.Recommendations'
+      sampling:
+        $ref: '#/definitions/profiler.Value-profiler_Sampling'
+      series_ref:
+        $ref: '#/definitions/profiler.SeriesRef'
+      service_context:
+        $ref: '#/definitions/profiler.ServiceContext'
+      temporal_structure:
+        $ref: '#/definitions/profiler.TemporalStructure'
+      tier:
+        type: string
+      value_semantics:
+        $ref: '#/definitions/profiler.ValueSemantics'
+    type: object
+  profiler.SeriesRef:
+    properties:
+      device_id:
+        type: string
+      service_id:
+        type: string
+      variable_path:
+        type: string
+    type: object
+  profiler.ServiceContext:
+    properties:
+      interaction:
+        type: string
+      relationships:
+        items:
+          $ref: '#/definitions/profiler.Relationship'
+        type: array
+      service_id:
+        type: string
+      sibling_variables:
+        items:
+          $ref: '#/definitions/profiler.SiblingVariable'
+        type: array
+    type: object
+  profiler.Session:
+    properties:
+      duration_s:
+        type: number
+      energy:
+        type: number
+      from:
+        type: string
+      peak:
+        type: number
+      points:
+        type: integer
+      to:
+        type: string
+    type: object
+  profiler.SessionPage:
+    properties:
+      next_cursor:
+        type: string
+      sessions:
+        items:
+          $ref: '#/definitions/profiler.Session'
+        type: array
+      total:
+        type: integer
+    type: object
+  profiler.SiblingVariable:
+    properties:
+      characteristic_id:
+        type: string
+      kind:
+        type: string
+      path:
+        type: string
+    type: object
+  profiler.Source:
+    enum:
+    - ontology
+    - detector
+    - inference
+    - developer
+    - api
+    type: string
+    x-enum-varnames:
+    - SourceOntology
+    - SourceDetector
+    - SourceInference
+    - SourceDeveloper
+    - SourceAPI
+  profiler.TemporalStructure:
+    properties:
+      dominant_periods_s:
+        $ref: '#/definitions/profiler.Value-array_float64'
+      period_evidence:
+        $ref: '#/definitions/profiler.Value-array_profiler_PeriodEvidence'
+      stationarity:
+        $ref: '#/definitions/profiler.Value-profiler_Stationarity'
+      trend:
+        $ref: '#/definitions/profiler.Value-profiler_Trend'
+    type: object
+  profiler.UnitSource:
+    enum:
+    - characteristic
+    - unit_reference
+    - inferred
+    - unknown
+    - conflict
+    type: string
+    x-enum-varnames:
+    - UnitFromCharacteristic
+    - UnitFromUnitReference
+    - UnitInferred
+    - UnitUnknown
+    - UnitConflict
+  profiler.Value-array_float64:
+    type: object
+  profiler.Value-array_profiler_PeriodEvidence:
+    type: object
+  profiler.Value-array_time_Time:
+    type: object
+  profiler.Value-bool:
+    type: object
+  profiler.Value-float64:
+    type: object
+  profiler.Value-profiler_ActivityPattern:
+    type: object
+  profiler.Value-profiler_Confidence:
+    type: object
+  profiler.Value-profiler_Coverage:
+    type: object
+  profiler.Value-profiler_Distribution:
+    type: object
+  profiler.Value-profiler_KindEvidence:
+    type: object
+  profiler.Value-profiler_Sampling:
+    type: object
+  profiler.Value-profiler_Stationarity:
+    type: object
+  profiler.Value-profiler_Trend:
+    type: object
+  profiler.Value-profiler_ValueKind:
+    type: object
+  profiler.Value-profiler_Window:
+    type: object
+  profiler.Value-string:
+    type: object
+  profiler.ValueKind:
+    enum:
+    - instantaneous
+    - cumulative_counter
+    - binary
+    - categorical
+    - status
+    type: string
+    x-enum-varnames:
+    - KindInstantaneous
+    - KindCumulativeCounter
+    - KindBinary
+    - KindCategorical
+    - KindStatus
+  profiler.ValueSemantics:
+    properties:
+      available_conversions:
+        items:
+          $ref: '#/definitions/profiler.Conversion'
+        type: array
+      characteristic_id:
+        description: |-
+          CharacteristicID is canonical and authoritative; Unit is derived from it
+          and advisory (D29). It is a pointer because null is a legitimate value
+          where the unit was inferred, and fabricating an id here would silently
+          enable a wrong server-side conversion.
+        type: string
+      counter_resets:
+        $ref: '#/definitions/profiler.Value-array_time_Time'
+      declared_range:
+        $ref: '#/definitions/profiler.DeclaredRange'
+      kind:
+        $ref: '#/definitions/profiler.Value-profiler_ValueKind'
+      kind_confidence:
+        $ref: '#/definitions/profiler.Value-profiler_Confidence'
+      kind_evidence:
+        $ref: '#/definitions/profiler.Value-profiler_KindEvidence'
+      range_violation_ratio:
+        $ref: '#/definitions/profiler.Value-float64'
+      unit:
+        type: string
+      unit_source:
+        $ref: '#/definitions/profiler.UnitSource'
+    type: object
+  profiler.Window:
+    properties:
+      from:
+        type: string
+      to:
+        type: string
+    type: object
+  profiler.WindowSource:
+    enum:
+    - default
+    - developer_override
+    type: string
+    x-enum-varnames:
+    - WindowDefault
+    - WindowDeveloperOverride
+  relations.AspectRef:
+    properties:
+      depth:
+        description: Depth is 0 for the requested node.
+        type: integer
+      id:
+        type: string
+      name:
+        type: string
+      parent_id:
+        type: string
+    type: object
+  relations.CandidateRule:
+    properties:
+      advisory:
+        description: |-
+          Advisory states the boundary in the document itself, so a model reading a
+          projection of this cannot mistake a candidate for a configured rule.
+        type: string
+      anomaly:
+        type: string
+      antecedent:
+        $ref: '#/definitions/relations.RuleTerm'
+      confidence:
+        type: number
+      consequent:
+        $ref: '#/definitions/relations.RuleTerm'
+      decision:
+        allOf:
+        - $ref: '#/definitions/relations.RuleDecision'
+        description: |-
+          Decision is the developer's, re-injected from the append-only log when the
+          same rule is computed again. Nil means nobody has decided yet.
+      exceptions:
+        description: |-
+          Exceptions are the conditions under which the rule does not hold — the
+          "except at certain times of day" of the motivating case. Empty means it held
+          in every condition examined, which is a finding rather than a missing field.
+        items:
+          $ref: '#/definitions/relations.Exception'
+        type: array
+      lift:
+        type: number
+      rule_id:
+        description: |-
+          RuleID is a fingerprint of what the rule *says* — the two members, their
+          states, and the direction. It deliberately excludes the window, the grid and
+          the detector version, so a decision made today still applies to the same rule
+          recomputed next month over a different window (D21).
+        type: string
+      samples:
+        description: |-
+          Samples is how many buckets the antecedent held in, and Violations how many
+          of those the consequent failed in. Violations is the count of the anomaly the
+          rule defines, which is the figure a developer judges it by.
+        type: integer
+      statement:
+        description: |-
+          Statement is the rule in words, and Anomaly is its violation in words. Both
+          are generated rather than templated at the call site, because they are what
+          appears beside the confirm button and the two have to agree.
+        type: string
+      strength:
+        allOf:
+        - $ref: '#/definitions/profiler.Confidence'
+        description: |-
+          Strength is this detector's own certainty, and it is ordinal because D23
+          forbids inventing a probability for it. It is not the confidence above: that
+          is P(consequent | antecedent), a statistic; this is how much weight the
+          detector puts on the finding given how much evidence there is.
+      support:
+        description: |-
+          Support, Confidence and Lift are the association statistics §5.5 names. They
+          are ratios with definitions, unlike Strength below.
+        type: number
+      violations:
+        type: integer
+    type: object
+  relations.CandidateSet:
+    properties:
+      aspect_id:
+        type: string
+      aspect_name:
+        type: string
+      aspect_path:
+        description: |-
+          AspectPath is root-first, so a reader can see where "Kitchen" sits without
+          fetching the tree.
+        items:
+          type: string
+        type: array
+      device_group_id:
+        type: string
+      devices:
+        description: |-
+          Devices is how many distinct devices the members span. A set of one device is
+          not a multi-device pattern, which is why it is never proposed.
+        type: integer
+      graph_id:
+        description: |-
+          The graph a set came from, and the node its members meet at. Empty for a set the
+          aspect hierarchy or a device group proposed.
+        type: string
+      graph_name:
+        type: string
+      graph_node:
+        type: string
+      members:
+        items:
+          $ref: '#/definitions/relations.SetMember'
+        type: array
+      name:
+        type: string
+      notes:
+        items:
+          type: string
+        type: array
+      origin:
+        type: string
+      rationale:
+        description: |-
+          Rationale says why these devices are together, in the terms the developer can
+          judge — "both report under the aspect Kitchen" rather than a score.
+        type: string
+      set_id:
+        description: |-
+          SetID is a fingerprint of the origin and the members, so the same proposal
+          made twice carries the same id and a relation can name where its members came
+          from.
+        type: string
+      truncated:
+        description: |-
+          Truncated says the member cap applied, and Notes says what was left out. A
+          silent truncation reads as completeness.
+        type: boolean
+    type: object
+  relations.ConditionedContingency:
+    properties:
+      bucket:
+        description: 'Bucket is the condition in a form a person reads: "06:00-12:00",
+          "weekend".'
+        type: string
+      contingency:
+        $ref: '#/definitions/relations.Contingency'
+      dimension:
+        type: string
+    type: object
+  relations.Conditioning:
+    properties:
+      hour_of_day:
+        type: boolean
+      weekday_weekend:
+        type: boolean
+    type: object
+  relations.Contingency:
+    properties:
+      active_active:
+        description: The counts, named by the state of A then of B.
+        type: integer
+      active_idle:
+        type: integer
+      active_rate_a:
+        description: |-
+          ActiveRateA and ActiveRateB are the marginals, and they are what a lift is
+          measured against.
+        type: number
+      active_rate_b:
+        type: number
+      idle_active:
+        type: integer
+      idle_idle:
+        type: integer
+      observed:
+        description: |-
+          Observed is the sum of the four, which is the number of buckets in which both
+          members had a reading.
+        type: integer
+    type: object
+  relations.DecidedRule:
+    properties:
+      anomaly:
+        type: string
+      confidence:
+        type: number
+      exceptions:
+        items:
+          $ref: '#/definitions/relations.Exception'
+        type: array
+      lift:
+        type: number
+      statement:
+        type: string
+      support:
+        type: number
+    type: object
+  relations.DecisionAction:
+    enum:
+    - confirm
+    - correct
+    - reject
+    type: string
+    x-enum-varnames:
+    - ActionConfirm
+    - ActionCorrect
+    - ActionReject
+  relations.Exception:
+    properties:
+      bucket:
+        type: string
+      confidence:
+        type: number
+      dimension:
+        type: string
+      drop:
+        description: |-
+          Drop is how far below the rule's overall confidence this condition fell. It
+          is the reason the exception was raised and belongs beside it.
+        type: number
+      from_hour:
+        description: |-
+          FromHour and ToHour bound an hour-of-day exception, half-open, in UTC — the
+          machine-readable form of Bucket. Both are zero for a weekday/weekend
+          exception, which Dimension already identifies.
+        type: integer
+      samples:
+        type: integer
+      to_hour:
+        type: integer
+    type: object
+  relations.GraphPlacement:
+    properties:
+      depth:
+        description: |-
+          Depth is how many edges separate this member from the graph's sink. It is what
+          makes "these two are at the same level" and "one contains the other" visible
+          without walking the topology again.
+        type: integer
+      graph_id:
+        type: string
+      graph_name:
+        type: string
+      role:
+        description: Role is sibling, upstream or downstream.
+        type: string
+      via:
+        description: |-
+          Via is the node this member's flow reaches, and ViaName its label. For a
+          downstream member of a flow set it is the node they all feed, which that member
+          measures.
+        type: string
+      via_name:
+        type: string
+      weight:
+        description: |-
+          Weight is the edge weight out of this device toward Via.
+
+          It is an *output split*, not a contribution share, and the difference matters
+          when reading one: models.Graph.Valid requires the outgoing weights of each node
+          to sum to 100, so a device feeding exactly one node always carries 100 and says
+          nothing. Below that means the device's flow is allocated across several
+          downstream nodes — one meter split across two business units, say — and only then
+          is the figure a fact about this edge rather than about the node having one.
+
+          Zero where the member has no outgoing edge at all: the sink end of a flow set.
+        type: integer
+    type: object
+  relations.Member:
+    properties:
+      aspect_id:
+        type: string
+      aspect_name:
+        type: string
+      device_name:
+        type: string
+      kind:
+        $ref: '#/definitions/profiler.ValueKind'
+      label:
+        type: string
+      profile_id:
+        description: |-
+          ProfileID is the SeriesProfile the state series was derived from, so a
+          reader can go and look at the threshold rather than take it on trust.
+        type: string
+      ref:
+        $ref: '#/definitions/profiler.SeriesRef'
+      service_name:
+        type: string
+      state:
+        allOf:
+        - $ref: '#/definitions/relations.StateSummary'
+        description: |-
+          State is how idle and active were decided for this member, including whether
+          the threshold was the detector's or the developer's.
+      unit:
+        description: |-
+          Unit and Kind are carried because a rule about a cumulative counter is a rule
+          about its rate, and that distinction has to be visible where the rule is read.
+        type: string
+    type: object
+  relations.PairRelation:
+    properties:
+      a:
+        description: |-
+          A and B index RelationProfile.Members. Indices rather than references because
+          the same series may legitimately appear twice under different labels, and a
+          reference would then be ambiguous.
+        type: integer
+      b:
+        type: integer
+      conditions:
+        description: Conditions is Overall split by the conditioning dimensions.
+        items:
+          $ref: '#/definitions/relations.ConditionedContingency'
+        type: array
+      overall:
+        allOf:
+        - $ref: '#/definitions/relations.Contingency'
+        description: |-
+          Overall is the joint distribution over every bucket both members were
+          observed in.
+    type: object
+  relations.Proposal:
+    properties:
+      aspect_id:
+        type: string
+      aspect_name:
+        type: string
+      candidate_devices:
+        description: |-
+          CandidateDevices is every readable device the aspect resolved to, whether or
+          not it made it into a set. It is what makes "only one device here" visible.
+        items:
+          $ref: '#/definitions/selection.CandidateDevice'
+        type: array
+      include_descendants:
+        description: |-
+          IncludeDescendants is echoed because it changes the answer materially and the
+          caller may have relied on a default.
+        type: boolean
+      notes:
+        items:
+          type: string
+        type: array
+      ontology_gaps:
+        items:
+          $ref: '#/definitions/selection.OntologyGap'
+        type: array
+      reads:
+        allOf:
+        - $ref: '#/definitions/relations.Reads'
+        description: |-
+          Reads is structurally value-free: this operation is tier L0 (§5.8) and reads
+          the ontology, the device list and the device groups. A non-zero Values here
+          would mean the tier claim had been broken.
+      sets:
+        items:
+          $ref: '#/definitions/relations.CandidateSet'
+        type: array
+      subtree:
+        description: Subtree is the aspect nodes that were considered, root-first.
+        items:
+          $ref: '#/definitions/relations.AspectRef'
+        type: array
+    type: object
+  relations.Reads:
+    properties:
+      aligned:
+        type: integer
+      devices:
+        description: |-
+          Devices is the metadata reads: one per service a pass profiles, and one per
+          graph neighbour a proposal resolves from outside the requested aspect. Counted
+          separately from Values because a device read is metadata and does not touch the
+          tier — but counted, because a proposal that quietly made twelve of them would
+          otherwise look free.
+        type: integer
+      profiles:
+        type: integer
+      values:
+        description: |-
+          Values totals the value-reading passes, so a caller comparing this against a
+          QuickProfile's zero has one number to compare.
+        type: integer
+    type: object
+  relations.RelationProfile:
+    properties:
+      buckets:
+        description: |-
+          Buckets is the length of the aligned grid, and Observed how many buckets had
+          a reading from every usable member. A rule's support is a share of Observed,
+          not of Buckets, and stating both is what keeps that legible.
+        type: integer
+      cache_key:
+        description: |-
+          CacheKey is the relation id, for the same reason the profiler's is: a caller
+          holding a relation can check it for staleness without a second index.
+        type: string
+      candidate_rules:
+        items:
+          $ref: '#/definitions/relations.CandidateRule'
+        type: array
+      candidate_set_id:
+        description: |-
+          CandidateSetID names the proposal this pass came from, when it came from one.
+          It is how a confirmed rule can be traced back to the aspect that suggested
+          the devices.
+        type: string
+      computed_at:
+        type: string
+      conditioning:
+        $ref: '#/definitions/relations.Conditioning'
+      detector_version:
+        type: string
+      grid_seconds:
+        type: number
+      group_time:
+        type: string
+      members:
+        items:
+          $ref: '#/definitions/relations.Member'
+        type: array
+      notes:
+        items:
+          type: string
+        type: array
+      observed:
+        type: integer
+      pairs:
+        items:
+          $ref: '#/definitions/relations.PairRelation'
+        type: array
+      params:
+        $ref: '#/definitions/relations.RuleParams'
+      reads:
+        $ref: '#/definitions/relations.Reads'
+      relation_id:
+        type: string
+      tier:
+        description: |-
+          Tier is the lowest exposure tier at which this document may be shown to a
+          model. It is L1 throughout — contingency counts and durations are aggregates,
+          and no value of any series appears here.
+        type: string
+      window:
+        $ref: '#/definitions/profiler.Window'
+    type: object
+  relations.RuleDecision:
+    properties:
+      action:
+        $ref: '#/definitions/relations.DecisionAction'
+      computed:
+        allOf:
+        - $ref: '#/definitions/relations.DecidedRule'
+        description: |-
+          Computed is the rule as the detector stated it — the statement and the three
+          figures. Copied into the record rather than referenced, because the record has
+          to stay readable after the relation profile it came from has been evicted, and
+          because "the detector said 0.91 and the developer confirmed it" is the finding.
+      confirmed:
+        allOf:
+        - $ref: '#/definitions/relations.DecidedRule'
+        description: |-
+          Confirmed is the developer's own form of the rule, for a correction: a narrowed
+          statement, exceptions they added, exceptions they struck out. Nil for a plain
+          confirm or reject.
+      created_at:
+        type: string
+      created_by:
+        type: string
+      decision_id:
+        type: string
+      detector_version:
+        type: string
+      note:
+        type: string
+      relation_id:
+        description: |-
+          RelationID and DetectorVersion record what the developer was looking at, so a
+          decision made against an older detector can be reviewed rather than carried
+          forward unexamined. Neither is used for lookup.
+        type: string
+      rule_id:
+        type: string
+    type: object
+  relations.RuleParams:
+    properties:
+      exception_drop:
+        description: |-
+          ExceptionDrop is how far a conditioned confidence must fall below the rule's
+          overall confidence before that condition is reported as an exception.
+        type: number
+      hour_buckets:
+        description: |-
+          HourBuckets is how many equal parts the day is split into for conditioning.
+          Four is deliberately coarse: twenty-four buckets over a month leave too few
+          samples each to distinguish an exception from noise.
+        type: integer
+      min_confidence:
+        description: |-
+          MinConfidence is P(consequent | antecedent): how reliably the pattern holds
+          where the antecedent is true.
+        type: number
+      min_lift:
+        description: |-
+          MinLift is how much more often the pair co-occurs than independent base rates
+          predict. Confidence alone promotes a consequent that is simply always true —
+          a light left on all year confirms every rule about it at confidence 1.0.
+        type: number
+      min_samples:
+        description: MinSamples is the fewest antecedent-true buckets a rule may be
+          built from.
+        type: integer
+      min_support:
+        description: |-
+          MinSupport is the share of observed buckets a pattern must cover. It is what
+          stops a rule resting on four coincidences in a year.
+        type: number
+    type: object
+  relations.RuleTerm:
+    properties:
+      label:
+        type: string
+      member:
+        description: Member indexes RelationProfile.Members.
+        type: integer
+      state:
+        $ref: '#/definitions/relations.State'
+    type: object
+  relations.SetMember:
+    properties:
+      aspect_id:
+        type: string
+      aspect_name:
+        type: string
+      characteristic_id:
+        description: CharacteristicID is canonical and never fabricated (§5.4.11).
+        type: string
+      connection_state:
+        type: string
+      device_name:
+        type: string
+      device_type_name:
+        type: string
+      from_aspect:
+        description: |-
+          FromAspect says the member came from the requested aspect rather than being
+          reached through a graph. A graph legitimately crosses out of the aspect — a site
+          meter is not in the kitchen — so a reader comparing a set against the aspect they
+          asked about needs to know which members are which.
+        type: boolean
+      function_id:
+        type: string
+      graph:
+        allOf:
+        - $ref: '#/definitions/relations.GraphPlacement'
+        description: |-
+          Graph is where this member sits in the topology that proposed it, and is nil for
+          a member the aspect hierarchy proposed. It changes how a rule about the member
+          should be read: a sibling and a sub-meter are different relationships, and the
+          weight says what share of the flow this device accounts for.
+      label:
+        description: |-
+          Label is what a rule statement will call this member. Built from the device
+          name and the variable's last path segment, because "the oven's power" reads and
+          "urn:infai:ses:device:4711|…|value.power" does not.
+        type: string
+      ref:
+        $ref: '#/definitions/profiler.SeriesRef'
+      service_name:
+        type: string
+      unit:
+        type: string
+      unit_source:
+        $ref: '#/definitions/profiler.UnitSource'
+    type: object
+  relations.State:
+    enum:
+    - active
+    - idle
+    - unknown
+    type: string
+    x-enum-varnames:
+    - StateActive
+    - StateIdle
+    - StateUnknown
+  relations.StateSummary:
+    properties:
+      active_buckets:
+        description: |-
+          ActiveBuckets, IdleBuckets and UnknownBuckets are the state series as three
+          numbers, which is what makes a lift figure checkable by hand.
+        type: integer
+      classification:
+        $ref: '#/definitions/profiler.ActivityClassification'
+      duty_cycle:
+        type: number
+      idle_buckets:
+        type: integer
+      method:
+        type: string
+      observed_buckets:
+        description: |-
+          ObservedBuckets is how many aligned buckets carried a value for this member, and
+          it is populated whether or not a state series could be derived.
+
+          It is the one number that separates the two ways a member fails, and without it
+          they look identical: an unusable member reports 0 active, 0 idle and every bucket
+          unknown either because the read came back empty or because it came back full and
+          no idle/active split could be found in it. Those have different causes and
+          different fixes, and "1 aligned read" says the read happened, not what it
+          returned.
+        type: integer
+      reason:
+        allOf:
+        - $ref: '#/definitions/profiler.NotComputed'
+        description: |-
+          Reason is a pointer because omitempty does not apply to a struct: as a value it
+          would put an empty reason object beside every *usable* member, which is exactly
+          the "there is a reason and it is blank" reading D24 exists to prevent. Absent
+          means there is nothing to explain, and Usable is what says so.
+      threshold:
+        description: |-
+          Threshold is the value that separates idle from active, in the member's own
+          unit. Meaningless for a categorical member, which reports method "distinct".
+        type: number
+      threshold_source:
+        description: |-
+          ThresholdSource is `detector` or `confirmed`. §5.10's whole argument rests on
+          the second being visible: a rule computed against a threshold the developer
+          corrected is a different claim from one computed against a guess.
+        type: string
+      unknown_buckets:
+        type: integer
+      usable:
+        description: |-
+          Usable is false when no state series could be derived. The reason says why,
+          and the member then takes part in no rule rather than contributing a series
+          of silently-idle buckets.
+        type: boolean
+    type: object
+  repo.AuthorizeRequest:
+    properties:
+      redirect_uri:
+        description: |-
+          RedirectURI is where GitHub will send the browser. Reported because it has to
+          match the OAuth app's registered callback exactly, and a mismatch is the most
+          common setup failure — naming it makes the error message actionable.
+        type: string
+      scopes:
+        description: |-
+          Scopes is what ODE is asking for, reported so the SPA can say what the
+          consent screen will show.
+        items:
+          type: string
+        type: array
+      state:
+        type: string
+      url:
+        type: string
+    type: object
+  repo.Change:
+    properties:
+      kind:
+        description: |-
+          Kind is "modified", "added", "deleted", "renamed", "copied", "untracked",
+          "unmerged" or "typechange" — git's XY codes, named.
+        type: string
+      path:
+        type: string
+      renamed_from:
+        description: RenamedFrom is the old path of a rename or a copy.
+        type: string
+      staged:
+        description: |-
+          Staged and Unstaged are the two halves of git's XY, so the pane can show
+          what a commit would include. A file can be both.
+        type: boolean
+      unstaged:
+        type: boolean
+    type: object
+  repo.CommitResult:
+    properties:
+      branch:
+        description: |-
+          Branch is where it landed, which for a first commit is the branch ODE put
+          HEAD on rather than one that existed before.
+        type: string
+      files:
+        description: |-
+          Files is how many paths the commit touched, from git's own summary rather
+          than from what ODE staged — the two differ when a file was already staged.
+        type: integer
+      sha:
+        type: string
+      subject:
+        type: string
+    type: object
+  repo.File:
+    properties:
+      binary:
+        type: boolean
+      language:
+        description: |-
+          Language is a hint for the editor, derived from the extension. The backend
+          does it so the pane and `write_file` agree on what a `.py` is.
+        type: string
+      modified:
+        type: string
+      path:
+        type: string
+      size:
+        type: integer
+      text:
+        type: string
+      truncated:
+        type: boolean
+    type: object
+  repo.FileTree:
+    properties:
+      excluded:
+        description: |-
+          Excluded names what the walk did not enter. `.git` and nothing else: a
+          developer may edit every file of their repository, but the object database is
+          not a file they edit — and listing it would bury the tree.
+        items:
+          type: string
+        type: array
+      root:
+        description: Root is the checkout, relative to the workspace.
+        type: string
+      tree:
+        $ref: '#/definitions/kernel.Node'
+    type: object
+  repo.Identity:
+    properties:
+      avatar_url:
+        type: string
+      connected_at:
+        type: string
+      login:
+        type: string
+      missing_scopes:
+        description: |-
+          MissingScopes names what the grant lacks of what §5.11 item 1 asks for. Empty
+          is the normal case; a non-empty list is reported to the developer up front
+          rather than discovered when a push is rejected.
+        items:
+          type: string
+        type: array
+      name:
+        type: string
+      scopes:
+        items:
+          type: string
+        type: array
+    type: object
+  repo.Link:
+    properties:
+      clone_url:
+        type: string
+      default_branch:
+        type: string
+      full_name:
+        type: string
+      html_url:
+        type: string
+      name:
+        type: string
+      operator_lib_ref:
+        description: |-
+          OperatorLibRef is the Operator Lib the scaffold pinned, per D15: latest at
+          scaffold time, recorded so an upgrade is a visible decision later. Empty for
+          a repository ODE did not scaffold.
+        type: string
+      owner:
+        type: string
+      path:
+        description: |-
+          Path is where the checkout is, relative to the workspace root — so
+          `{workspace}/{path}` on the PVC. Derived from the repository name and stable,
+          which is the "stable path" of §5.6.
+        type: string
+      private:
+        type: boolean
+      scaffolded_at:
+        type: string
+      selected_at:
+        type: string
+    type: object
+  repo.PushResult:
+    properties:
+      branch:
+        type: string
+      head_sha:
+        description: |-
+          HeadSHA is what the remote now has, so the experiment tag of §5.11 item 7
+          can be taken from a state that is actually pushed.
+        type: string
+      output:
+        type: string
+      remote:
+        type: string
+    type: object
+  repo.Repository:
+    properties:
+      can_push:
+        description: |-
+          Permissions.Push is why this field exists: a repository the developer can
+          only read is offered, but selecting it will fail on push, and saying so in
+          the list is cheaper than saying so afterwards.
+        type: boolean
+      clone_url:
+        type: string
+      default_branch:
+        type: string
+      description:
+        type: string
+      empty:
+        type: boolean
+      full_name:
+        type: string
+      html_url:
+        type: string
+      name:
+        type: string
+      owner:
+        type: string
+      private:
+        type: boolean
+      pushed_at:
+        type: string
+    type: object
+  repo.ScaffoldResult:
+    properties:
+      hint:
+        description: |-
+          Hint says what to do next, which after a scaffold is always the same thing:
+          read it, then commit it.
+        type: string
+      operator_lib_ref:
+        description: |-
+          OperatorLibRef is the pin the developer now has, repeated here because it is
+          the one part of a scaffold that is a decision rather than a file.
+        type: string
+      skipped:
+        items:
+          type: string
+        type: array
+      written:
+        items:
+          type: string
+        type: array
+    type: object
+  repo.ScaffoldState:
+    properties:
+      complete:
+        description: |-
+          Complete is Missing being empty — carried so the SPA does not have to know
+          that rule.
+        type: boolean
+      missing:
+        items:
+          type: string
+        type: array
+      present:
+        items:
+          type: string
+        type: array
+    type: object
+  repo.Status:
+    properties:
+      ahead:
+        description: |-
+          Ahead and Behind are commits, relative to the upstream branch. Both non-zero
+          is Diverged, which is the case that needs a human.
+        type: integer
+      behind:
+        type: integer
+      branch:
+        type: string
+      changes:
+        items:
+          $ref: '#/definitions/repo.Change'
+        type: array
+      cloned:
+        description: |-
+          Cloned is false when the PVC has no checkout, which happens on a fresh PVC
+          and after a developer deletes the directory themselves.
+        type: boolean
+      detached:
+        description: |-
+          Detached is a checkout not on a branch — nothing ODE does produces one, but a
+          developer with a terminal can, and committing there silently would lose work.
+        type: boolean
+      dirty:
+        type: boolean
+      diverged:
+        type: boolean
+      fetched:
+        description: |-
+          Fetched says whether this status included a fetch. A status without one
+          reports the divergence ODE last knew about, and saying which it is prevents
+          reading a stale zero as "up to date".
+        type: boolean
+      head:
+        type: string
+      head_date:
+        type: string
+      head_subject:
+        type: string
+      link:
+        $ref: '#/definitions/repo.Link'
+      remote:
+        description: |-
+          Remote is the origin URL as the checkout has it, so a directory pointing at
+          a different repository than the link says is visible rather than silently
+          committed into.
+        type: string
+      remote_mismatch:
+        description: RemoteMismatch is that case, made explicit.
+        type: boolean
+      scaffold:
+        allOf:
+        - $ref: '#/definitions/repo.ScaffoldState'
+        description: |-
+          Scaffold reports which of the compliance files of §5.11 item 3 are present.
+          A repository the developer brought themselves is usually missing some, and
+          this is what the pane offers to scaffold from.
+      unborn:
+        description: |-
+          Unborn is a clone of an empty repository: a branch with no commits yet. It is
+          the normal state of a repository ODE has just created.
+        type: boolean
+      upstream:
+        type: string
+      workspace:
+        description: |-
+          Workspace and AbsolutePath say where the checkout is, because "it is on the
+          PVC" is not something a developer can act on.
+        type: string
+    type: object
+  repo.WriteResult:
+    properties:
+      committed:
+        description: |-
+          Committed is always false and is reported anyway, because it is the property
+          that matters: writing a file changes the working copy and nothing else
+          (§5.11 item 5). The `write_file` tool returns this to the model for the same
+          reason — so it does not tell the developer their change is pushed.
+        type: boolean
+      path:
+        type: string
+      repository:
+        description: |-
+          Repository is which working copy it landed in. Carried because a caller that
+          is not looking at the pane — the `write_file` tool — may have been told about
+          a different repository earlier in the same session.
+        type: string
+      size:
+        type: integer
+    type: object
+  selection.CandidateDevice:
+    properties:
+      connection_state:
+        type: string
+      device_id:
+        type: string
+      device_type_id:
+        type: string
+      device_type_name:
+        type: string
+      name:
+        description: |-
+          Name is the platform's display name where it has one (devices.DisplayName),
+          because this list exists to be read rather than joined on.
+        type: string
+      permissions:
+        $ref: '#/definitions/models.Permissions'
+      series:
+        description: |-
+          Series is how many resolved series this device contributes, which is what
+          makes a device with forty matching paths distinguishable from one with a
+          single relevant column.
+        type: integer
+    type: object
+  selection.OntologyGap:
+    properties:
+      consequence:
+        type: string
+      device_type_id:
+        type: string
+      device_type_name:
+        description: |-
+          DeviceTypeName is empty when no listed device carries this type; see
+          Selectable.DeviceTypeName.
+        type: string
+      missing:
+        items:
+          type: string
+        type: array
+      paths:
+        items:
+          type: string
+        type: array
+    type: object
+  timeseries.Usage:
+    properties:
+      bytes:
+        type: integer
+      bytesPerDay:
+        type: number
+      deviceId:
+        type: string
+      exportId:
+        type: string
+      updatedAt:
+        type: string
+    type: object
+  tools.ProposedSelection:
+    properties:
+      proposed_at:
+        description: ProposedAt is stamped by ODE rather than taken from the model.
+        type: string
+      rationale:
+        type: string
+      series:
+        items:
+          $ref: '#/definitions/tools.ProposedSeries'
+        type: array
+    type: object
+  tools.ProposedSeries:
+    properties:
+      device_id:
+        type: string
+      reason:
+        type: string
+      role:
+        type: string
+      service_id:
+        type: string
+      variable_path:
+        type: string
+    type: object
+  tools.Tier:
+    enum:
+    - 0
+    - 1
+    - 2
+    - 0
+    - 2
+    type: integer
+    x-enum-varnames:
+    - L0
+    - L1
+    - L2
+    - DefaultTier
+    - MaxTier
+info:
+  contact: {}
+  description: |-
+    ODE helps a developer build a SENERGY analytics operator: it profiles
+    the series behind a device, resolves a semantic intent to concrete
+    series, and runs code in the developer's own kernel — with an LLM
+    assistant whose reach over platform data is bounded by an exposure
+    tier (SPEC §3.2).
+
+    Every route except /health and /doc requires a bearer token carrying
+    the configured realm role. The platform API gateway validates the
+    token; ODE authorises on it (SPEC §3.1, D5). Routes appear only when
+    the capability behind them is configured, so a deployment without a
+    timescale-wrapper answers 404 on the profiler rather than 500.
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  title: Operator Development Environment
+  version: "1.0"
+paths:
+  /admin/limits:
+    get:
+      description: |-
+        Returns the stored policies, the built-in defaults, which fields
+        this build enforces versus merely stores for a later milestone, and
+        the model pricing a cost cap is computed from (SPEC §3.3).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: the admin realm role is missing
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the limits store could not be read
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Every limits record
+      tags:
+      - admin
+    put:
+      consumes:
+      - application/json
+      description: |-
+        Serves both /admin/limits, which writes the global record, and
+        /admin/limits/{sub}, which writes one user's. The two paths exist so
+        that "global" is explicit rather than an omitted path segment. The
+        response carries the resulting effective policy, which for a subject
+        is the per-user record layered over the global one.
+      parameters:
+      - description: the policy to store
+        in: body
+        name: limits
+        required: true
+        schema:
+          $ref: '#/definitions/admin.Limits'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: the body is not a valid policy
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Write a limits policy
+      tags:
+      - admin
+  /admin/limits/{sub}:
+    get:
+      description: |-
+        The effective policy is the per-user record layered over the global
+        one; the spend is what that subject has used in the current period.
+      parameters:
+      - description: platform user id
+        in: path
+        name: sub
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: One subject's effective policy and spend
+      tags:
+      - admin
+    put:
+      consumes:
+      - application/json
+      description: |-
+        Serves both /admin/limits, which writes the global record, and
+        /admin/limits/{sub}, which writes one user's. The two paths exist so
+        that "global" is explicit rather than an omitted path segment. The
+        response carries the resulting effective policy, which for a subject
+        is the per-user record layered over the global one.
+      parameters:
+      - description: platform user id; absent writes the global record
+        in: path
+        name: sub
+        type: string
+      - description: the policy to store
+        in: body
+        name: limits
+        required: true
+        schema:
+          $ref: '#/definitions/admin.Limits'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: the body is not a valid policy
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Write a limits policy
+      tags:
+      - admin
+  /admin/tool-calls:
+    get:
+      description: |-
+        Every tool the assistant reached for, refusals included. This is what
+        makes the exposure-tier argument of §3.2 checkable after the fact.
+      parameters:
+      - description: restrict to one platform user
+        in: query
+        name: sub
+        type: string
+      - description: Go duration, e.g. 720h
+        in: query
+        name: period
+        type: string
+      - default: 200
+        description: maximum records
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The tool-call audit trail
+      tags:
+      - admin
+  /admin/usage:
+    get:
+      parameters:
+      - description: restrict to one platform user; absent reports across all
+        in: query
+        name: sub
+        type: string
+      - description: Go duration, e.g. 720h; an unparseable value falls back to the
+          default
+        in: query
+        name: period
+        type: string
+      - default: 200
+        description: maximum records
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: LLM usage and spend
+      tags:
+      - admin
+  /charts:
+    get:
+      description: |-
+        Newest first, optionally narrowed to one chat session — which is how the
+        pane lists what the assistant proposed in the conversation being read.
+      parameters:
+      - description: only charts proposed in this chat session
+        in: query
+        name: session_id
+        type: string
+      - description: how many to return
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The caller's charts
+      tags:
+      - charts
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Validates a declarative chart specification (SPEC §5.9), resolves every
+        series against the device type and the ontology, and stores it. No values
+        are read: this answers with the resolved units, the axis and the chart id,
+        and GET /charts/{id}/data is what reads the data behind it.
+
+        The resolution happens now rather than at first render so that a
+        `convert:` naming an unreachable characteristic is refused while the author
+        can still fix it — and because the device read it takes is the same
+        permission check the value read will need.
+      parameters:
+      - description: the specification
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.chartBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/charts.Created'
+        "400":
+          description: a malformed specification, or a transform that cannot be resolved
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: the caller may not read one of the devices
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the platform could not be read
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Create a chart specification
+      tags:
+      - charts
+  /charts/{id}:
+    delete:
+      parameters:
+      - description: chart id
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: discarded
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Discard a chart
+      tags:
+      - charts
+    get:
+      parameters:
+      - description: chart id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/charts.Spec'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: no such chart, or not this developer's
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: One chart specification
+      tags:
+      - charts
+  /charts/{id}/confirmations:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Appends a developer confirmation, correction or rejection to the profiler's
+        override overlay (D21) from the exploration pane — an inferred unit, a
+        session boundary, a gap classification, an advised range (§5.10). It is the
+        same overlay the profiler view writes to and the same one every later
+        profile is resolved against, keyed by series rather than by profile, so a
+        confirmation survives recomputation and applies to a series that has never
+        been profiled at all.
+
+        A developer action only. §5.8 lists writing a ProfileOverride among the
+        operations with no LLM tool: a model that can confirm its own inferred unit
+        has confirmed nothing.
+      parameters:
+      - description: chart id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: which series, which field, and what the developer says
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.chartConfirmBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/charts.Confirmed'
+        "400":
+          description: a malformed body, or a field that cannot be confirmed
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Confirm what a chart shows
+      tags:
+      - charts
+  /charts/{id}/data:
+    get:
+      description: |-
+        Reads the series a specification names, on behalf of the caller, and
+        returns them with the profiler-derived annotations of §5.10: detected
+        sessions, gaps, advised exclusions and usable range, and counter-reset
+        markers. Every transform is evaluated by the platform (§5.3.1) — the
+        bucket, the counter differencing and the unit conversion are all fields of
+        POST /queries/v2, not arithmetic done here.
+
+        This is the only route in ODE that hands series values to a client, and it
+        hands them to the developer. The exposure tier bounds what an LLM sees; it
+        does not stand between a developer and their own data.
+      parameters:
+      - description: chart id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: RFC3339. Overrides the specification's window, for zooming
+        in: query
+        name: from
+        type: string
+      - description: RFC3339
+        in: query
+        name: to
+        type: string
+      - description: aggregation bucket, e.g. 15m. Widened if the window would exceed
+          the point cap
+        in: query
+        name: group_time
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/charts.Data'
+        "400":
+          description: a malformed window or bucket
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: the caller may not read one of the devices
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: no such chart, or not this developer's
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the platform could not be read
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The values a chart draws
+      tags:
+      - charts
+  /chat/sessions:
+    get:
+      parameters:
+      - description: maximum sessions; absent returns the store's default
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/chat.Session'
+              type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The caller's chat sessions
+      tags:
+      - chat
+    post:
+      consumes:
+      - application/json
+      description: |-
+        An absent exposure_tier means L0, which §3.2 makes the default rather
+        than a choice the caller has to remember. A tier above the admin
+        ceiling for this user is refused, not silently clamped.
+      parameters:
+      - description: all fields optional; an empty body opens a default session
+        in: body
+        name: request
+        schema:
+          properties:
+            exposure_tier:
+              type: string
+            model:
+              type: string
+            provider:
+              type: string
+            title:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/chat.Session'
+        "400":
+          description: an unknown tier, or a malformed body
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: the provider, model or tier is not permitted for this user
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "429":
+          description: a limit from §3.3 was reached; the payload says which and when
+            it resets
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Open a chat session
+      tags:
+      - chat
+  /chat/sessions/{id}:
+    delete:
+      parameters:
+      - description: session id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: deleted
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Delete a session
+      tags:
+      - chat
+    get:
+      parameters:
+      - description: session id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: no such session, or it belongs to another user
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: One session, its messages and anything awaiting confirmation
+      tags:
+      - chat
+  /chat/sessions/{id}/tier:
+    put:
+      consumes:
+      - application/json
+      description: |-
+        The developer's control from §3.2. No LLM tool exists for this
+        (tools.Denied), so this route is the only way a tier changes. Every
+        change is written to the session's audit trail.
+      parameters:
+      - description: session id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: the tier to move to, e.g. L1
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            exposure_tier:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/chat.Session'
+        "400":
+          description: an unknown tier
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: above the admin ceiling for this user
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Set a session's exposure tier
+      tags:
+      - chat
+  /chat/sessions/{id}/tier-changes:
+    get:
+      description: §3.2 requires every tier change to be logged. This is that record.
+      parameters:
+      - description: session id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: A session's exposure-tier history
+      tags:
+      - chat
+  /devices:
+    get:
+      description: |-
+        Read on behalf of the caller, never as a service account (SPEC D5), so
+        this returns exactly what that user may see.
+      parameters:
+      - description: free-text filter
+        in: query
+        name: search
+        type: string
+      - description: page size
+        in: query
+        name: limit
+        type: integer
+      - description: page offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: unparseable list options
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: List the caller's devices
+      tags:
+      - devices
+  /devices/{id}:
+    get:
+      parameters:
+      - description: device id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Device'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: the platform refused this user the device
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: One device
+      tags:
+      - devices
+  /doc:
+    get:
+      description: |-
+        The OpenAPI document for this build. Unauthenticated, because the shape
+        of the API is not privileged and the platform's developer-swagger-api
+        has to be able to collect it without holding a developer's token.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: the embedded specification could not be read
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: This specification
+      tags:
+      - meta
+  /experiments:
+    get:
+      description: |-
+        Newest first. Statuses are refreshed from Ray for the runs that have
+        not finished, and only those — a listing of finished runs costs no
+        cluster calls. Resolved from the caller's own token: no route here takes
+        a user parameter.
+      parameters:
+      - description: how many to return; default 100
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The caller's experiments
+      tags:
+      - experiments
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Packages the developer's **committed** repository state with
+        `git archive`, uploads it to Ray, creates the MLflow run and tags it with
+        the commit SHA, then submits the job (§5.12, §5.11 item 7).
+
+        A working copy with uncommitted changes is refused with 409 and the
+        paths that made it dirty: the run records a commit SHA and is only
+        reproducible from it if the code that ran is that commit.
+      parameters:
+      - description: the entrypoint, environment and run name
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/api.launchBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/experiments.LaunchResult'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: the working copy is uncommitted, no repository is linked, or
+            the package is too large
+          schema:
+            additionalProperties: true
+            type: object
+        "502":
+          description: Ray or MLflow could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Launch an experiment
+      tags:
+      - experiments
+  /experiments/{id}:
+    get:
+      description: |-
+        The record plus its status, refreshed from Ray unless the job has
+        already finished. Another developer's experiment answers 404 rather than
+        403: nothing here reveals that one exists.
+      parameters:
+      - description: the experiment id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/experiments.Experiment'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Ray could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: One experiment
+      tags:
+      - experiments
+  /experiments/{id}/interpretation:
+    get:
+      description: |-
+        §5.13's summary, the assistant's reading of it, the concrete next
+        adjustment it proposed, and the developer's decision on that proposal
+        if they have given one.
+
+        Recomputed rather than stored: the summary comes from MLflow, the
+        interpretation from the conversation the assistant wrote it in, and only
+        the decisions come from a table — the split §5.4.3 makes between a
+        recomputable artifact and a record of human judgement.
+
+        `proposal` carries an explicit `status: not_computed` where there is no
+        proposal: a run whose developer has not been connected since it finished
+        has not been interpreted yet, and that is a different fact from an
+        assistant that proposed nothing.
+      parameters:
+      - description: the experiment id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/interpret.Interpretation'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: MLflow could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: A finished run's interpretation
+      tags:
+      - experiments
+  /experiments/{id}/interpretation/decision:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        §5.13's last sentence, recorded. Append-only and keyed by the
+        proposal's own fingerprint, so a rejected proposal stays rejected when the
+        same run is interpreted again, and a developer who changes their mind adds
+        a record rather than replacing one.
+
+        **Nothing here is binding (D28).** Accepting records agreement and
+        launches nothing; promoting a value into `evaluation.yaml` or the operator
+        config is a separate action the developer takes themselves, and §5.8 has no
+        tool for either. There is no LLM tool for this route: a model that could
+        accept its own proposal would be grading its own work.
+      parameters:
+      - description: the experiment id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: the decision
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.proposalDecisionBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/interpret.Interpretation'
+        "400":
+          description: no proposal to decide on, or an edit with no edited form
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: the proposal has changed since it was read
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Accept, edit or reject a proposed next experiment
+      tags:
+      - experiments
+  /experiments/{id}/logs:
+    get:
+      description: |-
+        The developer's own view of what the job printed, tail-capped. This is
+        deliberately not available to the assistant: §5.13 builds a structured
+        summary and says raw logs never enter the model's context.
+      parameters:
+      - description: the experiment id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/experiments.LogPage'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Ray could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: One job's driver output
+      tags:
+      - experiments
+  /experiments/{id}/results:
+    get:
+      description: |-
+        §5.13's compact structured summary: status, params, the latest value
+        of each metric, the run's tags, resource usage and the comparison against
+        the previous run of the same experiment. **Never logs** — those are a
+        route of their own, and no LLM tool reaches them.
+      parameters:
+      - description: the experiment id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/experiments.Summary'
+        "400":
+          description: the experiment has no MLflow run
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: MLflow could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: One experiment's structured summary
+      tags:
+      - experiments
+  /experiments/{id}/stop:
+    post:
+      description: |-
+        Asks Ray to stop it and reads the status back rather than assuming it:
+        Ray stops asynchronously, and a record claiming STOPPED while the job was
+        still winding down would disagree with the dashboard beside it. A job that
+        has already finished is answered with its record, not an error.
+      parameters:
+      - description: the experiment id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/experiments.Experiment'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Ray could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Stop a running job
+      tags:
+      - experiments
+  /experiments/embed:
+    get:
+      description: |-
+        The backend half of D6: each configured service is asked for its
+        X-Frame-Options and Content-Security-Policy frame-ancestors, and the
+        verdict is cached with a TTL. `embeddable` is "yes", "no" or "unknown",
+        and **"unknown" is a real answer** — ODE is inside the cluster and the
+        browser is not, so a service ODE cannot reach may still frame perfectly.
+        The pane should still load a hidden iframe with a timeout and fall back
+        to a link-only card, which is the half only a browser can decide.
+      parameters:
+      - description: re-probe rather than answering from the cache
+        in: query
+        name: refresh
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/experiments.EmbedReport'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Whether the Ray and MLflow UIs can be framed
+      tags:
+      - experiments
+  /health:
+    get:
+      description: |-
+        Answers from memory and never touches the platform, so that a
+        device-repository outage does not take ODE's pods down with it.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: always {\"status\":\"ok\"}
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Liveness
+      tags:
+      - meta
+  /kernel:
+    delete:
+      description: |-
+        Ends the kernel but not the pod: the pod is the developer's, their
+        files are on it, and the cluster's idle culling is what reclaims it.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the Hub or the singleuser server could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Shut the kernel down
+      tags:
+      - kernel
+    get:
+      description: |-
+        Resolved from the caller's own token: no route here takes a user
+        parameter, which is what makes "your pod" mean yours (§5.6).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/kernel.Status'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the Hub or the singleuser server could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The caller's kernel status
+      tags:
+      - kernel
+    post:
+      description: |-
+        The pre-warm of §5.6: spawn the pod, start a kernel, install the
+        platform token. Called when the developer opens the pane so that a cold
+        start of up to a minute happens while they are still reading.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/kernel.Status'
+        "202":
+          description: the pod is still coming up; keep polling rather than treating
+            this as a failure
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the Hub or the singleuser server could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Spawn the pod and start a kernel
+      tags:
+      - kernel
+  /kernel/files:
+    get:
+      description: |-
+        Read-only, one directory at a time. This is the visible half of M4's
+        acceptance criterion — that a file written in one session is present in
+        the next — not the Code pane of §5.11, which is M7.
+      parameters:
+      - description: directory relative to the workspace root; absent lists the root
+        in: query
+        name: path
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the Hub or the singleuser server could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: List the persistent workspace
+      tags:
+      - kernel
+  /kernel/interrupt:
+    post:
+      description: |-
+        Interrupts rather than abandons, so the kernel stays usable and its
+        state survives.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the Hub or the singleuser server could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Interrupt the running cell
+      tags:
+      - kernel
+  /kernel/restart:
+    post:
+      description: Discards the kernel's state. The pod and the workspace survive.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/kernel.Status'
+        "202":
+          description: the pod is still coming up
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the Hub or the singleuser server could not be reached
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Restart the kernel
+      tags:
+      - kernel
+  /llm/providers:
+    get:
+      description: |-
+        Each provider with its models and capabilities, including any that came
+        up degraded (§5.7), plus which one is the default.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The configured LLM providers
+      tags:
+      - chat
+  /llm/tools:
+    get:
+      description: |-
+        Every declared tool with its minimum tier and confirmation
+        requirement, which of them this deployment can actually run, what each
+        tier exposes, and the capabilities that deliberately have no tool.
+        Readable by any developer: knowing what the assistant may do is not
+        privileged information.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The tool surface of §5.8
+      tags:
+      - chat
+  /ontology/aspect-nodes:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/models.AspectNode'
+              type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Aspect nodes, flat
+      tags:
+      - ontology
+  /ontology/aspect-tree:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the device repository could not be read
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The aspect hierarchy as a tree
+      tags:
+      - ontology
+  /ontology/characteristics:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Characteristics
+      tags:
+      - ontology
+  /ontology/concepts:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/models.Concept'
+              type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Concepts
+      tags:
+      - ontology
+  /ontology/device-classes:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/models.DeviceClass'
+              type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Device classes
+      tags:
+      - ontology
+  /ontology/functions:
+    get:
+      description: |-
+        Semantic selection resolves an intent to a measuring function (SPEC
+        §5.2), so that is the default list.
+      parameters:
+      - default: measuring
+        description: which functions to return
+        enum:
+        - measuring
+        - controlling
+        - all
+        in: query
+        name: rdf_type
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: unknown rdf_type
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Functions, measuring by default
+      tags:
+      - ontology
+  /profiles:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        The batched unit of work of D19: one request profiles all variables of
+        a service rather than one variable at a time. The raw pass reads the
+        smaller of the configured window bounds, anchored at the most recent
+        data (D25).
+      parameters:
+      - description: which service to profile, and over which windows
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.profileRequestBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: a malformed body or window
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: the platform refused this user the device
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: no such device or service
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Profile every variable of one service
+      tags:
+      - profiler
+  /profiles/{id}:
+    get:
+      parameters:
+      - description: profile id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/profiler.SeriesProfile'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: One computed profile
+      tags:
+      - profiler
+  /profiles/{id}/overrides:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Appends a developer confirmation to the override overlay (D21), which
+        §5.4.3 calls an empirical record. A developer action only: §5.8 lists
+        writing an override among the operations with no LLM tool at all,
+        because a model that can confirm its own inferred unit has confirmed
+        nothing.
+      parameters:
+      - description: profile id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: which field, and what the developer says it is
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.overrideBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/profiler.ProfileOverride'
+        "400":
+          description: a malformed body, or a field that cannot be overridden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Confirm or correct a derived field
+      tags:
+      - profiler
+  /profiles/{id}/projection:
+    get:
+      description: |-
+        The one projection an LLM is ever given (D26), exposed over HTTP so the
+        SPA can show the developer exactly what the model will see.
+      parameters:
+      - description: profile id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: cap the projection; 0 or absent takes the configured budget
+        in: query
+        name: token_budget
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: token_budget is not a non-negative integer
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The model-facing view of a profile
+      tags:
+      - profiler
+  /profiles/{id}/sessions:
+    get:
+      description: |-
+        The paginated resource of D27. A profile carries session statistics and
+        a handful of exemplars; the full list is here, because two years of
+        washing-machine cycles is thousands of entries.
+      parameters:
+      - description: profile id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: continuation cursor from a previous page
+        in: query
+        name: cursor
+        type: string
+      - description: only sessions at or after this RFC3339 timestamp
+        in: query
+        name: from
+        type: string
+      - description: only sessions before this RFC3339 timestamp
+        in: query
+        name: to
+        type: string
+      - description: page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/profiler.SessionPage'
+        "400":
+          description: an unparseable timestamp or limit
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: A profile's detected sessions, paginated
+      tags:
+      - profiler
+  /quick-profiles:
+    get:
+      description: |-
+        The M1a surface (§5.2, §5.4.2): every candidate series behind the
+        matching devices, ranked without reading a single value. The response
+        carries the read counts, so "no value was read" is verifiable from the
+        answer rather than a claim about the code.
+      parameters:
+      - description: free-text device filter
+        in: query
+        name: search
+        type: string
+      - default: 10
+        description: how many devices to expand; the ceiling is 200
+        in: query
+        name: limit
+        type: integer
+      - description: window start, RFC3339
+        in: query
+        name: from
+        type: string
+      - description: window end, RFC3339
+        in: query
+        name: to
+        type: string
+      - description: keep series the platform cannot serve
+        in: query
+        name: include_unqueryable
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: an unparseable window, limit or flag
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Candidate series, ranked from metadata alone
+      tags:
+      - profiler
+  /relations:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Profiles every participating service, aligns the members onto one grid with
+        a single batched query, derives idle and active from each activity_pattern,
+        and proposes candidate rules with their exception windows (SPEC §5.5).
+
+        Values are read, so this is tier L1 for an LLM — but nothing that comes
+        back carries one: the document is contingency counts, ratios and bucket
+        durations.
+
+        Also available over the WebSocket as `relate`, which is the better route for
+        a wide window: the pass reads two passes per service plus the aligned read,
+        and the socket can cancel it.
+      parameters:
+      - description: the members and the window
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.relationBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/relations.RelationProfile'
+        "400":
+          description: fewer than two members, too many, or a malformed window
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: the caller may not read one of the devices
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the platform could not be read
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Compute a relational profile
+      tags:
+      - relations
+  /relations/{id}:
+    get:
+      description: |-
+        Serves a computed relation with the decision log as it stands now, so a rule
+        confirmed after the pass ran arrives carrying that verdict.
+      parameters:
+      - description: relation id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/relations.RelationProfile'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Read a stored relational profile
+      tags:
+      - relations
+  /relations/{id}/rule-decisions:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Records a developer's verdict on one candidate rule (SPEC §5.10, D21). The
+        log is append-only and keyed by a fingerprint of what the rule *says*, so
+        a verdict survives the rule being recomputed over a different window by a
+        later detector — and a developer who changes their mind adds a record
+        rather than replacing one.
+
+        Developer action only. No LLM tool exists for it, for the reason §5.8 gives
+        about writing a ProfileOverride: a model confirming its own findings is
+        grading its own work.
+      parameters:
+      - description: relation id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: the verdict
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.decisionBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/relations.RuleDecision'
+        "400":
+          description: an unknown action, or a correction with no rule
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: no such relation, or it carries no such rule
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Confirm, correct or reject a candidate rule
+      tags:
+      - relations
+  /relations/candidate-sets:
+    get:
+      description: |-
+        Turns an aspect node into candidate device sets (SPEC §5.5). The aspect
+        hierarchy is what solves candidate selection: the devices under "Kitchen"
+        yield the oven and the lights without the developer naming either.
+
+        Three kinds of set come back, in order of how much the grouping is worth
+        trusting: an existing platform device group, then one set per aspect node,
+        then the whole subtree. Every set names at least two devices, because a
+        single-device set has no conditional pattern in it.
+
+        Reads no values. The reads block says so, which is what makes the tier-L0
+        claim checkable from the answer.
+      parameters:
+      - description: the aspect node to propose from
+        in: query
+        name: aspect_id
+        required: true
+        type: string
+      - description: keep series declared against nodes below the requested one
+        in: query
+        name: include_descendants
+        type: boolean
+      - description: how many devices to expand
+        in: query
+        name: limit
+        type: integer
+      - description: how many series one set may offer
+        in: query
+        name: max_members
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/relations.Proposal'
+        "400":
+          description: no aspect id, or no such aspect node
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the platform could not be read
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Propose related device sets from an aspect
+      tags:
+      - relations
+  /relations/rule-decisions:
+    get:
+      description: |-
+        Every verdict recorded against a rule fingerprint, oldest first. The log is
+        append-only, so this is where "the detector said 0.91, the developer
+        confirmed it, then narrowed it a week later" is readable.
+      parameters:
+      - description: the rule fingerprint
+        in: query
+        name: rule_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Read the decision history of one rule
+      tags:
+      - relations
+  /repo:
+    get:
+      description: |-
+        Which repository, which branch, how far ahead and behind the remote,
+        what is uncommitted, and which of the compliance files are present.
+        `fetch=true` contacts the remote first, which is what makes the
+        divergence current rather than remembered (§5.11 item 5).
+      parameters:
+      - description: contact the remote before answering
+        in: query
+        name: fetch
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.Status'
+        "409":
+          description: no repository is selected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The working copy's state
+      tags:
+      - repo
+  /repo/commit:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        An explicit developer action. No other route in ODE commits, and no LLM
+        tool exists that does (§5.11 item 5, §5.8).
+      parameters:
+      - description: the message, and optionally which paths
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.commitBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.CommitResult'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: nothing to commit, or no repository
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Commit the working copy
+      tags:
+      - repo
+  /repo/connection:
+    delete:
+      description: |-
+        Forgets the credential. The working copy on the developer's PVC is left
+        exactly where it is — it is their work (§5.11 item 6).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Disconnect GitHub
+      tags:
+      - repo
+    get:
+      description: |-
+        Whether this developer has connected a GitHub account, which account,
+        and whether the grant actually carries the scopes §5.11 item 1 needs.
+        Never the credential itself.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The developer's GitHub connection
+      tags:
+      - repo
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Exchanges the code for a token, reads which account it belongs to and
+        stores it encrypted (§5.11 item 1). The state has to be the one this
+        developer was issued, and it is single-use.
+      parameters:
+      - description: the code and state GitHub returned
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.connectBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.Identity'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: GitHub refused the exchange
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Complete the GitHub OAuth flow
+      tags:
+      - repo
+  /repo/connection/authorize:
+    post:
+      description: |-
+        Returns the authorize URL and the single-use state bound to this
+        developer. The SPA opens the URL; GitHub returns the browser to the
+        SPA, which posts the code back to POST /repo/connection.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.AuthorizeRequest'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Begin the GitHub OAuth flow
+      tags:
+      - repo
+  /repo/discard:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        The destructive answer of the three, so it requires `confirm: true` and
+        the service refuses without it. Resets tracked files to HEAD and removes
+        untracked ones.
+      parameters:
+      - description: 'confirm: true'
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.discardBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.Status'
+        "400":
+          description: not confirmed
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Discard uncommitted changes
+      tags:
+      - repo
+  /repo/fetch:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.Status'
+        "409":
+          description: no repository is selected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Fetch and report divergence
+      tags:
+      - repo
+  /repo/files:
+    get:
+      description: |-
+        Every file of the repository, with nothing hidden and nothing reserved
+        (D14) — the workflow file and the gitignore are editable like any other.
+        Only `.git` is excluded, because it is git's storage rather than source.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.FileTree'
+        "409":
+          description: no repository is selected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The working copy's file tree
+      tags:
+      - repo
+  /repo/files/content:
+    delete:
+      description: |-
+        From the working copy, not from history: the deletion is an uncommitted
+        change like any other and reaches GitHub when the developer commits it.
+      parameters:
+      - description: path relative to the repository root
+        in: query
+        name: path
+        required: true
+        type: string
+      - description: required to delete a directory
+        in: query
+        name: recursive
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Delete a file or directory from the working copy
+      tags:
+      - repo
+    get:
+      description: |-
+        A file that is not UTF-8 comes back marked binary with no text rather
+        than as mangled content, and one longer than the limit comes back
+        truncated and says so.
+      parameters:
+      - description: path relative to the repository root
+        in: query
+        name: path
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.File'
+        "400":
+          description: the path leaves the repository
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: no repository is selected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Read one file of the working copy
+      tags:
+      - repo
+    put:
+      consumes:
+      - application/json
+      description: |-
+        Writes the file and nothing else: no staging, no commit. The same
+        operation the `write_file` tool performs, through the same service —
+        a second path would be a second, laxer one.
+      parameters:
+      - description: the path and its new content
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.writeFileBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.WriteResult'
+        "400":
+          description: the path leaves the repository, or the content is too large
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: no repository is selected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Write one file of the working copy
+      tags:
+      - repo
+  /repo/files/directory:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        git does not track an empty directory, which is why this exists: a
+        developer laying out a package needs the directory before the file.
+      parameters:
+      - description: the directory to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.makeDirBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Create a directory in the working copy
+      tags:
+      - repo
+  /repo/link:
+    delete:
+      description: |-
+        Forgets the link. The checkout stays on the PVC, so selecting the
+        repository again is a reuse rather than a clone.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+      security:
+      - Bearer: []
+      summary: Stop working on this repository
+      tags:
+      - repo
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Links the repository and makes sure its working copy is on the PVC:
+        clone if it is not there, reuse it if it is — including its uncommitted
+        changes, which the answer reports (§5.11 items 5 and 6).
+      parameters:
+      - description: the repository to work on
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.selectBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.Status'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: no GitHub account is connected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: GitHub, the Hub or git refused
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Work on an existing repository
+      tags:
+      - repo
+  /repo/push:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Pushes the current branch under the developer's own GitHub credential.
+        git's own reporting comes back, because the useful part of a push is
+        what the remote said.
+      parameters:
+      - description: the branch, if not the current one
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/api.pushBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.PushResult'
+        "409":
+          description: no repository is selected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the remote refused the push
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Push to GitHub
+      tags:
+      - repo
+  /repo/repositories:
+    get:
+      description: |-
+        Read under the developer's own GitHub token. A repository they cannot
+        push to is listed and says so, rather than being filtered out and
+        failing later.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/repo.Repository'
+              type: array
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: no GitHub account is connected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: The repositories this developer could work on
+      tags:
+      - repo
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Creates an *empty* repository on GitHub, clones it, and writes the
+        operator template of §5.11 item 3 into the working copy — pinning
+        Operator Lib at the newest ref at scaffold time (D15). Nothing is
+        committed: the developer's own commit is the repository's first.
+      parameters:
+      - description: the repository to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.createBody'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/repo.Status'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: no GitHub account is connected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: GitHub refused, or the name is taken
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Create a repository and scaffold its working copy
+      tags:
+      - repo
+  /repo/scaffold:
+    post:
+      description: |-
+        Never overwrites: a file that is there belongs to the developer, and the
+        answer says what was written and what was left alone. Nothing is
+        committed.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.ScaffoldResult'
+        "409":
+          description: no repository is selected, or it is not cloned
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Write the missing template files into the working copy
+      tags:
+      - repo
+  /repo/stash:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        The reversible of the three answers §5.11 item 6 requires for
+        uncommitted work found on reopen. Includes untracked files.
+      parameters:
+      - description: an optional stash message
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/api.stashBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.Status'
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Stash uncommitted changes
+      tags:
+      - repo
+  /selection:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        The M2 surface (§5.2). A free-text intent is matched lexically against
+        the ontology; explicit id lists bypass the matcher, which is how a
+        caller that has already read the ontology asks for exactly what it
+        means. Candidates are ranked by QuickProfile unless rank is false, and
+        ranking needs a timescale-wrapper — without one the resolution still
+        returns series, just unordered.
+      parameters:
+      - description: the intent, or the ids to resolve
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.selectionBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: a malformed body, or neither an intent nor any ids
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the device repository could not be read
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Resolve a semantic intent to concrete series
+      tags:
+      - selection
+  /session:
+    get:
+      description: |-
+        Identity from the token, the realm roles behind it, which capabilities
+        this deployment serves, and — when an admin service is configured —
+        the caller's limits and spend so far (SPEC §3.3).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: no token, or the required realm role is missing
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Who am I, and what can this deployment do
+      tags:
+      - meta
+  /timeseries/availability:
+    get:
+      description: A thin passthrough to the timescale-wrapper, read as the caller.
+      parameters:
+      - description: device id
+        in: query
+        name: device_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: device_id is missing
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: the timescale-wrapper could not be read
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Where a device has data
+      tags:
+      - timeseries
+  /timeseries/usage:
+    get:
+      parameters:
+      - description: comma-separated device ids
+        in: query
+        name: device_ids
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                $ref: '#/definitions/timeseries.Usage'
+              type: array
+            type: object
+        "400":
+          description: device_ids is missing
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: How much data devices hold
+      tags:
+      - timeseries
+  /ws:
+    get:
+      description: |-
+        One WebSocket carries everything that streams: profiler operations, the
+        chat exchange of §5.7, and kernel execution (§5.6). There is one
+        streaming mechanism rather than two, because an exchange can run for
+        minutes inside a single tool call and the connection has to survive it.
+
+        Not behind the usual middleware: a browser cannot set an Authorization
+        header on a handshake, so the token arrives in the Sec-WebSocket-Protocol
+        subprotocol or the query, and this handler enforces the realm role
+        itself. Everything else about §3.1 is unchanged.
+      parameters:
+      - description: bearer token, when the subprotocol cannot carry it
+        in: query
+        name: token
+        type: string
+      responses:
+        "101":
+          description: switching protocols
+        "401":
+          description: no token, or the required realm role is missing
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: The streaming surface
+      tags:
+      - streaming
+securityDefinitions:
+  Bearer:
+    description: A Keycloak bearer token, as `Bearer <jwt>`.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
