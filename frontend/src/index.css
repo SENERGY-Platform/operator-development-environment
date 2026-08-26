@@ -239,11 +239,37 @@
  * either palette is close to invisible — a keyboard user could not tell which of
  * eight tabs they were on. :focus-visible rather than :focus so a mouse click does
  * not leave a ring behind on every button it touches.
+ *
+ * The offset is negative, which is the whole point of this rule and the part that
+ * is easy to undo by accident. A ring drawn *outside* the border box needs four
+ * pixels of clearance on every side — two of offset and two of ring — and a
+ * control that fills the width it was given has none: the composer textarea, a
+ * full-width text field, a row in a list. Every one of those sits flush against
+ * the padding edge of a scrolling box (`.pane-body` and the eight others in this
+ * file), and an outline is not part of a scroll container's scrollable overflow,
+ * so the browser does not scroll to reveal it — it simply cuts it off. The result
+ * is a ring that is round at the top and bottom and sheared flat down both sides,
+ * which reads as "the highlight is wider than the space" rather than as focus.
+ *
+ * Drawing it inside costs nothing on anything with a box of its own: two pixels of
+ * a control's own padding are given over to the ring and the content does not
+ * move. It costs everything on a control that has no box — a bare text button, a
+ * disclosure arrow, a checkbox the platform paints itself — where an inward ring
+ * lands on the glyph instead of around it. Those four are listed below and keep
+ * the ring outside; none of them is ever full width, so none of them can clip.
  */
 :focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline-offset: -2px;
   border-radius: var(--r-1);
+}
+
+/* The controls with no box of their own. See the paragraph above. */
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible,
+button.link:focus-visible,
+.twisty:focus-visible {
+  outline-offset: 2px;
 }
 
 /* Nothing here animates for its own sake, but hover and focus transitions are
@@ -781,12 +807,6 @@ code {
 .split-separator:hover,
 .split-separator:focus-visible {
   background-image: linear-gradient(var(--accent), var(--accent));
-}
-
-.split-separator:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: -2px;
-  border-radius: 4px;
 }
 
 .split-buttons {
