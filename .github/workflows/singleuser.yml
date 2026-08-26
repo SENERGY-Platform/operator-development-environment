@@ -1,7 +1,7 @@
 name: 'Singleuser Image'
 
 # The JupyterHub singleuser image of SPEC §5.6 item 1, built from
-# deploy/singleuser and published to ghcr.io.
+# singleuser-image/ and published to ghcr.io.
 #
 # Deliberately not on every push to master, which is what prod.yml does for the
 # backend image. Nothing in this image comes from ODE's Go code, so rebuilding it
@@ -14,7 +14,7 @@ on:
     branches:
       - master
     paths:
-      - 'deploy/singleuser/**'
+      - 'singleuser-image/**'
       - '.github/workflows/singleuser.yml'
   workflow_dispatch:
     inputs:
@@ -107,7 +107,7 @@ jobs:
       - name: Build
         uses: docker/build-push-action@v6
         with:
-          context: ./deploy/singleuser
+          context: ./singleuser-image
           load: true
           tags: ode-singleuser:candidate
           build-args: |
@@ -164,7 +164,7 @@ jobs:
       - name: Push
         uses: docker/build-push-action@v6
         with:
-          context: ./deploy/singleuser
+          context: ./singleuser-image
           push: true
           tags: ${{ steps.tags.outputs.list }}
           build-args: |
@@ -187,7 +187,7 @@ jobs:
             echo
             echo "Operator Lib \`${{ steps.operator_lib.outputs.ref }}\` at \`${{ steps.operator_lib.outputs.sha }}\`."
             echo
-            echo "To roll it out, set the tag in \`values-ode-singleuser.yaml\` in rancher-2-defs,"
-            echo "list that file in the jupyterhub Argo CD application, and set"
-            echo "\`jupyterhub_profile: \"ode\"\` in ODE's own configuration."
+            echo "To roll it out: set this tag on the ODE KubeSpawner profile in the"
+            echo "cluster's own configuration, then set \`jupyterhub_profile: \"ode\"\`"
+            echo "in ODE's configuration so its spawns select that profile."
           } >> "$GITHUB_STEP_SUMMARY"

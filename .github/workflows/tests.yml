@@ -20,9 +20,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-      # pkg/api imports the generated specification, which is not committed.
+      # The generated specification is committed, so this step is a drift check
+      # rather than a build prerequisite. That is the trade the exception costs: a
+      # committed spec that claims an outdated state is worse than none, because
+      # a reader trusts it — so CI regenerates and fails if the result differs.
       - name: Generate the openapi specification
         run: go generate ./...
+      - name: Fail if the committed specification is stale
+        run: |
+          if ! git diff --quiet -- docs/; then
+            echo "::error::docs/ is out of date. Run 'go generate ./...' and commit the result."
+            git diff --stat -- docs/
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
       - name: Test
@@ -41,4 +51,11 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
-      - run: npm run build
+      # Test before build, for the reason vet runs before test above: the cheap
+      # step that localises a failure goes first. Vitest strips types rather than
+      # checking them, so `npm run build` — `tsc -b && vite build` — stays the type
+      # gate, and a failure in either step names which of the two it was.
+      - name: Test
+        run: npm test
+      - name: Type-check and bundle
+        run: npm run build
