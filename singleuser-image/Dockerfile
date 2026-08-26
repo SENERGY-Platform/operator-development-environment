@@ -2,12 +2,11 @@
 #
 # Offered as an additional KubeSpawner profile rather than replacing the default
 # one, so that existing notebook users keep the image they have. The profile
-# itself is values-ode-singleuser.yaml in rancher-2-defs; see
-# deploy/jupyterhub/README.md.
+# itself is a KubeSpawner profile, declared in the cluster's own configuration.
 #
 # Built and pushed by .github/workflows/singleuser.yml. Build it by hand with:
 #
-#   docker build -t ode-singleuser deploy/singleuser
+#   docker build -t ode-singleuser singleuser-image
 #
 # Licences of what this adds:
 #   analytics-operator-lib-python  Apache-2.0
@@ -39,9 +38,10 @@ FROM quay.io/jupyter/scipy-notebook:python-3.12.11
 
 USER root
 
-# git is needed to install Operator Lib and four of its dependencies, which are
-# all git references rather than releases on PyPI. It is wanted later anyway, by
-# the repo working copy of §5.11 when M7 arrives.
+# git is needed twice over. It installs Operator Lib and four of its dependencies,
+# which are all git references rather than releases on PyPI — and since M7 it is
+# also what ODE drives for the repo working copy of §5.11: clone, status, commit and
+# push all run as `git` in this image, under the developer's own GitHub credential.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git \
  && rm -rf /var/lib/apt/lists/*
