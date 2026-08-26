@@ -24,10 +24,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/swaggo/swag"
 
-	// The generated specification. It is not committed — `go generate ./...`
-	// writes it, the Dockerfile runs that before building, and .gitignore keeps it
-	// out of the repository. A fresh clone therefore has to generate once before
-	// it can build, which is the same deal every other SENERGY service makes.
+	// The generated specification. It *is* committed, deliberately: the spec has to
+	// be readable from the repository without a build, for a human and for a tool
+	// alike. `go generate ./...` rewrites it, the Dockerfile runs that before
+	// building, and CI regenerates and fails on a diff — which is the guarantee
+	// that makes committing a generated artifact safe rather than a lie.
 	_ "github.com/SENERGY-Platform/operator-development-environment/docs"
 )
 

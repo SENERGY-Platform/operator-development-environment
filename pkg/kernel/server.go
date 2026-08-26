@@ -37,7 +37,7 @@ import (
 
 // serverAPI is one developer's jupyter_server, reachable through the Hub proxy.
 type serverAPI struct {
-	baseURL string // e.g. https://hub.example/user/jonah
+	baseURL string // e.g. https://hub.example/user/devuser
 	token   HubToken
 	http    *http.Client
 	timeout time.Duration

@@ -342,8 +342,10 @@ func (s *PostgresStore) AppendMessages(ctx context.Context, sessionID string, me
 			return err
 		}
 		if _, err := transaction.Exec(ctx, `
-			INSERT INTO ode_chat_messages (session_id, seq, role, content)
-			VALUES ($1, $2, $3, $4)`, sessionID, next, string(message.Role), content); err != nil {
+			INSERT INTO ode_chat_messages (session_id, seq, role, content, origin, subject)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			sessionID, next, string(message.Role), content,
+			message.Origin, message.Subject); err != nil {
 			return err
 		}
 		next++
@@ -358,7 +360,7 @@ func (s *PostgresStore) AppendMessages(ctx context.Context, sessionID string, me
 
 func (s *PostgresStore) Messages(ctx context.Context, sessionID string) ([]StoredMessage, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT session_id, seq, role, content, created_at
+		SELECT session_id, seq, role, content, created_at, origin, subject
 		FROM ode_chat_messages WHERE session_id = $1 ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, err
@@ -370,7 +372,8 @@ func (s *PostgresStore) Messages(ctx context.Context, sessionID string) ([]Store
 		var message StoredMessage
 		var role string
 		var content []byte
-		if err := rows.Scan(&message.SessionID, &message.Seq, &role, &content, &message.CreatedAt); err != nil {
+		if err := rows.Scan(&message.SessionID, &message.Seq, &role, &content,
+			&message.CreatedAt, &message.Origin, &message.Subject); err != nil {
 			return nil, err
 		}
 		message.Role = llm.Role(role)

@@ -234,6 +234,47 @@ func TestMatchLimitTruncatesTheWeakestMatches(t *testing.T) {
 	}
 }
 
+// The limit used to cut silently: five of forty matching measuring functions came
+// back and nothing in the document said the other thirty-five existed. A caller —
+// an LLM in M3 — then chooses from the five as though they were all of them, which
+// is exactly the auto-narrowing this file's own header rules out, and the
+// bookkeeping D26 requires of any projection that drops rows.
+func TestMatchIntentReportsWhatTheLimitElidedPerEntityList(t *testing.T) {
+	match := MatchIntent(matchSnapshot(), Intent{
+		Text: "power consumption and generation", Limit: 1,
+	})
+
+	elision, found := findElision(match.Elided, FieldMatchedFunctions)
+	if !found {
+		t.Fatalf("elided = %+v, want an entry for %s", match.Elided, FieldMatchedFunctions)
+	}
+	if elision.Total != 2 || elision.Shown != 1 {
+		t.Errorf("elision = %+v, want total 2 shown 1", elision)
+	}
+
+	// Only the lists that actually lost something are reported. An entry for every
+	// list would make "nothing was cut" and "one was cut" look alike at a glance.
+	if _, reported := findElision(match.Elided, FieldMatchedAspects); reported {
+		t.Errorf("elided = %+v, want no entry for a list nothing was cut from", match.Elided)
+	}
+}
+
+func TestMatchIntentReportsNoElisionWhenTheLimitCutNothing(t *testing.T) {
+	match := MatchIntent(matchSnapshot(), Intent{Text: "power consumption and generation"})
+	if len(match.Elided) != 0 {
+		t.Errorf("elided = %+v, want nothing reported when the default limit cut nothing", match.Elided)
+	}
+}
+
+func findElision(elided []Elision, field string) (Elision, bool) {
+	for _, e := range elided {
+		if e.Field == field {
+			return e, true
+		}
+	}
+	return Elision{}, false
+}
+
 // A negative MinScore is how a caller asks to see what was nearly matched, which
 // is the difference between "no such thing" and "you used another word for it".
 //

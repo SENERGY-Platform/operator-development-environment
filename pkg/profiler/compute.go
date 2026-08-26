@@ -303,6 +303,16 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 	result.AnalysisWindow = analysis
 	result.RawWindow = raw
 
+	if err := validateGroupTime(req.GroupTime, analysis); err != nil {
+		return ProfileResult{}, err
+	}
+
+	// The raw window as requested, before the point budget has a chance to narrow
+	// it. This is the value the cache key is built from at both ends — the lookup
+	// below and the profiles built afterwards — because a key built from what was
+	// actually read cannot match a lookup made before the read.
+	requestedRaw := raw.Window
+
 	// Every variable of the service shares the analysis and raw windows, so the
 	// cache either has all of them or the batch read has to happen anyway.
 	cached, allCached := p.cachedProfiles(variables, device.Id, req.ServiceID, analysis, raw)
@@ -414,6 +424,7 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 		aggregate:    aggregated,
 		analysis:     analysis,
 		raw:          raw,
+		cacheRaw:     requestedRaw,
 		groupTime:    groupTime,
 		bucket:       bucket,
 		index:        index,

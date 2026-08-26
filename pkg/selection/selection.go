@@ -105,12 +105,19 @@ type Resolver struct {
 	index    profiler.OntologySource
 	devices  Devices
 	ranker   Ranker
+	imports  Imports
 	opts     Options
 }
 
-// New wires a resolver. ranker may be nil; index may not, because the unit and
-// completeness of every resolved variable come from it.
-func New(ont Ontology, index profiler.OntologySource, dev Devices, ranker Ranker, opts Options) (*Resolver, error) {
+// New wires a resolver. ranker and imp may be nil; index may not, because the
+// unit and completeness of every resolved variable come from it.
+//
+// imp being optional is not the same kind of optional as ranker. Without a ranker
+// the answer is the same set of series in a worse order; without imports it is a
+// smaller set — a whole class of operator input goes unmentioned. Both degrade
+// rather than fail, but only the second one changes what the developer is told
+// exists, which is why Notes says so explicitly (see importNotes).
+func New(ont Ontology, index profiler.OntologySource, dev Devices, ranker Ranker, imp Imports, opts Options) (*Resolver, error) {
 	if ont == nil || index == nil || dev == nil {
 		return nil, errors.New("selection: an ontology, an ontology index and a device lister are required")
 	}
@@ -123,7 +130,7 @@ func New(ont Ontology, index profiler.OntologySource, dev Devices, ranker Ranker
 	if opts.DeviceLimit <= 0 {
 		opts.DeviceLimit = defaultDeviceLimit
 	}
-	return &Resolver{ontology: ont, index: index, devices: dev, ranker: ranker, opts: opts}, nil
+	return &Resolver{ontology: ont, index: index, devices: dev, ranker: ranker, imports: imp, opts: opts}, nil
 }
 
 // Request is one semantic selection.
@@ -162,6 +169,14 @@ type Request struct {
 	// SkipRanking returns the ontology resolution alone. It is the cheap form of
 	// this operation: no availability calls, so no per-device round trips.
 	SkipRanking bool
+
+	// SkipImports leaves the import half unresolved.
+	//
+	// Off by default, deliberately: an intent should find every kind of input the
+	// platform can satisfy it with, and a caller who has to remember to ask for
+	// imports will forget. This exists for the caller that has already resolved
+	// them, or that is answering a question about devices specifically.
+	SkipImports bool
 }
 
 // InteractionAny asks for no interaction filter at all.
@@ -182,6 +197,13 @@ type Result struct {
 	MatchedAspects       []ontology.AspectMatch      `json:"matched_aspects"`
 	MatchedDeviceClasses []ontology.DeviceClassMatch `json:"matched_device_classes"`
 
+	// MatchElided is what the lexical matcher's per-list limit cut from the three
+	// lists above, one entry per list that lost something. It is not folded into the
+	// LLMResult's own Elided because the two answer different questions — this one
+	// is about the ontology resolution and survives into every form of this document,
+	// projected or not.
+	MatchElided []ontology.Elision `json:"match_elided"`
+
 	// Criteria is what was actually asked of the platform, with the number of
 	// device types each combination returned. It is the difference between "the
 	// ontology has nothing for this" and "the platform has no such device".
@@ -190,6 +212,14 @@ type Result struct {
 	Selectables      []Selectable      `json:"selectables"`
 	CandidateDevices []CandidateDevice `json:"candidate_devices"`
 	OntologyGaps     []OntologyGap     `json:"ontology_gaps"`
+
+	// The import half of the answer. Reported beside the device half rather than
+	// merged into it: the two are found by the same criteria and mean the same
+	// thing semantically, but they are read completely differently — an import has
+	// no stored series unless it was exported — and a single merged list would
+	// invite a caller to treat them as interchangeable.
+	ImportSelectables []ImportSelectable `json:"import_selectables"`
+	ImportCandidates  []ImportCandidate  `json:"import_candidates"`
 
 	// Candidates are the concrete series, ranked. Empty when ranking was skipped
 	// or is unavailable, which Notes then says.
@@ -315,6 +345,19 @@ type Reads struct {
 	Availability int `json:"availability"`
 	Usage        int `json:"usage"`
 	Values       int `json:"values"`
+
+	// ImportSelectables is one device-selection request per criteria combination
+	// that could be applied to imports, which is not every combination — see
+	// importFilter.
+	ImportSelectables int `json:"import_selectables"`
+	// ImportInstances is the import-deploy listing that answers whether each
+	// shortlisted import is running, and ImportExports the analytics-serving listing
+	// behind their history. Both are one read for the whole shortlist, because
+	// neither service can filter by what is being asked. Neither reads a value; they
+	// are counted for the reason the others are, so the cost of an answer is visible
+	// in it.
+	ImportInstances int `json:"import_instances"`
+	ImportExports   int `json:"import_exports"`
 }
 
 // Resolve runs one semantic selection.
@@ -335,10 +378,13 @@ func (r *Resolver) Resolve(ctx context.Context, token string, req Request) (Resu
 		MatchedFunctions:     []ontology.FunctionMatch{},
 		MatchedAspects:       []ontology.AspectMatch{},
 		MatchedDeviceClasses: []ontology.DeviceClassMatch{},
+		MatchElided:          []ontology.Elision{},
 		Criteria:             []Criterion{},
 		Selectables:          []Selectable{},
 		CandidateDevices:     []CandidateDevice{},
 		OntologyGaps:         []OntologyGap{},
+		ImportSelectables:    []ImportSelectable{},
+		ImportCandidates:     []ImportCandidate{},
 		Candidates:           []profiler.QuickProfile{},
 		Skipped:              []profiler.SkippedDevice{},
 		Notes:                []string{},
@@ -355,6 +401,17 @@ func (r *Resolver) Resolve(ctx context.Context, token string, req Request) (Resu
 	result.MatchedFunctions = match.Functions
 	result.MatchedAspects = match.Aspects
 	result.MatchedDeviceClasses = match.DeviceClasses
+	result.MatchElided = match.Elided
+	for _, elision := range match.Elided {
+		// Carried into Notes as well as into the field. Notes is what this document
+		// already uses to say that a cap was applied, and it is the part a model reads
+		// as prose — a count in a field it does not look at is a truncation nobody sees,
+		// which was the original defect rather than the truncation itself.
+		result.Notes = append(result.Notes, fmt.Sprintf(
+			"%d %s matched the intent and the strongest %d are carried; raise match_limit or "+
+				"pass explicit ids to see the rest",
+			elision.Total, matchListName(elision.Field), elision.Shown))
+	}
 
 	// Explicit ids come first in each list: a caller who named an id asked for it,
 	// and it should not be pushed out of the match limit by a lexical guess.
@@ -411,6 +468,17 @@ func (r *Resolver) Resolve(ctx context.Context, token string, req Request) (Resu
 		return result, nil
 	}
 
+	// The import half runs here, before the device half's early returns.
+	//
+	// That placement is the point rather than an accident: an intent the platform
+	// can only satisfy from an import must still be answered when no device type
+	// matches, and every `return result, nil` below is a case where the device
+	// side found nothing. Resolving imports afterwards would silently drop them in
+	// exactly the situation where they are the whole answer.
+	if err := r.addImports(ctx, token, &result, criteria, req, index, snap); err != nil {
+		return Result{}, err
+	}
+
 	matched, err := r.querySelectables(ctx, token, criteria)
 	if err != nil {
 		return Result{}, err
@@ -423,8 +491,10 @@ func (r *Resolver) Resolve(ctx context.Context, token string, req Request) (Resu
 	result.OntologyGaps = ontologyGaps(result.Selectables)
 
 	if len(result.Selectables) == 0 {
+		// "no device type", not "nothing": the import half above may well have
+		// matched, and this used to be the last word on the resolution.
 		result.Notes = append(result.Notes,
-			"the criteria matched no device type, so the ontology describes nothing of this kind on this platform")
+			"the criteria matched no device type, so no device on this platform is described as carrying this")
 		return result, nil
 	}
 
@@ -505,6 +575,8 @@ func (r *Resolver) Resolve(ctx context.Context, token string, req Request) (Resu
 		"functions", len(result.MatchedFunctions), "aspects", len(result.MatchedAspects),
 		"criteria", len(criteria), "device_types", len(matched),
 		"selectables", len(result.Selectables), "devices", len(listed.Devices),
+		"import_selectables", len(result.ImportSelectables),
+		"import_candidates", len(result.ImportCandidates),
 		"candidates", len(result.Candidates), "gaps", len(result.OntologyGaps),
 		"value_reads", result.Reads.Values)
 
@@ -675,6 +747,21 @@ func seriesCounts(candidateDevices []CandidateDevice, candidates []profiler.Quic
 		candidateDevices[i].Series = counts[candidateDevices[i].DeviceID]
 	}
 	return candidateDevices
+}
+
+// matchListName is an ontology elision's field as a sentence wants it:
+// "matched_functions" is a JSON key, "functions" is what a note reads with.
+func matchListName(field string) string {
+	switch field {
+	case ontology.FieldMatchedFunctions:
+		return "functions"
+	case ontology.FieldMatchedAspects:
+		return "aspects"
+	case ontology.FieldMatchedDeviceClasses:
+		return "device classes"
+	default:
+		return field
+	}
 }
 
 func appendUnknown(notes []string, kind string, unknown []string) []string {

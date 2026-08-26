@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -189,13 +190,18 @@ func (p *AnthropicCLIProvider) Stream(ctx context.Context, req Request) (<-chan 
 
 	// The MCP wiring. Without an endpoint the CLI still answers, with no access to
 	// the platform — which is the text-only advisory mode §5.7 describes.
+	//
+	// The configuration goes to a file and the file's path onto the command line.
+	// The inline form the flag also accepts would put the developer's access token
+	// in argv — see writeMCPConfig.
 	cleanup := func() {}
 	if endpoint := req.ToolEndpoint; endpoint != nil && endpoint.URL != "" && p.Capabilities().Tools {
-		config, err := mcpConfig(endpoint)
+		path, remove, err := writeMCPConfig(endpoint)
 		if err != nil {
 			return nil, err
 		}
-		args = append(args, "--mcp-config", config, "--strict-mcp-config")
+		cleanup = remove
+		args = append(args, "--mcp-config", path, "--strict-mcp-config")
 		if len(endpoint.AllowedTools) > 0 {
 			args = append(args, "--allowedTools", strings.Join(prefixed(endpoint.AllowedTools), ","))
 		}
@@ -208,21 +214,55 @@ func (p *AnthropicCLIProvider) Stream(ctx context.Context, req Request) (<-chan 
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		cancel()
+		cleanup()
 		return nil, fmt.Errorf("llm: %s: stdout: %w", p.name, err)
 	}
 	stderr := &strings.Builder{}
 	command.Stderr = stderr
+	// Bounds Wait. Stderr is not an *os.File, so os/exec pipes it and copies it on a
+	// goroutine, and Wait waits for that copy to finish. A grandchild that inherited
+	// the write end keeps it open after the CLI itself is killed — and the CLI runs
+	// exactly such things, a bash tool and stdio MCP servers among them. Without a
+	// delay Wait would then block for ever, and since the event channel is closed
+	// after it, the whole exchange would hang on a session that could never be used
+	// again. Five seconds is long enough for an ordinary exit and short enough that
+	// a stuck turn ends.
+	command.WaitDelay = 5 * time.Second
 
 	if err := command.Start(); err != nil {
 		cancel()
+		cleanup()
 		return nil, fmt.Errorf("llm: %s: could not start %s: %w", p.name, p.options.Binary, err)
 	}
 
 	events := make(chan Event, 16)
 	go func() {
+		// The process is waited for exactly once, on whichever path leaves this
+		// goroutine. cancel() signals it; only Wait reaps it, closes the stdout pipe
+		// and releases the two goroutines os/exec keeps per running command — so a
+		// turn that ended before the CLI did used to leave a zombie, a file
+		// descriptor and those goroutines behind, once per turn and with no recovery
+		// short of restarting ODE.
+		//
+		// A plain flag rather than a sync.Once: the body and its deferred calls all
+		// run on this one goroutine.
+		waited := false
+		reaped := error(nil)
+		wait := func() error {
+			if !waited {
+				waited = true
+				reaped = command.Wait()
+			}
+			return reaped
+		}
+
+		// Deferred calls run last-registered-first, so these run as cancel, wait,
+		// cleanup, close: signal the process, reap it, then remove its configuration
+		// file and end the stream.
 		defer close(events)
-		defer cancel()
 		defer cleanup()
+		defer wait()
+		defer cancel()
 
 		scanner := bufio.NewScanner(stdout)
 		// The CLI emits one JSON object per line, and an assistant message carrying
@@ -238,26 +278,51 @@ func (p *AnthropicCLIProvider) Stream(ctx context.Context, req Request) (<-chan 
 			if line == "" {
 				continue
 			}
-			emitted, tooled := p.handleLine(ctx, events, line, &usage, &stopReason)
+			emitted, tooled, failure := p.handleLine(ctx, events, line, &usage, &stopReason)
 			sawTool = sawTool || tooled
-			if !emitted {
+			if emitted {
+				continue
+			}
+			// The turn is over before the CLI is, and it has still been billed for
+			// the assistant messages it produced. It reports them: a turn's usage is
+			// filled from the done event alone, so leaving without one accounted a
+			// stopped turn as nothing at all and made §3.3's caps avoidable by
+			// stopping every turn.
+			p.pricing.Apply(&usage)
+			if failure == nil {
+				// No failure to report means the send failed, which happens when the
+				// caller has gone away.
+				deliverDone(ctx, events, DoneEvent(StopReasonCancelled, usage))
 				return
 			}
+			if stopReason == "" {
+				stopReason = StopReasonError
+			}
+			// Before the error, because a consumer stops reading at one and would
+			// otherwise never learn what the turn cost.
+			deliverDone(ctx, events, DoneEvent(stopReason, usage))
+			send(ctx, events, ErrorEvent(failure))
+			return
 		}
 
-		waitErr := command.Wait()
+		waitErr := wait()
 		if scanErr := scanner.Err(); scanErr != nil {
+			p.pricing.Apply(&usage)
+			deliverDone(ctx, events, DoneEvent(StopReasonError, usage))
 			send(ctx, events, ErrorEvent(fmt.Errorf("llm: %s: reading output: %w", p.name, scanErr)))
 			return
 		}
 		if waitErr != nil {
+			p.pricing.Apply(&usage)
 			if errors.Is(ctx.Err(), context.Canceled) {
+				deliverDone(ctx, events, DoneEvent(StopReasonCancelled, usage))
 				return
 			}
 			detail := strings.TrimSpace(stderr.String())
 			if detail == "" {
 				detail = waitErr.Error()
 			}
+			deliverDone(ctx, events, DoneEvent(StopReasonError, usage))
 			send(ctx, events, ErrorEvent(fmt.Errorf("llm: %s: %s", p.name, detail)))
 			return
 		}
@@ -312,16 +377,21 @@ type cliStreamLine struct {
 }
 
 // handleLine maps one output line onto the normalised stream. It reports whether
-// to keep going, and whether the line involved an ODE tool.
+// to keep going, whether the line involved an ODE tool, and what went wrong when
+// the turn has to stop.
+//
+// The failure is returned rather than emitted here so the caller can report the
+// turn's usage first. A consumer stops reading at an error event, so an error sent
+// from inside this function would bury the done event behind it.
 func (p *AnthropicCLIProvider) handleLine(
 	ctx context.Context, events chan<- Event, line string, usage *Usage, stopReason *string,
-) (keepGoing bool, sawTool bool) {
+) (keepGoing bool, sawTool bool, failure error) {
 	var parsed cliStreamLine
 	if err := json.Unmarshal([]byte(line), &parsed); err != nil {
 		// Not fatal: the CLI writes the occasional non-JSON line, and killing a
 		// turn over one would make this provider useless.
 		slog.DebugContext(ctx, "claude CLI line was not JSON", "provider", p.name)
-		return true, false
+		return true, false, nil
 	}
 
 	switch parsed.Type {
@@ -342,7 +412,7 @@ func (p *AnthropicCLIProvider) handleLine(
 					continue
 				}
 				if !send(ctx, events, TextEvent(content.Text)) {
-					return false, sawTool
+					return false, sawTool, nil
 				}
 			case "tool_use":
 				name, isODE := unprefix(content.Name)
@@ -355,7 +425,7 @@ func (p *AnthropicCLIProvider) handleLine(
 				if !send(ctx, events, ToolCallEvent(ToolCall{
 					ID: content.ID, Name: name, Input: input,
 				})) {
-					return false, sawTool
+					return false, sawTool, nil
 				}
 			}
 		}
@@ -372,7 +442,7 @@ func (p *AnthropicCLIProvider) handleLine(
 				Content: json.RawMessage(content.Content),
 				IsError: content.IsError,
 			})) {
-				return false, sawTool
+				return false, sawTool, nil
 			}
 		}
 
@@ -387,12 +457,11 @@ func (p *AnthropicCLIProvider) handleLine(
 			if message == "" {
 				message = parsed.Subtype
 			}
-			send(ctx, events, ErrorEvent(fmt.Errorf("llm: %s: %s", p.name, message)))
-			return false, sawTool
+			return false, sawTool, fmt.Errorf("llm: %s: %s", p.name, message)
 		}
 	}
 
-	return true, sawTool
+	return true, sawTool, nil
 }
 
 // accumulateCLIUsage adds a report's tokens.
@@ -407,7 +476,67 @@ func accumulateCLIUsage(usage *Usage, input, output, cached int) {
 	usage.CachedInputTokens += cached
 }
 
-// mcpConfig writes the CLI's MCP server configuration, pointing at ODE itself.
+// writeMCPConfig puts the CLI's MCP configuration in a private file and returns
+// its path together with a function that removes it.
+//
+// A file, not the --mcp-config flag's inline JSON form, because that JSON carries
+// the developer's Keycloak access token in an Authorization header and a command
+// line is not a private channel: /proc/<pid>/cmdline is world-readable and ps
+// prints it verbatim, to every process in the container for as long as the CLI
+// runs. The CLI itself is the nearest reader — it runs its own agent loop here,
+// with a bash tool and stdio MCP servers as further children of ODE, any of which
+// could have read the token out of the parent's argv. A token read out of there is
+// a full on-behalf-of credential for device and timeseries reads until it expires,
+// which is exactly what §3.1 item 3 and D5 reserve to the developer.
+//
+// The file lives in the system temporary directory with mode 0600, and is removed
+// when the turn ends. That is the smallest exposure reachable without introducing
+// new configuration: only ODE's own uid can read it, and it exists for one turn
+// rather than for the token's lifetime. It is not nothing — a process killed
+// between the write and the cleanup leaves the file behind until the container's
+// filesystem goes — but an orphan readable by one uid is a different order of
+// exposure from an argument every process could read.
+func writeMCPConfig(endpoint *ToolEndpoint) (path string, cleanup func(), err error) {
+	noop := func() {}
+
+	config, err := mcpConfig(endpoint)
+	if err != nil {
+		return "", noop, err
+	}
+
+	file, err := os.CreateTemp("", "ode-mcp-*.json")
+	if err != nil {
+		return "", noop, fmt.Errorf("llm: mcp config: %w", err)
+	}
+	name := file.Name()
+	remove := func() {
+		if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("a temporary MCP configuration file could not be removed",
+				"path", name, "error", err)
+		}
+	}
+
+	// CreateTemp already opens with 0600. Set explicitly because the mode is the
+	// entire point of writing a file at all, and a documented default is a poor
+	// place for that to rest.
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		remove()
+		return "", noop, fmt.Errorf("llm: mcp config: %w", err)
+	}
+	if _, err := file.WriteString(config); err != nil {
+		_ = file.Close()
+		remove()
+		return "", noop, fmt.Errorf("llm: mcp config: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		remove()
+		return "", noop, fmt.Errorf("llm: mcp config: %w", err)
+	}
+	return name, remove, nil
+}
+
+// mcpConfig renders the CLI's MCP server configuration, pointing at ODE itself.
 func mcpConfig(endpoint *ToolEndpoint) (string, error) {
 	type server struct {
 		Type    string            `json:"type"`

@@ -707,6 +707,79 @@ func TestNoWindowMeansTheDefaultLookback(t *testing.T) {
 	}
 }
 
+// A caller-supplied grid used to skip chooseGrid and its MaxBuckets widening
+// entirely, leaving only a note behind. Align checks nothing but that the grid is
+// positive, and grid() allocates one time.Time per bucket before the first read —
+// so `{"window": 26 years, "grid_seconds": 1}` over POST /relations was an
+// allocation of 820 million elements, about 19 GB, made before a single query went
+// out. The bound has to hold for an override for the same reason it holds for a
+// derived grid.
+func TestACallerSuppliedGridIsRoundedOntoTheLadderAndBoundedByMaxBuckets(t *testing.T) {
+	h := newHarness(t, func(d *Deps) { d.MaxBuckets = 30 })
+	window := profiler.Window{From: fixtureStart, To: fixtureStart.Add(time.Hour)}
+
+	profile, err := h.service.Relate(context.Background(), "token", Request{
+		Members: kitchenMembers(), Window: window, GridSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("Relate: %v", err)
+	}
+
+	// One second is not on the ladder, and 60s — the step it rounds up to — still
+	// puts 60 buckets in an hour where 30 are allowed, so the widening moves it on
+	// to 300s.
+	if profile.GridSeconds != 300 {
+		t.Errorf("grid = %vs, want 300 — the requested 1s rounded onto the ladder and widened to fit",
+			profile.GridSeconds)
+	}
+	if profile.Buckets > 30 {
+		t.Errorf("buckets = %d, want no more than the 30 this deployment allows", profile.Buckets)
+	}
+
+	// A developer who asked for one-second buckets and silently got five-minute ones
+	// is worse off than one who is told: every count in the document is per bucket.
+	if !containsSubstring(profile.Notes, "300") || !containsSubstring(profile.Notes, "1s") {
+		t.Errorf("notes = %v, want one naming both the requested 1s grid and the 300s the pass ran at",
+			profile.Notes)
+	}
+}
+
+// Beyond this span even the coarsest bucket on the ladder cannot fit the window
+// into MaxBuckets, so no grid choice can bound the allocation and the window
+// itself has to be refused. Refused rather than shortened, for the reason the grid
+// is widened rather than the window truncated: a truncated read looks like the
+// whole window.
+func TestAWindowTooWideForTheCoarsestBucketIsRefusedBeforeAnythingIsRead(t *testing.T) {
+	h := newHarness(t, func(d *Deps) { d.MaxBuckets = 60 })
+
+	// 60 buckets of the ladder's widest 43200s step cover 30 days exactly.
+	_, err := h.service.Relate(context.Background(), "token", Request{
+		Members: kitchenMembers(),
+		Window:  profiler.Window{From: fixtureStart, To: fixtureStart.Add(31 * 24 * time.Hour)},
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest", err)
+	}
+	if h.timeseries.calls != 0 || len(h.profiler.calls) != 0 || len(h.devices.actions) != 0 {
+		t.Errorf("the platform was read %d/%d/%d times for a window that was refused",
+			h.timeseries.calls, len(h.profiler.calls), len(h.devices.actions))
+	}
+
+	// The bound is the widest window that can still be aligned, not a round number
+	// below it: 30 days at the same cap is computed rather than refused.
+	fits := newHarness(t, func(d *Deps) { d.MaxBuckets = 60 })
+	profile, err := fits.service.Relate(context.Background(), "token", Request{
+		Members: kitchenMembers(),
+		Window:  profiler.Window{From: fixtureStart, To: fixtureStart.Add(30 * 24 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("a window exactly at the bound was refused: %v", err)
+	}
+	if profile.Buckets != 60 {
+		t.Errorf("buckets = %d, want the 60 the cap allows", profile.Buckets)
+	}
+}
+
 // One service failing to profile must not take the finding with it: the
 // oven-and-lights rule does not depend on the third device having usable data.
 func TestOneUnprofilableServiceLeavesTheOtherMembersRelated(t *testing.T) {
@@ -1513,4 +1586,37 @@ func setSummaries(sets []CandidateSet) []string {
 		out = append(out, fmt.Sprintf("%s/%s(%d devices)", set.Origin, set.Name, set.Devices))
 	}
 	return out
+}
+
+// A negative grid used to fall through to the derived path, which answered a
+// request nobody made: the profile came back on a grid the caller never asked for,
+// with nothing in it saying their own value had been discarded. It cannot allocate
+// anything, so this is not a bound — it is the difference between refusing an
+// impossible request and quietly substituting a different one.
+func TestANegativeGridIsRefusedRatherThanQuietlyReplacedByADerivedOne(t *testing.T) {
+	h := newHarness(t)
+
+	_, err := h.service.Relate(context.Background(), "token", Request{
+		Members:     kitchenMembers(),
+		Window:      profiler.Window{From: fixtureStart, To: fixtureStart.Add(24 * time.Hour)},
+		GridSeconds: -300,
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest", err)
+	}
+	if h.timeseries.calls != 0 || len(h.profiler.calls) != 0 {
+		t.Errorf("the platform was read %d/%d times for a request that was refused",
+			h.timeseries.calls, len(h.profiler.calls))
+	}
+
+	// Zero still means "derive one", which is what an omitted field marshals to and
+	// is the normal case rather than an error.
+	derived := newHarness(t)
+	if _, err := derived.service.Relate(context.Background(), "token", Request{
+		Members:     kitchenMembers(),
+		Window:      profiler.Window{From: fixtureStart, To: fixtureStart.Add(24 * time.Hour)},
+		GridSeconds: 0,
+	}); err != nil {
+		t.Fatalf("an omitted grid was refused: %v", err)
+	}
 }

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,13 +35,17 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/configuration"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/database"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/identifiers"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/imports"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/interpret"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/mcp"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
@@ -184,10 +189,21 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		deps.Charts = chartService
 	}
 
+	// Imports as the second kind of operator input (PLAN). Optional the way the
+	// timescale-wrapper is: without a device_selection_url a resolution finds
+	// devices exactly as before and says in its notes that the import half was not
+	// searched, rather than pretending the platform has no imports.
+	importService, err := startImports(config)
+	if err != nil {
+		return nil, err
+	}
+	deps.Imports = importService
+
 	// Semantic selection (§5.2). The ranker is the profiler, which may be absent;
 	// selection then resolves an intent to series without the availability-based
 	// order, and says so in the response rather than failing.
 	resolver, err := selection.New(ontologyRepo, ontologyIndex, deviceService, rankerOrNil(deps.Profiler),
+		importsOrNil(importService),
 		selection.Options{
 			Concurrency: int(config.SelectionConcurrency),
 			MaxCriteria: int(config.SelectionMaxCriteria),
@@ -249,8 +265,36 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 	}
 	deps.Kernel = kernelService
 
+	// M7 before M3 for the same reason: write_file is registered inside startM3 and
+	// needs the repo service to exist by then.
+	repoService, err := startM7(config, db, kernelService)
+	if err != nil {
+		return nil, err
+	}
+	deps.Repo = repoService
+
+	// M8 before M3, for the reason M4 and M7 are: launch_experiment and
+	// get_experiment_results are registered inside startM3 and need the service to
+	// exist by then. It sits after M7 because it needs the repo surface — a run is
+	// submitted from a commit, not from a working copy.
+	experimentService, err := startM8(config, db, kernelService, repoService)
+	if err != nil {
+		return nil, err
+	}
+	deps.Experiments = experimentService
+
 	// M3: providers, the tool surface, the dispatcher, chat and the admin controls.
-	if err := startM3(ctx, config, &deps, db, ontologyRepo, deviceService, timeseriesClient, kernelService); err != nil {
+	if err := startM3(ctx, config, &deps, db, ontologyRepo, deviceService, timeseriesClient, kernelService, repoService, experimentService); err != nil {
+		return nil, err
+	}
+
+	// M9: result interpretation (§5.13). After M3 rather than inside startM8,
+	// because it needs both halves — the experiment surface to summarise a run and
+	// the chat engine to interpret it into — and the engine does not exist until
+	// startM3 has run. It is the one piece of wiring that could not live in the
+	// milestone's own start function.
+	stopM9, err := startM9(ctx, config, &deps, db, experimentService)
+	if err != nil {
 		return nil, err
 	}
 
@@ -288,6 +332,12 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			slog.Error("api shutdown", "error", err)
 		}
+		// The two M9 loops, before the database closes under them. Waited for rather
+		// than merely cancelled: the delivery loop may be halfway through injecting a
+		// summary and running a turn, and pulling the connection pool out from under
+		// it would leave the summary in the conversation with nothing that answered
+		// it. They stop at the next safe point because their context is ctx.
+		stopM9(shutdownCtx)
 		// After the server, so no in-flight request loses its connection mid-write.
 		db.Close()
 	}()
@@ -333,6 +383,8 @@ func startM3(
 	deviceService *devices.Service,
 	timeseriesClient *timeseries.Client,
 	kernelService *kernel.Service,
+	repoService *repo.Service,
+	experimentService *experiments.Service,
 ) error {
 	pricing := llm.NewPricing(config.LlmCurrency, modelPrices(config.LlmPricing)...)
 
@@ -367,6 +419,7 @@ func startM3(
 	registry, err := tools.NewSurface(tools.Deps{
 		Ontology:            ontologyRepo,
 		Devices:             deviceService,
+		Imports:             toolImportsOrNil(deps.Imports),
 		Timeseries:          timeseriesOrNil(timeseriesClient),
 		Profiler:            profilerOrNil(deps.Profiler),
 		Selection:           selectionOrNil(deps.Selection),
@@ -374,6 +427,8 @@ func startM3(
 		Kernel:              kernelOrNil(kernelService),
 		Charts:              chartsOrNil(deps.Charts),
 		Relations:           relationsOrNil(deps.Relations),
+		Repo:                repoOrNil(repoService),
+		Experiments:         experimentsOrNil(experimentService),
 		ProfileTokenBudget:  int(config.ToolProfileTokenBudget),
 		ProfileMaxProfiles:  int(config.ToolProfileMaxProfiles),
 		QuickTokenBudget:    int(config.ToolQuickTokenBudget),
@@ -536,6 +591,421 @@ func startM4(ctx context.Context, config configuration.Config) (*kernel.Service,
 	return service, nil
 }
 
+// startM7 wires the repository surface (§5.11).
+//
+// It needs three things and degrades without any of them, in the same shape the
+// rest of ODE degrades: no GitHub OAuth app, no repo routes and no `write_file`.
+// The one thing it will not do is run without the encryption key — a token stored
+// in the clear is a different design than the one §5.11 item 1 describes, not a
+// development convenience — or without a Hub, because there would be nowhere for a
+// working copy to live.
+func startM7(
+	config configuration.Config, db *database.DB, kernelService *kernel.Service,
+) (*repo.Service, error) {
+	if config.GithubClientId == "" {
+		slog.Warn("no github_client_id configured: the repo routes are not served and " +
+			"write_file is declared but not callable (SPEC §5.11, M7)")
+		return nil, nil
+	}
+	if kernelService == nil {
+		// Not a refusal of the deployment, because a Hub-less ODE is a supported
+		// configuration — but the repo surface cannot be part of one, since the
+		// working copy lives in the developer's pod.
+		slog.Warn("github_client_id is set but no jupyterhub_url is: the repo routes are " +
+			"not served, because the working copy of §5.11 item 5 lives on the developer's pod")
+		return nil, nil
+	}
+	if config.GithubClientSecret == "" {
+		return nil, errors.New(
+			"config: github_client_secret is required when github_client_id is set")
+	}
+
+	sealer, err := repo.NewSealer(config.GithubTokenKey.Value())
+	if err != nil {
+		return nil, err
+	}
+
+	commandTimeout, err := time.ParseDuration(config.RepoCommandTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("config: repo_command_timeout: %w", err)
+	}
+
+	// The callback belongs to the SPA, which posts the code back to ODE with its own
+	// platform token. Derived from public_url only as a convenience for a deployment
+	// that serves both from one origin; anything else has to say it, because the
+	// value has to match the OAuth app's registered callback exactly.
+	redirect := config.GithubRedirectUri
+	if redirect == "" && config.PublicUrl != "" {
+		redirect = strings.TrimSuffix(config.PublicUrl, "/") + "/github/callback"
+	}
+	if redirect == "" {
+		return nil, errors.New(
+			"config: github_redirect_uri is required (or public_url, to derive it from)")
+	}
+
+	service, err := repo.New(repo.Deps{
+		Workspace: kernelService,
+		// The credential and the link go to Postgres when there is one. Neither is
+		// recomputable: without them every developer reconnects GitHub and re-selects
+		// a repository whose checkout is still on their PVC.
+		Store:  repoStore(db),
+		Sealer: sealer,
+		Options: repo.Options{
+			ClientID:              config.GithubClientId,
+			ClientSecret:          config.GithubClientSecret.Value(),
+			APIURL:                config.GithubApiUrl,
+			WebURL:                config.GithubWebUrl,
+			Scopes:                config.GithubScopes,
+			RedirectURI:           redirect,
+			CommandTimeout:        commandTimeout,
+			MaxFileBytes:          int(config.RepoMaxFileBytes),
+			MaxTreeEntries:        int(config.RepoMaxTreeEntries),
+			MaxCommandOutputBytes: int(config.RepoMaxCommandOutputBytes),
+			OperatorLib:           config.OperatorLibRepo,
+			OperatorLibRef:        config.OperatorLibRef,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	slog.Info("repo surface ready",
+		"github", config.GithubApiUrl,
+		"scopes", config.GithubScopes,
+		"redirect", redirect,
+		"operator_lib", config.OperatorLibRepo,
+		"operator_lib_ref", pinOrLatest(config.OperatorLibRef),
+		"persistent", db != nil)
+	return service, nil
+}
+
+// startM8 wires the experiment surface (§5.12).
+//
+// It degrades in the shape the rest of ODE degrades and refuses in the shape the
+// rest of ODE refuses. No ray_url or mlflow_url means no experiment routes and two
+// tools that stay declared-but-unavailable. A ray_url without an mlflow_url — or
+// without the Hub and repo surfaces the job package is built from — is a
+// deployment that cannot do the thing it was configured for, so it is named rather
+// than half-served.
+//
+// The one thing it will not do is degrade a *misconfigured* one. An unparseable
+// duration fails startup, for the reason startM4 gives: a deployment fault
+// discovered on a developer's first launch is worse than one discovered at boot.
+func startM8(
+	config configuration.Config,
+	db *database.DB,
+	kernelService *kernel.Service,
+	repoService *repo.Service,
+) (*experiments.Service, error) {
+	if config.RayUrl == "" && config.MlflowUrl == "" {
+		slog.Warn("no ray_url or mlflow_url configured: the experiment routes are not " +
+			"served and launch_experiment and get_experiment_results are declared but not " +
+			"callable (SPEC §5.12, M8)")
+		return nil, nil
+	}
+	// Half a configuration is a deployment fault rather than a lesser capability:
+	// ODE creates the MLflow run before submitting the job, so a Ray cluster without
+	// a tracking server cannot launch anything at all.
+	if config.RayUrl == "" {
+		return nil, errors.New("config: ray_url is required when mlflow_url is set")
+	}
+	if config.MlflowUrl == "" {
+		return nil, errors.New("config: mlflow_url is required when ray_url is set")
+	}
+	if kernelService == nil || repoService == nil {
+		// Not a refusal of the deployment, for the reason startM7's Hub check is not:
+		// a Hub-less or GitHub-less ODE is supported, and the experiment surface
+		// simply cannot be part of one. The job package is `git archive` of a working
+		// copy that lives on the developer's pod, so both are load-bearing.
+		slog.Warn("ray_url and mlflow_url are set but the experiment surface needs both a "+
+			"kernel and a repository service: the routes are not served and the two "+
+			"experiment tools stay declared but not callable",
+			"jupyterhub_url", config.JupyterhubUrl != "",
+			"github_client_id", config.GithubClientId != "")
+		return nil, nil
+	}
+
+	parse := func(name, value string) (time.Duration, error) {
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return 0, fmt.Errorf("config: %s: %w", name, err)
+		}
+		return parsed, nil
+	}
+
+	requestTimeout, err := parse("experiment_request_timeout", config.ExperimentRequestTimeout)
+	if err != nil {
+		return nil, err
+	}
+	uploadTimeout, err := parse("experiment_upload_timeout", config.ExperimentUploadTimeout)
+	if err != nil {
+		return nil, err
+	}
+	commandTimeout, err := parse("repo_command_timeout", config.RepoCommandTimeout)
+	if err != nil {
+		return nil, err
+	}
+	embedTTL, err := parse("experiment_embed_ttl", config.ExperimentEmbedTtl)
+	if err != nil {
+		return nil, err
+	}
+	embedTimeout, err := parse("experiment_embed_timeout", config.ExperimentEmbedTimeout)
+	if err != nil {
+		return nil, err
+	}
+	jobTokenLifetime, err := parse("job_token_lifetime", config.JobTokenLifetime)
+	if err != nil {
+		return nil, err
+	}
+
+	service, err := experiments.New(experiments.Deps{
+		Workspace: kernelService,
+		Repo:      repoService,
+		// An experiment record is the one thing in M8 that is recomputable from
+		// nowhere else: Ray forgets a submission and MLflow does not know which
+		// working copy produced a run. So it goes to Postgres whenever there is one,
+		// unlike the profiles and relation profiles that stay in memory (§5.4.3).
+		Store: experimentStore(db),
+		IDs:   identifiers.New(),
+		Options: experiments.Options{
+			RayURL:            config.RayUrl,
+			RayToken:          config.RayToken.Value(),
+			RayDashboardURL:   config.RayDashboardUrl,
+			MLflowURL:         config.MlflowUrl,
+			MLflowToken:       config.MlflowToken.Value(),
+			MLflowUIURL:       config.MlflowUiUrl,
+			ExperimentPrefix:  config.MlflowExperimentPrefix,
+			DefaultEntrypoint: config.ExperimentDefaultEntrypoint,
+			MaxPackageBytes:   config.ExperimentMaxPackageBytes,
+			MaxEnvVars:        int(config.ExperimentMaxEnvVars),
+			MaxEnvValueBytes:  int(config.ExperimentMaxEnvValueBytes),
+			MaxLogBytes:       int(config.ExperimentMaxLogBytes),
+			RequestTimeout:    requestTimeout,
+			UploadTimeout:     uploadTimeout,
+			CommandTimeout:    commandTimeout,
+			EmbedProbeTTL:     embedTTL,
+			EmbedProbeTimeout: embedTimeout,
+
+			KeycloakURL:          config.KeycloakUrl,
+			KeycloakRealm:        config.KeycloakRealm,
+			KeycloakClientID:     config.KeycloakClientId,
+			KeycloakClientSecret: config.KeycloakClientSecret.Value(),
+			JobTokenAudience:     config.JobTokenAudience,
+			JobTokenLifetime:     jobTokenLifetime,
+
+			// The same URLs a kernel is told about, for the same reason: a job reads
+			// its training data from the platform directly (§5.3.4) rather than through
+			// ODE, and should not need the developer to restate where.
+			Environment: kernelEnvironment(config),
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if !service.ExchangeConfigured() {
+		// The risk register's "token expiry vs. long Ray jobs" row, said once at
+		// startup rather than only in each launch result. §3.1 item 6 asks for a
+		// short-lived scoped token, and a deployment without one should know that a
+		// long run will lose its platform access partway through.
+		slog.Warn("no keycloak token exchange is configured: a Ray job carries the " +
+			"developer's interactive session token, so a run that outlives the session " +
+			"loses its platform access partway through (SPEC §3.1 item 6). Set " +
+			"keycloak_url, keycloak_realm, keycloak_client_id and keycloak_client_secret")
+	}
+
+	slog.Info("experiment surface ready",
+		"ray", config.RayUrl,
+		"mlflow", config.MlflowUrl,
+		"entrypoint", config.ExperimentDefaultEntrypoint,
+		"max_package_bytes", config.ExperimentMaxPackageBytes,
+		"scoped_job_token", service.ExchangeConfigured(),
+		"persistent", db != nil)
+	return service, nil
+}
+
+// experimentStore picks the store for submitted experiments.
+//
+// No split, unlike the profiler's and the relational profiler's: none of an
+// experiment record is recomputable, so all of it goes to Postgres when there is
+// one. Without a database the memory store keeps it for the life of the process,
+// and validate() says what that costs.
+func experimentStore(db *database.DB) experiments.Store {
+	if db == nil {
+		return experiments.NewMemoryStore()
+	}
+	return experiments.NewPostgresStore(db)
+}
+
+// startM9 wires result interpretation (§5.13).
+//
+// It degrades in the shape the rest of ODE degrades, and the two things it needs
+// are the two halves of the sentence §5.13 is: an experiment surface to summarise
+// a finished run, and a chat engine to interpret it into. A deployment missing
+// either serves everything else and says which is absent — a Ray cluster with no
+// LLM provider still launches experiments and still answers
+// /experiments/{id}/results; nothing merely happens by itself.
+//
+// Two goroutines for the whole process, both rooted at ctx so shutdown stops them:
+// the poller that notices a run finished, and the delivery loop that runs the turn
+// when a developer's credential is available. Neither holds a credential of its
+// own — that is the point of the design and the reason the loop exists at all.
+// It returns the function shutdown calls to wait for both loops to have stopped,
+// which is a no-op where neither was started.
+func startM9(
+	ctx context.Context,
+	config configuration.Config,
+	deps *api.Deps,
+	db *database.DB,
+	experimentService *experiments.Service,
+) (func(context.Context), error) {
+	if experimentService == nil {
+		if deps.Chat != nil {
+			slog.Warn("no experiment surface is configured: a finished run cannot be " +
+				"interpreted into a conversation (SPEC §5.13, M9)")
+		}
+		return noStop, nil
+	}
+	if deps.Chat == nil {
+		slog.Warn("no llm provider is configured: experiments still launch and their " +
+			"results are still read through /experiments/{id}/results, but nothing " +
+			"interprets a finished run into a conversation (SPEC §5.13, M9)")
+		return noStop, nil
+	}
+
+	parse := func(name, value string) (time.Duration, error) {
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return 0, fmt.Errorf("config: %s: %w", name, err)
+		}
+		return parsed, nil
+	}
+
+	pollInterval, err := parse("experiment_poll_interval", config.ExperimentPollInterval)
+	if err != nil {
+		return noStop, err
+	}
+	pollWindow, err := parse("experiment_poll_window", config.ExperimentPollWindow)
+	if err != nil {
+		return noStop, err
+	}
+	pollTimeout, err := parse("experiment_poll_timeout", config.ExperimentPollTimeout)
+	if err != nil {
+		return noStop, err
+	}
+	retryInterval, err := parse("interpretation_retry_interval", config.InterpretationRetryInterval)
+	if err != nil {
+		return noStop, err
+	}
+	turnTimeout, err := parse("interpretation_turn_timeout", config.InterpretationTurnTimeout)
+	if err != nil {
+		return noStop, err
+	}
+
+	service, err := interpret.New(interpret.Deps{
+		Experiments: experimentService,
+		Chat:        deps.Chat,
+		// The decision log goes to Postgres when there is one, for the reason the
+		// profiler's override overlay and the relational profiler's rule decisions do
+		// (§5.4.3): the summary and the interpretation are recoverable — from MLflow
+		// and from the conversation — and a developer's answer to a proposal is not.
+		Store: interpretStore(db),
+		IDs:   identifiers.New(),
+		Options: interpret.Options{
+			RetryInterval: retryInterval,
+			TurnTimeout:   turnTimeout,
+			MaxPending:    int(config.InterpretationMaxPending),
+		},
+	})
+	if err != nil {
+		return noStop, err
+	}
+
+	poller, err := experiments.NewPoller(experimentService, service, experiments.PollerOptions{
+		Interval: pollInterval,
+		Window:   pollWindow,
+		Batch:    int(config.ExperimentPollBatch),
+		Timeout:  pollTimeout,
+	})
+	if err != nil {
+		return noStop, err
+	}
+
+	service.Start(ctx)
+	poller.Start(ctx)
+	deps.Interpretations = service
+
+	slog.Info("result interpretation ready",
+		"poll_interval", pollInterval,
+		"poll_window", pollWindow,
+		"retry_interval", retryInterval,
+		"persistent_decisions", db != nil)
+
+	return func(shutdownCtx context.Context) {
+		// Both loops are rooted at the process context, so they are already stopping by
+		// the time this runs; what this waits for is their goroutines actually having
+		// returned. Bounded by the shutdown deadline, because a turn that will not end
+		// must not hold the process open — the summary is durable either way.
+		for _, done := range []<-chan struct{}{service.Stopped(), poller.Stopped()} {
+			select {
+			case <-done:
+			case <-shutdownCtx.Done():
+				slog.Warn("result interpretation did not stop within the shutdown deadline")
+				return
+			}
+		}
+	}, nil
+}
+
+// noStop is the shutdown hook of a deployment that started neither M9 loop.
+func noStop(context.Context) {}
+
+// interpretStore picks the store for the proposal decision log.
+//
+// The only persisted state M9 adds, and the split behind that is §5.4.3's: the
+// summary is recomputable from MLflow, the interpretation is already durable as
+// chat messages, and only the developer's answer can be regenerated by nothing.
+// Without a database it is in memory, and a restart then loses every answer — so a
+// proposal a developer rejected comes back as though they had never been asked.
+func interpretStore(db *database.DB) interpret.Store {
+	if db == nil {
+		return interpret.NewMemoryStore()
+	}
+	return interpret.NewPostgresStore(db)
+}
+
+// experimentsOrNil keeps the two M8 tools declared-but-unavailable in a deployment
+// without a Ray cluster, for the reason chartsOrNil documents.
+func experimentsOrNil(service *experiments.Service) tools.Experiments {
+	if service == nil {
+		return nil
+	}
+	return service
+}
+
+func pinOrLatest(ref string) string {
+	if ref == "" {
+		return "(resolved at scaffold time)"
+	}
+	return ref
+}
+
+func repoStore(db *database.DB) repo.Store {
+	if db == nil {
+		return repo.NewMemoryStore()
+	}
+	return repo.NewPostgresStore(db)
+}
+
+// repoOrNil keeps write_file declared-but-unavailable in a deployment without a
+// GitHub app, for the reason chartsOrNil documents.
+func repoOrNil(service *repo.Service) tools.Repo {
+	if service == nil {
+		return nil
+	}
+	return service
+}
+
 // kernelEnvironment is what a pod is told about the platform, beside the
 // developer's own token. Only URLs: no credential of ODE's own ever goes in.
 func kernelEnvironment(config configuration.Config) map[string]string {
@@ -690,6 +1160,17 @@ func profilerOrNil(prof *profiler.Profiler) tools.Profiler {
 	return prof
 }
 
+// toolImportsOrNil is the tool surface's narrower view of the same service the
+// resolver holds, and exists for the reason every other *OrNil here does: a typed
+// nil in an interface is not nil, and the three import tools would then be
+// registered with an executor that panics instead of declared-but-unavailable.
+func toolImportsOrNil(svc *imports.Service) tools.Imports {
+	if svc == nil {
+		return nil
+	}
+	return svc
+}
+
 func selectionOrNil(resolver *selection.Resolver) tools.Selection {
 	if resolver == nil {
 		return nil
@@ -738,6 +1219,57 @@ func rankerOrNil(prof *profiler.Profiler) selection.Ranker {
 	return prof
 }
 
+// importsOrNil exists for the reason rankerOrNil does: a typed nil pointer in an
+// interface is not nil, so returning the service unconditionally would make every
+// `if r.imports == nil` guard downstream false and every call panic.
+func importsOrNil(svc *imports.Service) selection.Imports {
+	if svc == nil {
+		return nil
+	}
+	return svc
+}
+
+// startImports wires the import surface, or returns nil when the platform
+// services it needs are not configured.
+//
+// device_selection_url is the one that decides. The other three each remove a
+// capability rather than the surface: without import-deploy an instance's status
+// is unknown, without import-repository a type cannot be looked up by id alone,
+// and without analytics-serving the history question answers "unknown". Each of
+// those is reported in the answer, which is why none of them is fatal here.
+//
+// import-deploy is the exception that is required alongside device-selection: the
+// import service refuses to be built without it, because discovery carries no
+// container status at all and an import whose status is never asked for would be
+// ranked as though it were running.
+func startImports(config configuration.Config) (*imports.Service, error) {
+	if config.DeviceSelectionUrl == "" {
+		return nil, nil
+	}
+	if config.ImportDeployUrl == "" {
+		return nil, errors.New("config: device_selection_url is set, so import_deploy_url is " +
+			"required: without it ODE cannot tell a running import from a stopped one")
+	}
+
+	timeout, err := time.ParseDuration(config.ImportRequestTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("config: import_request_timeout: %w", err)
+	}
+	opts := imports.ClientOptions{Timeout: timeout}
+
+	deps := imports.Deps{
+		Selectables: imports.NewSelectionClient(config.DeviceSelectionUrl, opts),
+		Instances:   imports.NewDeployClient(config.ImportDeployUrl, opts),
+	}
+	if config.ImportRepoUrl != "" {
+		deps.Types = imports.NewRepositoryClient(config.ImportRepoUrl, opts)
+	}
+	if config.AnalyticsServingUrl != "" {
+		deps.Exports = imports.NewServingClient(config.AnalyticsServingUrl, opts)
+	}
+	return imports.New(deps)
+}
+
 // validate fails fast on configuration that would otherwise produce confusing
 // runtime failures, and warns where a weak setting is legal but undesirable.
 func validate(config configuration.Config) error {
@@ -753,17 +1285,45 @@ func validate(config configuration.Config) error {
 	if config.TimescaleWrapperUrl == "" {
 		slog.Warn("no timescale_wrapper_url configured: the timeseries and profiler routes are not served")
 	}
+	if config.DeviceSelectionUrl == "" {
+		// Not a tidiness warning. An operator can take an import as an input, and
+		// without this every semantic selection answers with devices only — so a
+		// developer is told a signal does not exist when the platform imports it.
+		slog.Warn("no device_selection_url configured: imports are not searched, so semantic " +
+			"selection reports devices only and list_import_instances, get_import_type_metadata " +
+			"and propose_operator_input are declared but not callable")
+	} else if config.ImportDeployUrl == "" {
+		slog.Warn("device_selection_url is set but import_deploy_url is not: imports are found " +
+			"but ODE cannot say whether one is running, and a stopped import looks exactly " +
+			"like a live one in a selectables answer")
+	} else if config.AnalyticsServingUrl == "" {
+		slog.Warn("no analytics_serving_url configured: whether an import has stored history " +
+			"answers 'unknown' rather than 'live only', because timescale-wrapper has no " +
+			"importId and only an export puts an import in timescale")
+	}
 	if config.JupyterhubUrl == "" {
 		slog.Warn("no jupyterhub_url configured: a developer cannot run code, and run_code " +
 			"is declared but not callable (SPEC §5.6, M4)")
+	}
+	if config.GithubClientId == "" {
+		slog.Warn("no github_client_id configured: a developer cannot connect a repository, " +
+			"and write_file is declared but not callable (SPEC §5.11, M7)")
+	}
+	if config.RayUrl == "" || config.MlflowUrl == "" {
+		slog.Warn("no ray_url or mlflow_url configured: a developer cannot launch an " +
+			"experiment, and launch_experiment and get_experiment_results are declared " +
+			"but not callable (SPEC §5.12, M8)")
 	}
 	if config.PostgresUrl == "" {
 		// Not a warning about tidiness. §3.3's per-user spend cap is computed from
 		// recorded usage, so without a database the cap is only as old as this
 		// process: a restart hands every developer a fresh allowance.
 		slog.Warn("no postgres_url configured: chat history, the exposure-tier audit trail, " +
-			"the profiler override overlay and LLM spend accounting are in memory and will not " +
-			"survive a restart, so a per-user spend cap does not hold across one")
+			"the profiler override overlay, LLM spend accounting and the record of every " +
+			"submitted experiment are in memory and will not survive a restart, so a " +
+			"per-user spend cap does not hold across one and a restart loses the trail " +
+			"from an MLflow run back to the commit it came from, and a next-experiment " +
+			"proposal the developer rejected comes back as though they had never been asked")
 	}
 	return nil
 }

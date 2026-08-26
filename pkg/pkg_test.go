@@ -19,11 +19,14 @@ package pkg
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
 	devicerepo "github.com/SENERGY-Platform/device-repository/lib/client"
 	"github.com/SENERGY-Platform/device-repository/lib/model"
+
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/configuration"
 )
 
 // This exercises the real device-repository client rather than a fake, because
@@ -99,5 +102,79 @@ func TestANilAuthClosureSendsNoTokenUpstream(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("Authorization = %q, want empty: this documents why the factory exists", got)
+	}
+}
+
+// --- M8 wiring (SPEC §5.12) ---
+
+// startM8 degrades in the shape the rest of ODE degrades and refuses in the shape
+// the rest of ODE refuses. Both halves are asserted because both are decisions: a
+// deployment with neither URL still serves M0 to M7, and a deployment with one of
+// them cannot do the thing it was configured for.
+func TestStartM8DegradesWithoutARayClusterAndRefusesHalfAConfiguration(t *testing.T) {
+	cases := []struct {
+		name      string
+		ray       string
+		mlflow    string
+		wantError string
+	}{
+		{"neither configured", "", "", ""},
+		{"ray without mlflow", "http://ray:8265", "", "mlflow_url is required"},
+		{"mlflow without ray", "", "http://mlflow:5000", "ray_url is required"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := &configuration.ConfigStruct{RayUrl: tc.ray, MlflowUrl: tc.mlflow}
+			configuration.HandleEnvironmentVars(config)
+
+			// No kernel and no repo service: the surface cannot be built either way, and
+			// the point here is which branch answers first.
+			service, err := startM8(config, nil, nil, nil)
+
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want a degraded start", err)
+				}
+				if service != nil {
+					t.Error("a service was built with no Ray cluster configured")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("half a configuration started anyway (service %v)", service != nil)
+			}
+			if !strings.Contains(err.Error(), tc.wantError) {
+				t.Errorf("err = %q, want it to name %q", err, tc.wantError)
+			}
+		})
+	}
+}
+
+// The tools stay declared-but-unavailable rather than registered against a typed
+// nil, which is the footgun rankerOrNil documents.
+func TestExperimentsOrNilIsActuallyNil(t *testing.T) {
+	if experimentsOrNil(nil) != nil {
+		t.Error("a nil experiment service became a non-nil interface, so ifPresent " +
+			"would register an executor that panics on the first call")
+	}
+}
+
+// A configured Ray and MLflow without a Hub or a GitHub app is a warning and no
+// surface, not a refusal: the job package is git archive of a working copy that
+// lives on the developer's pod, and a Hub-less ODE is a supported deployment.
+func TestStartM8NeedsAKernelAndARepositoryButDoesNotRefuseWithoutThem(t *testing.T) {
+	config := &configuration.ConfigStruct{
+		RayUrl:    "http://ray:8265",
+		MlflowUrl: "http://mlflow:5000",
+	}
+	configuration.HandleEnvironmentVars(config)
+
+	service, err := startM8(config, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("err = %v, want a degraded start", err)
+	}
+	if service != nil {
+		t.Error("the experiment surface was built without a pod to package a repository in")
 	}
 }

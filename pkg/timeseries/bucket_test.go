@@ -124,3 +124,38 @@ func TestValidGroupTypeAgreesWithThePlatform(t *testing.T) {
 		t.Error("an aggregate the platform does not have passed the check")
 	}
 }
+
+// "0s" is the one wrong answer neither layer below here would catch.
+//
+// The server's own interval pattern accepts it, so a bucket of no length passes
+// schema validation and reaches Postgres as time_bucket('0 seconds', ...). Bucket
+// used to hand it straight through, because a request that parsed as zero took the
+// same branch as one that did not parse at all — and those are different things:
+// an unparseable bucket is a form the server understands and Go does not, while a
+// zero-length one is not a bucket.
+func TestAZeroLengthBucketIsNotPassedThrough(t *testing.T) {
+	span := 7 * 24 * time.Hour
+	for _, requested := range []string{"0s", "0", "-5m"} {
+		got, widened := Bucket(requested, span, 2000)
+		if got == requested {
+			t.Errorf("Bucket(%q) = %q: a bucket of no length was passed to the platform", requested, got)
+		}
+		if !widened {
+			t.Errorf("Bucket(%q) reported no widening, so nothing tells the reader the bucket was replaced", requested)
+		}
+		if parsed, err := time.ParseDuration(got); err != nil || parsed <= 0 {
+			t.Errorf("Bucket(%q) = %q, which is not a positive interval either", requested, got)
+		}
+	}
+}
+
+// FormatBucket's whole-second rendering truncates, and below a second that
+// truncation reaches zero. Callers reject sub-second intervals themselves and say
+// why; this is the second line, so that no rounding path can produce "0s".
+func TestFormatBucketNeverRoundsDownToNothing(t *testing.T) {
+	for _, d := range []time.Duration{time.Nanosecond, time.Millisecond, 500 * time.Millisecond, 999 * time.Millisecond} {
+		if got := FormatBucket(d); got != "1s" {
+			t.Errorf("FormatBucket(%s) = %q, want 1s", d, got)
+		}
+	}
+}

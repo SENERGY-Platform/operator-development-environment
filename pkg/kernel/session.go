@@ -61,6 +61,10 @@ type Status struct {
 	WorkspaceReady bool `json:"workspace_ready"`
 }
 
+// runToken identifies one execution's hold on the kernel. Zero is "no hold": it
+// is never handed out, so a token compared against it is always a live one.
+type runToken uint64
+
 // userSession is ODE's hold on one developer's pod.
 //
 // Everything on it is guarded by mux, which also serialises execution: one
@@ -80,8 +84,16 @@ type userSession struct {
 	// notice a refresh, not for any other purpose, and never logged.
 	pushedToken    string
 	workspaceReady bool
-	running        bool
-	lastUsed       time.Time
+	// running names the execution that currently holds the kernel, zero when none
+	// does. A token rather than a flag because the execution that took the kernel
+	// is not always the one that finishes last: a Restart ends a cell and brings a
+	// new kernel up while the ended cell is still forwarding into a slow browser,
+	// and that cell must not release a kernel a later execution has since claimed.
+	running runToken
+	// runs counts the executions this session has claimed. Only ever incremented,
+	// so a token is never reused and a stale finish can never match a live run.
+	runs     runToken
+	lastUsed time.Time
 
 	keepalive context.CancelFunc
 }
@@ -163,26 +175,10 @@ func (s *Service) Run(
 	if strings.TrimSpace(code) == "" {
 		return nil, fmt.Errorf("%w: there is no code to run", ErrInvalidRequest)
 	}
-	user, err := s.UserFor(bearer)
+	session, conn, handle, user, run, err := s.claim(ctx, bearer)
 	if err != nil {
 		return nil, err
 	}
-	session := s.session(user)
-
-	session.mux.Lock()
-	if session.running {
-		session.mux.Unlock()
-		return nil, ErrBusy
-	}
-	handle, err := s.ensureLocked(ctx, session, bearer)
-	if err != nil {
-		session.mux.Unlock()
-		return nil, err
-	}
-	conn := session.conn
-	session.running = true
-	session.lastUsed = time.Now()
-	session.mux.Unlock()
 
 	// The cell's own deadline, descending from the caller so that a disconnected
 	// developer still stops their cell, and bounded so a runaway one does not hold
@@ -202,7 +198,7 @@ func (s *Service) Run(
 	})
 	if err != nil {
 		cancel()
-		s.finishRun(session)
+		s.finishRun(session, run)
 		return nil, err
 	}
 
@@ -212,7 +208,7 @@ func (s *Service) Run(
 	go func() {
 		defer close(out)
 		defer cancel()
-		defer s.finishRun(session)
+		defer s.finishRun(session, run)
 		for event := range raw {
 			out <- event
 		}
@@ -220,9 +216,56 @@ func (s *Service) Run(
 	return out, nil
 }
 
-func (s *Service) finishRun(session *userSession) {
+// claim brings the session up and marks it busy for one execution.
+//
+// Shared by Run and by the workspace operations of workspace.go, which need the
+// same four things in the same order: the developer resolved from their own
+// token, a session that is not already running a cell, a live connection, and the
+// handle an interrupt would need. Extracted rather than repeated so that the busy
+// check cannot be forgotten on one path — a kernel executes one cell at a time,
+// and a second request that skipped it would silently queue behind the first.
+func (s *Service) claim(
+	ctx context.Context, bearer string,
+) (*userSession, *connection, KernelHandle, User, runToken, error) {
+	user, err := s.UserFor(bearer)
+	if err != nil {
+		return nil, nil, KernelHandle{}, User{}, 0, err
+	}
+	session := s.session(user)
+
 	session.mux.Lock()
-	session.running = false
+	if session.running != 0 {
+		session.mux.Unlock()
+		return nil, nil, KernelHandle{}, user, 0, ErrBusy
+	}
+	handle, err := s.ensureLocked(ctx, session, bearer)
+	if err != nil {
+		session.mux.Unlock()
+		return nil, nil, KernelHandle{}, user, 0, err
+	}
+	conn := session.conn
+	session.runs++
+	session.running = session.runs
+	run := session.running
+	session.lastUsed = time.Now()
+	session.mux.Unlock()
+	return session, conn, handle, user, run, nil
+}
+
+// finishRun releases the kernel, if the run that is finishing is the one holding
+// it.
+//
+// The check is not defensive: a Restart ends the running cell and brings a new
+// kernel up while that cell's forwarding goroutine may still be draining into a
+// browser that is not reading. When it does finish, the kernel it ran on is gone
+// and the session may already be running a later cell — and clearing the flag
+// then would put two ODE executions on one kernel, which is what ErrBusy exists
+// to prevent.
+func (s *Service) finishRun(session *userSession, run runToken) {
+	session.mux.Lock()
+	if session.running == run {
+		session.running = 0
+	}
 	session.lastUsed = time.Now()
 	session.mux.Unlock()
 }
@@ -339,6 +382,21 @@ func (s *Service) Files(ctx context.Context, bearer, path string) ([]FileEntry, 
 // §5.6 item 4: spawn-time environment variables cannot be refreshed, so the
 // current token is installed by executing into the kernel instead. Called
 // whenever the connection ODE is serving has adopted a new token.
+//
+// Not while a cell is running, and that exception is the point. The push is an
+// execution like any other, and ipykernel runs one at a time — so it would queue
+// behind a training run of unknown length while this call holds the session for
+// however long that takes. Everything else on this developer's session goes
+// through the same mutex: their status reads, their repository operations, the
+// running cell's own finish, and the reaper. A refresh that arrives on the SPA's
+// poll timer must not be able to stop all of them.
+//
+// Skipping loses nothing. The token is not dropped: pushedToken still holds the
+// previous one, so the next claim — which is what any use of the kernel goes
+// through — finds them different and installs the current token before the
+// developer's code runs. The window where the kernel holds a token older than
+// ODE's is a window in which it is executing something that was started with the
+// older one anyway.
 func (s *Service) RefreshPlatformToken(ctx context.Context, bearer string) error {
 	user, err := s.UserFor(bearer)
 	if err != nil {
@@ -352,6 +410,12 @@ func (s *Service) RefreshPlatformToken(ctx context.Context, bearer string) error
 	session.mux.Lock()
 	defer session.mux.Unlock()
 	if session.conn == nil {
+		return nil
+	}
+	if session.running != 0 {
+		slog.DebugContext(ctx,
+			"a cell is running, so the refreshed platform token is left to the next execution",
+			"user", user.Name)
 		return nil
 	}
 	return s.pushEnvironmentLocked(ctx, session, bearer)
@@ -640,7 +704,9 @@ func (s *Service) dropKernelLocked(session *userSession) {
 	}
 	session.kernelID = ""
 	session.pushedToken = ""
-	session.running = false
+	// The kernel is gone, so no execution holds it any more. The token of the run
+	// that did is not reused, so its own finish will find nothing to release.
+	session.running = 0
 }
 
 func (s *Service) statusLocked(ctx context.Context, session *userSession) (Status, error) {
@@ -656,7 +722,7 @@ func (s *Service) statusLocked(ctx context.Context, session *userSession) (Statu
 		Started:        state.Started,
 		LastActivity:   state.LastActivity,
 		KernelID:       session.kernelID,
-		Busy:           session.running,
+		Busy:           session.running != 0,
 		Profile:        s.opts.Profile,
 		Workspace:      s.opts.WorkspacePath,
 		WorkspaceReady: session.workspaceReady,
@@ -702,7 +768,7 @@ func (s *Service) reap() {
 
 	for _, session := range candidates {
 		session.mux.Lock()
-		if session.running || session.lastUsed.After(cutoff) {
+		if session.running != 0 || session.lastUsed.After(cutoff) {
 			session.mux.Unlock()
 			continue
 		}

@@ -515,6 +515,55 @@ func TestSearchOntologyReportsUnmatchedTerms(t *testing.T) {
 	}
 }
 
+// The matcher keeps five matches per entity list by default and used to drop the
+// rest without saying how many there were. A tool result carrying five functions
+// and no total tells the model it has seen the ontology's whole answer, so it
+// stops looking — the elision, not the truncation, is what D26 requires here.
+func TestSearchOntologyReportsWhatTheMatchLimitElided(t *testing.T) {
+	snapshot := &ontology.Snapshot{
+		MeasuringFunctions: []models.Function{
+			{Id: "fn-consumption", DisplayName: "Power Consumption"},
+			{Id: "fn-generation", DisplayName: "Power Generation"},
+		},
+	}
+	_, dispatcher := executorFor(t, Deps{Ontology: &fakeOntology{snapshot: snapshot}}, "search_ontology")
+
+	decoded := dispatchJSON(t, dispatcher, L0, "search_ontology",
+		`{"query":"power consumption and generation","limit":1}`)
+
+	elided, ok := decoded["elided"].([]any)
+	if !ok || len(elided) != 1 {
+		t.Fatalf("elided = %v, want one entry counting the functions that were cut", decoded["elided"])
+	}
+	entry, _ := elided[0].(map[string]any)
+	if entry["field"] != ontology.FieldMatchedFunctions || entry["total"] != float64(2) ||
+		entry["shown"] != float64(1) {
+		t.Errorf("elided[0] = %v, want matched_functions total 2 shown 1", entry)
+	}
+}
+
+// resolve_semantic_selection projects the candidate list and passes the rest of
+// the document through by embedding, and a field declared at the shallower depth
+// of LLMResult wins the JSON tag. The ontology elisions must survive that, or the
+// truncation is recorded everywhere except where the model reads.
+func TestResolveSemanticSelectionCarriesTheOntologyElisions(t *testing.T) {
+	_, dispatcher := executorFor(t, Deps{Selection: &fakeSelection{
+		matchElided: []ontology.Elision{{Field: ontology.FieldMatchedFunctions, Total: 40, Shown: 5}},
+	}}, "resolve_semantic_selection")
+
+	decoded := dispatchJSON(t, dispatcher, L0, "resolve_semantic_selection", `{"intent":"pv power"}`)
+
+	elided, ok := decoded["match_elided"].([]any)
+	if !ok || len(elided) != 1 {
+		t.Fatalf("match_elided = %v, want the ontology elision carried through the projection",
+			decoded["match_elided"])
+	}
+	entry, _ := elided[0].(map[string]any)
+	if entry["total"] != float64(40) || entry["shown"] != float64(5) {
+		t.Errorf("match_elided[0] = %v, want total 40 shown 5", entry)
+	}
+}
+
 func TestSearchOntologyRequiresAQuery(t *testing.T) {
 	_, dispatcher := executorFor(t, Deps{Ontology: &fakeOntology{snapshot: &ontology.Snapshot{}}},
 		"search_ontology")
@@ -808,14 +857,18 @@ func TestResolveSemanticSelectionAnswersWithProjectedCandidates(t *testing.T) {
 	}
 }
 
-type fakeSelection struct{ candidates []profiler.QuickProfile }
+type fakeSelection struct {
+	candidates  []profiler.QuickProfile
+	matchElided []ontology.Elision
+}
 
 func (f *fakeSelection) Resolve(
 	context.Context, string, selection.Request,
 ) (selection.Result, error) {
 	return selection.Result{
-		Intent:     "pv power",
-		Candidates: f.candidates,
-		Notes:      []string{},
+		Intent:      "pv power",
+		Candidates:  f.candidates,
+		MatchElided: f.matchElided,
+		Notes:       []string{},
 	}, nil
 }

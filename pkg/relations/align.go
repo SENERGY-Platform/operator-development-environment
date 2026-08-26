@@ -124,6 +124,25 @@ func chooseGrid(window profiler.Window, intervals []float64, maxBuckets int) (se
 	return chosen, widened
 }
 
+// maxAlignableSeconds is the widest window a pass can cover: maxBuckets of the
+// coarsest bucket on the ladder.
+//
+// Past it no grid choice can bound the read, because chooseGrid has nothing
+// wider to widen to — and Align allocates the whole grid before the first query,
+// so the overflow is an allocation rather than a slow answer. Kept in seconds
+// rather than as a time.Duration: a deployment free to configure maxBuckets is
+// free to configure one that overflows a Duration, and a bound that wraps is
+// worse than none.
+//
+// Zero means unbounded, which is chooseGrid's convention for the same argument
+// and reachable only past Service.New, which gives MaxBuckets a default.
+func maxAlignableSeconds(maxBuckets int) float64 {
+	if maxBuckets <= 0 {
+		return 0
+	}
+	return float64(maxBuckets) * gridLadder[len(gridLadder)-1]
+}
+
 func nextGrid(current float64) (float64, bool) {
 	for _, step := range gridLadder {
 		if step > current {

@@ -109,7 +109,7 @@ var _ Backend = (*Service)(nil)
 // UsernameClaim names which token claim carries the Hub username.
 const (
 	// ClaimPreferredUsername is the default, and matches the deployed
-	// GenericOAuthenticator: it produces Hub usernames like "jonah". §5.6 assumes
+	// GenericOAuthenticator: it produces Hub usernames like "devuser". §5.6 assumes
 	// the subject instead, which is true of the identity but not of the string.
 	ClaimPreferredUsername = "preferred_username"
 	// ClaimSub is for a Hub configured with username_claim = sub.
@@ -117,7 +117,7 @@ const (
 )
 
 type Options struct {
-	// BaseURL is the Hub's public base, e.g. http://proxy-public.jupyterhub.svc.cluster.local.
+	// BaseURL is the Hub's public base, e.g. the z2jh proxy service in its namespace.
 	// Both /hub/api and the /user/{name}/ proxy hang off it.
 	BaseURL string
 	// Token is ODE's JupyterHub service token. A deployment secret; never logged,
@@ -185,7 +185,7 @@ const (
 
 // PlatformTokenEnv is the environment variable the developer's platform token
 // arrives in. Named as a constant because the singleuser image's helper library
-// reads the same name (see deploy/singleuser).
+// reads the same name (see singleuser-image/).
 const PlatformTokenEnv = "SENERGY_TOKEN"
 
 // WorkspaceEnv tells code in the pod where its persistent workspace is.

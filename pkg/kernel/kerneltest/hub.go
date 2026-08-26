@@ -23,11 +23,14 @@
 package kerneltest
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -81,7 +84,9 @@ type Hub struct {
 	stopped         bool
 	keepStopped     bool
 	failNextExecute bool
+	streamChunks    int
 	hangExecute     chan struct{}
+	responder       func(code string) (stdout string, stderr string, handled bool)
 }
 
 type MintedRequest struct {
@@ -103,6 +108,7 @@ func NewHub(t testing.TB) *Hub {
 		Kind:         "service",
 		Scopes:       []string{"servers", "tokens", "access:servers", "users:activity", "read:users"},
 		nextKernelID: "kernel-1",
+		streamChunks: 1,
 		deadKernels:  map[string]bool{},
 	}
 	hub.server = httptest.NewServer(http.HandlerFunc(hub.route))
@@ -127,7 +133,62 @@ func (f *Hub) Hang(release chan struct{}) {
 	f.hangExecute = release
 }
 
+// SetStreamChunks splits the canned answer across n stream messages instead of
+// one.
+//
+// It is how a test makes a consumer's buffers fill: a cell nobody is reading
+// blocks its forwarding goroutine once the channels between the socket and the
+// caller are full, which is the state a browser on a slow connection puts an ODE
+// session in and the one where "the cell is over" and "the caller has seen it"
+// come apart.
+func (f *Hub) SetStreamChunks(n int) {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.streamChunks = n
+}
+
 // SetNextKernelID names the kernel the next create returns.
+// OnExecute installs a responder for execute_request.
+//
+// Without one the fake answers every cell with the same canned stream and result,
+// which is all the M4 tests need. The workspace operations of §5.11 need more:
+// they send a request and read the answer back off stdout, so a fake that always
+// prints "hello" cannot exercise them at all. A responder that reports handled
+// replaces the canned output with its own.
+func (f *Hub) OnExecute(responder func(code string) (stdout string, stderr string, handled bool)) {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.responder = responder
+}
+
+// PythonExecutor runs the cell with the local python3, in the given HOME.
+//
+// It is the responder the workspace tests use, and it is deliberately not a
+// second implementation of the workspace protocol in Go: the cell ODE sends is
+// executed by a real interpreter against a real filesystem, so the Python in
+// kernel/workspace.go is what the test covers rather than a Go paraphrase of it
+// that could agree with the test while disagreeing with the pod.
+//
+// Skips the test when there is no python3 to run.
+func PythonExecutor(t testing.TB, home string) func(string) (string, string, bool) {
+	t.Helper()
+	binary, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed, so the workspace helper cannot be executed")
+	}
+	return func(code string) (string, string, bool) {
+		command := exec.Command(binary, "-c", code)
+		// HOME is what the helper resolves the workspace against, so pointing it at
+		// a temporary directory is what makes the test's filesystem the pod's.
+		command.Env = append(os.Environ(), "HOME="+home)
+		command.Dir = home
+		var stdout, stderr bytes.Buffer
+		command.Stdout, command.Stderr = &stdout, &stderr
+		_ = command.Run()
+		return stdout.String(), stderr.String(), true
+	}
+}
+
 func (f *Hub) SetNextKernelID(id string) {
 	f.mux.Lock()
 	defer f.mux.Unlock()
@@ -444,6 +505,8 @@ func (f *Hub) serveChannels(w http.ResponseWriter, r *http.Request, kernelID str
 			failing := f.failNextExecute
 			f.failNextExecute = false
 			hang := f.hangExecute
+			responder := f.responder
+			chunks := f.streamChunks
 			f.mux.Unlock()
 
 			f.reply(conn, msgID, "status", "iopub", map[string]any{"execution_state": "busy"})
@@ -467,9 +530,11 @@ func (f *Hub) serveChannels(w http.ResponseWriter, r *http.Request, kernelID str
 				continue
 			}
 
-			if !silent {
-				f.reply(conn, msgID, "stream", "iopub",
-					map[string]any{"name": "stdout", "text": "hello\n"})
+			if handled := f.respond(conn, msgID, code, responder); !handled && !silent {
+				for range max(chunks, 1) {
+					f.reply(conn, msgID, "stream", "iopub",
+						map[string]any{"name": "stdout", "text": "hello\n"})
+				}
 				f.reply(conn, msgID, "execute_result", "iopub", map[string]any{
 					"execution_count": 1,
 					"data": map[string]any{
@@ -483,6 +548,28 @@ func (f *Hub) serveChannels(w http.ResponseWriter, r *http.Request, kernelID str
 			f.reply(conn, msgID, "status", "iopub", map[string]any{"execution_state": "idle"})
 		}
 	}
+}
+
+// respond streams a responder's answer, in the two messages a real kernel would
+// use. Reports whether it handled the cell at all.
+func (f *Hub) respond(
+	conn *websocket.Conn, msgID, code string,
+	responder func(string) (string, string, bool),
+) bool {
+	if responder == nil {
+		return false
+	}
+	stdout, stderr, handled := responder(code)
+	if !handled {
+		return false
+	}
+	if stdout != "" {
+		f.reply(conn, msgID, "stream", "iopub", map[string]any{"name": "stdout", "text": stdout})
+	}
+	if stderr != "" {
+		f.reply(conn, msgID, "stream", "iopub", map[string]any{"name": "stderr", "text": stderr})
+	}
+	return true
 }
 
 func (f *Hub) reply(conn *websocket.Conn, parentID, msgType, channel string, content map[string]any) {

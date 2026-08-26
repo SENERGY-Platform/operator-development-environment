@@ -45,6 +45,21 @@ const (
 	EventError EventType = "error"
 )
 
+// StopReasonCancelled and StopReasonError name the two ways a turn can end
+// without the model having finished.
+//
+// They exist because a turn that ended early still has to report what it cost:
+// the provider billed the input it read and the output it produced whether or not
+// anyone waited for the answer, and §3.3's caps are computed from recorded usage.
+// So such a turn emits a done event like any other — and the stop reason is what
+// keeps anything downstream from reading it as a clean finish. Neither value can
+// collide with a provider's own: Anthropic reports end_turn, max_tokens, tool_use
+// or stop_sequence, OpenAI stop, length, tool_calls or content_filter.
+const (
+	StopReasonCancelled = "cancelled"
+	StopReasonError     = "error"
+)
+
 // Event is one item of the normalised stream.
 type Event struct {
 	Type EventType `json:"type"`

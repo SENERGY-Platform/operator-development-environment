@@ -118,8 +118,8 @@ func TestCheckScopesWarnsWhenTheCredentialOnlyCoversOneUser(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	hub.Kind = "user"
 	hub.Scopes = []string{
-		"servers!user=jonah", "tokens!user=jonah",
-		"access:servers!user=jonah", "users:activity!user=jonah",
+		"servers!user=devuser", "tokens!user=devuser",
+		"access:servers!user=devuser", "users:activity!user=devuser",
 	}
 	service := newService(t, hub, nil)
 
@@ -138,14 +138,14 @@ func TestCheckScopesWarnsWhenTheCredentialOnlyCoversOneUser(t *testing.T) {
 func TestUserForReadsTheHubNameFromThePreferredUsernameClaim(t *testing.T) {
 	service := newService(t, kerneltest.NewHub(t), nil)
 
-	user, err := service.UserFor(unsignedToken("jonah"))
+	user, err := service.UserFor(unsignedToken("devuser"))
 	if err != nil {
 		t.Fatalf("UserFor: %v", err)
 	}
-	if user.Name != "jonah" {
+	if user.Name != "devuser" {
 		t.Errorf("name = %q, want the preferred_username claim", user.Name)
 	}
-	if user.Sub != "live-test-jonah" {
+	if user.Sub != "live-test-devuser" {
 		t.Errorf("sub = %q, want the subject claim", user.Sub)
 	}
 }
@@ -166,7 +166,7 @@ func TestEnsureSpawnsPollsAndStartsAKernelInTheWorkspace(t *testing.T) {
 		o.SpawnTimeout = 10 * time.Second
 	})
 
-	status, err := service.Ensure(context.Background(), unsignedToken("jonah"))
+	status, err := service.Ensure(context.Background(), unsignedToken("devuser"))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -175,8 +175,8 @@ func TestEnsureSpawnsPollsAndStartsAKernelInTheWorkspace(t *testing.T) {
 	}
 
 	got := hub.Calls()
-	if len(got.StartedServers) != 1 || got.StartedServers[0] != "jonah" {
-		t.Errorf("started servers = %v, want one spawn for jonah", got.StartedServers)
+	if len(got.StartedServers) != 1 || got.StartedServers[0] != "devuser" {
+		t.Errorf("started servers = %v, want one spawn for devuser", got.StartedServers)
 	}
 	if len(got.CreatedKernels) != 1 || got.CreatedKernels[0].Path != "data/ode" {
 		t.Errorf("created kernels = %+v, want one in the workspace", got.CreatedKernels)
@@ -193,7 +193,7 @@ func TestASpawnAsksForTheConfiguredKubespawnerProfile(t *testing.T) {
 	hub.Ready = false
 	service := newService(t, hub, func(o *kernel.Options) { o.Profile = "ode" })
 
-	if _, err := service.Ensure(context.Background(), unsignedToken("jonah")); err != nil {
+	if _, err := service.Ensure(context.Background(), unsignedToken("devuser")); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 	// §5.6 item 1 adds the ODE image as a profile rather than replacing the
@@ -208,7 +208,7 @@ func TestASpawnWithNoConfiguredProfileTakesTheDeploymentDefault(t *testing.T) {
 	hub.Ready = false
 	service := newService(t, hub, nil)
 
-	if _, err := service.Ensure(context.Background(), unsignedToken("jonah")); err != nil {
+	if _, err := service.Ensure(context.Background(), unsignedToken("devuser")); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 	if profiles := hub.Calls().SpawnProfiles; len(profiles) != 1 || profiles[0] != "" {
@@ -220,7 +220,7 @@ func TestEnsureMintsANarrowlyScopedShortLivedTokenForThePod(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, func(o *kernel.Options) { o.TokenTTL = 90 * time.Minute })
 
-	if _, err := service.Ensure(context.Background(), unsignedToken("jonah")); err != nil {
+	if _, err := service.Ensure(context.Background(), unsignedToken("devuser")); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 
@@ -232,7 +232,7 @@ func TestEnsureMintsANarrowlyScopedShortLivedTokenForThePod(t *testing.T) {
 	if minted.ExpiresIn != 5400 {
 		t.Errorf("expires_in = %d, want the configured ttl in seconds", minted.ExpiresIn)
 	}
-	if len(minted.Scopes) != 1 || minted.Scopes[0] != "access:servers!user=jonah" {
+	if len(minted.Scopes) != 1 || minted.Scopes[0] != "access:servers!user=devuser" {
 		t.Errorf("scopes = %v, want only access to this user's own server", minted.Scopes)
 	}
 	// The Hub API is only ever called with ODE's service credential; a developer's
@@ -248,7 +248,7 @@ func TestRunStreamsOutputAndEndsWithADoneEvent(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
 
-	events, err := service.Run(context.Background(), unsignedToken("jonah"), "print('hello')")
+	events, err := service.Run(context.Background(), unsignedToken("devuser"), "print('hello')")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestRunInstallsThePlatformTokenSilentlyBeforeTheDevelopersCode(t *testing.T
 		o.Environment = map[string]string{"SENERGY_DEVICE_REPO_URL": "https://api.example/device-repository"}
 	})
 
-	events, err := service.Run(context.Background(), unsignedToken("jonah"), "print('hello')")
+	events, err := service.Run(context.Background(), unsignedToken("devuser"), "print('hello')")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestRunInstallsThePlatformTokenSilentlyBeforeTheDevelopersCode(t *testing.T
 	}
 	// The values are base64 in the source, so a token never appears verbatim in
 	// anything the kernel records as history or a traceback quotes back.
-	if strings.Contains(push, unsignedToken("jonah")) {
+	if strings.Contains(push, unsignedToken("devuser")) {
 		t.Error("the platform token was interpolated into the source verbatim")
 	}
 	if executed[1] != "print('hello')" {
@@ -311,7 +311,7 @@ func TestRunInstallsThePlatformTokenSilentlyBeforeTheDevelopersCode(t *testing.T
 func TestRunPushesTheTokenOnceAndAgainWhenItChanges(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
-	bearer := unsignedToken("jonah")
+	bearer := unsignedToken("devuser")
 
 	for range 2 {
 		events, err := service.Run(context.Background(), bearer, "pass")
@@ -340,12 +340,12 @@ func TestRunReportsAKernelExceptionAsAnErrorRatherThanAFailure(t *testing.T) {
 
 	// Brought up first, so the arming below lands on the developer's cell rather
 	// than on the hidden environment push that precedes it.
-	if _, err := service.Ensure(context.Background(), unsignedToken("jonah")); err != nil {
+	if _, err := service.Ensure(context.Background(), unsignedToken("devuser")); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 	hub.ArmFailure()
 
-	events, err := service.Run(context.Background(), unsignedToken("jonah"), "raise ValueError()")
+	events, err := service.Run(context.Background(), unsignedToken("devuser"), "raise ValueError()")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestRunReportsAKernelExceptionAsAnErrorRatherThanAFailure(t *testing.T) {
 func TestRunRefusesASecondCellWhileOneIsRunning(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
-	bearer := unsignedToken("jonah")
+	bearer := unsignedToken("devuser")
 
 	// Brought up first, so the hang below lands on the developer's cell rather
 	// than on the hidden environment push that precedes it.
@@ -392,7 +392,7 @@ func TestRunRefusesASecondCellWhileOneIsRunning(t *testing.T) {
 func TestACancelledExecutionInterruptsTheKernelRatherThanLeavingItRunning(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
-	bearer := unsignedToken("jonah")
+	bearer := unsignedToken("devuser")
 
 	if _, err := service.Ensure(context.Background(), bearer); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -426,7 +426,7 @@ func TestOutputIsTruncatedAtTheByteCapAndSaysSo(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, func(o *kernel.Options) { o.MaxOutputBytes = 4 })
 
-	events, err := service.Run(context.Background(), unsignedToken("jonah"), "print('hello')")
+	events, err := service.Run(context.Background(), unsignedToken("devuser"), "print('hello')")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestOutputIsTruncatedAtTheByteCapAndSaysSo(t *testing.T) {
 func TestRestartReplacesTheKernelWithoutTouchingTheWorkspace(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
-	bearer := unsignedToken("jonah")
+	bearer := unsignedToken("devuser")
 
 	if _, err := service.Ensure(context.Background(), bearer); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -472,7 +472,7 @@ func TestRestartReplacesTheKernelWithoutTouchingTheWorkspace(t *testing.T) {
 func TestAKernelThatVanishedIsReplacedRatherThanReported(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
-	bearer := unsignedToken("jonah")
+	bearer := unsignedToken("devuser")
 
 	if _, err := service.Ensure(context.Background(), bearer); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -493,7 +493,7 @@ func TestAKernelThatVanishedIsReplacedRatherThanReported(t *testing.T) {
 func TestAStoppedPodIsRespawnedRatherThanReportedAsA403(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
-	bearer := unsignedToken("jonah")
+	bearer := unsignedToken("devuser")
 
 	if _, err := service.Ensure(context.Background(), bearer); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -514,7 +514,7 @@ func TestAStoppedPodIsRespawnedRatherThanReportedAsA403(t *testing.T) {
 
 	// One spawn, for the replacement: the first bring-up found a server already up.
 	calls := hub.Calls()
-	if len(calls.StartedServers) != 1 || calls.StartedServers[0] != "jonah" {
+	if len(calls.StartedServers) != 1 || calls.StartedServers[0] != "devuser" {
 		t.Errorf("started servers = %v, want one spawn for the replacement pod",
 			calls.StartedServers)
 	}
@@ -539,7 +539,7 @@ func TestAStoppedPodIsRespawnedRatherThanReportedAsA403(t *testing.T) {
 func TestTheWorkspaceListingSurvivesThePodBeingStopped(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
-	bearer := unsignedToken("jonah")
+	bearer := unsignedToken("devuser")
 
 	if _, err := service.Ensure(context.Background(), bearer); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -558,7 +558,7 @@ func TestTheWorkspaceListingSurvivesThePodBeingStopped(t *testing.T) {
 func TestAHubPageIsReportedAsOneRatherThanAsFourKilobytesOfMarkup(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
-	bearer := unsignedToken("jonah")
+	bearer := unsignedToken("devuser")
 
 	if _, err := service.Ensure(context.Background(), bearer); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -585,7 +585,7 @@ func TestKeepaliveReportsActivityWhileASessionIsHeld(t *testing.T) {
 		o.KeepaliveInterval = 20 * time.Millisecond
 	})
 
-	if _, err := service.Ensure(context.Background(), unsignedToken("jonah")); err != nil {
+	if _, err := service.Ensure(context.Background(), unsignedToken("devuser")); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -603,7 +603,7 @@ func TestShutdownEndsTheKernelAndStopsTheKeepalive(t *testing.T) {
 	service := newService(t, hub, func(o *kernel.Options) {
 		o.KeepaliveInterval = 20 * time.Millisecond
 	})
-	bearer := unsignedToken("jonah")
+	bearer := unsignedToken("devuser")
 
 	if _, err := service.Ensure(context.Background(), bearer); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -627,7 +627,7 @@ func TestFilesListsTheWorkspace(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
 
-	entries, err := service.Files(context.Background(), unsignedToken("jonah"), "")
+	entries, err := service.Files(context.Background(), unsignedToken("devuser"), "")
 	if err != nil {
 		t.Fatalf("Files: %v", err)
 	}
@@ -639,7 +639,7 @@ func TestFilesListsTheWorkspace(t *testing.T) {
 func TestFilesRefusesToClimbOutOfTheWorkspace(t *testing.T) {
 	service := newService(t, kerneltest.NewHub(t), nil)
 
-	_, err := service.Files(context.Background(), unsignedToken("jonah"), "../../etc")
+	_, err := service.Files(context.Background(), unsignedToken("devuser"), "../../etc")
 	if !errors.Is(err, kernel.ErrInvalidRequest) {
 		t.Fatalf("error = %v, want ErrInvalidRequest", err)
 	}
@@ -648,7 +648,7 @@ func TestFilesRefusesToClimbOutOfTheWorkspace(t *testing.T) {
 func TestInterruptWithoutAKernelSaysSoRatherThanFailing(t *testing.T) {
 	service := newService(t, kerneltest.NewHub(t), nil)
 
-	if err := service.InterruptUser(context.Background(), unsignedToken("jonah")); !errors.Is(err, kernel.ErrNoKernel) {
+	if err := service.InterruptUser(context.Background(), unsignedToken("devuser")); !errors.Is(err, kernel.ErrNoKernel) {
 		t.Fatalf("error = %v, want ErrNoKernel", err)
 	}
 }
@@ -661,7 +661,7 @@ func TestASpawnThatNeverBecomesReadyTimesOutWithItsOwnError(t *testing.T) {
 		o.SpawnTimeout = 100 * time.Millisecond
 	})
 
-	_, err := service.Ensure(context.Background(), unsignedToken("jonah"))
+	_, err := service.Ensure(context.Background(), unsignedToken("devuser"))
 	if !errors.Is(err, kernel.ErrSpawnTimeout) {
 		t.Fatalf("error = %v, want ErrSpawnTimeout", err)
 	}
@@ -670,7 +670,7 @@ func TestASpawnThatNeverBecomesReadyTimesOutWithItsOwnError(t *testing.T) {
 func TestATracebackIsBothKeptVerbatimAndOfferedWithoutColourCodes(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)
-	bearer := unsignedToken("jonah")
+	bearer := unsignedToken("devuser")
 
 	if _, err := service.Ensure(context.Background(), bearer); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -696,5 +696,136 @@ func TestATracebackIsBothKeptVerbatimAndOfferedWithoutColourCodes(t *testing.T) 
 	}
 	if event.Text != "ValueError: deliberate" {
 		t.Errorf("text = %q, want the traceback in plain form", event.Text)
+	}
+}
+
+// Restart is the "my session is wedged" action, so it is pressed precisely while
+// a cell is running. The cell it ends must not, when its forwarding finally
+// drains, clear a busy flag that by then belongs to a later execution: ErrBusy is
+// the whole of ODE's "one developer, one cell", and a kernel running two ODE
+// executions at once is what it exists to prevent.
+func TestACellEndedByARestartDoesNotReleaseTheKernelHeldByTheNextOne(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, func(o *kernel.Options) {
+		o.ExecuteTimeout = 30 * time.Second
+	})
+	bearer := unsignedToken("devuser")
+
+	if _, err := service.Ensure(context.Background(), bearer); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	// More output than the channels between the socket and the caller can hold, so
+	// that a cell nobody reads cannot finish forwarding. That is a slow browser,
+	// and it is what makes the interleaving below deterministic rather than a race
+	// the test would usually lose.
+	hub.SetStreamChunks(100)
+
+	first, err := service.Run(context.Background(), bearer, "train()")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	hub.SetNextKernelID("kernel-2")
+	if _, err := service.Restart(context.Background(), bearer); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+
+	second, err := service.Run(context.Background(), bearer, "after_the_restart()")
+	if err != nil {
+		t.Fatalf("Run after the restart: %v", err)
+	}
+
+	// Only now does the cell from before the restart drain and finish.
+	collect(t, first)
+
+	if _, err := service.Run(context.Background(), bearer, "third()"); !errors.Is(err, kernel.ErrBusy) {
+		t.Errorf("a third execution = %v, want ErrBusy: the cell from before the "+
+			"restart released a kernel it no longer held", err)
+	}
+
+	// And once the live cell is genuinely over, the kernel is usable again — the
+	// fix must not leave a session permanently marked busy.
+	collect(t, second)
+	events, err := service.Run(context.Background(), bearer, "afterwards()")
+	if err != nil {
+		t.Fatalf("Run once the kernel is idle again: %v", err)
+	}
+	collect(t, events)
+}
+
+// A token refresh arrives from the SPA's own poll, on nobody's schedule — so it
+// lands during a ten-minute training cell as readily as on an idle kernel. It
+// must not queue a hidden cell behind that one while holding the session: for as
+// long as it did, every status read, every repository operation and the cell's
+// own finish would wait on it, and the reaper with them.
+func TestATokenRefreshWhileACellRunsNeitherQueuesBehindItNorHoldsTheSession(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, nil)
+	bearer := unsignedToken("devuser")
+
+	if _, err := service.Ensure(context.Background(), bearer); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	release := make(chan struct{})
+	hub.Hang(release)
+
+	first, err := service.Run(context.Background(), bearer, "train()")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	refreshed := bearer + "x"
+	refreshCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- service.RefreshPlatformToken(refreshCtx, refreshed) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RefreshPlatformToken: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the refresh is still waiting on the running cell, and holding the " +
+			"session while it waits")
+	}
+
+	// The session is free: a status read answers rather than waiting behind the
+	// refresh, and it still reports the cell as running.
+	statusCtx, statusCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer statusCancel()
+	status, err := service.Status(statusCtx, bearer)
+	if err != nil {
+		t.Fatalf("Status while a cell runs: %v", err)
+	}
+	if !status.Busy {
+		t.Error("status = idle, want the running cell reported")
+	}
+
+	// Only the developer's own two cells so far: the refresh installed nothing
+	// while the kernel was busy.
+	if executed := hub.Calls().Executed; len(executed) != 2 {
+		t.Errorf("executed %d cells, want the environment push and the running one", len(executed))
+	}
+
+	hub.Hang(nil)
+	close(release)
+	collect(t, first)
+
+	// And the refreshed token is not lost: the next execution installs it, which
+	// is the arrangement §5.6 item 4 needs — the kernel holds the current token
+	// whenever it is running the developer's code.
+	events, err := service.Run(context.Background(), refreshed, "next()")
+	if err != nil {
+		t.Fatalf("Run after the refresh: %v", err)
+	}
+	collect(t, events)
+
+	executed := hub.Calls().Executed
+	if len(executed) != 4 {
+		t.Fatalf("executed %v, want a second environment push and the next cell", executed)
+	}
+	if !strings.Contains(executed[2], kernel.PlatformTokenEnv) || executed[3] != "next()" {
+		t.Errorf("cells = %q then %q, want the environment push then the cell",
+			executed[2], executed[3])
 	}
 }

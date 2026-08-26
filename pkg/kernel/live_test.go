@@ -32,9 +32,9 @@ import (
 // The one test in this package that talks to a real JupyterHub. Skipped unless
 // both variables are set, because everything else has to pass without a cluster:
 //
-//	ODE_JUPYTERHUB_URL=http://proxy-public.jupyterhub.svc.cluster.local \
+//	ODE_JUPYTERHUB_URL=http://proxy-public.<hub-namespace>.svc.cluster.local \
 //	ODE_JUPYTERHUB_TOKEN=... \
-//	ODE_JUPYTERHUB_USER=jonah \
+//	ODE_JUPYTERHUB_USER=devuser \
 //	go test ./pkg/kernel/ -run Live -v
 //
 // It exists because the parts of §5.6 that are easiest to get wrong — the spawn

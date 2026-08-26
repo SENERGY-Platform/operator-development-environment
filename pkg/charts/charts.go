@@ -254,6 +254,18 @@ func parseBucket(raw string) (string, error) {
 		if parsed <= 0 {
 			return "", fmt.Errorf("%w: resample interval %q is not positive", ErrInvalidSpec, raw)
 		}
+		// Whole seconds, and at least one. The server's interval is expressed in
+		// whole seconds, so anything finer has to be rounded to be sent at all —
+		// and rounding here would be silent: "500ms" would become a bucket of no
+		// length and "90500ms" a bucket half a second short of what was asked for,
+		// with the rate divisor computed from the rounded figure either way. A
+		// refusal that says which interval to ask for instead is the smaller cost.
+		if parsed%time.Second != 0 {
+			return "", fmt.Errorf(
+				"%w: resample interval %q is finer than whole seconds, which the platform's "+
+					"bucket cannot express; ask for whole seconds, e.g. resample:1s",
+				ErrInvalidSpec, raw)
+		}
 		return timeseries.FormatBucket(parsed), nil
 	}
 	// Forms the server accepts and Go's parser does not — a day, a week, a month.

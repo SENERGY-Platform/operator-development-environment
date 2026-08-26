@@ -75,6 +75,20 @@ type Event struct {
 	Error      string `json:"error,omitempty"`
 }
 
+// The stop reasons ODE produces itself, as opposed to the ones a provider
+// reports. Named because the SPA and any other API consumer read them.
+const (
+	// StopAwaitingConfirmation is a turn paused on a held tool call (D11). The
+	// exchange resumes from Confirm.
+	StopAwaitingConfirmation = "awaiting_confirmation"
+	// StopConfirmationUnavailable is a turn stopped because a call needed the
+	// developer's decision and the request for it could not be recorded, so they
+	// will never be asked. Distinct from the above, which a caller may wait on.
+	StopConfirmationUnavailable = "confirmation_unavailable"
+	// StopMaxIterations is the tool-loop bound.
+	StopMaxIterations = "max_iterations"
+)
+
 // IDs mints session, message and confirmation ids.
 type IDs interface{ NewID() string }
 
@@ -407,16 +421,101 @@ func StaticToken(token string) TokenSource {
 //
 // ctx is still used for the checks made before the exchange starts, so a caller
 // that goes away during validation is not charged for a turn.
-func (e *Engine) Send(ctx context.Context, token TokenSource, sub, sessionID, text string) (*Exchange, error) {
+func (e *Engine) Send(
+	ctx context.Context, token TokenSource, sub, sessionID, text string,
+) (*Exchange, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, fmt.Errorf("%w: an empty message", ErrInvalidRequest)
 	}
+	return e.start(ctx, token, sub, sessionID, StoredMessage{
+		SessionID: sessionID, Role: llm.RoleUser,
+		Content: []llm.Content{{Type: llm.ContentText, Text: text}},
+	}, text)
+}
+
+// SendInjected starts a turn from a message ODE composed rather than the developer
+// (§5.13, M9).
+//
+// It is the same turn in every respect that matters, and that is the design rather
+// than an economy. An automated turn dispatches tools, spends tokens against the
+// developer's §3.3 cap and reads the platform on their behalf, so it goes through
+// the same guards as a typed one: the session's ownership check, the one-exchange-
+// at-a-time rule, limits.Check before anything is stored, and the session's own
+// exposure tier re-read on every iteration of the loop. There is deliberately no
+// second path into run() that skips any of them.
+//
+// Three things differ, and each is visible in the arguments:
+//
+//   - The stored message is marked OriginODE with a subject, so the SPA's replay
+//     and any later reader can tell it from something the developer typed. A block
+//     of JSON rendered in the developer's own voice would be a lie about who said it.
+//   - It never titles the session. A conversation named after a machine-generated
+//     summary would lose the developer's own opening line from every listing.
+//   - The token is still a developer's. It has to be: a background poller has no
+//     credential and §3.1 item 3 does not let it acquire one, so the caller only
+//     reaches here when a live token exists.
+func (e *Engine) SendInjected(
+	ctx context.Context, token TokenSource, sub, sessionID string, message InjectedMessage,
+) (*Exchange, error) {
+	if strings.TrimSpace(message.Text) == "" {
+		return nil, fmt.Errorf("%w: an empty injected message", ErrInvalidRequest)
+	}
+	return e.start(ctx, token, sub, sessionID, StoredMessage{
+		SessionID: sessionID, Role: llm.RoleUser,
+		Content: []llm.Content{{Type: llm.ContentText, Text: message.Text}},
+		Origin:  OriginODE,
+		Subject: message.Subject,
+	}, "")
+}
+
+// Continue starts a turn on a session without adding anything to it.
+//
+// One caller, one reason: ODE injected §5.13's summary and then stopped — a
+// restart, a crash — before the assistant answered it. Re-injecting would put a
+// second copy of the same summary in the conversation, which is ODE talking over
+// itself; leaving it would be a summary nobody ever read. So the turn is run over
+// the history as it stands.
+//
+// It goes through the same guards as any other turn, which is the point of it
+// sharing start: the cap is checked, the tier is re-read, and a session already
+// running an exchange refuses it.
+func (e *Engine) Continue(
+	ctx context.Context, token TokenSource, sub, sessionID string,
+) (*Exchange, error) {
+	return e.start(ctx, token, sub, sessionID, StoredMessage{}, "")
+}
+
+// InjectedMessage is what ODE puts into a conversation on the developer's behalf.
+type InjectedMessage struct {
+	// Text is what the model reads. It is stored, so it is also what the developer
+	// sees — there is no hidden half of a conversation.
+	Text string
+	// Subject names what it is about, which for §5.13 is the experiment id. It is
+	// what makes the delivery idempotent: the stored message is itself the record
+	// that this run was already injected, so a poller offering the same run again
+	// finds it rather than injecting a second copy.
+	Subject string
+}
+
+// start is the body Send and SendInjected share: every check, in the one order.
+//
+// titleFrom is the text a session with no title takes one from, and is empty for
+// an injected message.
+func (e *Engine) start(
+	ctx context.Context, token TokenSource, sub, sessionID string,
+	message StoredMessage, titleFrom string,
+) (*Exchange, error) {
 	session, err := e.Session(ctx, sub, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	// One turn at a time per conversation. Two concurrent exchanges would interleave
 	// their assistant messages into one history and leave it unreadable by either.
+	//
+	// Checked before the message is stored, which is what makes a refused automated
+	// turn harmless: nothing is appended, so the conversation is not left with a
+	// summary wedged between an assistant's tool call and its result — a shape both
+	// native protocols reject outright. The caller retries later.
 	if existing, running := e.Attach(sessionID); running {
 		_ = existing
 		return nil, fmt.Errorf("%w: an exchange is already running on this session",
@@ -432,20 +531,25 @@ func (e *Engine) Send(ctx context.Context, token TokenSource, sub, sessionID, te
 		return nil, err
 	}
 
-	if session.Title == "" {
-		session.Title = title(text, e.opts.TitleWords)
+	if session.Title == "" && titleFrom != "" {
+		session.Title = title(titleFrom, e.opts.TitleWords)
 		session.UpdatedAt = e.now()
 		if err := e.store.UpdateSession(ctx, session); err != nil {
 			return nil, err
 		}
 	}
 
-	if err := e.store.AppendMessages(ctx, sessionID, StoredMessage{
-		SessionID: sessionID, Role: llm.RoleUser,
-		Content:   []llm.Content{{Type: llm.ContentText, Text: text}},
-		CreatedAt: e.now(),
-	}); err != nil {
-		return nil, err
+	// A message with no content is Continue's: the turn runs over the history as it
+	// already stands, and appending an empty message would put a blank turn in the
+	// conversation that both native protocols would then have to be given a role for.
+	if len(message.Content) > 0 {
+		message.SessionID = sessionID
+		if message.CreatedAt.IsZero() {
+			message.CreatedAt = e.now()
+		}
+		if err := e.store.AppendMessages(ctx, sessionID, message); err != nil {
+			return nil, err
+		}
 	}
 
 	exchange := e.begin(sessionID)
@@ -704,6 +808,16 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			e.limits.RecordUsage(recordCtx, session.UserSub, session.ID, turn.usage)
 			cancel()
+		} else if turn.stopReason == llm.StopReasonCancelled || turn.stopReason == llm.StopReasonError {
+			// The turn was billed and could not say by how much. Not every protocol
+			// reports usage as it streams — the chat-completions one sends it only in
+			// the final chunk — so a turn stopped before the end has nothing to
+			// account. §3.3's cap then under-counts, and that is worth seeing rather
+			// than inferring from a gap in the records.
+			slog.WarnContext(ctx, "a turn ended early without reporting its usage; "+
+				"the tokens it spent are not accounted",
+				"session", session.ID, "provider", session.Provider,
+				"model", session.Model, "stop_reason", turn.stopReason)
 		}
 		if !ok {
 			return
@@ -715,6 +829,17 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 		if capabilities.ToolsOutOfBand {
 			if err := e.persistAssistant(ctx, session.ID, turn); err != nil {
 				exchange.publish(Event{Type: EventError, Error: err.Error()})
+			}
+			// The results are stored next to the calls even though nothing here
+			// dispatched them. persistAssistant has just written the provider's
+			// tool_use blocks, and a tool_use that nothing answers is a conversation
+			// both native protocols refuse — so leaving them out would strand the
+			// session the moment it was moved to another provider, and would have
+			// conversation() report a result ODE is in fact holding as lost.
+			if len(turn.results) > 0 {
+				if err := e.appendToolResults(ctx, session.ID, outOfBandResultMessage(turn.results)); err != nil {
+					exchange.publish(Event{Type: EventError, Error: err.Error()})
+				}
 			}
 			exchange.publish(Event{Type: EventDone, StopReason: turn.stopReason})
 			return
@@ -730,10 +855,10 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 			return
 		}
 
-		results, held := e.dispatch(ctx, exchange, token, session, turn.calls)
+		results, stop := e.dispatch(ctx, exchange, token, session, turn.calls)
 
 		if len(results) > 0 {
-			if err := e.store.AppendMessages(ctx, session.ID, toolResultMessage(results)); err != nil {
+			if err := e.appendToolResults(ctx, session.ID, toolResultMessage(results)); err != nil {
 				exchange.publish(Event{Type: EventError, Error: err.Error()})
 				return
 			}
@@ -742,15 +867,15 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 		// A held confirmation ends the exchange. The loop resumes from Confirm when
 		// the developer decides, which is the whole point of D11: nothing proceeds
 		// on the model's word.
-		if held {
-			exchange.publish(Event{Type: EventDone, StopReason: "awaiting_confirmation"})
+		if stop != "" {
+			exchange.publish(Event{Type: EventDone, StopReason: stop})
 			return
 		}
 	}
 
 	exchange.publish(Event{
 		Type:       EventDone,
-		StopReason: "max_iterations",
+		StopReason: StopMaxIterations,
 		Error: fmt.Sprintf(
 			"the assistant used tools %d times without concluding, and the exchange was stopped",
 			e.opts.MaxIterations),
@@ -759,8 +884,11 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 
 // turnResult is what one provider call produced.
 type turnResult struct {
-	text       string
-	calls      []llm.ToolCall
+	text  string
+	calls []llm.ToolCall
+	// results is what an out-of-band provider reported for the calls it ran itself.
+	// Empty for every other provider, whose results come from the dispatcher.
+	results    []llm.ToolResult
 	usage      llm.Usage
 	stopReason string
 }
@@ -769,29 +897,51 @@ type turnResult struct {
 // when the exchange should stop — an error, or the caller going away.
 func (e *Engine) consume(ctx context.Context, exchange *Exchange, stream <-chan llm.Event) (turnResult, bool) {
 	turn := turnResult{}
+
+	// abandoned marks a turn that will not be continued — the developer stopped it,
+	// or the provider reported an error.
+	//
+	// The loop keeps reading to the end of the stream either way rather than
+	// returning at once. A provider reports what a turn cost in its closing done
+	// event, which is therefore the last thing to arrive; returning at the first
+	// event seen after a cancellation dropped it, turn.usage stayed zero and
+	// RecordUsage was skipped entirely. §3.3's caps are computed from recorded
+	// usage, so that made stopping a turn a free and repeatable way past them.
+	//
+	// Nothing further is published, so the developer still sees the turn stop where
+	// they stopped it. Termination rests on the provider closing its channel, which
+	// the Provider contract requires and every adapter does with a deferred close.
+	abandoned := false
 	for event := range stream {
+		if event.Type == llm.EventDone {
+			turn.stopReason = event.StopReason
+			if event.Usage != nil {
+				turn.usage = *event.Usage
+			}
+			continue
+		}
+		if abandoned {
+			continue
+		}
 		switch event.Type {
 		case llm.EventTextDelta:
 			turn.text += event.Text
 			exchange.publish(Event{Type: EventTextDelta, Text: event.Text})
-			if ctx.Err() != nil {
-				return turn, false
-			}
+			abandoned = ctx.Err() != nil
 		case llm.EventToolCall:
 			if event.ToolCall == nil {
 				continue
 			}
 			turn.calls = append(turn.calls, *event.ToolCall)
 			exchange.publish(Event{Type: EventToolCall, ToolCall: event.ToolCall})
-			if ctx.Err() != nil {
-				return turn, false
-			}
+			abandoned = ctx.Err() != nil
 		case llm.EventToolResult:
 			// Only an out-of-band provider produces these: the CLI reporting what it
 			// already ran over MCP.
 			if event.ToolResult == nil {
 				continue
 			}
+			turn.results = append(turn.results, *event.ToolResult)
 			exchange.publish(Event{Type: EventToolResult, ToolResult: &tools.Result{
 				CallID:  event.ToolResult.CallID,
 				Tool:    event.ToolResult.Name,
@@ -799,27 +949,26 @@ func (e *Engine) consume(ctx context.Context, exchange *Exchange, stream <-chan 
 				Content: event.ToolResult.Content,
 				IsError: event.ToolResult.IsError,
 			}})
-			if ctx.Err() != nil {
-				return turn, false
-			}
-		case llm.EventDone:
-			turn.stopReason = event.StopReason
-			if event.Usage != nil {
-				turn.usage = *event.Usage
-			}
+			abandoned = ctx.Err() != nil
 		case llm.EventError:
 			exchange.publish(Event{Type: EventError, Error: event.Error})
-			return turn, false
+			abandoned = true
 		}
 	}
-	return turn, true
+	return turn, !abandoned
 }
 
-// dispatch runs the turn's tool calls and reports whether any is held for
-// confirmation.
+// dispatch runs the turn's tool calls and reports the stop reason when the
+// exchange must not continue past them. An empty stop reason means carry on.
+//
+// Two reasons to stop, and they are not the same thing: a call is waiting for the
+// developer (D11), or a call needed their decision and ODE could not ask for it.
+// The first resumes from Confirm; the second never will, and saying so is what
+// keeps an API consumer from waiting on a confirmation that was never recorded.
 func (e *Engine) dispatch(
 	ctx context.Context, exchange *Exchange, token TokenSource, session Session, calls []llm.ToolCall,
-) (results []tools.Result, held bool) {
+) (results []tools.Result, stop string) {
+	awaiting, unavailable := false, false
 	for _, call := range calls {
 		// Every call goes through the one Dispatcher, which is where the tier gate
 		// lives. Nothing in this loop decides what a tool may do.
@@ -843,10 +992,36 @@ func (e *Engine) dispatch(
 			}
 			if err := e.store.PutConfirmation(ctx, confirmation); err != nil {
 				exchange.publish(Event{Type: EventError, Error: err.Error()})
+				// Two things follow from a confirmation that was not recorded, and
+				// neither used to happen.
+				//
+				// The call still needs an answer. Its tool_use block is already in the
+				// assistant message this loop is answering, and a tool_use with no
+				// tool_result is a conversation both native protocols refuse with a 400
+				// — for the rest of the session's life, since the history is stored.
+				//
+				// And the exchange has to stop. The developer will never be asked,
+				// because nothing recorded that there was anything to ask about, so
+				// carrying on would call the provider again on the model's word for a
+				// tool D11 says nothing may proceed on.
+				result = tools.Result{
+					CallID:  call.ID,
+					Tool:    call.Name,
+					Outcome: tools.OutcomeFailed,
+					IsError: true,
+					Content: map[string]any{
+						"error": "this call needs the developer's confirmation and ODE could not " +
+							"record the request, so they were never asked. It did not run.",
+						"hint": "tell the developer that the confirmation could not be stored, " +
+							"and do not retry it.",
+					},
+				}
+				results = append(results, result)
+				unavailable = true
 				continue
 			}
 			exchange.publish(Event{Type: EventConfirmation, Confirmation: confirmation.Describe()})
-			held = true
+			awaiting = true
 			// Kept in results on purpose. The tool did not run, but its tool_use block
 			// still needs an answer before the conversation can continue, and the
 			// dispatcher's content says exactly what happened: confirmation required.
@@ -858,7 +1033,104 @@ func (e *Engine) dispatch(
 		exchange.publish(Event{Type: EventToolResult, ToolResult: &result})
 		results = append(results, result)
 	}
-	return results, held
+	switch {
+	case awaiting:
+		// One recorded confirmation is enough to make waiting the right description,
+		// even if another in the same turn could not be recorded: the developer has
+		// something to answer, and answering it resumes the exchange.
+		return results, StopAwaitingConfirmation
+	case unavailable:
+		return results, StopConfirmationUnavailable
+	}
+	return results, ""
+}
+
+// appendToolResults stores the answers to a turn's tool calls, retrying once on a
+// context detached from the exchange.
+//
+// The assistant's tool_use blocks are already in the history by the time this
+// runs. If their results never land, the session keeps a tool_use that nothing
+// answers, which both native protocols refuse with a 400 — so the session becomes
+// unusable, not merely incomplete. Two of the three ways this write fails are the
+// exchange's own deadline and CancelExchange, and neither says anything about
+// whether the store would accept the write; the retry is therefore made without
+// that deadline, exactly as the usage record is (see run). A store that is
+// genuinely down still loses it, and conversation() repairs that on the way back
+// out.
+func (e *Engine) appendToolResults(ctx context.Context, sessionID string, message StoredMessage) error {
+	err := e.store.AppendMessages(ctx, sessionID, message)
+	if err == nil {
+		return nil
+	}
+	// Warn, not error: the retry below usually settles it, and this is the expected
+	// shape of a cancelled turn rather than something anyone has to act on.
+	slog.WarnContext(ctx, "a turn's tool results could not be stored; retrying detached",
+		"session", sessionID, "error", err)
+
+	retryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	// The first attempt may have landed despite reporting an error — a transaction
+	// that committed and an acknowledgement that never came back. Writing the same
+	// results again would answer one tool call twice, and an unmatched tool_result
+	// is refused just as an unanswered tool_use is, so the history is re-read
+	// first. A read that fails leaves the retry to go ahead: an unanswered call is
+	// the more likely and the more damaging of the two.
+	if stored, err := e.store.Messages(retryCtx, sessionID); err == nil && alreadyAnswered(stored, message) {
+		return nil
+	}
+
+	if err := e.store.AppendMessages(retryCtx, sessionID, message); err != nil {
+		slog.ErrorContext(ctx, "a turn's tool results were lost; the session's history now "+
+			"has an unanswered tool call and is repaired on read",
+			"session", sessionID, "error", err)
+		return err
+	}
+	return nil
+}
+
+// alreadyAnswered reports whether every tool call the message answers is already
+// answered in the stored history.
+func alreadyAnswered(stored []StoredMessage, message StoredMessage) bool {
+	answered := map[string]bool{}
+	for _, existing := range stored {
+		for _, content := range existing.Content {
+			if content.Type == llm.ContentToolResult {
+				answered[content.ToolUseID] = true
+			}
+		}
+	}
+	found := false
+	for _, content := range message.Content {
+		if content.Type != llm.ContentToolResult {
+			continue
+		}
+		if !answered[content.ToolUseID] {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+// outOfBandResultMessage packs the results an out-of-band provider reported into
+// the user-role message both protocols expect for tool output.
+func outOfBandResultMessage(results []llm.ToolResult) StoredMessage {
+	content := make([]llm.Content, 0, len(results))
+	for _, result := range results {
+		encoded, err := json.Marshal(result.Content)
+		if err != nil {
+			encoded = []byte(`{"error":"the tool result could not be encoded"}`)
+		}
+		content = append(content, llm.Content{
+			Type:       llm.ContentToolResult,
+			ToolUseID:  result.CallID,
+			ToolName:   result.Name,
+			ToolResult: string(encoded),
+			IsError:    result.IsError,
+		})
+	}
+	return StoredMessage{Role: llm.RoleUser, Content: content}
 }
 
 func (e *Engine) persistAssistant(ctx context.Context, sessionID string, turn turnResult) error {
@@ -933,10 +1205,99 @@ func toolResultMessage(results []tools.Result) StoredMessage {
 	return StoredMessage{Role: llm.RoleUser, Content: content}
 }
 
+// conversation renders the stored history as a provider request, answering any
+// tool call left unanswered on the way.
 func conversation(messages []StoredMessage) []llm.Message {
 	out := make([]llm.Message, 0, len(messages))
 	for _, message := range messages {
 		out = append(out, message.Message())
+	}
+	return repairUnansweredToolCalls(out)
+}
+
+// orphanedToolResult is what an unanswered tool call is answered with. It says
+// the call did not complete rather than inventing an outcome, because the one
+// thing that must not happen is a model concluding that a tool ran.
+const orphanedToolResult = `{"error":"ODE lost the result of this call, so it is not known ` +
+	`whether the tool ran","hint":"do not assume any effect; say so and ask the developer ` +
+	`whether to try again"}`
+
+// repairUnansweredToolCalls answers every tool_use that nothing answers.
+//
+// Anthropic and OpenAI both reject a conversation containing an assistant
+// tool_use with no matching tool_result — a 400, every time it is sent. Since the
+// history is stored and replayed on every turn, a session that acquires one is not
+// merely odd but permanently unusable, with no repair short of deleting it. The
+// paths that can produce one are guarded upstream, but not all of them can be:
+// a store that will not accept the results leaves an orphan whatever the engine
+// does, and an out-of-band provider (§5.7's CLI) stores tool_use blocks for calls
+// it ran over MCP that ODE never has results for at all.
+//
+// The repair happens on the way out rather than in the store, for two reasons.
+// The stored history is the record of what actually happened and is not rewritten
+// to make it look tidier; what the provider sees is a reading of that record that
+// the protocol accepts. And it is retrospective — a session already broken in the
+// wild recovers on its next turn, which no write-side fix can do.
+func repairUnansweredToolCalls(messages []llm.Message) []llm.Message {
+	out := make([]llm.Message, 0, len(messages))
+	for i := 0; i < len(messages); i++ {
+		message := messages[i]
+		out = append(out, message)
+		if message.Role != llm.RoleAssistant {
+			continue
+		}
+
+		calls := []llm.Content{}
+		for _, content := range message.Content {
+			if content.Type == llm.ContentToolUse && content.ToolUseID != "" {
+				calls = append(calls, content)
+			}
+		}
+		if len(calls) == 0 {
+			continue
+		}
+
+		// The answers, if there are any, are in the turn that follows.
+		var next *llm.Message
+		answered := map[string]bool{}
+		if i+1 < len(messages) && messages[i+1].Role == llm.RoleUser {
+			next = &messages[i+1]
+			for _, content := range next.Content {
+				if content.Type == llm.ContentToolResult {
+					answered[content.ToolUseID] = true
+				}
+			}
+		}
+
+		missing := make([]llm.Content, 0, len(calls))
+		for _, call := range calls {
+			if answered[call.ToolUseID] {
+				continue
+			}
+			missing = append(missing, llm.Content{
+				Type:       llm.ContentToolResult,
+				ToolUseID:  call.ToolUseID,
+				ToolName:   call.ToolName,
+				ToolResult: orphanedToolResult,
+				IsError:    true,
+			})
+		}
+		if len(missing) == 0 {
+			continue
+		}
+
+		if next == nil {
+			out = append(out, llm.Message{Role: llm.RoleUser, Content: missing})
+			continue
+		}
+		// Merged into the following user turn rather than inserted before it as a
+		// second user message: a tool result has to come first in the turn that
+		// answers the call, and consecutive same-role messages are a shape not every
+		// provider accepts.
+		repaired := *next
+		repaired.Content = append(missing, next.Content...)
+		out = append(out, repaired)
+		i++
 	}
 	return out
 }

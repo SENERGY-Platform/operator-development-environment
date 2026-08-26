@@ -36,11 +36,15 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/charts"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/imports"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/interpret"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/mcp"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
@@ -58,6 +62,12 @@ type Deps struct {
 	Timeseries TimeseriesReader
 	Profiler   *profiler.Profiler
 	Selection  *selection.Resolver
+
+	// Imports is the second kind of operator input (PLAN). Absent when no
+	// device_selection_url is configured, in which case semantic selection reports
+	// devices only and says so, and the three import tools stay
+	// declared-but-unavailable.
+	Imports *imports.Service
 
 	// M3. Chat and Admin arrive together: a chat engine without an admin service
 	// cannot enforce §3.3, and chat.New refuses to be built without one.
@@ -80,6 +90,20 @@ type Deps struct {
 	// activity_pattern every state series comes from and the resolver for the
 	// aspect-scoped proposals, so it is present whenever both are.
 	Relations *relations.Service
+
+	// M7. The Code pane and GitHub (§5.11). Needs a Hub — the working copy lives in
+	// the developer's pod — a GitHub OAuth app and an encryption key for the token,
+	// so it is absent unless all three are configured.
+	Repo *repo.Service
+
+	// M8. Ray and MLflow (§5.12). Needs a Ray cluster, a tracking server, a Hub and
+	// a repo surface: the job package is the committed state of a working copy that
+	// lives in the developer's pod, so it is absent unless all four are configured.
+	Experiments *experiments.Service
+	// Interpretations is M9's result interpretation (§5.13). Optional in the shape
+	// everything else here is: without an LLM provider there is no chat engine, and
+	// without one there is nowhere to interpret a run into.
+	Interpretations *interpret.Service
 }
 
 // NewRouter wires the ODE HTTP surface.
@@ -263,6 +287,73 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		kern.GET("/files", handleKernelFiles(deps.Kernel))
 	}
 
+	// M7. The repository surface (§5.11). On HTTP throughout: a git command answers
+	// in seconds and a file edit in milliseconds, so none of it needs the streaming
+	// surface — a clone is the one slow operation and it is still one request.
+	//
+	// There is no unauthenticated OAuth callback. GitHub returns the browser to the
+	// SPA, which posts the code here with its own platform token, so every route in
+	// this group sits behind the same realm-role gate as the rest of ODE.
+	if deps.Repo != nil {
+		repoRoutes := secured.Group("/repo")
+		repoRoutes.GET("", handleRepoStatus(deps.Repo))
+		repoRoutes.GET("/connection", handleRepoConnection(deps.Repo))
+		repoRoutes.POST("/connection/authorize", handleRepoAuthorize(deps.Repo))
+		repoRoutes.POST("/connection", handleRepoConnect(deps.Repo))
+		repoRoutes.DELETE("/connection", handleRepoDisconnect(deps.Repo))
+		repoRoutes.GET("/repositories", handleRepoRepositories(deps.Repo))
+		repoRoutes.POST("/repositories", handleRepoCreate(deps.Repo))
+		repoRoutes.POST("/link", handleRepoSelect(deps.Repo))
+		repoRoutes.DELETE("/link", handleRepoUnlink(deps.Repo))
+		repoRoutes.POST("/fetch", handleRepoFetch(deps.Repo))
+		repoRoutes.POST("/scaffold", handleRepoScaffold(deps.Repo))
+		// The three explicit actions of §5.11 item 5, and the two of item 6. None of
+		// them happens as a side effect of anything else.
+		repoRoutes.POST("/commit", handleRepoCommit(deps.Repo))
+		repoRoutes.POST("/push", handleRepoPush(deps.Repo))
+		repoRoutes.POST("/stash", handleRepoStash(deps.Repo))
+		repoRoutes.POST("/discard", handleRepoDiscard(deps.Repo))
+		// The Code pane (D14). Static segments only, so no wildcard has to compete
+		// with them: the path of a file is a query parameter rather than a path
+		// segment, which also spares every caller two rounds of escaping.
+		repoRoutes.GET("/files", handleRepoFiles(deps.Repo))
+		repoRoutes.GET("/files/content", handleRepoReadFile(deps.Repo))
+		repoRoutes.PUT("/files/content", handleRepoWriteFile(deps.Repo))
+		repoRoutes.DELETE("/files/content", handleRepoDeleteFile(deps.Repo))
+		repoRoutes.POST("/files/directory", handleRepoMakeDir(deps.Repo))
+	}
+
+	// M8. Ray and MLflow (§5.12, D6). On HTTP throughout: a launch is bounded in
+	// seconds and answers once, and the thing that takes hours is the job, which is
+	// polled rather than streamed. As with the kernel and repo routes, none of them
+	// takes a user parameter.
+	if deps.Experiments != nil {
+		experimentRoutes := secured.Group("/experiments")
+		experimentRoutes.POST("", handleLaunchExperiment(deps.Experiments))
+		experimentRoutes.GET("", handleListExperiments(deps.Experiments))
+		// The static segment is registered before the :id wildcard, so gin does not
+		// have to choose between them — the same order the relation routes use.
+		experimentRoutes.GET("/embed", handleExperimentEmbed(deps.Experiments))
+		experimentRoutes.GET("/:id", handleGetExperiment(deps.Experiments))
+		experimentRoutes.GET("/:id/results", handleExperimentResults(deps.Experiments))
+		// Logs have a route and no LLM tool, which is §5.13's "never raw logs" made
+		// structural: the developer reads them here, and the tool surface has no
+		// method that could reach them.
+		experimentRoutes.GET("/:id/logs", handleExperimentLogs(deps.Experiments))
+		experimentRoutes.POST("/:id/stop", handleStopExperiment(deps.Experiments))
+
+		// M9 (§5.13). Under the experiment group because an interpretation is a
+		// property of a run rather than a resource of its own, and because the
+		// ownership check that guards it is the experiment store's.
+		if deps.Interpretations != nil {
+			experimentRoutes.GET("/:id/interpretation",
+				handleGetInterpretation(deps.Interpretations))
+			// A developer action with no LLM tool behind it (§5.8, D28).
+			experimentRoutes.POST("/:id/interpretation/decision",
+				handleDecideProposal(deps.Interpretations))
+		}
+	}
+
 	if deps.Admin != nil {
 		// The realm role gate is on the group, so a route added here later cannot
 		// forget it.
@@ -329,13 +420,18 @@ func handleSession(deps Deps) gin.HandlerFunc {
 			// The default a new session starts at (§3.2).
 			"exposure_tier": tools.DefaultTier,
 			"features": gin.H{
-				"profiler":  deps.Profiler != nil,
-				"selection": deps.Selection != nil,
-				"chat":      deps.Chat != nil,
-				"mcp":       deps.MCP != nil,
-				"kernel":    deps.Kernel != nil,
-				"charts":    deps.Charts != nil,
-				"relations": deps.Relations != nil,
+				"profiler":    deps.Profiler != nil,
+				"selection":   deps.Selection != nil,
+				"chat":        deps.Chat != nil,
+				"mcp":         deps.MCP != nil,
+				"kernel":      deps.Kernel != nil,
+				"charts":      deps.Charts != nil,
+				"relations":   deps.Relations != nil,
+				"repo":        deps.Repo != nil,
+				"experiments": deps.Experiments != nil,
+				// §5.13's automated interpretation, which needs both an experiment
+				// surface and a chat engine.
+				"result_interpretation": deps.Interpretations != nil,
 			},
 		}
 
@@ -352,6 +448,21 @@ func handleSession(deps Deps) gin.HandlerFunc {
 		}
 		if deps.Chat != nil {
 			body["providers"] = deps.Chat.Providers().Describe()
+		}
+		if deps.Repo != nil {
+			// What the GitHub consent screen will ask for, so the SPA can say it before
+			// the developer is looking at GitHub's own wording (§5.11 item 1).
+			body["repo"] = gin.H{"scopes": deps.Repo.Scopes()}
+		}
+		if deps.Experiments != nil {
+			// Where a browser should open the two services, and whether ODE can mint a
+			// credential that outlives the session (§3.1 item 6) — so the pane can say
+			// what a long run will survive before the developer starts one.
+			body["experiments"] = gin.H{
+				"ray_url":          deps.Experiments.DashboardURL(),
+				"mlflow_url":       deps.Experiments.TrackingUIURL(),
+				"scoped_job_token": deps.Experiments.ExchangeConfigured(),
+			}
 		}
 		if deps.Kernel != nil {
 			// The workspace path is reported so the SPA can say where a file it lists

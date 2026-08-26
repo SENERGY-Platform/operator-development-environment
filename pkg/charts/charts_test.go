@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -928,4 +929,77 @@ func deref(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// A rate over a long bucket was rejected by the platform, and took the whole
+// chart with it.
+//
+// The divisor is written into the server's `math` field, which it validates
+// against `^([+\-*/])\d+(\.\d+)?$` — a pattern with no exponent. Rendering the
+// bucket length with %g switched to exponential notation at 1e6, so every bucket
+// longer than about eleven and a half days produced a request the platform
+// refused. Because §5.3.1 sends every series of a chart in one batch, one rate
+// series failing meant no series was drawn at all.
+//
+// TestEveryTransformIsResolvedIntoAQueryField already asserted element.Valid(),
+// which is the check that catches this — but only at an hourly bucket, where the
+// rendering happens to be safe. The bucket, not the transform, is the variable
+// that mattered, so this case names one long enough to show it.
+func TestARateOverALongBucketIsStillAcceptedByTheSharedSchema(t *testing.T) {
+	for _, bucket := range []string{"1h", "14d", "30d"} {
+		t.Run(bucket, func(t *testing.T) {
+			h := newHarness(t)
+			created := h.create(t, CreateRequest{
+				Series:    []SeriesSpec{powerSeries("rate")},
+				Window:    window(),
+				GroupTime: bucket,
+			})
+			// The elements are built for the read, so the chart has to be drawn
+			// before there is anything to assert against.
+			if _, err := h.service.Data(context.Background(), "Bearer t", DataRequest{
+				ChartID: created.Spec.ChartID, UserSub: developer,
+			}); err != nil {
+				t.Fatalf("Data: %v", err)
+			}
+
+			elements := h.timeseries.elements
+			if len(elements) != 1 {
+				t.Fatalf("query elements = %d, want 1", len(elements))
+			}
+			math := deref(elements[0].Columns[0].Math)
+			if strings.ContainsAny(math, "eE") {
+				t.Errorf("math = %q: the platform's own pattern has no exponent", math)
+			}
+			if !elements[0].Valid() {
+				t.Errorf("a rate at %s is rejected by the shared schema: math = %q", bucket, math)
+			}
+		})
+	}
+}
+
+// A bucket finer than a whole second used to become "0s".
+//
+// FormatBucket rendered sub-second durations as whole seconds, so 500ms
+// truncated to zero — and "0s" is a form the server's own regex accepts, which
+// meant nothing between here and Postgres would refuse it. It reached the store
+// as time_bucket('0 seconds', ...). The point cap did not save it either: Bucket
+// treated a parsed-but-zero request the same as an unparseable one and passed it
+// straight through.
+func TestASubSecondResampleIsRefusedRatherThanRoundedToNothing(t *testing.T) {
+	for _, interval := range []string{"500ms", "1ms", "90500ms"} {
+		t.Run(interval, func(t *testing.T) {
+			h := newHarness(t)
+			_, err := h.service.Create(context.Background(), "Bearer t", CreateRequest{
+				UserSub: developer,
+				Series:  []SeriesSpec{powerSeries("resample:" + interval)},
+				Window:  window(),
+			})
+			if !errors.Is(err, ErrInvalidSpec) {
+				t.Fatalf("resample:%s was accepted: %v", interval, err)
+			}
+			if h.timeseries.calls != 0 {
+				t.Error("the platform was queried with a bucket ODE cannot express")
+			}
+		})
+	}
 }

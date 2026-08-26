@@ -160,6 +160,9 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 				if !send(ctx, events, ToolCallEvent(ToolCall{
 					ID: call.ID, Name: call.Name, Input: arguments,
 				})) {
+					// send only fails when the caller has gone, which here means the
+					// developer stopped the turn. It was still billed.
+					deliverDone(ctx, events, DoneEvent(StopReasonCancelled, p.usage(&accumulator, params)))
 					return
 				}
 				continue
@@ -167,16 +170,25 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 
 			if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
 				if !send(ctx, events, TextEvent(chunk.Choices[0].Delta.Content)) {
+					deliverDone(ctx, events, DoneEvent(StopReasonCancelled, p.usage(&accumulator, params)))
 					return
 				}
 			}
 		}
 
 		if err := stream.Err(); err != nil {
+			// A turn that ended early still reports a done event. It is what the chat
+			// engine fills a turn's usage from, and without one a cancelled turn was
+			// accounted as nothing at all — see p.usage for what this protocol can and
+			// cannot say about a turn it never finished.
+			usage := p.usage(&accumulator, params)
 			if errors.Is(err, context.Canceled) {
 				slog.DebugContext(ctx, "openai stream cancelled", "provider", p.name)
+				deliverDone(ctx, events, DoneEvent(StopReasonCancelled, usage))
 				return
 			}
+			// Before the error event, because a consumer stops reading at one.
+			deliverDone(ctx, events, DoneEvent(StopReasonError, usage))
 			send(ctx, events, ErrorEvent(fmt.Errorf("llm: %s: %w", p.name, err)))
 			return
 		}
@@ -185,28 +197,44 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 		if len(accumulator.Choices) > 0 {
 			stopReason = accumulator.Choices[0].FinishReason
 		}
-		usage := Usage{
-			InputTokens:  int(accumulator.Usage.PromptTokens),
-			OutputTokens: int(accumulator.Usage.CompletionTokens),
-			CachedInputTokens: int(
-				accumulator.Usage.PromptTokensDetails.CachedTokens),
-			Provider: p.name,
-			Model:    accumulator.Model,
-		}
-		if usage.Model == "" {
-			usage.Model = string(params.Model)
-		}
-		// Cached tokens are reported inside the prompt total here, unlike the
-		// Anthropic API where they are separate. Subtracting keeps Usage's meaning
-		// the same across providers, which is the point of normalising at all.
-		if usage.CachedInputTokens > 0 && usage.InputTokens >= usage.CachedInputTokens {
-			usage.InputTokens -= usage.CachedInputTokens
-		}
-		p.pricing.Apply(&usage)
-		send(ctx, events, DoneEvent(stopReason, usage))
+		send(ctx, events, DoneEvent(stopReason, p.usage(&accumulator, params)))
 	}()
 
 	return events, nil
+}
+
+// usage is what the accumulator says the turn cost, priced.
+//
+// One caveat belongs with the number rather than at the call site: this protocol
+// reports usage only in the final chunk, which is why params ask for
+// include_usage. A turn cancelled or failed before that chunk arrives therefore
+// has nothing to report and this returns zeroes — the tokens were spent and ODE
+// cannot know how many. It reports none rather than estimating, because a guessed
+// figure in an accounting row is worse than a missing one: §3.3's caps would then
+// be enforced against a number nobody can reconcile with the provider's invoice.
+// The Anthropic API does not have this problem; it reports usage as it goes.
+func (p *OpenAIProvider) usage(
+	accumulator *openai.ChatCompletionAccumulator, params openai.ChatCompletionNewParams,
+) Usage {
+	usage := Usage{
+		InputTokens:  int(accumulator.Usage.PromptTokens),
+		OutputTokens: int(accumulator.Usage.CompletionTokens),
+		CachedInputTokens: int(
+			accumulator.Usage.PromptTokensDetails.CachedTokens),
+		Provider: p.name,
+		Model:    accumulator.Model,
+	}
+	if usage.Model == "" {
+		usage.Model = string(params.Model)
+	}
+	// Cached tokens are reported inside the prompt total here, unlike the
+	// Anthropic API where they are separate. Subtracting keeps Usage's meaning
+	// the same across providers, which is the point of normalising at all.
+	if usage.CachedInputTokens > 0 && usage.InputTokens >= usage.CachedInputTokens {
+		usage.InputTokens -= usage.CachedInputTokens
+	}
+	p.pricing.Apply(&usage)
+	return usage
 }
 
 func (p *OpenAIProvider) params(req Request) (openai.ChatCompletionNewParams, error) {

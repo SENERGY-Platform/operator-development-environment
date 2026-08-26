@@ -21,14 +21,19 @@ import (
 	"encoding/json"
 
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
+	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
+	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/charts"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/imports"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
@@ -63,6 +68,22 @@ type (
 		Resolve(ctx context.Context, token string, req selection.Request) (selection.Result, error)
 	}
 
+	// Imports is the second kind of operator input (PLAN). Discovery is not here:
+	// an import is found through resolve_semantic_selection like a device, because
+	// a developer asking for a signal has no business knowing which of the two the
+	// platform happens to deliver it from. What is here is what discovery cannot
+	// answer — the direct lookup by id, and whether an instance is running.
+	Imports interface {
+		List(ctx context.Context, token string, opts imports.InstanceListOptions) (imports.ListResult, error)
+		Get(ctx context.Context, token string, id string) (idmodel.Instance, error)
+		GetType(ctx context.Context, token string, id string) (dsmodel.ImportType, error)
+		History(ctx context.Context, token string, instanceID string) imports.History
+		// Histories is the batch form, for a listing. analytics-serving cannot filter
+		// by import, so asking per instance would re-read the whole export listing once
+		// per row.
+		Histories(ctx context.Context, token string, instanceIDs []string) map[string]imports.History
+	}
+
 	// SelectionSink is where propose_data_selection writes. Implemented by the
 	// chat store, because a proposed selection is session state (§5.10:
 	// "confirmations persist as session overrides").
@@ -95,6 +116,26 @@ type (
 		Run(ctx context.Context, bearer, code string) (<-chan kernel.ExecutionEvent, error)
 		Workspace() string
 	}
+
+	// Repo is the working copy (§5.11). Exactly one method, which is the point:
+	// §5.8 gives the model a tool that writes a file and no tool that commits,
+	// stages, pushes, selects a repository or discards a change. A wider interface
+	// here would be the first step towards one.
+	Repo interface {
+		WriteFile(ctx context.Context, req repo.Request, path string, content []byte) (repo.WriteResult, error)
+	}
+
+	// Experiments is the Ray and MLflow surface (§5.12). Three methods, and the
+	// omission is the interesting part: there is no Logs here, because §5.13 says a
+	// model's context never carries raw logs and the cheapest way to guarantee that
+	// is for the tool surface to have no way of asking. Stopping a job is absent for
+	// the reason a commit is absent from Repo — it is a developer's decision about
+	// their own cluster time.
+	Experiments interface {
+		Launch(ctx context.Context, req experiments.LaunchRequest) (experiments.LaunchResult, error)
+		Results(ctx context.Context, req experiments.Request, id string) (experiments.Summary, error)
+		List(ctx context.Context, req experiments.Request, limit int) ([]experiments.Experiment, error)
+	}
 )
 
 // Deps carries the services the executors need. Every field is optional: a
@@ -104,6 +145,7 @@ type (
 type Deps struct {
 	Ontology      Ontology
 	Devices       Devices
+	Imports       Imports
 	Timeseries    Timeseries
 	Profiler      Profiler
 	Selection     Selection
@@ -111,6 +153,8 @@ type Deps struct {
 	Kernel        Kernel
 	Charts        Charts
 	Relations     Relations
+	Repo          Repo
+	Experiments   Experiments
 
 	// ProfileTokenBudget bounds the projection handed to the model (D26). The
 	// stored profile is unbounded; what an LLM reads never is.
@@ -270,6 +314,49 @@ func NewSurface(deps Deps) (*Registry, error) {
 			executor:    ifPresent(s.getDeviceMetadata, deps.Devices),
 		},
 		Definition{
+			Name: "list_import_instances",
+			Description: "List the import instances this developer may read. An import is the " +
+				"platform's other kind of operator input: an adapter that pulls data from outside — " +
+				"a weather service, a price feed, a public sensor network — and publishes it to one " +
+				"Kafka topic. Metadata only: names, import type, the Kafka topic, whether the " +
+				"container is running, and whether any of its past is stored.\n\n" +
+				"Prefer resolve_semantic_selection: it finds imports and devices together, by " +
+				"meaning. Use this when the developer names an import, or to see what exists at all.",
+			Effect:  "read",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "search": {"type": "string", "description": "Matches the instance name only, upstream."},
+			    "import_type_ids": {"type": "array", "items": {"type": "string"}, "description": "Keep only instances of these import types. Filtered here, not upstream, so it costs a full listing."},
+			    "limit": {"type": "integer"},
+			    "include_history": {"type": "boolean", "description": "Also report per instance whether its data is stored in timescale. One extra call each; off by default."}
+			  }
+			}`),
+			Unavailable: "requires device_selection_url and import_deploy_url",
+			executor:    ifPresent(s.listImportInstances, deps.Imports),
+		},
+		Definition{
+			Name: "get_import_type_metadata",
+			Description: "Read one import type: its configs and its output tree, with the " +
+				"addressable variable paths, characteristics and semantics of each variable.\n\n" +
+				"Read the paths carefully. An import type's output describes the *whole* Kafka " +
+				"message, so it carries an `import_id` and a `time` variable that are not signals, " +
+				"and every real variable sits under a payload node. The variable_path this returns " +
+				"is already the addressable form.",
+			Effect:  "read",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "import_type_id": {"type": "string"},
+			    "instance_id": {"type": "string", "description": "Alternative to import_type_id: read the type of this instance."}
+			  }
+			}`),
+			Unavailable: "requires device_selection_url, import_deploy_url and import_repo_url",
+			executor:    ifPresent(s.getImportTypeMetadata, deps.Imports),
+		},
+		Definition{
 			Name: "probe_availability",
 			Description: "Report the time range for which a device has stored data, per service, " +
 				"with the pre-computed aggregate tables available. Reads no values.",
@@ -382,7 +469,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			    "service_id": {"type": "string"},
 			    "from": {"type": "string", "description": "RFC3339 start of the analysis window."},
 			    "to": {"type": "string", "description": "RFC3339 end of the analysis window."},
-			    "group_time": {"type": "string", "description": "Aggregation bucket, e.g. \"15m\". Empty means derived from the detected sampling interval."},
+			    "group_time": {"type": "string", "description": "Aggregation bucket, e.g. \"15m\". Empty means derived from the detected sampling interval, which is the better answer unless you mean to override it. At least 1s, and coarse enough that the analysis window divides into at most 500000 buckets; a bucket below that is refused and the refusal names the finest one the window allows."},
 			    "variable_paths": {
 			      "type": "array", "items": {"type": "string"},
 			      "description": "Restrict the response to these variable paths. The service is read once for all of its variables either way, so this narrows what you read back, not what it costs. Omit it and the response carries the first few profiles and names the variables it left out."
@@ -517,6 +604,45 @@ func NewSurface(deps Deps) (*Registry, error) {
 		},
 
 		Definition{
+			Name: "propose_operator_input",
+			Description: "Propose the concrete pipeline input that wires one import instance into " +
+				"an operator, ready for the developer to deploy. You name the instance and which " +
+				"of its variables feeds which operator input; this returns the exact node input " +
+				"the analytics flow engine takes, with the topic and the filter resolved.\n\n" +
+				"The developer must confirm; nothing is deployed on your word. Propose only " +
+				"variables you found through resolve_semantic_selection or " +
+				"get_import_type_metadata — a path you guessed produces an operator that " +
+				"subscribes successfully and never receives a value.\n\n" +
+				"One proposal is one import instance. Every instance has its own topic, so two " +
+				"imports are two inputs.",
+			Effect:  "emit a pipeline input, no deployment",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "instance_id": {"type": "string", "description": "The import instance to consume."},
+			    "rationale": {"type": "string", "description": "Why this import, and why these variables."},
+			    "bindings": {
+			      "type": "array",
+			      "items": {
+			        "type": "object",
+			        "properties": {
+			          "input_name": {"type": "string", "description": "The operator's own name for the input, which its code reads."},
+			          "variable_path": {"type": "string", "description": "The import variable to feed it, as resolve_semantic_selection reported it."},
+			          "reason": {"type": "string"}
+			        },
+			        "required": ["input_name", "variable_path"]
+			      }
+			    }
+			  },
+			  "required": ["instance_id", "bindings", "rationale"]
+			}`),
+			Unavailable: "requires device_selection_url and import_deploy_url",
+			executor:    ifPresent(s.proposeOperatorInput, deps.Imports),
+		},
+
+		Definition{
 			Name: "render_chart",
 			Description: "Emit a declarative chart specification for the developer's exploration pane " +
 				"to draw. This is how you demonstrate a claim about data visually: you name the series, " +
@@ -610,12 +736,26 @@ func NewSurface(deps Deps) (*Registry, error) {
 			executor:    ifPresent(s.renderChart, deps.Charts),
 		},
 		Definition{
-			Name:        "write_file",
-			Description: "Write a file into the repository working copy.",
-			Effect:      "write repo working copy",
-			MinTier:     L0,
-			Schema:      json.RawMessage(`{"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}`),
-			Unavailable: "M7 (repo/, SPEC §5.11)",
+			Name: "write_file",
+			Description: "Write a file into the developer's working copy of the operator " +
+				"repository, on their own persistent storage. The path is relative to the " +
+				"repository root and every file of it is writable, including the Dockerfile " +
+				"and .github/workflows/build.yml. The whole file is replaced, so send its " +
+				"complete new content rather than a fragment. Nothing is staged, committed " +
+				"or pushed: the developer reviews the change and commits it. Do not write " +
+				"evaluation.yaml — the criteria are the developer's.",
+			Effect:  "write repo working copy",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "path": {"type": "string", "description": "Path relative to the repository root, e.g. op.py or tests/test_op.py."},
+			    "content": {"type": "string", "description": "The file's complete new content."}
+			  },
+			  "required": ["path", "content"]
+			}`),
+			Unavailable: "M7 — requires github_client_id and a Hub",
+			executor:    ifPresent(s.writeFile, deps.Repo),
 		},
 		Definition{
 			Name: "run_code",
@@ -641,21 +781,72 @@ func NewSurface(deps Deps) (*Registry, error) {
 			executor:    ifPresent(s.runCode, deps.Kernel),
 		},
 		Definition{
-			Name:        "launch_experiment",
-			Description: "Submit a Ray job for the current repository state.",
-			Effect:      "submit Ray job",
-			MinTier:     L0,
-			Confirm:     true,
-			Schema:      json.RawMessage(`{"type": "object", "properties": {"entrypoint": {"type": "string"}}}`),
-			Unavailable: "M8 (experiments/, SPEC §5.12)",
+			Name: "launch_experiment",
+			Description: "Submit a training run to the Ray cluster from the developer's " +
+				"**committed** repository state, and create the MLflow run it will log to. " +
+				"The developer must confirm each launch: it spends cluster time.\n\n" +
+				"The job is built with `git archive` of HEAD, so **a working copy with " +
+				"uncommitted changes is refused** and the refusal names the files. That is " +
+				"not a nuisance check — the run is tagged with the commit SHA and is " +
+				"supposed to be reproducible from it, which is only true if the code that " +
+				"ran is that commit. When it refuses, ask the developer to commit; you have " +
+				"no tool that commits for them.\n\n" +
+				"The job reads its training data from the platform directly with its own " +
+				"credential, so it does not stream through this conversation and you will " +
+				"not see its output. Read the credential block in the answer: when it says " +
+				"the token expires with the session, say so before proposing a long run.",
+			Effect:  "submit Ray job",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "entrypoint": {
+			      "type": "string",
+			      "description": "The command Ray runs in the unpacked repository, e.g. \"python training.py --folds 5\". Omit it for the deployment's default, which points at the scaffold's training.py."
+			    },
+			    "env_vars": {
+			      "type": "object",
+			      "description": "Extra environment variables for the job, as a flat string-to-string map. This is how a hyperparameter reaches a run that reads one from the environment. The MLflow and platform variables are set by ODE and cannot be overridden here.",
+			      "additionalProperties": {"type": "string"}
+			    },
+			    "run_name": {
+			      "type": "string",
+			      "description": "What to call the run in MLflow. Omit and it is named after the commit. Use it to say what the run is trying, e.g. \"wider lookback, 5 folds\"."
+			    }
+			  }
+			}`),
+			Unavailable: "M8 — requires ray_url and mlflow_url",
+			executor:    ifPresent(s.launchExperiment, deps.Experiments),
 		},
 		Definition{
-			Name:        "get_experiment_results",
-			Description: "Read metrics and parameters of a finished run from MLflow.",
-			Effect:      "read MLflow",
-			MinTier:     L0,
-			Schema:      json.RawMessage(`{"type": "object", "properties": {"run_id": {"type": "string"}}}`),
-			Unavailable: "M8 (experiments/, SPEC §5.12)",
+			Name: "get_experiment_results",
+			Description: "Read one experiment as a compact structured summary: status, " +
+				"params, the latest value of each metric, the run's tags, the resource usage, " +
+				"and **the comparison against the previous run of the same experiment** — " +
+				"which is usually the number that answers whether a change helped. Call it " +
+				"without an experiment_id to list the developer's recent runs and choose one.\n\n" +
+				"It never returns logs, stdout or an artifact, by design: you interpret " +
+				"recorded metrics, you do not read a training process's output. A run that " +
+				"has not finished answers with a snapshot and says so — do not report a " +
+				"mid-run metric as a result.\n\n" +
+				"`comparison_to_previous` carries `lower_is_better` beside each direction, " +
+				"and it is inferred from the metric's *name*. Say which way you read a metric " +
+				"when it matters rather than asserting an improvement the naming happened to " +
+				"produce.",
+			Effect:  "read MLflow",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "experiment_id": {
+			      "type": "string",
+			      "description": "The experiment_id launch_experiment returned. Omit it to get the developer's recent runs instead, newest first, so you can name one."
+			    }
+			  }
+			}`),
+			Unavailable: "M8 — requires ray_url and mlflow_url",
+			executor:    ifPresent(s.getExperimentResults, deps.Experiments),
 		},
 	)
 }

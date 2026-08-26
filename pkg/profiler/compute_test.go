@@ -1274,3 +1274,110 @@ func derefInt(value *int) any {
 	}
 	return *value
 }
+
+// group_time reaches the profiler from a model as a free-form string, and the
+// aggregated detectors size their grid from the analysis window divided by it
+// before any data is looked at. It is refused at the boundary, before either read
+// is paid for, and the refusal names the bucket that would have worked — a model
+// that gets a bound it can act on corrects itself, where a bare rejection makes
+// it give up.
+func TestAGroupTimeTooFineForTheWindowIsRefusedBeforeAnythingIsRead(t *testing.T) {
+	for _, groupTime := range []string{"1ns", "1ms", "1s"} {
+		fake := meterFixture()
+		prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+
+		_, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+			Device:    meterDevice(testDeviceID, testServiceID),
+			ServiceID: testServiceID,
+			GroupTime: groupTime,
+		})
+		if err == nil {
+			t.Fatalf("group_time %s was accepted", groupTime)
+		}
+		if !errors.Is(err, ErrInvalidRequest) {
+			t.Errorf("group_time %s: error is %v, want ErrInvalidRequest", groupTime, err)
+		}
+		for _, want := range []string{groupTime, "16s"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("group_time %s: refusal does not mention %q: %v", groupTime, want, err)
+			}
+		}
+		for _, query := range fake.queries {
+			for _, element := range query {
+				if element.GroupTime != nil || element.Columns != nil {
+					t.Errorf("group_time %s: a value read was made despite the refusal", groupTime)
+				}
+			}
+		}
+	}
+}
+
+func TestAUsableGroupTimeIsStillAccepted(t *testing.T) {
+	fake := meterFixture()
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+
+	result, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+		GroupTime: "1h",
+	})
+	if err != nil {
+		t.Fatalf("ProfileService: %v", err)
+	}
+	if result.GroupTime != "1h" {
+		t.Errorf("group_time = %q, want the requested 1h", result.GroupTime)
+	}
+}
+
+// The cache key is built from the raw window as *requested* (D25). It used to be
+// built from the requested one at the lookup and from the truncated one at the
+// write, so the two could not match: an eleven-variable meter divides the point
+// budget down to 9090 rows and is truncated essentially always, and every
+// identical repeat re-read the platform — both passes, up to the row cap by the
+// column count — while from_cache reported the profiles as cached, so the
+// response's own read counter contradicted itself. A tool result is re-offered on
+// every iteration of the tool loop, so this happens several times in one turn.
+func TestARecomputationReadsNothingEvenWhenThePointBudgetTruncated(t *testing.T) {
+	const limit = 100
+	fake := meterFixture()
+	rawTimes, power, total := meterRawSeries()
+	head := len(rawTimes) - limit
+	fake.results[0] = []timeseries.QueryResult{queryResult(0, testDeviceID, testServiceID, testColumnNames,
+		rawTimes[head:], map[string][]float64{powerPath: power[head:], totalPath: total[head:]})}
+	// Enough fixture responses that a second pass reading the platform would
+	// succeed rather than fail for want of one.
+	fake.results = append(fake.results, fake.results[0], fake.results[1])
+
+	prof, err := New(fake, fakeOntology{index: powerOntology()}, NewMemoryStore(), Options{
+		Now:                func() time.Time { return computeNow },
+		RawWindowMaxPoints: limit,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	request := ProfileRequest{Device: meterDevice(testDeviceID, testServiceID), ServiceID: testServiceID}
+
+	first, err := prof.ProfileService(context.Background(), "Bearer caller", request)
+	if err != nil {
+		t.Fatalf("first ProfileService: %v", err)
+	}
+	if !first.RawWindow.Truncated {
+		t.Fatal("the fixture did not truncate, so this proves nothing")
+	}
+	queriesAfterFirst := len(fake.queries)
+
+	second, err := prof.ProfileService(context.Background(), "Bearer caller", request)
+	if err != nil {
+		t.Fatalf("second ProfileService: %v", err)
+	}
+	if second.Reads.Values != 0 {
+		t.Errorf("value reads = %d on an identical repeat, want 0", second.Reads.Values)
+	}
+	if len(fake.queries) != queriesAfterFirst {
+		t.Errorf("queries went from %d to %d; the profiles were reported cached, so nothing may be read",
+			queriesAfterFirst, len(fake.queries))
+	}
+	if len(second.FromCache) != len(first.Profiles) {
+		t.Errorf("from_cache = %v, want all %d profiles", second.FromCache, len(first.Profiles))
+	}
+}

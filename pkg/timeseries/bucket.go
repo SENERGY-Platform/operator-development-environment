@@ -40,11 +40,20 @@ func Bucket(requested string, span time.Duration, maxPoints int) (bucket string,
 	}
 
 	if requested != "" {
-		if parsed, err := time.ParseDuration(requested); err == nil && parsed > 0 {
+		parsed, err := time.ParseDuration(requested)
+		switch {
+		case err == nil && parsed > 0:
 			if int(span/parsed) <= maxPoints {
 				return requested, false
 			}
-		} else {
+			// Too many points: fall through to the ladder, which widens it.
+		case err == nil:
+			// Parsed, but not positive. Distinguished from unparseable on purpose:
+			// "0s" is a form timescale-wrapper's own regex accepts, so passing it
+			// through would reach Postgres as time_bucket('0 seconds', ...) with
+			// nothing between here and there to refuse it. A bucket of no length is
+			// not a request to honour, so the ladder answers instead.
+		default:
 			// An unparseable bucket is not rejected: timescale-wrapper accepts forms
 			// Go's parser does not (a day, for instance). It is passed through and
 			// the point cap still applies on decode.
@@ -72,10 +81,18 @@ func Bucket(requested string, span time.Duration, maxPoints int) (bucket string,
 //
 // The seconds case is not decoration: a chart spec may ask to resample to 90s,
 // and rendering that as whole minutes would silently double the bucket.
+//
+// One second is the floor. Below it the whole-second rendering would truncate to
+// "0s", which the server's own regex accepts and Postgres then reads as a bucket
+// of no length — a wrong answer that nothing downstream can catch. Callers that
+// take an interval from a developer or a model reject sub-second themselves and
+// say why; this is the second line, so no path can produce "0s" by rounding.
 func FormatBucket(d time.Duration) string {
 	switch {
 	case d <= 0:
 		return "0s"
+	case d < time.Second:
+		return "1s"
 	case d%time.Minute != 0:
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	case d%(24*time.Hour) == 0:

@@ -19,6 +19,7 @@ package relations
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 )
@@ -117,8 +118,19 @@ func DeriveState(column AlignedColumn, member Member, profile profiler.ResolvedP
 	// once active, a member stays active until it falls below the lower band, so a
 	// series hovering at the threshold does not alternate every bucket and inflate
 	// both the support and the violation count of every rule it appears in.
-	lower := threshold * (1 - activity.ThresholdParams.HysteresisFrac)
+	// The band is a fraction of the threshold's *magnitude*, not of its signed
+	// value. Scaling the signed value works only while the threshold is positive:
+	// for a negative one — a bidirectional meter idling near zero and charging at
+	// -2000 W puts the KDE valley around -1000 — `threshold * 0.9` is the *less*
+	// negative number, so the band came out above the threshold instead of below
+	// it. The guard below then clamped it back, which meant no inversion but no
+	// hysteresis either: the band collapsed to nothing and the chatter it exists to
+	// suppress came straight back, silently, on exactly the series that need it.
+	lower := threshold - math.Abs(threshold)*activity.ThresholdParams.HysteresisFrac
 	if lower > threshold {
+		// Unreachable with a non-negative fraction, and kept as the floor it always
+		// was: a band that sits above its own threshold would make every bucket a
+		// transition.
 		lower = threshold
 	}
 

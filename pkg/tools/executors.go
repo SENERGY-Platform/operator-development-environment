@@ -69,6 +69,10 @@ func (s *surface) searchOntology(ctx context.Context, req Request) (any, error) 
 		// The honest half: words the ontology had no wording for. An LLM that does
 		// not see this will assume its vocabulary matched and keep using it.
 		"unmatched_terms": match.UnmatchedTerms,
+		// The other honest half: how many matches each list above was cut down from.
+		// Five functions with no total read as the ontology's whole answer, and a
+		// model that believes that stops looking — raise `limit` to see the rest.
+		"elided": match.Elided,
 		"ontology_size": map[string]int{
 			"aspect_nodes":          len(snap.AspectNodes),
 			"measuring_functions":   len(snap.MeasuringFunctions),

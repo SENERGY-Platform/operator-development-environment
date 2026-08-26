@@ -36,7 +36,7 @@ import (
 // genuinely different durability requirements. A computed profile is a
 // reproducible artifact — losing it costs a recomputation. An override is a
 // developer's confirmation of derived semantics, which §5.4.3 calls an empirical
-// record and D11 calls a paper contribution; losing it destroys evidence that
+// record and D11 makes a first-class part of the design; losing it destroys evidence that
 // cannot be regenerated.
 type Overrides interface {
 	Append(override ProfileOverride) (ProfileOverride, error)

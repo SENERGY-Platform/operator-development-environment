@@ -33,12 +33,13 @@
 //     those by refusing at dispatch time would be weaker: the tool would still
 //     be advertised, and the model would keep asking.
 //
-// The registry declares all eighteen tools of §5.8; fifteen have an executor as of
-// M6, and the three that do not belong to M7 and M8. The declaration is the tier
-// table — one source of truth for the paper, the settings UI and the tests — while
-// only a tool with an executor is advertised to a provider. An unbuilt tool
-// therefore cannot be called and never appears in tools/list; it appears in the
-// documented surface with the milestone that will fill it in.
+// The registry declares all eighteen tools of §5.8, and as of M8 every one of them
+// has an executor — where the service behind it is configured. The declaration is
+// the tier table — one source of truth for the published table, the settings UI and the
+// tests — while only a tool with an executor is advertised to a provider. A tool
+// whose dependency is absent therefore cannot be called and never appears in
+// tools/list; it appears in the documented surface with the configuration a
+// deployment would need to add for it to work.
 package tools
 
 import (
@@ -55,7 +56,7 @@ type Definition struct {
 	// reader who has to choose between tools, not as a restatement of the name.
 	Description string `json:"description"`
 	// Effect is §5.8's own column, kept because it is the table published in the
-	// paper and it says something the description does not: what the tool does to
+	// published table and it says something the description does not: what the tool does to
 	// the platform, as opposed to what it is for.
 	Effect  string `json:"effect"`
 	MinTier Tier   `json:"min_tier"`

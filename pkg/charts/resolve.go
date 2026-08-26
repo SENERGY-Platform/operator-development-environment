@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/SENERGY-Platform/models/go/models"
@@ -175,9 +176,10 @@ func (s *Service) resolveSeries(
 			// Scaling commutes with differencing and with every aggregate used here,
 			// so the result is the increase per second whichever order the server
 			// evaluates in.
-			resolved.math = fmt.Sprintf("/%g", seconds)
+			divisor := formatDivisor(seconds)
+			resolved.math = "/" + divisor
 			resolved.Notes = append(resolved.Notes, fmt.Sprintf(
-				"rate is the per-bucket difference divided by %g s, both evaluated by the platform", seconds))
+				"rate is the per-bucket difference divided by %s s, both evaluated by the platform", divisor))
 		}
 		if kind, ok := unitKind(s.deps.Profiles, series.ProfileID); ok && kind != profiler.KindCumulativeCounter {
 			resolved.Notes = append(resolved.Notes, fmt.Sprintf(
@@ -583,3 +585,16 @@ func distinctDevices(series []SeriesSpec) int {
 }
 
 func stringPtr(s string) *string { return &s }
+
+// formatDivisor renders a bucket length for the server's `math` field.
+//
+// Not %g, which is the obvious choice and the wrong one: it switches to
+// exponential notation at 1e6, and the server validates math against
+// `^([+\-*/])\d+(\.\d+)?$`, which has no exponent. A rate over a bucket of
+// fourteen days is 1209600 s, so `/%g` produced `/1.2096e+06` and the request was
+// rejected — and because §5.3.1 sends every series of a chart in one batch, one
+// rate series took the whole chart with it. The threshold is a bucket of about
+// eleven and a half days, which is why nothing shorter ever showed it.
+func formatDivisor(seconds float64) string {
+	return strconv.FormatFloat(seconds, 'f', -1, 64)
+}

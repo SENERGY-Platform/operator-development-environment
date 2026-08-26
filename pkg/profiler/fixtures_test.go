@@ -340,3 +340,43 @@ func mustGet[T any](t *testing.T, value Value[T], what string) T {
 	}
 	return out
 }
+
+// energyRegister is a quarter-hourly Wh meter reading: a register that starts at
+// a plausible figure and gains 250 Wh an interval, dropping to zero at each reset
+// index as a replaced or rolled-over meter does.
+//
+// It differs from counterWithResets in the one respect that matters here — the
+// register is large beside what a fortnight adds to it, which is what a real meter
+// looks like and what makes the position of a reset decide whether the last
+// reading is above the first.
+func energyRegister(n int, resets ...int) ([]time.Time, []float64) {
+	resetAt := map[int]bool{}
+	for _, index := range resets {
+		resetAt[index] = true
+	}
+	times := make([]time.Time, 0, n)
+	values := make([]float64, 0, n)
+	current := 1000000.0
+	for i := 0; i < n; i++ {
+		if resetAt[i] {
+			current = 0
+		}
+		times = append(times, fixtureStart.Add(time.Duration(i)*quarterHour))
+		values = append(values, current)
+		current += 250
+	}
+	return times, values
+}
+
+// hourlyBuckets is an aggregated series on a one-hour grid, valued by shape(i),
+// with the window and full coverage the periodicity detector wants beside it.
+func hourlyBuckets(hours int, shape func(i int) float64) (aggregatedSeries, Window, Value[Coverage]) {
+	series := aggregatedSeries{}
+	for i := 0; i < hours; i++ {
+		series.Times = append(series.Times, fixtureStart.Add(time.Duration(i)*time.Hour))
+		series.Mean = append(series.Mean, shape(i))
+	}
+	window := Window{From: fixtureStart, To: fixtureStart.Add(time.Duration(hours) * time.Hour)}
+	coverage := Computed(Coverage{NPoints: hours, ExpectedPoints: hours, CompletenessRatio: 1})
+	return series, window, coverage
+}

@@ -385,8 +385,8 @@ func TestRegistryRejectsMalformedDefinitions(t *testing.T) {
 }
 
 // TestSurfaceDeclaresTheWholeAllowList checks the published table against §5.8,
-// including the tier and confirmation columns. These are the numbers the paper
-// prints, so a drift here is a drift in the paper.
+// including the tier and confirmation columns. This table is the published
+// account of what the surface can do, so a drift here is a drift in that account.
 func TestSurfaceDeclaresTheWholeAllowList(t *testing.T) {
 	registry, err := NewSurface(Deps{})
 	if err != nil {
@@ -401,6 +401,8 @@ func TestSurfaceDeclaresTheWholeAllowList(t *testing.T) {
 		"resolve_semantic_selection": {L0, false},
 		"list_devices":               {L0, false},
 		"get_device_metadata":        {L0, false},
+		"list_import_instances":      {L0, false},
+		"get_import_type_metadata":   {L0, false},
 		"probe_availability":         {L0, false},
 		"estimate_read_cost":         {L0, false},
 		"quick_profile":              {L0, false},
@@ -411,10 +413,14 @@ func TestSurfaceDeclaresTheWholeAllowList(t *testing.T) {
 		"preview_series":             {L2, false},
 		"render_chart":               {L1, false},
 		"propose_data_selection":     {L0, true},
-		"write_file":                 {L0, false},
-		"run_code":                   {L0, true},
-		"launch_experiment":          {L0, true},
-		"get_experiment_results":     {L0, false},
+		// Confirmed for the reason propose_data_selection is: it produces something
+		// the developer deploys, and a wiring nobody agreed to is a pipeline nobody
+		// asked for.
+		"propose_operator_input": {L0, true},
+		"write_file":             {L0, false},
+		"run_code":               {L0, true},
+		"launch_experiment":      {L0, true},
+		"get_experiment_results": {L0, false},
 	}
 
 	declared := registry.Definitions()

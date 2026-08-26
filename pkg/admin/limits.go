@@ -87,9 +87,9 @@ type Limits struct {
 	// The Ray cap waits for M7, as before. The kernel caps turned out not to be
 	// ODE's to apply at all: a pod's resources are set by KubeSpawner at spawn
 	// time, and the Hub API's spawn body selects a *profile* rather than carrying
-	// arbitrary overrides. A per-user memory limit therefore lives in the profile
-	// (values-ode-singleuser.yaml in rancher-2-defs) or in a Hub-side spawn hook —
-	// somewhere ODE cannot reach from here.
+	// arbitrary overrides. A per-user memory limit therefore lives in the
+	// KubeSpawner profile itself, or in a Hub-side spawn hook — somewhere ODE
+	// cannot reach from here.
 	//
 	// They stay on the type because §3.3 lists them and an admin will look for
 	// them, and DeclaredFields is what stops an administrator setting one and
@@ -112,8 +112,8 @@ func EnforcedFields() []string {
 }
 
 func DeclaredFields() map[string]string {
-	const kernelResources = "set on the KubeSpawner profile, not by ODE — " +
-		"see deploy/jupyterhub/README.md"
+	const kernelResources = "set on the KubeSpawner profile at spawn time, not by " +
+		"ODE: the Hub API selects a profile rather than carrying resource overrides"
 	return map[string]string{
 		"kernel_cpu_default":      kernelResources,
 		"kernel_cpu_max":          kernelResources,

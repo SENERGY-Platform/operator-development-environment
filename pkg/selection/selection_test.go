@@ -319,6 +319,7 @@ type harness struct {
 	resolver *Resolver
 	ontology *fakeOntology
 	devices  *fakeDevices
+	imports  *fakeImports
 }
 
 func newHarness(t *testing.T, opts Options) *harness {
@@ -327,6 +328,13 @@ func newHarness(t *testing.T, opts Options) *harness {
 }
 
 func newHarnessWith(t *testing.T, opts Options, ranked bool) *harness {
+	t.Helper()
+	return newHarnessImports(t, opts, ranked, nil)
+}
+
+// newHarnessImports is the same harness with an import half. imp may be nil,
+// which is the deployment without a device_selection_url.
+func newHarnessImports(t *testing.T, opts Options, ranked bool, imp *fakeImports) *harness {
 	t.Helper()
 
 	ont := &fakeOntology{snap: testSnapshot(), answer: meterSelectables}
@@ -342,11 +350,21 @@ func newHarnessWith(t *testing.T, opts Options, ranked bool) *harness {
 		ranker = prof
 	}
 
-	resolver, err := New(ont, staticIndex{index: testIndex()}, dev, ranker, opts)
+	resolver, err := New(ont, staticIndex{index: testIndex()}, dev, ranker, importsOrNil(imp), opts)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return &harness{resolver: resolver, ontology: ont, devices: dev}
+	return &harness{resolver: resolver, ontology: ont, devices: dev, imports: imp}
+}
+
+// importsOrNil keeps a typed nil out of the interface. A *fakeImports(nil) stored
+// in an Imports would make the resolver's own nil check false and every import
+// call panic, which is the same trap pkg.importsOrNil exists for.
+func importsOrNil(imp *fakeImports) Imports {
+	if imp == nil {
+		return nil
+	}
+	return imp
 }
 
 func (h *harness) resolve(t *testing.T, req Request) Result {
@@ -957,6 +975,40 @@ func TestDevicesAreListedForExecuteWithTheirDeviceType(t *testing.T) {
 	}
 }
 
+// The lexical matcher keeps a handful of matches per entity list and used to drop
+// the rest without a trace anywhere in this document. A resolution that reports
+// five functions with nothing to say the intent matched forty reads as complete,
+// and the caller — the model behind resolve_semantic_selection — narrows from a
+// slice believing it is the whole (D26).
+func TestAResolutionReportsTheMatchesTheMatchLimitElided(t *testing.T) {
+	h := newHarness(t, Options{})
+
+	result := h.resolve(t, Request{Intent: "power generation and temperature", MatchLimit: 1})
+
+	if len(result.MatchedFunctions) != 1 {
+		t.Fatalf("functions = %d, want the one the limit allows", len(result.MatchedFunctions))
+	}
+	found := false
+	for _, elision := range result.MatchElided {
+		if elision.Field != ontology.FieldMatchedFunctions {
+			continue
+		}
+		found = true
+		if elision.Total != 2 || elision.Shown != 1 {
+			t.Errorf("elision = %+v, want total 2 shown 1", elision)
+		}
+	}
+	if !found {
+		t.Fatalf("match_elided = %+v, want an entry for the truncated function list", result.MatchElided)
+	}
+
+	// Notes is where this document already says that a cap was applied, and a reader
+	// who scans the notes for what was narrowed should find this one among them.
+	if !hasNote(result.Notes, "match_limit") {
+		t.Errorf("notes = %v, want one saying the match limit cut a list", result.Notes)
+	}
+}
+
 func TestDeviceLimitFallsBackToTheResolverDefault(t *testing.T) {
 	h := newHarness(t, Options{DeviceLimit: 7})
 	result := h.resolve(t, Request{Intent: "power generation kitchen"})
@@ -1205,7 +1257,7 @@ func TestAnAvailabilityFailureStillYieldsCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("profiler.New: %v", err)
 	}
-	resolver, err := New(ont, staticIndex{index: testIndex()}, dev, prof, Options{})
+	resolver, err := New(ont, staticIndex{index: testIndex()}, dev, prof, nil, Options{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1231,13 +1283,13 @@ func TestASnapshotFailureFailsTheResolution(t *testing.T) {
 }
 
 func TestNewRefusesMissingDependencies(t *testing.T) {
-	if _, err := New(nil, staticIndex{}, &fakeDevices{}, nil, Options{}); err == nil {
+	if _, err := New(nil, staticIndex{}, &fakeDevices{}, nil, nil, Options{}); err == nil {
 		t.Error("expected an error without an ontology")
 	}
-	if _, err := New(&fakeOntology{}, nil, &fakeDevices{}, nil, Options{}); err == nil {
+	if _, err := New(&fakeOntology{}, nil, &fakeDevices{}, nil, nil, Options{}); err == nil {
 		t.Error("expected an error without an ontology index")
 	}
-	if _, err := New(&fakeOntology{}, staticIndex{}, nil, nil, Options{}); err == nil {
+	if _, err := New(&fakeOntology{}, staticIndex{}, nil, nil, nil, Options{}); err == nil {
 		t.Error("expected an error without a device lister")
 	}
 }

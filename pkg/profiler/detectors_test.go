@@ -999,3 +999,235 @@ func TestCoverageIsCappedAtOneForASeriesDenserThanItsInterval(t *testing.T) {
 			coverage.NPoints, coverage.ExpectedPoints)
 	}
 }
+
+// --- regressions ---
+
+// A counter is a counter wherever its last reset happens to fall.
+//
+// rises() compared only the last reading against the first, so a meter replaced
+// or rolled over late in the raw window ended below where it started and the
+// register was reported as instantaneous beside a monotonic_ratio of 1.00 —
+// evidence contradicting its own verdict. Everything downstream then went wrong
+// quietly: the temporal detectors ran on the ramp instead of the rate, the
+// session detector thresholded the register instead of its rate of change, the
+// power-versus-energy check was skipped, and both counter quality flags fell
+// silent because they gate on the kind. M1b's acceptance criterion says
+// counter-versus-instantaneous must never be misclassified.
+func TestACounterIsRecognisedWhereverItsResetFalls(t *testing.T) {
+	const n = 14 * 96 // a fortnight of quarter-hourly readings
+	for _, at := range []struct {
+		label string
+		index int
+	}{
+		{"day 1 of 14", 1 * 96},
+		{"day 3 of 14", 3 * 96},
+		{"day 7 of 14", 7 * 96},
+		{"day 10 of 14", 10 * 96},
+		{"day 13 of 14", 13 * 96},
+		{"one hour before the end", n - 4},
+	} {
+		times, values := energyRegister(n, at.index)
+		result := detectValueKind(column("value.total", times, values), models.Float)
+
+		kind := mustGet(t, result.Kind, "kind")
+		evidence := mustGet(t, result.Evidence, "kind evidence")
+		if kind != KindCumulativeCounter {
+			t.Errorf("reset on %s: kind = %s beside monotonic_ratio %.2f, want cumulative_counter",
+				at.label, kind, evidence.MonotonicRatio)
+			continue
+		}
+		resets := mustGet(t, result.Resets, "counter resets")
+		if len(resets) != 1 || !resets[0].Equal(times[at.index]) {
+			t.Errorf("reset on %s: resets = %v, want the one at %s", at.label, resets, times[at.index])
+		}
+	}
+}
+
+// The other half of the same predicate, and the reason it counts rather than
+// comparing endpoints.
+//
+// An appliance that idles at a standby draw for most of the day clears the
+// monotonic threshold on its own: almost every delta is exactly zero, so an oven
+// at 5 W between two evening runs reports a monotonic ratio of 0.98. It also
+// rises between its own switch-offs. What separates it from a register is that it
+// falls back once per rise, where a meter rolls over at most daily — and reading
+// it as a counter would difference it, threshold its rate instead of its power,
+// and cost every relational pass its state series.
+func TestAnApplianceThatIdlesBetweenRunsIsNotACounter(t *testing.T) {
+	// Fourteen days of quarter-hourly power: 5 W standby, 2000 W for three hours
+	// every evening and half an hour every morning.
+	times, values := regularSeries(fixtureStart, quarterHour, 14*96, func(i int) float64 {
+		at := fixtureStart.Add(time.Duration(i) * quarterHour)
+		if (at.Hour() >= 19 && at.Hour() < 22) || (at.Hour() == 10 && at.Minute() < 30) {
+			return 2000
+		}
+		return 5
+	})
+
+	result := detectValueKind(column("value.power", times, values), models.Float)
+	kind := mustGet(t, result.Kind, "kind")
+	evidence := mustGet(t, result.Evidence, "kind evidence")
+	if evidence.MonotonicRatio < monotonicThreshold {
+		t.Fatalf("monotonic_ratio = %.2f, below the threshold — the fixture no longer exercises the guard",
+			evidence.MonotonicRatio)
+	}
+	if kind == KindCumulativeCounter {
+		t.Errorf("kind = cumulative_counter for a load that returns to idle after every run "+
+			"(monotonic_ratio %.2f, %d negative deltas)", evidence.MonotonicRatio, evidence.NegativeDeltas)
+	}
+}
+
+// A week is an exact multiple of a day, so the autocorrelation of a purely daily
+// series is naturally high at 168h — and namedCycles reported a weekly cycle from
+// it while isHarmonicOf, which exempts named cycles, let it through. The evidence
+// was worse than uninformative: a sensor with no weekly structure scored higher
+// on "weekly" than one with a real weekend effect, and a model reads weekly
+// seasonality off that and proposes a model for it.
+func TestAPurelyDailySeriesIsNotAlsoReportedAsWeekly(t *testing.T) {
+	random := rand.New(rand.NewSource(7))
+	for _, shape := range []struct {
+		label string
+		value func(i int) float64
+	}{
+		{"pure daily", func(i int) float64 { return 100 + 50*math.Sin(2*math.Pi*float64(i)/24) }},
+		{"daily with noise", func(i int) float64 {
+			return 100 + 50*math.Sin(2*math.Pi*float64(i)/24) + 5*random.NormFloat64()
+		}},
+	} {
+		series, window, coverage := hourlyBuckets(30*24, shape.value)
+		periods, evidence := detectPeriodicity(series, window, 3600, coverage)
+
+		for _, period := range mustGet(t, periods, "dominant periods") {
+			if math.Abs(period-604800) < 0.05*604800 {
+				t.Errorf("%s: periods = %v, want no weekly cycle in a series that has none",
+					shape.label, mustGet(t, periods, "dominant periods"))
+			}
+		}
+		for _, entry := range mustGet(t, evidence, "period evidence") {
+			if entry.Label == "weekly" {
+				t.Errorf("%s: evidence carries a weekly entry at strength %.2f", shape.label, entry.Strength)
+			}
+		}
+	}
+}
+
+// An FFT bin is a band of periods, and at the low-frequency end it is a wide one:
+// at 720 buckets bin 4 is 180h with its neighbours at 144h and 240h. Reported to
+// a tenth of a second and stamped "weekly" by labelPeriod's ±10 % window, it
+// escaped the harmonic filter — which skips labelled candidates — and the profile
+// carried two entries called weekly, so the model read both a 7-day and a
+// 7.5-day cycle off one series.
+func TestAWeeklyCycleIsReportedOnceRatherThanOncePerMethod(t *testing.T) {
+	random := rand.New(rand.NewSource(11))
+	// Thirty days of a daily shape with a genuine weekend lift, which is the case
+	// that produced both entries.
+	series, window, coverage := hourlyBuckets(30*24, func(i int) float64 {
+		weekend := 0.0
+		if (i/24)%7 >= 5 {
+			weekend = 60
+		}
+		return 100 + 50*math.Sin(2*math.Pi*float64(i)/24) + weekend + 5*random.NormFloat64()
+	})
+
+	periods, evidence := detectPeriodicity(series, window, 3600, coverage)
+
+	weeklyish := []float64{}
+	for _, period := range mustGet(t, periods, "dominant periods") {
+		if period > 5*86400 && period < 10*86400 {
+			weeklyish = append(weeklyish, period)
+		}
+	}
+	if len(weeklyish) != 1 {
+		t.Errorf("periods near a week = %v, want exactly one; the FFT bin and the ACF lag are one finding",
+			weeklyish)
+	}
+	if len(weeklyish) == 1 && math.Abs(weeklyish[0]-604800) > 0.05*604800 {
+		t.Errorf("the weekly period is %.0fs, want the exact 604800 the ACF resolves rather than a bin centre",
+			weeklyish[0])
+	}
+
+	labelled := 0
+	for _, entry := range mustGet(t, evidence, "period evidence") {
+		if entry.Label == "weekly" {
+			labelled++
+		}
+		if entry.Method == "fft" && entry.ResolutionS <= 0 {
+			t.Errorf("fft entry %+v carries no resolution, so nothing can tell it from a neighbouring bin", entry)
+		}
+	}
+	if labelled > 1 {
+		t.Errorf("%d evidence entries are labelled weekly, want at most one", labelled)
+	}
+}
+
+// The grid is sized from the window divided by the bucket, and group_time is a
+// free-form string in the schema published to the model. Sizing before checking
+// meant "1ns" over a year reached makeslice with 31.5 billion elements and
+// panicked; nothing in pkg/ recovers, so one profile_series call took the process
+// and every other developer's session with it. "1ms" allocates instead — about
+// 284 GB — which is an OOM kill rather than a panic.
+func TestAnAbsurdBucketNeitherAllocatesNorPanics(t *testing.T) {
+	window := Window{From: fixtureStart, To: fixtureStart.Add(365 * 24 * time.Hour)}
+	populated := aggregatedSeries{
+		Times: []time.Time{fixtureStart.Add(time.Hour)},
+		Mean:  []float64{42},
+	}
+
+	for _, groupTime := range []string{"1ns", "1ms", "1s"} {
+		bucket := bucketSecondsOf(groupTime)
+		if grid := onUniformGrid(aggregatedSeries{}, window, bucket); grid != nil {
+			t.Errorf("group_time %s: grid of %d buckets built from no data", groupTime, len(grid))
+		}
+		if grid := onUniformGrid(populated, window, bucket); grid != nil {
+			t.Errorf("group_time %s: grid of %d buckets, above the %d cap", groupTime, len(grid), maxAggregatedBuckets)
+		}
+		if gaps := aggregatedGaps(populated, window, bucket); len(gaps) != 0 {
+			t.Errorf("group_time %s: %d exclusions from a grid that may not be built", groupTime, len(gaps))
+		}
+		periods, _ := detectPeriodicity(populated, window, bucket,
+			Computed(Coverage{NPoints: 1000, ExpectedPoints: 1000, CompletenessRatio: 1}))
+		if periods.IsComputed() {
+			t.Errorf("group_time %s: periods were computed over a grid that may not be built", groupTime)
+		}
+	}
+}
+
+// The hysteresis band has to sit around the threshold whichever sign it has.
+//
+// enter = threshold·(1+frac) and exit = threshold·(1−frac) put entry *below* exit
+// for a negative threshold, so a value inside the band satisfied both conditions
+// and a session opened and closed on the same sample — the chatter the hysteresis
+// exists to prevent, produced by the hysteresis itself. A bidirectional meter
+// reaches a negative threshold easily: a battery idling near zero and charging at
+// −2 kW splits at about −1 kW.
+func TestTheHysteresisBandHoldsForANegativeThreshold(t *testing.T) {
+	const threshold = -1000.0
+	// One stretch above the entry level, dipping into the band and back, then
+	// falling clear below the exit level. With hysteresis that is one session; the
+	// dip is what an inverted band breaks in two.
+	values := []float64{}
+	for i := 0; i < 10; i++ {
+		values = append(values, -500)
+	}
+	values = append(values, -1000, -1000)
+	for i := 0; i < 10; i++ {
+		values = append(values, -500)
+	}
+	for i := 0; i < 10; i++ {
+		values = append(values, -1500)
+	}
+	times, _ := regularSeries(fixtureStart, time.Minute, len(values), func(int) float64 { return 0 })
+
+	// No merging and no minimum duration, so what is measured is the hysteresis
+	// itself rather than the repair afterwards.
+	sessions := buildSessions(times, values, threshold,
+		SessionParams{HysteresisFrac: 0.1, MergeGapS: 0, MinDurationS: 0})
+
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want one; a dip inside the band must not close a session: %+v",
+			len(sessions), sessions)
+	}
+	if got := sessions[0].DurationS; got < 20*60 {
+		t.Errorf("session lasts %vs, want the whole stretch across the dip", got)
+	}
+}

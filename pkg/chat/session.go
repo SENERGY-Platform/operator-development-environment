@@ -70,6 +70,23 @@ type Session struct {
 	MessageCount int `json:"message_count"`
 }
 
+// Origin says who put a message in the conversation.
+//
+// Two values, and the distinction is the point rather than bookkeeping. Most of
+// what ODE stores with the user role is the developer's own typing; §5.13's
+// summary is not — it is a structured document ODE composed and injected when a
+// run finished, and the assistant answers it as though it had been asked. A reader
+// that could not tell the two apart would show the developer a message they never
+// wrote, in their own voice, containing a block of JSON.
+//
+// The empty string is the developer, so every message written before this existed
+// reads as theirs, which is what they were.
+const (
+	OriginDeveloper = ""
+	// OriginODE is a message ODE composed and injected on the developer's behalf.
+	OriginODE = "ode"
+)
+
 // StoredMessage is one turn as persisted. The content blocks are kept structurally
 // rather than flattened to text, so a conversation resumed after a restart still
 // carries its tool calls and their results — a flattened history would replay as
@@ -80,7 +97,19 @@ type StoredMessage struct {
 	Role      llm.Role      `json:"role"`
 	Content   []llm.Content `json:"content"`
 	CreatedAt time.Time     `json:"created_at"`
+	// Origin distinguishes what the developer typed from what ODE injected. Absent
+	// on the wire for a developer's own message, so the common case costs nothing and
+	// a reader that ignores the field behaves exactly as it did before.
+	Origin string `json:"origin,omitempty"`
+	// Subject names what an injected message is about — the experiment id, for a
+	// §5.13 summary — so a pane can render it as a result card rather than as prose,
+	// and so a later reader can find the message belonging to one run without
+	// parsing it. Empty for anything a developer typed.
+	Subject string `json:"subject,omitempty"`
 }
+
+// Injected reports whether ODE composed this message rather than the developer.
+func (m StoredMessage) Injected() bool { return m.Origin == OriginODE }
 
 // Message is the SPA's view of a turn: the same content, plus the tool outcomes
 // that belong beside it.

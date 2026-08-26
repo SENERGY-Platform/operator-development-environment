@@ -253,6 +253,34 @@ func (s *Service) Relate(ctx context.Context, token string, req Request) (Relati
 		window = profiler.Window{From: now.Add(-s.deps.DefaultLookback), To: now}
 	}
 
+	// Bounded here, before the first device read, because the grid is what usually
+	// absorbs a wide window and past this span it cannot: the ladder ends at twelve
+	// hours, so a window wider than MaxBuckets of those has no bucket that fits it.
+	// Align allocates one time.Time per bucket before it queries anything, which
+	// makes an unbounded `from` an allocation rather than a slow answer. Refused
+	// rather than shortened, for the reason the grid is widened rather than the
+	// window truncated: a truncated read looks like the whole window.
+	if limit := maxAlignableSeconds(s.deps.MaxBuckets); limit > 0 && window.Duration().Seconds() > limit {
+		return RelationProfile{}, fmt.Errorf(
+			"%w: this window spans %.0f days and the widest a pass can align is %.0f — "+
+				"%d buckets of the coarsest %gs this package computes on. Ask for a narrower "+
+				"window rather than a shortened read",
+			ErrInvalidRequest, window.Duration().Hours()/24, limit/86400,
+			s.deps.MaxBuckets, gridLadder[len(gridLadder)-1])
+	}
+
+	// Beside the window bound and for the same reason — before the first read —
+	// though not for the same danger. A negative grid cannot allocate anything; it
+	// is refused because falling through to the derived path would answer a request
+	// nobody made, handing back a profile on a grid the caller never chose with
+	// nothing in it saying their own value had been discarded. Zero is different and
+	// stays legal: it is what an omitted field marshals to, and it means "derive one".
+	if req.GridSeconds < 0 {
+		return RelationProfile{}, fmt.Errorf(
+			"%w: grid_seconds is %g; a grid is a length, so it has to be positive, or omitted "+
+				"to derive one from the coarsest member", ErrInvalidRequest, req.GridSeconds)
+	}
+
 	params := req.Params.withDefaults()
 	conditioning := DefaultConditioning()
 	if req.Conditioning != nil {
@@ -294,9 +322,30 @@ func (s *Service) Relate(ctx context.Context, token string, req Request) (Relati
 
 	gridSeconds := req.GridSeconds
 	if gridSeconds > 0 {
+		// The override goes through the same ladder and the same MaxBuckets widening a
+		// derived grid does. It used to skip both, which made grid_seconds the one
+		// input to a pass that no bound stood in front of — and the bucket count is
+		// what the read and the allocation are proportional to, whoever chose it.
+		requested := gridSeconds
+		widened := false
+		gridSeconds, widened = chooseGrid(window, []float64{requested}, s.deps.MaxBuckets)
 		profile.Notes = append(profile.Notes, fmt.Sprintf(
 			"the alignment grid was set to %gs by the caller rather than derived from the coarsest "+
-				"member; a grid finer than the slowest series produces idle states that are gaps", gridSeconds))
+				"member; a grid finer than the slowest series produces idle states that are gaps",
+			requested))
+		if gridSeconds != requested {
+			// Said rather than silently applied: every count below is per bucket, and a
+			// developer who asked for one-second buckets and got twelve-hour ones without
+			// being told would read the same document as a different measurement.
+			because := "it is not one of the bucket widths a relation may be computed on"
+			if widened {
+				because = fmt.Sprintf("%gs would put more than %d buckets in this window",
+					requested, s.deps.MaxBuckets)
+			}
+			profile.Notes = append(profile.Notes, fmt.Sprintf(
+				"the requested grid of %gs was not used: the pass ran at %gs because %s",
+				requested, gridSeconds, because))
+		}
 	} else {
 		widened := false
 		gridSeconds, widened = chooseGrid(window, intervals, s.deps.MaxBuckets)

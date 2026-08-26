@@ -38,7 +38,15 @@ import (
 //
 // It is deliberately a constant rather than configuration: a deployment that
 // could set it would be able to claim a detector version it is not running.
-const DetectorVersion = "1.0.0"
+// 1.1.0: the counter test no longer flips to instantaneous on a reset late in the
+// window; the weekly cycle is tested against what the daily one leaves rather
+// than against the raw autocorrelation; an FFT candidate carries its bin
+// resolution, is merged with what it cannot be told apart from, and is labelled
+// only where the resolution supports the label; and the session hysteresis band
+// keeps entry above exit for a negative threshold. All four change what a
+// detector reports for unchanged input, which is exactly what this constant is
+// in the cache key for.
+const DetectorVersion = "1.1.0"
 
 // SeriesRef is the addressable unit (D19). Not {device_id, service_id}: a
 // service output is a ContentVariable tree and timescale-wrapper addresses its
@@ -399,6 +407,15 @@ type PeriodEvidence struct {
 	Method   string  `json:"method"`
 	Strength float64 `json:"strength"`
 	Label    string  `json:"label"`
+	// ResolutionS is how far either side of PeriodS the method cannot tell one
+	// period from another: half a bucket for a lag, half the spread between
+	// neighbouring bins for a frequency.
+	//
+	// It is reported because the period alone invites a precision that is not
+	// there. An FFT bin at 720 buckets covers 160h to 206h and used to be printed
+	// as "648000.0" seconds, which reads as a distinct cycle beside the 604800 the
+	// ACF found rather than as the same one seen through a wider lens.
+	ResolutionS float64 `json:"resolution_s,omitempty"`
 }
 
 type Trend struct {

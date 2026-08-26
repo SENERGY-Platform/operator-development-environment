@@ -217,7 +217,7 @@ func newRelationHarness(t *testing.T) *relationHarness {
 	if err != nil {
 		t.Fatalf("profiler.New: %v", err)
 	}
-	resolver, err := selection.New(ontologyRepo, index, deviceService, prof, selection.Options{})
+	resolver, err := selection.New(ontologyRepo, index, deviceService, prof, nil, selection.Options{})
 	if err != nil {
 		t.Fatalf("selection.New: %v", err)
 	}

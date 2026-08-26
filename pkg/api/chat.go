@@ -250,7 +250,7 @@ func handleTierAudit(engine *chat.Engine) gin.HandlerFunc {
 
 // handleListTools publishes §5.8's table.
 //
-// Served to the SPA and to anyone reading the paper: every declared tool with its
+// Served to the SPA and to anyone auditing the surface: every declared tool with its
 // minimum tier and confirmation requirement, which of them this deployment can
 // actually run, and the list of capabilities that deliberately have no tool.
 //

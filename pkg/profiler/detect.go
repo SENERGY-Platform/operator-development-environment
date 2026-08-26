@@ -34,6 +34,12 @@ type detectionInput struct {
 	aggregate map[string]aggregatedSeries
 	analysis  Window
 	raw       RawWindow
+	// cacheRaw is the raw window that was *requested*, which is what the cache key
+	// is built from (D25). It is not raw.Window: the point budget narrows that one
+	// to the span actually read, and a key built from the narrowed window can
+	// never match the one the lookup used, so an identical repeat re-read the
+	// platform every time while reporting the profiles as cached.
+	cacheRaw  Window
 	groupTime string
 	bucket    float64
 	index     *OntologyIndex
@@ -142,7 +148,7 @@ func (p *Profiler) profileVariable(input detectionInput, variable Variable, ctx 
 		ServiceID:    input.service.Id,
 		VariablePath: variable.Path,
 	}
-	cacheKey := CacheKey(ref, input.analysis, input.raw.Window, DetectorVersion)
+	cacheKey := CacheKey(ref, input.analysis, input.cacheRaw, DetectorVersion)
 
 	own := ctx.series[variable.Path]
 	aggregate := input.aggregate[variable.Path]
@@ -469,11 +475,14 @@ func siblingTimestamps(all map[string]variableSeries, path string) []time.Time {
 // resolution, for free. It is coarser than the raw gap list and complements it
 // rather than replacing it.
 func aggregatedGaps(series aggregatedSeries, analysis Window, bucket float64) []Exclusion {
-	if bucket <= 0 || !analysis.Valid() || len(series.Times) == 0 {
+	if len(series.Times) == 0 {
 		return []Exclusion{}
 	}
-	buckets := int(math.Floor(analysis.Duration().Seconds() / bucket))
-	if buckets <= 0 {
+	// Sized from the window divided by the bucket, so the bound is checked before
+	// the allocation rather than after it — the same exposure onUniformGrid had to
+	// a group_time the model chose.
+	buckets, sized := gridBuckets(analysis, bucket)
+	if !sized {
 		return []Exclusion{}
 	}
 

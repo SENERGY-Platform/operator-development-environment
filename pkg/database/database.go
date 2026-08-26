@@ -185,6 +185,30 @@ CREATE TABLE IF NOT EXISTS ode_chat_messages (
 )`,
 	},
 	{
+		// The two columns of M9's injected messages, added rather than declared in the
+		// CREATE above so a deployment that already has the table gets them too. Both
+		// are additive with a default, which is the only shape of change this
+		// migration style can carry — see Migrate.
+		name: "ode_chat_messages_origin",
+		sql: `
+ALTER TABLE ode_chat_messages
+    -- Who put the message there: '' is the developer, 'ode' is a message ODE
+    -- composed and injected, which today means §5.13's result summary. The default
+    -- is the developer's because every row written before M9 was one.
+    ADD COLUMN IF NOT EXISTS origin  TEXT NOT NULL DEFAULT '',
+    -- What an injected message is about — an experiment id, for a run summary — so
+    -- a reader can find the message belonging to one run without parsing it. It is
+    -- also what makes the delivery idempotent: the message *is* the record that the
+    -- run was interpreted, so a poller re-offering the same run finds it here.
+    ADD COLUMN IF NOT EXISTS subject TEXT NOT NULL DEFAULT ''`,
+	},
+	{
+		name: "ode_chat_messages_by_subject",
+		sql: `CREATE INDEX IF NOT EXISTS ode_chat_messages_subject_idx
+              ON ode_chat_messages (session_id, subject)
+              WHERE subject <> ''`,
+	},
+	{
 		name: "ode_tier_changes",
 		sql: `
 CREATE TABLE IF NOT EXISTS ode_tier_changes (
@@ -320,5 +344,178 @@ CREATE TABLE IF NOT EXISTS ode_relation_rule_decisions (
 		name: "ode_relation_rule_decisions_by_rule",
 		sql: `CREATE INDEX IF NOT EXISTS ode_relation_rule_decisions_rule_idx
               ON ode_relation_rule_decisions (rule_id, created_at)`,
+	},
+	{
+		name: "ode_github_identities",
+		sql: `
+-- The GitHub credential of §5.11 item 1: per user, encrypted, and separate from the
+-- Keycloak session. sealed_token is AES-256-GCM under github_token_key and is the
+-- one column in this schema whose loss is a security event rather than an
+-- inconvenience — a row read out of a backup is a set of repositories.
+--
+-- One row per developer. A second GitHub account would be a second row and there is
+-- no use for one: the account is how ODE pushes, not what it pushes to.
+CREATE TABLE IF NOT EXISTS ode_github_identities (
+    user_sub       TEXT PRIMARY KEY,
+    login          TEXT NOT NULL,
+    name           TEXT NOT NULL DEFAULT '',
+    avatar_url     TEXT NOT NULL DEFAULT '',
+    scopes         TEXT[] NOT NULL DEFAULT '{}',
+    missing_scopes TEXT[] NOT NULL DEFAULT '{}',
+    sealed_token   TEXT NOT NULL,
+    connected_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+	},
+	{
+		name: "ode_repo_links",
+		sql: `
+-- Which repository a developer is working on, and where its working copy sits on
+-- their PVC (§5.11 item 5). Everything else about the repository — its contents, its
+-- history, its divergence — is read from the checkout or from GitHub, because both
+-- are authoritative and a cached copy here could only be wrong.
+--
+-- One active repository per developer. Switching replaces the row and leaves the old
+-- checkout in place, which is what makes switching back a reuse rather than a clone.
+CREATE TABLE IF NOT EXISTS ode_repo_links (
+    user_sub         TEXT PRIMARY KEY,
+    full_name        TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    owner            TEXT NOT NULL,
+    default_branch   TEXT NOT NULL DEFAULT '',
+    private          BOOLEAN NOT NULL DEFAULT FALSE,
+    clone_url        TEXT NOT NULL,
+    html_url         TEXT NOT NULL DEFAULT '',
+    path             TEXT NOT NULL,
+    -- The Operator Lib the scaffold pinned (D15), so an upgrade later is a visible
+    -- decision rather than a silent drift.
+    operator_lib_ref TEXT NOT NULL DEFAULT '',
+    scaffolded_at    TIMESTAMPTZ,
+    selected_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+	},
+	{
+		name: "ode_experiments",
+		sql: `
+-- One submitted Ray job (§5.12), and the one table in this schema whose contents
+-- are recomputable from nowhere else.
+--
+-- The profiler and the relational profiler split their state — the artifact stays
+-- in memory because losing it costs a recomputation, and only a developer's own
+-- judgement is worth a table (§5.4.3). An experiment record makes no such split.
+-- Ray forgets a submission when the cluster restarts and keeps a finished job only
+-- as long as its own retention allows; MLflow knows the run but not which ODE
+-- session, which working copy or which Ray submission produced it. The join
+-- between the three exists here, so losing this row loses the trail from a run
+-- back to the commit it came from — which is the whole of §5.11 item 7.
+CREATE TABLE IF NOT EXISTS ode_experiments (
+    id                     TEXT PRIMARY KEY,
+    user_sub               TEXT NOT NULL,
+    -- Ray's own id for the job. Unique per cluster, and ODE mints it rather than
+    -- letting Ray, which is what makes a resubmitted request a refusal rather than
+    -- a second job.
+    submission_id          TEXT NOT NULL,
+    mlflow_run_id          TEXT NOT NULL DEFAULT '',
+    mlflow_experiment_id   TEXT NOT NULL DEFAULT '',
+    mlflow_experiment_name TEXT NOT NULL DEFAULT '',
+    session_id             TEXT NOT NULL DEFAULT '',
+    repository             TEXT NOT NULL DEFAULT '',
+    -- The state the job package was built from. The reason this table exists.
+    commit_sha             TEXT NOT NULL DEFAULT '',
+    branch                 TEXT NOT NULL DEFAULT '',
+    entrypoint             TEXT NOT NULL DEFAULT '',
+    package_uri            TEXT NOT NULL DEFAULT '',
+    package_bytes          BIGINT NOT NULL DEFAULT 0,
+    package_reused         BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Ray's own status vocabulary, not a translation of it: these strings are what
+    -- the dashboard beside the pane shows, and a second vocabulary would give a
+    -- developer two answers to reconcile.
+    status                 TEXT NOT NULL DEFAULT 'PENDING',
+    message                TEXT NOT NULL DEFAULT '',
+    -- Whether the job carried a token minted for it (§3.1 item 6) or the caller's
+    -- session token. Recorded because it decides what a long run survives, and a
+    -- run that died at hour two should be explicable afterwards.
+    scoped_credential      BOOLEAN NOT NULL DEFAULT FALSE,
+    submitted_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at             TIMESTAMPTZ,
+    ended_at               TIMESTAMPTZ
+)`,
+	},
+	{
+		name: "ode_proposal_decisions",
+		sql: `
+-- The developer's answer to a proposed next experiment (§5.13's last sentence,
+-- D28): append-only, keyed by a fingerprint of *what was proposed* rather than by
+-- the interpretation it appeared in — the same choice ode_relation_rule_decisions
+-- makes, and for the same reason. A run interpreted again produces a fresh
+-- summary and a fresh reading of it, and a decision tied to that reading would
+-- silently stop applying; tied to the proposal's text, a rejection stays a
+-- rejection.
+--
+-- This is the only table M9 adds, and the split behind that is §5.4.3's. The
+-- summary is recomputable from MLflow, the assistant's interpretation is already
+-- durable as chat messages in ode_chat_messages, and only the human judgement
+-- here can be regenerated by nothing.
+--
+-- Nothing in it is binding. Accepting a proposal records agreement; promoting a
+-- value into evaluation.yaml or the operator config is a separate developer
+-- action, and §5.8 has no tool for either.
+CREATE TABLE IF NOT EXISTS ode_proposal_decisions (
+    id            TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    proposal_id   TEXT NOT NULL,
+    created_by    TEXT NOT NULL,
+    decision      TEXT NOT NULL,
+    -- The whole record, so a reader gets what was proposed and what the developer
+    -- put in its place without this schema having to grow a column per field.
+    record        JSONB NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+	},
+	{
+		name: "ode_proposal_decisions_by_experiment",
+		sql: `CREATE INDEX IF NOT EXISTS ode_proposal_decisions_experiment_idx
+              ON ode_proposal_decisions (experiment_id, created_by, created_at)`,
+	},
+	{
+		name: "ode_proposal_decisions_by_proposal",
+		sql: `CREATE INDEX IF NOT EXISTS ode_proposal_decisions_proposal_idx
+              ON ode_proposal_decisions (proposal_id, created_at)`,
+	},
+	{
+		name: "ode_experiments_by_user_time",
+		sql: `CREATE INDEX IF NOT EXISTS ode_experiments_user_at_idx
+              ON ode_experiments (user_sub, submitted_at DESC)`,
+	},
+	{
+		name: "ode_experiments_by_submission",
+		sql: `CREATE UNIQUE INDEX IF NOT EXISTS ode_experiments_submission_idx
+              ON ode_experiments (submission_id)`,
+	},
+	{
+		name: "ode_experiments_unfinished",
+		sql: `-- The poller of §5.13 asks this every interval: which runs does the store
+              -- still call unfinished. Partial, because that set is small and stays small
+              -- however large the table grows — which is the whole point of indexing it
+              -- rather than letting a sequence scan get slower every week.
+              CREATE INDEX IF NOT EXISTS ode_experiments_unfinished_idx
+              ON ode_experiments (updated_at)
+              WHERE status NOT IN ('SUCCEEDED', 'FAILED', 'STOPPED')`,
+	},
+	{
+		name: "ode_experiments_recently_terminal",
+		sql: `-- The poller's second query: which session-bound runs finished lately. The
+              -- expression matches the one in the query, COALESCE and all, or the planner
+              -- would not use it.
+              CREATE INDEX IF NOT EXISTS ode_experiments_recently_terminal_idx
+              ON ode_experiments (COALESCE(ended_at, updated_at))
+              WHERE session_id <> '' AND mlflow_run_id <> ''`,
+	},
+	{
+		name: "ode_experiments_previous",
+		sql: `-- The lookup §5.13's comparison_to_previous makes: the most recent finished run
+              -- of the same developer's same MLflow experiment.
+              CREATE INDEX IF NOT EXISTS ode_experiments_previous_idx
+              ON ode_experiments (user_sub, mlflow_experiment_id, submitted_at DESC)`,
 	},
 }

@@ -405,16 +405,21 @@ func idleLevel(values []float64, threshold float64) float64 {
 // less than MergeGapS and drops those shorter than MinDurationS.
 //
 // Hysteresis is what stops a value sitting on the threshold from producing a
-// session per sample: entry needs the value above threshold·(1+frac), exit needs
-// it below threshold·(1−frac).
+// session per sample: entry needs the value a band above the threshold, exit
+// needs it a band below.
+//
+// The band is taken from the magnitude of the threshold, not from the signed
+// value. Scaling by (1±frac) puts entry *below* exit whenever the threshold is
+// negative — which a bidirectional meter reaches easily, since a battery that
+// idles near zero and charges at −2 kW splits at about −1 kW — and a series
+// oscillating inside the band then enters and leaves on the same sample. That is
+// the chatter the hysteresis exists to prevent, arrived at by the hysteresis
+// itself. A zero threshold gives a zero band, which is the strict crossing a
+// series idling at exactly zero needs.
 func buildSessions(times []time.Time, values []float64, threshold float64, params SessionParams) []Session {
-	enter := threshold * (1 + params.HysteresisFrac)
-	exit := threshold * (1 - params.HysteresisFrac)
-	if threshold == 0 {
-		// A zero threshold has no proportional band around it; fall back to a
-		// strict crossing so a series that idles at exactly zero still works.
-		enter, exit = 0, 0
-	}
+	band := math.Abs(threshold) * params.HysteresisFrac
+	enter := threshold + band
+	exit := threshold - band
 
 	raw := []Session{}
 	active := false

@@ -630,6 +630,29 @@ func TestHysteresisHoldsAValueHoveringAtTheThreshold(t *testing.T) {
 	}
 }
 
+// The same property on a negative threshold, which is where it used to disappear.
+//
+// The band was a fraction of the threshold's signed value, so for a negative
+// threshold it landed *above* it — and the floor beneath then clamped it back to
+// the threshold itself. That is why the failure was invisible: nothing inverted,
+// the band simply collapsed to zero width and the chatter came back, on exactly
+// the series that need suppressing. A bidirectional meter idling near zero and
+// charging hard is the ordinary case, not an exotic one.
+func TestHysteresisHoldsOnANegativeThresholdToo(t *testing.T) {
+	// Mirrors the test above through zero, keeping this detector's own direction:
+	// active is *above* the threshold, so -960 activates and -1010 sits inside the
+	// 10% band below -1000 (which is -1100, not -900). Without a band this is twenty
+	// transitions.
+	values, present := repeatPattern(40, -960, -1010)
+	series := DeriveState(column(values, present), Member{},
+		sessionProfile(-1000, profiler.KindInstantaneous))
+
+	if series.Summary.ActiveBuckets != 40 {
+		t.Errorf("active buckets = %d, want 40: -960 is inside the 10%% hysteresis band below -1000",
+			series.Summary.ActiveBuckets)
+	}
+}
+
 // Hysteresis must not become an assumption about what happened while nobody was
 // looking.
 func TestAGapClearsTheHysteresisState(t *testing.T) {

@@ -213,7 +213,7 @@ func newProfileHarnessWith(t *testing.T, client profiler.TimeseriesClient) *prof
 	// The profiler is the ranker (§5.2: candidates are ranked by QuickProfile), so
 	// this harness exercises the full resolution — including the read counter that
 	// makes the tier-L0 claim checkable.
-	resolver, err := selection.New(ontologyRepo, staticOntology{index: apiOntology()}, deviceService, prof,
+	resolver, err := selection.New(ontologyRepo, staticOntology{index: apiOntology()}, deviceService, prof, nil,
 		selection.Options{})
 	if err != nil {
 		t.Fatalf("selection.New: %v", err)

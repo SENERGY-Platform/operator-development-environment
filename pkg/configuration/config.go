@@ -44,6 +44,41 @@ type ConfigStruct struct {
 	OntologyCacheTtl      string `json:"ontology_cache_ttl"`
 	OntologyInvalidateInt string `json:"ontology_invalidate_interval"`
 
+	// Imports as operator inputs (PLAN). An operator can take an import as an
+	// input the way it takes a device, and an import type carries the same content
+	// variables a device type does — so semantic selection finds both, or the
+	// answer is quietly missing a class of candidate.
+	//
+	// DeviceSelectionUrl is the discovery half. It is deliberately not used for
+	// devices: device-selection's device answer drops the connection state, the
+	// device type name and the full device type, and hard-codes `shared` to false,
+	// so ODE would have to read the devices again anyway. Its *import* answer is
+	// the whole reason to have it — aspect subtree expansion, the type-to-instance
+	// join and the message-relative paths are all things a direct caller would have
+	// to reimplement, and get silently wrong.
+	//
+	// ImportDeployUrl answers whether an instance is actually running, which
+	// discovery cannot: a stopped import is indistinguishable from a live one in a
+	// selectables answer.
+	//
+	// ImportRepoUrl is needed only for a direct lookup of one import type by id;
+	// discovery returns the type alongside every instance.
+	//
+	// AnalyticsServingUrl is how ODE tells a live-only import from an exported one.
+	// timescale-wrapper has no importId, and there is no table worker for imports,
+	// so an import's history exists if and only if an export was created for it.
+	// Without this URL that question answers "unknown" — which is honest, and
+	// different from "no history".
+	DeviceSelectionUrl  string `json:"device_selection_url"`
+	ImportDeployUrl     string `json:"import_deploy_url"`
+	ImportRepoUrl       string `json:"import_repo_url"`
+	AnalyticsServingUrl string `json:"analytics_serving_url"`
+
+	// ImportRequestTimeout bounds a single request to any of the four services
+	// above. Held separately from TimeseriesRequestTimeout because these are
+	// metadata reads: generous by timescale standards would be a hang here.
+	ImportRequestTimeout string `json:"import_request_timeout"`
+
 	// TimeseriesRequestTimeout bounds a single timescale-wrapper request. A
 	// profiler pass over a long window is the slowest thing ODE asks of the
 	// platform, so this is generous by design.
@@ -241,6 +276,155 @@ type ConfigStruct struct {
 	ToolRelationTokenBudget int64 `json:"tool_relation_token_budget"`
 	ToolRelationMaxRules    int64 `json:"tool_relation_max_rules"`
 
+	// GitHub integration (§5.11, M7). Without GithubClientId the repo routes are not
+	// served and `write_file` stays declared-but-unavailable — the same degradation
+	// the profiler and the kernel do.
+	//
+	// GithubTokenKey is the key the developer's GitHub token is encrypted with, as
+	// base64 of 32 bytes: `openssl rand -base64 32`. It is required rather than
+	// optional, because §5.11 item 1 says the token is stored encrypted and a
+	// deployment that stored it in the clear would be a different design, not a
+	// convenience.
+	//
+	// GithubRedirectUri is the SPA's own callback URL, which has to match the OAuth
+	// app's registered one exactly. Empty derives it from PublicUrl, which is right
+	// only where ODE serves the SPA from the same origin.
+	GithubClientId     string       `json:"github_client_id"`
+	GithubClientSecret types.Secret `json:"github_client_secret"`
+	GithubTokenKey     types.Secret `json:"github_token_key"`
+	GithubApiUrl       string       `json:"github_api_url"`
+	GithubWebUrl       string       `json:"github_web_url"`
+	GithubScopes       []string     `json:"github_scopes"`
+	GithubRedirectUri  string       `json:"github_redirect_uri"`
+
+	// Repository bounds (§5.11, M7). RepoCommandTimeout bounds one git command, and
+	// is minutes rather than seconds because a clone of a repository with history is
+	// the slow one. RepoMaxFileBytes bounds a file the Code pane reads or writes; a
+	// larger figure makes both the editor and the `write_file` tool able to move more
+	// in one request, and neither wants a repository of model binaries.
+	RepoCommandTimeout        string `json:"repo_command_timeout"`
+	RepoMaxFileBytes          int64  `json:"repo_max_file_bytes"`
+	RepoMaxTreeEntries        int64  `json:"repo_max_tree_entries"`
+	RepoMaxCommandOutputBytes int64  `json:"repo_max_command_output_bytes"`
+
+	// The library the scaffold pins (D15). OperatorLibRef empty resolves the newest
+	// tag at scaffold time, which is what "track latest, pin per repo" means; setting
+	// it fixes every new repository to one ref, which is what a deployment reproducing
+	// an evaluation write-up wants.
+	OperatorLibRepo string `json:"operator_lib_repo"`
+	OperatorLibRef  string `json:"operator_lib_ref"`
+
+	// Experiments (§5.12, M8). Without ray_url or mlflow_url the experiment routes
+	// are not served and both experiment tools stay declared-but-unavailable — the
+	// same degradation the profiler, the kernel and the repo surface do. The surface
+	// also needs a Hub and a GitHub app, because the job package is the committed
+	// state of a working copy that lives on the developer's pod.
+	//
+	// RayUrl and MlflowUrl are the *API* bases ODE calls. RayDashboardUrl and
+	// MlflowUiUrl are what a browser should open, which is routinely a different
+	// host: a cluster-internal service and an ingress-exposed UI. They are what the
+	// embed probe of D6 asks and what the pane links to.
+	//
+	// The two tokens are the service accounts §3.1 item 5 permits — the only place
+	// in ODE where one is legitimate, because a Ray cluster and a tracking server
+	// have no per-user identity to act as and D18 rules out building one. Both may
+	// be empty: an in-cluster dashboard is commonly unauthenticated, and M10's
+	// NetworkPolicy is what bounds who reaches it.
+	RayUrl                      string       `json:"ray_url"`
+	RayToken                    types.Secret `json:"ray_token"`
+	RayDashboardUrl             string       `json:"ray_dashboard_url"`
+	MlflowUrl                   string       `json:"mlflow_url"`
+	MlflowToken                 types.Secret `json:"mlflow_token"`
+	MlflowUiUrl                 string       `json:"mlflow_ui_url"`
+	MlflowExperimentPrefix      string       `json:"mlflow_experiment_prefix"`
+	ExperimentDefaultEntrypoint string       `json:"experiment_default_entrypoint"`
+
+	// ExperimentMaxPackageBytes bounds the job archive. Exceeding it is reported
+	// rather than truncated: a job that ran against a partial repository fails in a
+	// way nobody could diagnose from the run. It also bounds ODE's own memory — the
+	// archive is held whole, and it travels back from the pod base64-encoded, which
+	// costs a third more again.
+	ExperimentMaxPackageBytes int64 `json:"experiment_max_package_bytes"`
+	// ExperimentMaxEnvVars and ExperimentMaxEnvValueBytes bound what one launch may
+	// push into a cluster's job spec. They matter because a launch arrives from an
+	// HTTP body or from an LLM tool call, and neither is trusted input.
+	ExperimentMaxEnvVars       int64 `json:"experiment_max_env_vars"`
+	ExperimentMaxEnvValueBytes int64 `json:"experiment_max_env_value_bytes"`
+	// ExperimentMaxLogBytes bounds a log read. Logs go to the developer's own route
+	// and never to a model (§5.13).
+	ExperimentMaxLogBytes int64 `json:"experiment_max_log_bytes"`
+
+	// ExperimentRequestTimeout bounds one Ray or MLflow API call;
+	// ExperimentUploadTimeout bounds the one request that moves the whole archive,
+	// separately, for the reason the profiler's two read timeouts are separate: a
+	// bound that fits a status probe cannot fit a multi-megabyte upload.
+	ExperimentRequestTimeout string `json:"experiment_request_timeout"`
+	ExperimentUploadTimeout  string `json:"experiment_upload_timeout"`
+
+	// The framing probe of D6. ExperimentEmbedTtl is how long a verdict is cached;
+	// ExperimentEmbedTimeout bounds one probe and is short, because an unreachable
+	// service is a normal answer and the pane is waiting for it.
+	ExperimentEmbedTtl     string `json:"experiment_embed_ttl"`
+	ExperimentEmbedTimeout string `json:"experiment_embed_timeout"`
+
+	// The Keycloak token exchange of §3.1 item 6, and the risk register's "token
+	// expiry vs. long Ray jobs" row.
+	//
+	// A Ray job reads training data directly from timescale-wrapper with its own
+	// token (§5.3.4), and a training run outlives an interactive session — so where
+	// these are configured ODE mints one token per submission through RFC 8693, on
+	// behalf of the developer. Where they are not, the caller's session token is
+	// passed, a warning names what is missing at startup, and the launch result says
+	// the credential expires with the session. That is the degradation the rest of
+	// ODE does, and the limitation is visible in the answer rather than discovered
+	// from a Ray log at hour two.
+	//
+	// JobTokenAudience is not optional in practice: Keycloak returns a token for the
+	// *requesting* client unless an audience names another, and a job reads
+	// timescale-wrapper. JobTokenLifetime is an expectation rather than a request —
+	// neither RFC 8693 nor Keycloak accepts a requested lifetime, so ODE compares it
+	// against the issuer's own expires_in and warns on a shortfall.
+	KeycloakUrl          string       `json:"keycloak_url"`
+	KeycloakRealm        string       `json:"keycloak_realm"`
+	KeycloakClientId     string       `json:"keycloak_client_id"`
+	KeycloakClientSecret types.Secret `json:"keycloak_client_secret"`
+	JobTokenAudience     string       `json:"job_token_audience"`
+	JobTokenLifetime     string       `json:"job_token_lifetime"`
+
+	// Result interpretation (§5.13, M9). ExperimentPollInterval is how often ODE
+	// asks Ray about the runs it still calls unfinished; without the poller nothing
+	// would notice a run ended unless a developer opened the pane.
+	//
+	// ExperimentPollWindow is how far back a finished run is still offered for
+	// interpretation, and it is the figure that covers an ODE restart rather than a
+	// tuning knob: a deployment that was down for an hour should still interpret the
+	// runs that finished during it, and one that has been down for a week should
+	// not replay the week.
+	//
+	// ExperimentPollBatch caps how many records one tick touches, and
+	// ExperimentPollTimeout bounds the whole tick so a cluster that stopped
+	// answering costs one tick rather than the loop.
+	ExperimentPollInterval string `json:"experiment_poll_interval"`
+	ExperimentPollWindow   string `json:"experiment_poll_window"`
+	ExperimentPollBatch    int64  `json:"experiment_poll_batch"`
+	ExperimentPollTimeout  string `json:"experiment_poll_timeout"`
+
+	// InterpretationRetryInterval is how often the runs waiting for a developer are
+	// tried again. Every reason a turn is refused is transient — a session already
+	// running an exchange, a spend cap that resets, a developer who has not come
+	// back — so this is the interval at which those resolve rather than a backoff.
+	//
+	// InterpretationTurnTimeout bounds how long one interpretation turn is waited
+	// for before the run is left pending; the turn itself is not stopped, because
+	// chat_exchange_timeout is the real ceiling and abandoning a turn the developer
+	// can see would be worse than recording its proposal a minute later.
+	//
+	// InterpretationMaxPending bounds the queue of summaries held for developers who
+	// are away.
+	InterpretationRetryInterval string `json:"interpretation_retry_interval"`
+	InterpretationTurnTimeout   string `json:"interpretation_turn_timeout"`
+	InterpretationMaxPending    int64  `json:"interpretation_max_pending"`
+
 	CorsOrigins []string `json:"cors_origins"`
 }
 
@@ -285,6 +469,9 @@ func applyDefaults(config Config) {
 	}
 	if config.OntologyInvalidateInt == "" {
 		config.OntologyInvalidateInt = "5m"
+	}
+	if config.ImportRequestTimeout == "" {
+		config.ImportRequestTimeout = "30s"
 	}
 	if config.TimeseriesRequestTimeout == "" {
 		config.TimeseriesRequestTimeout = "60s"
@@ -414,6 +601,94 @@ func applyDefaults(config Config) {
 	}
 	if config.RelationMaxStored <= 0 {
 		config.RelationMaxStored = 200
+	}
+	if config.GithubApiUrl == "" {
+		config.GithubApiUrl = "https://api.github.com"
+	}
+	if config.GithubWebUrl == "" {
+		config.GithubWebUrl = "https://github.com"
+	}
+	if len(config.GithubScopes) == 0 {
+		// The two §5.11 item 1 names. `workflow` is not optional in practice: the
+		// scaffold writes .github/workflows/build.yml, and GitHub rejects a push that
+		// touches a workflow file from a token without it.
+		config.GithubScopes = []string{"repo", "workflow"}
+	}
+	if config.RepoCommandTimeout == "" {
+		config.RepoCommandTimeout = "300s"
+	}
+	if config.RepoMaxFileBytes <= 0 {
+		config.RepoMaxFileBytes = 1048576
+	}
+	if config.RepoMaxTreeEntries <= 0 {
+		config.RepoMaxTreeEntries = 4000
+	}
+	if config.RepoMaxCommandOutputBytes <= 0 {
+		config.RepoMaxCommandOutputBytes = 1048576
+	}
+	if config.OperatorLibRepo == "" {
+		config.OperatorLibRepo = "SENERGY-Platform/analytics-operator-lib-python"
+	}
+	if config.MlflowExperimentPrefix == "" {
+		config.MlflowExperimentPrefix = "ode"
+	}
+	if config.ExperimentDefaultEntrypoint == "" {
+		// The scaffold of §5.11 item 3 puts the Ray task in training.py, so the
+		// default points at what a scaffolded repository actually has.
+		config.ExperimentDefaultEntrypoint = "python training.py"
+	}
+	if config.ExperimentPollInterval == "" {
+		config.ExperimentPollInterval = "30s"
+	}
+	if config.ExperimentPollWindow == "" {
+		config.ExperimentPollWindow = "6h"
+	}
+	if config.ExperimentPollBatch <= 0 {
+		config.ExperimentPollBatch = 200
+	}
+	if config.ExperimentPollTimeout == "" {
+		config.ExperimentPollTimeout = "120s"
+	}
+	if config.InterpretationRetryInterval == "" {
+		config.InterpretationRetryInterval = "30s"
+	}
+	if config.InterpretationTurnTimeout == "" {
+		config.InterpretationTurnTimeout = "10m"
+	}
+	if config.InterpretationMaxPending <= 0 {
+		config.InterpretationMaxPending = 200
+	}
+	if config.ExperimentMaxPackageBytes <= 0 {
+		config.ExperimentMaxPackageBytes = 16777216
+	}
+	if config.ExperimentMaxEnvVars <= 0 {
+		config.ExperimentMaxEnvVars = 32
+	}
+	if config.ExperimentMaxEnvValueBytes <= 0 {
+		config.ExperimentMaxEnvValueBytes = 4096
+	}
+	if config.ExperimentMaxLogBytes <= 0 {
+		config.ExperimentMaxLogBytes = 1048576
+	}
+	if config.ExperimentRequestTimeout == "" {
+		config.ExperimentRequestTimeout = "30s"
+	}
+	if config.ExperimentUploadTimeout == "" {
+		config.ExperimentUploadTimeout = "300s"
+	}
+	if config.ExperimentEmbedTtl == "" {
+		config.ExperimentEmbedTtl = "10m"
+	}
+	if config.ExperimentEmbedTimeout == "" {
+		config.ExperimentEmbedTimeout = "5s"
+	}
+	if config.KeycloakRealm == "" {
+		config.KeycloakRealm = "master"
+	}
+	if config.JobTokenLifetime == "" {
+		// Matches jupyterhub_token_ttl, because the two bound the same thing from
+		// different directions: how long a developer's work can run unattended.
+		config.JobTokenLifetime = "12h"
 	}
 	if config.RelationDefaultLookback == "" {
 		// A month, not a week. An exception "at certain times of day" needs several

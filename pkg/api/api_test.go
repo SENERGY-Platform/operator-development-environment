@@ -248,7 +248,7 @@ func newHarness(t *testing.T) *harness {
 	// No ranker: this harness has no profiler, which is the deployment without a
 	// timescale-wrapper URL. Semantic selection still resolves an intent to series
 	// there, so the route is wired and the missing ranking is a note.
-	resolver, err := selection.New(ontologyRepo, staticOntology{index: apiOntology()}, deviceService, nil,
+	resolver, err := selection.New(ontologyRepo, staticOntology{index: apiOntology()}, deviceService, nil, nil,
 		selection.Options{})
 	if err != nil {
 		t.Fatalf("selection.New: %v", err)

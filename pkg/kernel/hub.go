@@ -111,7 +111,7 @@ func (h *Hub) Whoami(ctx context.Context) (Identity, error) {
 // CheckScopes verifies the credential can do the job, and reports what is only
 // half true.
 //
-// Scopes arrive expanded and filtered — `servers!user=jonah` rather than
+// Scopes arrive expanded and filtered — `servers!user=devuser` rather than
 // `servers` — so the comparison is on the base name. A filtered grant is not an
 // error, because a developer's own token is exactly that and is how this is
 // tried locally; it is returned as a warning, so a deployment that accidentally
@@ -169,7 +169,7 @@ type ServerState struct {
 	Ready bool `json:"ready"`
 	// Pending is "spawn" or "stop" while the Hub is working, empty otherwise.
 	Pending string `json:"pending,omitempty"`
-	// URL is the server's path under the Hub, e.g. /user/jonah/.
+	// URL is the server's path under the Hub, e.g. /user/devuser/.
 	URL          string     `json:"url,omitempty"`
 	Started      *time.Time `json:"started,omitempty"`
 	LastActivity *time.Time `json:"last_activity,omitempty"`

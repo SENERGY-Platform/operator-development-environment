@@ -35,6 +35,12 @@ var ErrNoKernel = errors.New("no kernel is running for this developer")
 // the SPA reports it as "still starting" rather than as a fault.
 var ErrSpawnTimeout = errors.New("the singleuser server did not become ready in time")
 
+// ErrNotFound is a workspace path that is not there. Distinguished from an
+// invalid one because the answers differ: a path outside the workspace is a
+// request ODE refuses, while a path that merely does not exist is a fact about
+// the developer's own filesystem.
+var ErrNotFound = errors.New("no such path in the workspace")
+
 // ErrBusy is a second execution on a kernel that is already running one. ODE
 // serialises per developer (see Service.Run), and this is what the second caller
 // is told rather than being silently queued behind an unbounded wait.
@@ -74,6 +80,6 @@ type ScopeError struct {
 func (e *ScopeError) Error() string {
 	return fmt.Sprintf(
 		"kernel: the jupyterhub credential (kind %q) is missing the scopes %v; it holds %v. "+
-			"Register ODE as a JupyterHub service with these scopes — see deploy/jupyterhub/README.md",
+			"Register ODE as a JupyterHub service holding exactly these scopes; the Hub side is cluster configuration",
 		e.Kind, e.Missing, e.Held)
 }

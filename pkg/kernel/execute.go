@@ -35,6 +35,15 @@ type executeOptions struct {
 	// Used for the token push of §5.6 item 4, which is ODE's business and not
 	// something the developer asked to run.
 	Silent bool
+	// Quiet keeps the execution out of the kernel's history like Silent does, but
+	// still delivers its output. It is what the workspace operations of
+	// workspace.go run under, because they read the answer off stdout.
+	//
+	// The distinction is not pedantry. The protocol says a silent execution should
+	// be "as quiet as possible", so an implementation is free to suppress its
+	// output entirely — fine for a token push that only needs to have succeeded,
+	// useless for a git command whose stdout is the result.
+	Quiet bool
 	// MaxOutputBytes bounds the text one execution may emit. Zero means unbounded,
 	// which is never what a caller wants and is only reachable from a test.
 	MaxOutputBytes int
@@ -63,7 +72,7 @@ func (c *connection) execute(
 	request, err := newMessage(c.session, c.username, msgExecuteRequest, channelShell, msgID, executeRequest{
 		Code:            code,
 		Silent:          opts.Silent,
-		StoreHistory:    !opts.Silent,
+		StoreHistory:    !opts.Silent && !opts.Quiet,
 		UserExpressions: map[string]any{},
 		AllowStdin:      false,
 		StopOnError:     true,
@@ -166,7 +175,11 @@ func (c *connection) relay(
 				continue
 			}
 
-			if opts.MaxOutputBytes > 0 && event.Kind != KindStatus {
+			// The budget bounds what the cell *emitted*, so the status transitions and
+			// the echo of the code that was sent are not charged against it. The echo
+			// matters: a workspace operation sends a cell of several kilobytes and would
+			// otherwise spend its whole allowance on hearing its own request back.
+			if opts.MaxOutputBytes > 0 && event.Kind != KindStatus && event.Kind != KindInput {
 				remaining := opts.MaxOutputBytes - written
 				if remaining <= 0 {
 					truncated = true

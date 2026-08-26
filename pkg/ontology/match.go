@@ -119,11 +119,40 @@ type Intent struct {
 	IncludeControlling bool
 }
 
+// The lists an Elision can name. They are the JSON keys of IntentMatch itself, so
+// a reader can find the list a count belongs to without a second mapping.
+const (
+	FieldMatchedFunctions     = "matched_functions"
+	FieldMatchedAspects       = "matched_aspects"
+	FieldMatchedDeviceClasses = "matched_device_classes"
+)
+
+// Elision records a list the match limit cut, so a caller reading five matches
+// knows whether five was the answer or the ceiling (D26).
+//
+// The shape is profiler.Elision's, field for field, but declared here rather than
+// reused: pkg/profiler imports pkg/ontology, so the dependency cannot run the
+// other way. Same idiom on the wire, forced into a second declaration by the
+// import direction — keep the two in step if either moves.
+type Elision struct {
+	Field string `json:"field"`
+	Total int    `json:"total"`
+	Shown int    `json:"shown"`
+	Fetch string `json:"fetch,omitempty"`
+}
+
 // IntentMatch is what an intent resolved to, plus what it did not.
 type IntentMatch struct {
 	Functions     []FunctionMatch    `json:"matched_functions"`
 	Aspects       []AspectMatch      `json:"matched_aspects"`
 	DeviceClasses []DeviceClassMatch `json:"matched_device_classes"`
+
+	// Elided names the lists the limit truncated, with the total that matched and
+	// the number kept. One entry per list that lost something, and nothing for a
+	// list that did not: a matcher that narrows silently is one whose caller cannot
+	// tell a complete answer from a prefix of one, which is the case the header's
+	// "nothing is auto-narrowed" rule is about.
+	Elided []Elision `json:"elided"`
 
 	// Terms is the intent as the matcher read it, so a caller can see that
 	// "PV-Anlage" became two searchable words.
@@ -142,6 +171,7 @@ func MatchIntent(snap *Snapshot, intent Intent) IntentMatch {
 		Functions:      []FunctionMatch{},
 		Aspects:        []AspectMatch{},
 		DeviceClasses:  []DeviceClassMatch{},
+		Elided:         []Elision{},
 		Terms:          []string{},
 		UnmatchedTerms: []string{},
 	}
@@ -188,7 +218,7 @@ func MatchIntent(snap *Snapshot, intent Intent) IntentMatch {
 	sortMatches(out.Functions, func(m FunctionMatch) (float64, string, string) {
 		return m.Matched.Score, m.Name, m.Id
 	})
-	out.Functions = truncate(out.Functions, limit)
+	out.Functions, out.Elided = truncate(out.Functions, limit, FieldMatchedFunctions, out.Elided)
 
 	for _, node := range snap.AspectNodes {
 		matched, ok := bestMatch(asked, label{BasisName, node.Name})
@@ -202,7 +232,7 @@ func MatchIntent(snap *Snapshot, intent Intent) IntentMatch {
 	sortMatches(out.Aspects, func(m AspectMatch) (float64, string, string) {
 		return m.Matched.Score, m.Name, m.Id
 	})
-	out.Aspects = truncate(out.Aspects, limit)
+	out.Aspects, out.Elided = truncate(out.Aspects, limit, FieldMatchedAspects, out.Elided)
 
 	for _, class := range snap.DeviceClasses {
 		matched, ok := bestMatch(asked, label{BasisName, class.Name})
@@ -216,7 +246,7 @@ func MatchIntent(snap *Snapshot, intent Intent) IntentMatch {
 	sortMatches(out.DeviceClasses, func(m DeviceClassMatch) (float64, string, string) {
 		return m.Matched.Score, m.Name, m.Id
 	})
-	out.DeviceClasses = truncate(out.DeviceClasses, limit)
+	out.DeviceClasses, out.Elided = truncate(out.DeviceClasses, limit, FieldMatchedDeviceClasses, out.Elided)
 
 	used := map[string]bool{}
 	for _, m := range out.Functions {
@@ -526,11 +556,18 @@ func sortMatches[T any](items []T, key func(T) (score float64, name string, id s
 	})
 }
 
-func truncate[T any](items []T, limit int) []T {
-	if limit > 0 && len(items) > limit {
-		return items[:limit]
+// truncate keeps the strongest `limit` items and records what that cost.
+//
+// The record is the point. Cutting silently leaves a caller unable to tell a
+// complete list from a prefix of one, and the caller here is often a model
+// choosing a function to profile: five of forty measuring functions read exactly
+// like all five there were. Nothing is appended when nothing was cut, so an empty
+// Elided means the lists are whole.
+func truncate[T any](items []T, limit int, field string, elided []Elision) ([]T, []Elision) {
+	if limit <= 0 || len(items) <= limit {
+		return items, elided
 	}
-	return items
+	return items[:limit], append(elided, Elision{Field: field, Total: len(items), Shown: limit})
 }
 
 func round2(value float64) float64 {

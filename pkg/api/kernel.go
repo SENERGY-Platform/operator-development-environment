@@ -211,6 +211,8 @@ func statusForKernelError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, kernel.ErrNoKernel):
 		return http.StatusNotFound
+	case errors.Is(err, kernel.ErrNotFound):
+		return http.StatusNotFound
 	case errors.Is(err, kernel.ErrBusy):
 		return http.StatusConflict
 	case errors.Is(err, kernel.ErrSpawnTimeout):

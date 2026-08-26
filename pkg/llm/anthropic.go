@@ -126,6 +126,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 		for stream.Next() {
 			event := stream.Current()
 			if err := message.Accumulate(event); err != nil {
+				deliverDone(ctx, events, DoneEvent(StopReasonError, p.usage(&message)))
 				send(ctx, events, ErrorEvent(fmt.Errorf("llm: %s: accumulate: %w", p.name, err)))
 				return
 			}
@@ -135,6 +136,9 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 			if delta, ok := event.AsAny().(anthropic.ContentBlockDeltaEvent); ok {
 				if text, ok := delta.Delta.AsAny().(anthropic.TextDelta); ok && text.Text != "" {
 					if !send(ctx, events, TextEvent(text.Text)) {
+						// send only fails when the caller has gone, which here means the
+						// developer stopped the turn. It was still billed.
+						deliverDone(ctx, events, DoneEvent(StopReasonCancelled, p.usage(&message)))
 						return
 					}
 				}
@@ -142,11 +146,23 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 		}
 
 		if err := stream.Err(); err != nil {
+			// The usage accumulated so far is reported rather than discarded. It is
+			// partial: message_start carries the input tokens, and the output count is
+			// only completed by the message_delta that arrives at the end, so a turn
+			// stopped in the middle knows what it read but not exactly what it wrote.
+			// Input dominates the case this matters for — a large context, streamed and
+			// then stopped — and the alternative was a zero usage and no accounting row
+			// at all, which made cancelling every turn a free way past §3.3's caps.
+			usage := p.usage(&message)
 			if errors.Is(err, context.Canceled) {
 				// A cancelled turn is the developer stopping it, not a failure.
 				slog.DebugContext(ctx, "anthropic stream cancelled", "provider", p.name)
+				deliverDone(ctx, events, DoneEvent(StopReasonCancelled, usage))
 				return
 			}
+			// Before the error event, because a consumer stops reading at one and
+			// would otherwise never see what the turn cost.
+			deliverDone(ctx, events, DoneEvent(StopReasonError, usage))
 			send(ctx, events, ErrorEvent(fmt.Errorf("llm: %s: %w", p.name, err)))
 			return
 		}
@@ -160,23 +176,33 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 				if !send(ctx, events, ToolCallEvent(ToolCall{
 					ID: toolUse.ID, Name: toolUse.Name, Input: input,
 				})) {
+					deliverDone(ctx, events, DoneEvent(StopReasonCancelled, p.usage(&message)))
 					return
 				}
 			}
 		}
 
-		usage := Usage{
-			InputTokens:       int(message.Usage.InputTokens),
-			OutputTokens:      int(message.Usage.OutputTokens),
-			CachedInputTokens: int(message.Usage.CacheReadInputTokens),
-			Provider:          p.name,
-			Model:             string(message.Model),
-		}
-		p.pricing.Apply(&usage)
-		send(ctx, events, DoneEvent(string(message.StopReason), usage))
+		send(ctx, events, DoneEvent(string(message.StopReason), p.usage(&message)))
 	}()
 
 	return events, nil
+}
+
+// usage is what the accumulated message says the turn cost, priced.
+//
+// Read through one function because three exit paths need it now: the turn that
+// finished, the turn that was cancelled and the turn that failed. All three were
+// billed.
+func (p *AnthropicProvider) usage(message *anthropic.Message) Usage {
+	usage := Usage{
+		InputTokens:       int(message.Usage.InputTokens),
+		OutputTokens:      int(message.Usage.OutputTokens),
+		CachedInputTokens: int(message.Usage.CacheReadInputTokens),
+		Provider:          p.name,
+		Model:             string(message.Model),
+	}
+	p.pricing.Apply(&usage)
+	return usage
 }
 
 func (p *AnthropicProvider) params(req Request) (anthropic.MessageNewParams, error) {
@@ -315,5 +341,26 @@ func send(ctx context.Context, events chan<- Event, event Event) bool {
 		return true
 	case <-ctx.Done():
 		return false
+	}
+}
+
+// deliverDone hands over the closing done event of a turn that ended early.
+//
+// send would be wrong here. Its select has two ready cases the moment ctx is
+// cancelled, and Go picks between ready cases at random — so the one event that
+// must arrive on a cancelled turn would arrive about half the time. The tokens
+// have been spent and §3.3's accounting reads them from this event, so it is
+// offered to the channel first and only given up on if the buffer is full *and*
+// the caller has gone, which is a caller that has stopped reading anyway. That
+// keeps it from blocking a provider goroutine for ever.
+func deliverDone(ctx context.Context, events chan<- Event, event Event) {
+	select {
+	case events <- event:
+		return
+	default:
+	}
+	select {
+	case events <- event:
+	case <-ctx.Done():
 	}
 }

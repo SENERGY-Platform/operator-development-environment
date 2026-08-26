@@ -197,6 +197,21 @@ func handleWebSocket(cfg Config, deps Deps) gin.HandlerFunc {
 			running:       map[string]context.CancelFunc{},
 			slots:         make(chan struct{}, concurrentPerConnection),
 		}
+		// §5.13's interpretation turn needs a developer's own credential, and this is
+		// the only place ODE has one that stays fresh: the SPA refreshes the token over
+		// this connection and sessionToken hands the current one to whatever is
+		// reading. Registering the *source* — not a copy of the token — is what lets a
+		// run that finished at three in the morning be interpreted the moment its
+		// developer opens the tab, without ODE ever holding a credential of its own
+		// (SPEC §3.1 item 3).
+		//
+		// Withdrawn when the connection ends, so a run whose developer has gone waits
+		// rather than being interpreted with a token nobody is behind any more.
+		if deps.Interpretations != nil {
+			disconnect := deps.Interpretations.Connected(parsed.Sub, session.token.Bearer)
+			defer disconnect()
+		}
+
 		session.serve(c.Request.Context())
 	}
 }

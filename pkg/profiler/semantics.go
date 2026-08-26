@@ -34,6 +34,16 @@ const (
 	// blunt — a meter rollover or a replacement drops to near zero, while sensor
 	// jitter on a counter moves it by parts per thousand.
 	resetDropRatio = 0.5
+	// maxResetShare is how many resets a counter may take beside the number of
+	// times it rose.
+	//
+	// It is what tells a register from a load that switches on and off, and the two
+	// populations sit an order of magnitude either side of it: a register rolling
+	// over daily and read every quarter hour comes to about 0.01, while a load that
+	// falls back to idle after every rise comes to 1. Both clear the monotonic
+	// threshold, because a long idle stretch is a run of deltas that are exactly
+	// zero rather than negative.
+	maxResetShare = 0.1
 	// statusDistinctMax separates a small set of named states from a larger
 	// labelled vocabulary.
 	statusDistinctMax = 10
@@ -117,12 +127,13 @@ func detectValueKind(column timeseries.Column, declaredType models.Type) kindRes
 		evidence.MonotonicRatio = round2(float64(nonNegative) / float64(len(deltas)))
 	}
 
+	resets := counterResetIndices(values)
 	kind := KindInstantaneous
 	confidence := Likely
 	switch {
 	case declaredType == models.Boolean || isBinaryValued(values, len(distinct)):
 		kind = KindBinary
-	case len(deltas) > 0 && evidence.MonotonicRatio >= monotonicThreshold && rises(values):
+	case len(deltas) > 0 && evidence.MonotonicRatio >= monotonicThreshold && risesLikeACounter(values, resets):
 		kind = KindCumulativeCounter
 	}
 	if n < confidentKindSize {
@@ -141,7 +152,7 @@ func detectValueKind(column timeseries.Column, declaredType models.Type) kindRes
 		Evidence:   Computed(evidence),
 	}
 	if kind == KindCumulativeCounter {
-		result.Resets = Computed(detectCounterResets(times, values))
+		result.Resets = Computed(resetTimes(times, resets))
 	} else {
 		result.Resets = Uncomputablef[[]time.Time](ReasonWrongKind,
 			"the series is %s, not a cumulative counter", kind)
@@ -149,11 +160,38 @@ func detectValueKind(column timeseries.Column, declaredType models.Type) kindRes
 	return result
 }
 
-// rises guards against calling a flat series a counter. A constant series has a
-// monotonic ratio of 1.0 because every delta is zero, which is a frozen sensor
-// rather than a meter.
-func rises(values []float64) bool {
-	return len(values) > 1 && values[len(values)-1] > values[0]
+// risesLikeACounter asks the two questions that separate a register from
+// everything else that clears the monotonic threshold: does it make forward
+// progress at all, and are the drops it takes exceptional rather than part of how
+// it works.
+//
+// Neither is what the endpoints answer. Comparing the last reading against the
+// first put a meter replaced or rolled over late in the raw window below where it
+// started, and reported a register whose monotonic ratio is 1.00 as
+// instantaneous — evidence contradicting its own verdict, the opposite of what
+// D23 asks for, and the misclassification M1b lists as must-never-happen. D25
+// anchors the raw window at the most recent data, so it landed preferentially on
+// the freshly replaced meters someone is actually looking at, and a register with
+// a daily rollover met it about half the time.
+//
+// Counting instead is what keeps an on/off load out. Long idle stretches make
+// almost every delta exactly zero — an oven idling at 5 W for twenty-three hours
+// a day has a monotonic ratio of 0.98 — so the monotonic threshold alone does not
+// exclude it, and it does rise between its own switch-offs. What it does not do is
+// rise more often than it falls back.
+func risesLikeACounter(values []float64, resets []int) bool {
+	increases := 0
+	for i := 1; i < len(values); i++ {
+		if values[i] > values[i-1] {
+			increases++
+		}
+	}
+	// A series that never rises is a frozen sensor rather than a meter, which is
+	// the case the monotonic ratio of a constant column reads as 1.0.
+	if increases == 0 {
+		return false
+	}
+	return float64(len(resets)) <= maxResetShare*float64(increases)
 }
 
 func isBinaryValued(values []float64, distinct int) bool {
@@ -168,14 +206,15 @@ func isBinaryValued(values []float64, distinct int) bool {
 	return true
 }
 
-// detectCounterResets finds the steps where a counter went backwards far enough
-// to be a rollover or a replacement rather than jitter.
+// counterResetIndices finds the steps where a counter went backwards far enough
+// to be a rollover or a replacement rather than jitter, in ascending order.
 //
 // This is what makes a counter usable at all: differencing across an unflagged
 // reset produces a large negative energy figure, and summing that into a daily
-// total silently loses a day.
-func detectCounterResets(times []time.Time, values []float64) []time.Time {
-	resets := []time.Time{}
+// total silently loses a day. It is also what the kind detector needs before it
+// has a kind, which is why the indices and their timestamps are separate steps.
+func counterResetIndices(values []float64) []int {
+	resets := []int{}
 	for i := 1; i < len(values); i++ {
 		previous, current := values[i-1], values[i]
 		if current >= previous {
@@ -185,14 +224,25 @@ func detectCounterResets(times []time.Time, values []float64) []time.Time {
 			// Below zero there is no meaningful drop ratio; a decrease from a
 			// non-positive counter reading is reported as a reset because a
 			// counter should not be there in the first place.
-			resets = append(resets, times[i])
+			resets = append(resets, i)
 			continue
 		}
 		if current < previous*(1-resetDropRatio) {
-			resets = append(resets, times[i])
+			resets = append(resets, i)
 		}
 	}
 	return resets
+}
+
+// resetTimes puts the reset indices back on the clock.
+func resetTimes(times []time.Time, resets []int) []time.Time {
+	out := make([]time.Time, 0, len(resets))
+	for _, index := range resets {
+		if index < len(times) {
+			out = append(out, times[index])
+		}
+	}
+	return out
 }
 
 // detectRangeViolation is the share of values outside the range the

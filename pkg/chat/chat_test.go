@@ -1240,3 +1240,581 @@ func TestAConfirmedToolUsesTheTokenOfTheDecision(t *testing.T) {
 		t.Errorf("the confirmed tool presented %q, want the token of the decision", presented[0])
 	}
 }
+
+// --- an unanswered tool_use, and what a cancelled turn costs ---
+
+// failingStore fails one store operation on demand, so the two paths that can
+// leave an assistant tool_use unanswered can be reached without a real database.
+type failingStore struct {
+	*MemoryStore
+	mux sync.Mutex
+	// putConfirmation fails PutConfirmation while set.
+	putConfirmation error
+	// toolResults fails AppendMessages for a message carrying tool results while
+	// set, which is the write that answers the assistant's tool_use.
+	toolResults error
+}
+
+func newFailingStore() *failingStore {
+	return &failingStore{MemoryStore: NewMemoryStore()}
+}
+
+func (s *failingStore) failPutConfirmation(err error) {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	s.putConfirmation = err
+}
+
+func (s *failingStore) failToolResults(err error) {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	s.toolResults = err
+}
+
+func (s *failingStore) PutConfirmation(ctx context.Context, confirmation Confirmation) error {
+	s.mux.Lock()
+	err := s.putConfirmation
+	s.mux.Unlock()
+	if err != nil {
+		return err
+	}
+	return s.MemoryStore.PutConfirmation(ctx, confirmation)
+}
+
+func (s *failingStore) AppendMessages(ctx context.Context, sessionID string, messages ...StoredMessage) error {
+	s.mux.Lock()
+	err := s.toolResults
+	s.mux.Unlock()
+	if err != nil {
+		for _, message := range messages {
+			for _, content := range message.Content {
+				if content.Type == llm.ContentToolResult {
+					return err
+				}
+			}
+		}
+	}
+	return s.MemoryStore.AppendMessages(ctx, sessionID, messages...)
+}
+
+// orphanedToolUses reports the tool_use ids in a history that nothing answers.
+// Anthropic and OpenAI both refuse such a conversation with a 400, so a session
+// that has one is unusable until it is repaired.
+func orphanedToolUses(messages []llm.Message) []string {
+	answered := map[string]bool{}
+	called := []string{}
+	for _, message := range messages {
+		for _, content := range message.Content {
+			switch content.Type {
+			case llm.ContentToolUse:
+				called = append(called, content.ToolUseID)
+			case llm.ContentToolResult:
+				answered[content.ToolUseID] = true
+			}
+		}
+	}
+	orphans := []string{}
+	for _, id := range called {
+		if !answered[id] {
+			orphans = append(orphans, id)
+		}
+	}
+	return orphans
+}
+
+func storedConversation(t *testing.T, h *harness, sessionID string) []llm.Message {
+	t.Helper()
+	stored, err := h.engine.store.Messages(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	out := make([]llm.Message, 0, len(stored))
+	for _, message := range stored {
+		out = append(out, message.Message())
+	}
+	return out
+}
+
+// newFailingHarness is newHarness with a store that can be made to fail.
+func newFailingHarness(t *testing.T, store *failingStore, turns ...[]llm.Event) *harness {
+	t.Helper()
+
+	tracker := &ranTools{}
+	registry, err := testTools(tracker)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	adminStore := admin.NewMemoryStore()
+	pricing := llm.NewPricing("EUR", llm.ModelPrice{
+		Model: "fake-model", InputPerMTok: 1000, OutputPerMTok: 1000,
+	})
+	adminService, err := admin.New(adminStore, pricing)
+	if err != nil {
+		t.Fatalf("admin: %v", err)
+	}
+	dispatcher, err := tools.NewDispatcher(registry, adminService, &fixedIDs{})
+	if err != nil {
+		t.Fatalf("dispatcher: %v", err)
+	}
+	provider := newScriptedProvider("fake", turns...)
+	providers, err := llm.NewRegistry(provider)
+	if err != nil {
+		t.Fatalf("providers: %v", err)
+	}
+	engine, err := New(context.Background(), providers, dispatcher, store, adminService, &fixedIDs{}, Options{})
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	return &harness{
+		engine: engine, provider: provider, tracker: tracker,
+		admin: adminService, registry: registry,
+	}
+}
+
+// A confirmation that cannot be recorded used to leave the assistant's tool_use
+// with no tool_result and let the loop run on. Both native protocols answer such a
+// history with a 400, and it is stored, so every later turn on that session fails
+// the same way with no repair short of deleting it.
+func TestAConfirmationThatCannotBeRecordedStillAnswersTheToolUse(t *testing.T) {
+	store := newFailingStore()
+	h := newFailingHarness(t, store,
+		toolTurn("call-1", "confirmed_tool"),
+		textTurn("carrying on regardless"),
+	)
+	store.failPutConfirmation(errors.New("the confirmation store is unavailable"))
+
+	session := h.session(t, tools.L0)
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "do it")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	if orphans := orphanedToolUses(storedConversation(t, h, session.ID)); len(orphans) > 0 {
+		t.Errorf("stored history has tool_use ids nothing answers: %v", orphans)
+	}
+	// And it says so: a caller that read "awaiting_confirmation" here would wait for
+	// a decision on a request that was never recorded.
+	done := find(drain(t, events), EventDone)
+	if len(done) != 1 || done[0].StopReason != StopConfirmationUnavailable {
+		t.Errorf("done = %+v, want one with stop reason %q", done, StopConfirmationUnavailable)
+	}
+	// The developer will never be asked, so the exchange has to stop rather than
+	// call the provider again on a history it cannot accept.
+	if calls := h.provider.callCount(); calls != 1 {
+		t.Errorf("provider calls = %d, want 1: the exchange must not continue past a "+
+			"confirmation it could not record", calls)
+	}
+}
+
+// The same property for the other path: the results were produced but the write
+// that answers the tool_use failed. The stored history is beyond saving in that
+// case, so what has to hold is that the *next* turn is still possible — the
+// conversation handed to the provider answers every call.
+func TestAFailedToolResultWriteLeavesTheSessionReplayable(t *testing.T) {
+	store := newFailingStore()
+	h := newFailingHarness(t, store,
+		toolTurn("call-1", "l0_tool"),
+		textTurn("first"),
+		textTurn("second"),
+	)
+	store.failToolResults(errors.New("the database is unavailable"))
+
+	session := h.session(t, tools.L0)
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	collected := drain(t, events)
+	if len(find(collected, EventError)) == 0 {
+		t.Fatal("the failed write was not reported to the developer")
+	}
+	// The stored history really is broken — otherwise this test would pass for the
+	// wrong reason and prove nothing about reading it back.
+	if orphans := orphanedToolUses(storedConversation(t, h, session.ID)); len(orphans) != 1 {
+		t.Fatalf("stored orphans = %v, want the one the failed write left behind", orphans)
+	}
+
+	// The database comes back, and the developer sends again.
+	store.failToolResults(nil)
+	resumed, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "again")
+	if err != nil {
+		t.Fatalf("second Send: %v", err)
+	}
+	drain(t, resumed)
+
+	sent := h.provider.lastRequest(t).Messages
+	if orphans := orphanedToolUses(sent); len(orphans) > 0 {
+		t.Errorf("the provider was sent tool_use ids nothing answers: %v; "+
+			"both native protocols refuse that with a 400", orphans)
+	}
+}
+
+// failOnceStore fails the first write of a turn's tool results and accepts the
+// next, which is what a cancelled context or a momentary database outage looks
+// like from here.
+type failOnceStore struct {
+	*MemoryStore
+	mux    sync.Mutex
+	failed bool
+}
+
+func (s *failOnceStore) AppendMessages(ctx context.Context, sessionID string, messages ...StoredMessage) error {
+	carriesResults := false
+	for _, message := range messages {
+		for _, content := range message.Content {
+			if content.Type == llm.ContentToolResult {
+				carriesResults = true
+			}
+		}
+	}
+	if carriesResults {
+		s.mux.Lock()
+		first := !s.failed
+		s.failed = true
+		s.mux.Unlock()
+		if first {
+			return context.Canceled
+		}
+	}
+	return s.MemoryStore.AppendMessages(ctx, sessionID, messages...)
+}
+
+// The write that answers a tool call fails for reasons that say nothing about
+// whether the store would accept it — the exchange's own deadline, or the
+// developer pressing stop. Retrying without that deadline is what keeps the
+// session from being left with a tool call nothing answers.
+func TestAToolResultWriteRefusedByACancelledContextIsRetried(t *testing.T) {
+	store := &failOnceStore{MemoryStore: NewMemoryStore()}
+	h := newFailingHarness(t, &failingStore{MemoryStore: store.MemoryStore})
+	// The harness above only exists for its collaborators; rebuild the engine over
+	// the store under test.
+	engine, err := New(context.Background(), h.engine.providers, h.engine.dispatcher, store,
+		h.engine.limits, &fixedIDs{}, Options{})
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	h.engine = engine
+	h.provider.turns = [][]llm.Event{toolTurn("call-1", "l0_tool"), textTurn("done")}
+
+	session := h.session(t, tools.L0)
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	collected := drain(t, events)
+
+	if errs := find(collected, EventError); len(errs) > 0 {
+		t.Errorf("the retry did not settle the write: %q", errs[0].Error)
+	}
+	if orphans := orphanedToolUses(storedConversation(t, h, session.ID)); len(orphans) > 0 {
+		t.Errorf("stored history has tool_use ids nothing answers: %v", orphans)
+	}
+}
+
+// writesThenFailsStore stores the message and then reports an error, which is
+// what a transaction that commits and an acknowledgement that never comes back
+// look like from the caller's side.
+type writesThenFailsStore struct {
+	*MemoryStore
+	mux    sync.Mutex
+	failed bool
+}
+
+func (s *writesThenFailsStore) AppendMessages(ctx context.Context, sessionID string, messages ...StoredMessage) error {
+	carriesResults := false
+	for _, message := range messages {
+		for _, content := range message.Content {
+			if content.Type == llm.ContentToolResult {
+				carriesResults = true
+			}
+		}
+	}
+	if err := s.MemoryStore.AppendMessages(ctx, sessionID, messages...); err != nil {
+		return err
+	}
+	if !carriesResults {
+		return nil
+	}
+	s.mux.Lock()
+	first := !s.failed
+	s.failed = true
+	s.mux.Unlock()
+	if first {
+		return context.Canceled
+	}
+	return nil
+}
+
+// The retry that saves a cancelled write must not answer the same tool call
+// twice. An unmatched tool_result is refused by both protocols just as an
+// unanswered tool_use is, so a retry that duplicated the write would produce the
+// very failure it exists to prevent.
+func TestTheToolResultRetryDoesNotAnswerTheSameCallTwice(t *testing.T) {
+	store := &writesThenFailsStore{MemoryStore: NewMemoryStore()}
+	h := newFailingHarness(t, &failingStore{MemoryStore: store.MemoryStore})
+	engine, err := New(context.Background(), h.engine.providers, h.engine.dispatcher, store,
+		h.engine.limits, &fixedIDs{}, Options{})
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	h.engine = engine
+	h.provider.turns = [][]llm.Event{toolTurn("call-1", "l0_tool"), textTurn("done")}
+
+	session := h.session(t, tools.L0)
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	answers := 0
+	for _, message := range storedConversation(t, h, session.ID) {
+		for _, content := range message.Content {
+			if content.Type == llm.ContentToolResult && content.ToolUseID == "call-1" {
+				answers++
+			}
+		}
+	}
+	if answers != 1 {
+		t.Errorf("tool_result blocks for call-1 = %d, want exactly 1", answers)
+	}
+}
+
+// An out-of-band provider (§5.7's CLI) runs ODE's tools itself over MCP and
+// reports what they returned. Those results were never stored, so every such turn
+// left the assistant's tool_use blocks unanswered — a history both native
+// protocols refuse, and one that a repair on read can only describe as lost. The
+// results are in hand; they belong in the history.
+func TestAnOutOfBandProvidersToolResultsAreStoredBesideItsCalls(t *testing.T) {
+	h := newHarness(t, []llm.Event{
+		llm.ToolCallEvent(llm.ToolCall{
+			ID: "call-1", Name: "list_devices", Input: json.RawMessage(`{}`),
+		}),
+		llm.ToolResultEvent(llm.ToolResult{
+			CallID: "call-1", Name: "list_devices",
+			Content: json.RawMessage(`{"devices":["oven"]}`),
+		}),
+		llm.TextEvent("you have one device."),
+		llm.DoneEvent("end_turn", llm.Usage{
+			InputTokens: 10, OutputTokens: 5, Provider: "fake", Model: "fake-model",
+		}),
+	}, textTurn("and it is an oven."))
+	h.provider.capabilities = llm.Capabilities{
+		Tools: true, ToolsOutOfBand: true, Streaming: true, System: true,
+		Models: []string{"fake-model"},
+	}
+
+	session := h.session(t, tools.L0)
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser,
+		session.ID, "which devices are there?")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	if orphans := orphanedToolUses(storedConversation(t, h, session.ID)); len(orphans) > 0 {
+		t.Errorf("stored history has tool_use ids nothing answers: %v", orphans)
+	}
+
+	// The next turn must carry what the tool actually returned. Reporting it as
+	// lost would be ODE telling the model, in the developer's voice, that a call it
+	// has the answer to did not complete.
+	resumed, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser,
+		session.ID, "which one?")
+	if err != nil {
+		t.Fatalf("second Send: %v", err)
+	}
+	drain(t, resumed)
+
+	replayed := ""
+	for _, message := range h.provider.lastRequest(t).Messages {
+		for _, content := range message.Content {
+			if content.Type == llm.ContentToolResult && content.ToolUseID == "call-1" {
+				replayed = content.ToolResult
+			}
+		}
+	}
+	if !strings.Contains(replayed, "oven") {
+		t.Errorf("the replayed result for call-1 is %q, want what the tool returned", replayed)
+	}
+}
+
+// cancellingProvider streams a first piece of text, waits for the exchange to be
+// cancelled, and only then finishes — reporting what the turn cost, which is what
+// a real adapter does once it stops discarding its accumulated usage.
+type cancellingProvider struct {
+	name  string
+	usage llm.Usage
+}
+
+func (p *cancellingProvider) Name() string { return p.name }
+func (p *cancellingProvider) Capabilities() llm.Capabilities {
+	return llm.Capabilities{Tools: true, Streaming: true, System: true, Models: []string{"fake-model"}}
+}
+
+func (p *cancellingProvider) Stream(ctx context.Context, _ llm.Request) (<-chan llm.Event, error) {
+	out := make(chan llm.Event, 16)
+	go func() {
+		defer close(out)
+		out <- llm.TextEvent("the answer begins")
+		<-ctx.Done()
+		// Ordered so the done event sits behind an event the consumer sees after the
+		// cancellation, which is the arrangement that used to lose it.
+		out <- llm.TextEvent(" and is cut off")
+		out <- llm.DoneEvent(llm.StopReasonCancelled, p.usage)
+	}()
+	return out, nil
+}
+
+// A turn the developer stops has still been paid for: the provider billed the
+// input it read and the output it produced. Recording nothing for it makes
+// cancellation a free, repeatable way past §3.3's caps — send a large context,
+// read the streamed answer, stop before the end.
+func TestACancelledTurnIsAccountedForWhatItAlreadySpent(t *testing.T) {
+	provider := &cancellingProvider{name: "cancelling", usage: llm.Usage{
+		InputTokens: 200000, OutputTokens: 120, Provider: "cancelling", Model: "fake-model",
+	}}
+	providers, err := llm.NewRegistry(provider)
+	if err != nil {
+		t.Fatalf("providers: %v", err)
+	}
+	tracker := &ranTools{}
+	registry, err := testTools(tracker)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	adminStore := admin.NewMemoryStore()
+	pricing := llm.NewPricing("EUR", llm.ModelPrice{
+		Model: "fake-model", InputPerMTok: 1000, OutputPerMTok: 1000,
+	})
+	adminService, err := admin.New(adminStore, pricing)
+	if err != nil {
+		t.Fatalf("admin: %v", err)
+	}
+	dispatcher, err := tools.NewDispatcher(registry, adminService, &fixedIDs{})
+	if err != nil {
+		t.Fatalf("dispatcher: %v", err)
+	}
+	engine, err := New(context.Background(), providers, dispatcher, NewMemoryStore(),
+		adminService, &fixedIDs{}, Options{})
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+
+	ctx := context.Background()
+	session, err := engine.CreateSession(ctx, testUser, CreateRequest{Tier: tools.L0})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	exchange, err := engine.Send(ctx, StaticToken(testToken), testUser, session.ID, "a very long question")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	events, detach := exchange.Subscribe()
+	defer detach()
+	for event := range events {
+		if event.Type == EventTextDelta {
+			if err := engine.CancelExchange(ctx, testUser, session.ID); err != nil {
+				t.Fatalf("CancelExchange: %v", err)
+			}
+			break
+		}
+	}
+	select {
+	case <-exchange.Done():
+	case <-time.After(20 * time.Second):
+		t.Fatal("the cancelled exchange did not finish")
+	}
+
+	spend, err := adminService.Spend(ctx, testUser, 0)
+	if err != nil {
+		t.Fatalf("Spend: %v", err)
+	}
+	if spend.Tokens == 0 {
+		t.Errorf("recorded spend = %+v; a cancelled turn was billed by the provider and "+
+			"must be accounted, or §3.3's caps are bypassed by stopping every turn", spend)
+	}
+}
+
+// Where the repaired tool_result lands matters as much as that it exists: both
+// protocols want every tool call answered at the start of the turn that follows
+// the assistant's, and Anthropic in particular will not take two user turns in a
+// row. So an existing user turn is extended rather than preceded by a new one.
+func TestRepairingAnUnansweredToolCallKeepsTheTurnStructureValid(t *testing.T) {
+	assistant := llm.Message{Role: llm.RoleAssistant, Content: []llm.Content{
+		{Type: llm.ContentToolUse, ToolUseID: "call-1", ToolName: "l0_tool"},
+		{Type: llm.ContentToolUse, ToolUseID: "call-2", ToolName: "l1_tool"},
+	}}
+
+	t.Run("merged into the user turn that follows", func(t *testing.T) {
+		repaired := repairUnansweredToolCalls([]llm.Message{
+			llm.UserText("go"),
+			assistant,
+			// Only one of the two calls was answered.
+			{Role: llm.RoleUser, Content: []llm.Content{
+				{Type: llm.ContentToolResult, ToolUseID: "call-2", ToolResult: `{"ran":true}`},
+				{Type: llm.ContentText, Text: "and what about the other one?"},
+			}},
+		})
+		if len(repaired) != 3 {
+			t.Fatalf("messages = %d, want 3: the answer belongs in the existing user turn", len(repaired))
+		}
+		if orphans := orphanedToolUses(repaired); len(orphans) > 0 {
+			t.Errorf("still unanswered: %v", orphans)
+		}
+		if got := repaired[2].Content[0]; got.Type != llm.ContentToolResult || !got.IsError {
+			t.Errorf("first block of the user turn = %+v, want the repaired tool result", got)
+		}
+		// The answer that was already there is kept as it was.
+		answers := map[string]string{}
+		for _, content := range repaired[2].Content {
+			if content.Type == llm.ContentToolResult {
+				answers[content.ToolUseID] = content.ToolResult
+			}
+		}
+		if answers["call-2"] != `{"ran":true}` {
+			t.Errorf("the real result for call-2 was replaced: %q", answers["call-2"])
+		}
+		if !strings.Contains(answers["call-1"], "not known") {
+			t.Errorf("the repaired result for call-1 claims to know something: %q", answers["call-1"])
+		}
+	})
+
+	t.Run("added as its own turn when nothing follows", func(t *testing.T) {
+		repaired := repairUnansweredToolCalls([]llm.Message{llm.UserText("go"), assistant})
+		if len(repaired) != 3 {
+			t.Fatalf("messages = %d, want a user turn appended", len(repaired))
+		}
+		if repaired[2].Role != llm.RoleUser {
+			t.Errorf("the repair turn has role %q, want user: both protocols carry a tool "+
+				"result on a user turn", repaired[2].Role)
+		}
+		if orphans := orphanedToolUses(repaired); len(orphans) > 0 {
+			t.Errorf("still unanswered: %v", orphans)
+		}
+	})
+
+	t.Run("a healthy conversation is left alone", func(t *testing.T) {
+		healthy := []llm.Message{
+			llm.UserText("go"),
+			{Role: llm.RoleAssistant, Content: []llm.Content{
+				{Type: llm.ContentToolUse, ToolUseID: "call-1", ToolName: "l0_tool"},
+			}},
+			{Role: llm.RoleUser, Content: []llm.Content{
+				{Type: llm.ContentToolResult, ToolUseID: "call-1", ToolResult: `{"ran":true}`},
+			}},
+			llm.AssistantText("done"),
+		}
+		repaired := repairUnansweredToolCalls(healthy)
+		if len(repaired) != len(healthy) {
+			t.Fatalf("messages = %d, want %d unchanged", len(repaired), len(healthy))
+		}
+		for i := range healthy {
+			if len(repaired[i].Content) != len(healthy[i].Content) {
+				t.Errorf("message %d was rewritten: %+v", i, repaired[i])
+			}
+		}
+	})
+}
