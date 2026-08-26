@@ -4,14 +4,14 @@
       "annotations": [],
       "author": "developer",
       "caption": "the week the inverter was replaced",
-      "chart_id": "druvqisileayrgf7gqzk6luzg4",
+      "chart_id": "3ymhlm6gjhapienixdubejx67q",
       "created_at": "2026-08-17T00:00:00Z",
       "created_by": "user-123",
       "markers": [],
       "series": [
         {
           "label": "PV power",
-          "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+          "profile_id": "d93d4d8d2bc1db8a003bbe219e112526c1282ff6855f21c0e9cbd6bf9ec77c9c",
           "ref": {
             "device_id": "urn:infai:ses:device:1",
             "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
@@ -31,14 +31,14 @@
       "annotations": [],
       "author": "developer",
       "caption": "the week the inverter was replaced",
-      "chart_id": "h3hpf2ujyf4j3ixyo67ibryoxa",
+      "chart_id": "kgtdhuid4zmoj2i4aukqukxnka",
       "created_at": "2026-08-17T00:00:00Z",
       "created_by": "user-123",
       "markers": [],
       "series": [
         {
           "label": "PV power",
-          "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+          "profile_id": "d93d4d8d2bc1db8a003bbe219e112526c1282ff6855f21c0e9cbd6bf9ec77c9c",
           "ref": {
             "device_id": "urn:infai:ses:device:1",
             "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",

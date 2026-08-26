@@ -31,6 +31,7 @@ import type {
 // view rather than being written again here: the columns mean the same thing in
 // both places, and a second table would be the one that drifts.
 import { CandidateRow, DEFAULT_DEVICE_LIMIT, ReadCounter, ScoreBar, seriesKey } from "./profiler";
+import { setParam, useLocation } from "./router";
 import { profilerSocket } from "./ws";
 import { Muted, Pane, Section, date, shortId, useAction } from "./ui";
 
@@ -47,13 +48,34 @@ import { Muted, Pane, Section, date, shortId, useAction } from "./ui";
  * selection is `propose_data_selection`, which needs developer confirmation and
  * arrives with the tool surface in M3.
  */
+/** The interactions the form offers, and the guard for one arriving from a URL. */
+const INTERACTIONS = ["event", "event+request", "request", "any"] as const;
+
 export function SelectionView() {
-  const [form, setForm] = useState({
-    intent: "",
-    limit: String(DEFAULT_DEVICE_LIMIT),
-    interaction: "event" as NonNullable<SelectionRequest["interaction"]>,
-    includeControlling: false,
-    rank: true,
+  const { params } = useLocation();
+
+  /*
+   * The URL restores the inputs, not the result.
+   *
+   * A resolution cannot be re-fetched by id — it is computed per request, and
+   * ranking it reads availability once per device, which is the slow part. So
+   * reloading this view puts the intent and its options back into the form and
+   * leaves the Resolve button to the developer, rather than spending their quota
+   * on a read they did not ask for a second time. Read once, at mount: after that
+   * the form is the developer's and the URL follows it on submit.
+   */
+  const [form, setForm] = useState(() => {
+    const interaction = params.get("interaction");
+    return {
+      intent: params.get("intent") ?? "",
+      limit: params.get("limit") ?? String(DEFAULT_DEVICE_LIMIT),
+      interaction: (INTERACTIONS as readonly string[]).includes(interaction ?? "")
+        ? (interaction as NonNullable<SelectionRequest["interaction"]>)
+        : ("event" as NonNullable<SelectionRequest["interaction"]>),
+      includeControlling: params.get("controlling") === "1",
+      // Ranking is on by default, so only its absence is written.
+      rank: params.get("rank") !== "0",
+    };
   });
 
   // Over the socket, like the candidate listing, and for the same reason: a
@@ -68,6 +90,13 @@ export function SelectionView() {
       event.preventDefault();
       const intent = form.intent.trim();
       if (!intent) return;
+      // Written on submit rather than on every keystroke: the parameters should
+      // describe the resolution on screen, not whatever is half-typed above it.
+      setParam("intent", intent);
+      setParam("limit", form.limit === String(DEFAULT_DEVICE_LIMIT) ? null : form.limit);
+      setParam("interaction", form.interaction === "event" ? null : form.interaction);
+      setParam("controlling", form.includeControlling ? "1" : null);
+      setParam("rank", form.rank ? null : "0");
       void resolve.invoke({
         intent,
         limit: deviceLimit(form.limit),

@@ -22,10 +22,10 @@
       },
       "created_at": "2026-08-17T00:00:00Z",
       "created_by": "user-123",
-      "decision_id": "6j7nyq66ldg452562e5bzrur5e",
+      "decision_id": "wft3ikggnry2uumw32y4doxzmm",
       "detector_version": "1.0.0",
       "note": "matches how the kitchen is used",
-      "relation_id": "8bfed85a8066205f14d5fa90c9511c62b0275096a60618919db01529de13ae00",
+      "relation_id": "87272b400eca1e8e16e7ca55dd15abd097bfeb1fea023df8a490bdc1f086909c",
       "rule_id": "rule-0c29b1557e8c1ecf9405a12f"
     }
   ],

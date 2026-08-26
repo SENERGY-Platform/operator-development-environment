@@ -33,6 +33,7 @@
   ],
   "include_descendants": false,
   "notes": [
+    "imports were not searched because no device-selection URL is configured: an operator can take an import as an input just as it can a device, so this answer may be missing a whole class of candidate",
     "ranking was skipped on request: the candidates are the ontology's, unordered by availability"
   ],
   "ontology_gaps": [],

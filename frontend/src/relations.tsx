@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
   type AspectTreeNode,
@@ -32,6 +32,7 @@ import {
   type RuleException,
   type SeriesRef,
 } from "./api";
+import { setParam, useLocation, useParam } from "./router";
 import { profilerSocket, type OperationPhase } from "./ws";
 import {
   ConfidenceTag,
@@ -42,6 +43,7 @@ import {
   Row,
   Section,
   dateTime,
+  describe,
   num,
   percent,
   round,
@@ -70,11 +72,31 @@ import {
  * missing — an absent rule read as "no such pattern" is the D24 mistake one level up.
  */
 export function RelationsView() {
-  const [aspect, setAspect] = useState<string>("");
-  const [includeDescendants, setIncludeDescendants] = useState(true);
+  const { params } = useLocation();
+  /*
+   * The URL restores two different kinds of thing here, and it restores them two
+   * different ways.
+   *
+   * The aspect and its descendants switch are *inputs*. Proposing sets from them
+   * is an ontology walk over every device under the node, so it stays behind the
+   * button: reloading puts the choice back into the form, not the proposal back on
+   * screen. Read once at mount; after that the form is the developer's and the URL
+   * follows it on submit.
+   *
+   * A relation is a *result*, and results here are stored. A pass profiles every
+   * participating service and then issues one aligned read — minutes, and the most
+   * expensive thing ODE asks of the platform — so re-running it on a reload would
+   * be indefensible. It is fetched back by id instead.
+   */
+  const [aspect, setAspect] = useState<string>(() => params.get("aspect") ?? "");
+  const [includeDescendants, setIncludeDescendants] = useState(
+    () => params.get("descendants") !== "0",
+  );
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [setId, setSetId] = useState<string | null>(null);
   const [phase, setPhase] = useState<OperationPhase | null>(null);
+  const [restored, setRestored] = useState<RelationProfile | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
 
   const loadTree = useCallback(() => api.aspectTree().then((r) => r.tree), []);
   const tree = useLoad(loadTree);
@@ -92,7 +114,33 @@ export function RelationsView() {
   );
 
   const proposal = propose.data;
-  const relation = relate.data;
+  const computed = relate.data;
+  const relationId = useParam("relation");
+
+  useEffect(() => {
+    // Nothing to fetch when the parameter names the pass that has just finished
+    // here — that would be a second read of a document already in hand.
+    if (!relationId || computed?.relation_id === relationId) {
+      setRestored(null);
+      setRestoreError(null);
+      return;
+    }
+    let cancelled = false;
+    setRestoreError(null);
+    api
+      .relation(relationId)
+      .then((document) => {
+        if (!cancelled) setRestored(document);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setRestoreError(describe(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [relationId, computed]);
+
+  const relation = computed ?? restored;
 
   const chosen = useMemo(() => {
     if (!proposal) return [];
@@ -114,6 +162,12 @@ export function RelationsView() {
       setSelected({});
       setSetId(null);
       relate.reset();
+      // A new proposal supersedes whatever relation was on screen, so the
+      // parameter naming it goes with it — the alternative is an address that
+      // still points at a document the pane no longer shows.
+      setParam("relation", null);
+      setParam("aspect", aspect);
+      setParam("descendants", includeDescendants ? null : "0");
       void propose.invoke({ aspectId: aspect, includeDescendants });
     },
     [aspect, includeDescendants, propose, relate],
@@ -136,15 +190,21 @@ export function RelationsView() {
   const run = useCallback(() => {
     if (chosen.length < 2) return;
     setPhase(null);
-    void relate.invoke({
-      members: chosen.map((member) => ({
-        device_id: member.ref.device_id,
-        service_id: member.ref.service_id,
-        variable_path: member.ref.variable_path,
-        label: member.label,
-      })),
-      candidate_set_id: setId ?? undefined,
-    });
+    void relate
+      .invoke({
+        members: chosen.map((member) => ({
+          device_id: member.ref.device_id,
+          service_id: member.ref.service_id,
+          variable_path: member.ref.variable_path,
+          label: member.label,
+        })),
+        candidate_set_id: setId ?? undefined,
+      })
+      .then((document) => {
+        // Recorded only once it exists. A pass that was cancelled or failed has no
+        // document to point at, and a parameter naming one would 404 on reload.
+        if (document) setParam("relation", document.relation_id);
+      });
   }, [chosen, relate, setId]);
 
   return (
@@ -252,6 +312,13 @@ export function RelationsView() {
           </p>
         )}
         {relate.error && <Muted>{relate.error}</Muted>}
+        {restoreError && (
+          <Muted>
+            The relation named in the address could not be read: {restoreError}. The store is
+            bounded, so an old relation may have been evicted; the pass can be run again from the
+            set on the left.
+          </Muted>
+        )}
         {relation && <RelationDocument relation={relation} />}
       </Pane>
     </main>

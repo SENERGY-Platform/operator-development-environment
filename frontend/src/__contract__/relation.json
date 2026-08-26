@@ -1,6 +1,6 @@
 {
   "buckets": 2880,
-  "cache_key": "8bfed85a8066205f14d5fa90c9511c62b0275096a60618919db01529de13ae00",
+  "cache_key": "87272b400eca1e8e16e7ca55dd15abd097bfeb1fea023df8a490bdc1f086909c",
   "candidate_rules": [
     {
       "advisory": "candidate only: not a configured rule, not an anomaly definition, and never read by an operator or a training job until a developer confirms it (§5.5, D28)",
@@ -72,7 +72,7 @@
       "device_name": "Oven",
       "kind": "instantaneous",
       "label": "the oven",
-      "profile_id": "f4b3d2e7cd393bc287a5b533956ced7318009a3cdec4f081a35277e228999672",
+      "profile_id": "03a590ee8b49966d11fe0c4c7643e06737c2f2d11a03862ea1a12d259028280f",
       "ref": {
         "device_id": "urn:infai:ses:device:1",
         "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
@@ -97,7 +97,7 @@
       "device_name": "Kitchen lights",
       "kind": "instantaneous",
       "label": "the kitchen lights",
-      "profile_id": "cb06a1ef73c6cb30bb5326b81e2cd770dbf32b61bcfadd85807a55973a19aeb0",
+      "profile_id": "34d6b500b4e9728c0be7e1a13bea235011b45eae3c6476e7c3bb07acfff1ee37",
       "ref": {
         "device_id": "urn:infai:ses:device:2",
         "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
@@ -232,7 +232,7 @@
     "profiles": 4,
     "values": 5
   },
-  "relation_id": "8bfed85a8066205f14d5fa90c9511c62b0275096a60618919db01529de13ae00",
+  "relation_id": "87272b400eca1e8e16e7ca55dd15abd097bfeb1fea023df8a490bdc1f086909c",
   "tier": "L1",
   "window": {
     "from": "2026-07-18T00:00:00Z",

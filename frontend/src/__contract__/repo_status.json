@@ -1,0 +1,48 @@
+{
+  "ahead": 0,
+  "behind": 0,
+  "branch": "main",
+  "changes": [],
+  "cloned": true,
+  "detached": false,
+  "dirty": false,
+  "diverged": false,
+  "fetched": true,
+  "head": "d8a098f4bbcd1a9235be7cfe95518d1a782b3ae5",
+  "head_date": "2026-08-26T12:53:31+02:00",
+  "head_subject": "Scaffold the operator",
+  "link": {
+    "clone_url": "file:///tmp/TestWriteRepoContractFixtures3488946866/002/operator.git",
+    "default_branch": "main",
+    "full_name": "jonah/pv-forecast",
+    "html_url": "https://github.test/jonah/pv-forecast",
+    "name": "pv-forecast",
+    "operator_lib_ref": "v1.3.1",
+    "owner": "jonah",
+    "path": "jonah/pv-forecast",
+    "private": false,
+    "scaffolded_at": "2026-08-26T10:53:31.705628328Z",
+    "selected_at": "2026-08-26T10:53:31.336535607Z"
+  },
+  "remote": "file:///tmp/TestWriteRepoContractFixtures3488946866/002/operator.git",
+  "scaffold": {
+    "complete": true,
+    "missing": [],
+    "present": [
+      "main.py",
+      "op.py",
+      "training.py",
+      "pyproject.toml",
+      "Dockerfile",
+      ".github/workflows/build.yml",
+      "operator.yaml",
+      "evaluation.yaml",
+      "tests/test_op.py",
+      ".gitignore",
+      "README.md"
+    ]
+  },
+  "unborn": false,
+  "upstream": "origin/main",
+  "workspace": "data/ode"
+}

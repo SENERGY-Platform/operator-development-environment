@@ -1,0 +1,49 @@
+{
+  "count": 2,
+  "experiments": [
+    {
+      "branch": "main",
+      "commit_sha": "62c1325827f736cd404d5a202bc060600e496ee8",
+      "ended_at": "2026-08-26T10:54:30.721Z",
+      "entrypoint": "python training.py",
+      "experiment_id": "ful5oilsvhpds3jej2uquqije4",
+      "mlflow_experiment_id": "1",
+      "mlflow_experiment_name": "ode/dev/jonah-pv-forecast",
+      "mlflow_run_id": "run-2",
+      "package_bytes": 7350,
+      "package_reused": false,
+      "package_uri": "gcs://_ray_pkg_5f77a68eec23d011baab2b309e2c62a53bf2a0a9707661970375aecd927d9fa6.zip",
+      "repository": "jonah/pv-forecast",
+      "scoped_credential": false,
+      "session_id": "27hhve7luinpi6wjslnvbfzncm",
+      "started_at": "2026-08-26T10:53:30.721Z",
+      "status": "SUCCEEDED",
+      "submission_id": "faehnhfp4pgnzdmcshbz3hpk54",
+      "submitted_at": "2026-08-26T10:53:30.72101519Z",
+      "updated_at": "2026-08-26T10:53:30.722358931Z"
+    },
+    {
+      "branch": "main",
+      "commit_sha": "ad5e02eaea5f2e56e5c21185e241a6df37ff4b3e",
+      "ended_at": "2026-08-26T10:54:30.434Z",
+      "entrypoint": "python training.py",
+      "experiment_id": "z53bhrw7steqessawbubj2sgra",
+      "mlflow_experiment_id": "1",
+      "mlflow_experiment_name": "ode/dev/jonah-pv-forecast",
+      "mlflow_run_id": "run-1",
+      "package_bytes": 8901,
+      "package_reused": false,
+      "package_uri": "gcs://_ray_pkg_fff32cf3e40bc11a22744a5e0b059b337e717e94a27e5a0f61f3e88b8a66d09c.zip",
+      "repository": "jonah/pv-forecast",
+      "scoped_credential": false,
+      "session_id": "27hhve7luinpi6wjslnvbfzncm",
+      "started_at": "2026-08-26T10:53:30.434Z",
+      "status": "SUCCEEDED",
+      "submission_id": "l5r2krcqzw42be6v2gosc2efx4",
+      "submitted_at": "2026-08-26T10:53:30.433668273Z",
+      "updated_at": "2026-08-26T10:53:30.435144285Z"
+    }
+  ],
+  "mlflow_url": "http://127.0.0.1:42226",
+  "ray_url": "http://127.0.0.1:41784"
+}

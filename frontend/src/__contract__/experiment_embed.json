@@ -1,0 +1,23 @@
+{
+  "as_of": "2026-08-26T10:53:30.850015348Z",
+  "cached": false,
+  "services": [
+    {
+      "embeddable": "yes",
+      "probed_at": "2026-08-26T10:53:30.850081439Z",
+      "reason": "neither X-Frame-Options nor a frame-ancestors directive is set, so nothing on the service's side refuses framing",
+      "service": "ray",
+      "status": 404,
+      "url": "http://127.0.0.1:41784"
+    },
+    {
+      "embeddable": "yes",
+      "probed_at": "2026-08-26T10:53:30.850025537Z",
+      "reason": "neither X-Frame-Options nor a frame-ancestors directive is set, so nothing on the service's side refuses framing",
+      "service": "mlflow",
+      "status": 404,
+      "url": "http://127.0.0.1:42226"
+    }
+  ],
+  "ttl": "10m0s"
+}

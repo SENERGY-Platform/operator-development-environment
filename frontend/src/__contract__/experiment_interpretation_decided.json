@@ -1,0 +1,117 @@
+{
+  "decision": {
+    "binding": false,
+    "created_at": "2026-08-26T10:53:30.975537683Z",
+    "created_by": "user-123",
+    "decision": "edited",
+    "decision_id": "nhaqmxco7ssfgty2elq5hfzxea",
+    "edited": "raise lookback_days to 270 rather than 365; the series does not go back further",
+    "experiment_id": "ful5oilsvhpds3jej2uquqije4",
+    "note": "the window is bounded by what the device has recorded",
+    "proposal_id": "3bf9caa0b7d16371",
+    "proposed": "hold folds at 5 and raise lookback_days from 180 to 365, so the next run isolates the window.",
+    "run_id": "run-2"
+  },
+  "decisions": [
+    {
+      "binding": false,
+      "created_at": "2026-08-26T10:53:30.975537683Z",
+      "created_by": "user-123",
+      "decision": "edited",
+      "decision_id": "nhaqmxco7ssfgty2elq5hfzxea",
+      "edited": "raise lookback_days to 270 rather than 365; the series does not go back further",
+      "experiment_id": "ful5oilsvhpds3jej2uquqije4",
+      "note": "the window is bounded by what the device has recorded",
+      "proposal_id": "3bf9caa0b7d16371",
+      "proposed": "hold folds at 5 and raise lookback_days from 180 to 365, so the next run isolates the window.",
+      "run_id": "run-2"
+    }
+  ],
+  "experiment_id": "ful5oilsvhpds3jej2uquqije4",
+  "interpretation": "rmse came in at 0.31, under the 0.35 you asked for, and down from 0.42 on the previous run. The gain could be the wider window or the extra folds — both moved.\n\nNEXT STEP: hold folds at 5 and raise lookback_days from 180 to 365, so the next run isolates the window.",
+  "interpreted_at": "2026-08-26T10:53:30.973035186Z",
+  "proposal": {
+    "proposal_id": "3bf9caa0b7d16371",
+    "text": "hold folds at 5 and raise lookback_days from 180 to 365, so the next run isolates the window."
+  },
+  "run_id": "run-2",
+  "session_id": "27hhve7luinpi6wjslnvbfzncm",
+  "summary": {
+    "commit_sha": "62c1325827f736cd404d5a202bc060600e496ee8",
+    "comparison_to_previous": [
+      {
+        "current": 0.78,
+        "delta": 0.07000000000000006,
+        "direction": "better",
+        "lower_is_better": false,
+        "metric": "r2",
+        "previous": 0.71
+      },
+      {
+        "current": 0.31,
+        "delta": -0.10999999999999999,
+        "direction": "better",
+        "lower_is_better": true,
+        "metric": "rmse",
+        "previous": 0.42
+      }
+    ],
+    "ended_at": "2026-08-26T10:55:00.721Z",
+    "entrypoint": "python training.py",
+    "evaluation_criteria": {
+      "goal": "minimise",
+      "goal_stated": true,
+      "lower_is_better": true,
+      "met": true,
+      "metric": "rmse",
+      "source": "evaluation.yaml at 62c1325, which is the developer's own (SPEC §5.8: no tool may modify it)",
+      "threshold": 0.35,
+      "value": 0.31
+    },
+    "experiment_id": "ful5oilsvhpds3jej2uquqije4",
+    "finished": true,
+    "metrics": {
+      "r2": 0.78,
+      "rmse": 0.31
+    },
+    "params": {
+      "folds": "5",
+      "lookback_days": "180"
+    },
+    "previous_run_id": "run-1",
+    "repository": "jonah/pv-forecast",
+    "resource_usage": {
+      "duration_s": 90
+    },
+    "run_id": "run-2",
+    "secondary_criteria": [
+      {
+        "goal": "minimise",
+        "goal_stated": true,
+        "lower_is_better": true,
+        "met": {
+          "detail": "the run logged no mape; it logged r2, rmse. A criterion whose metric was never recorded is not a criterion the run missed",
+          "reason": "metric_not_reported",
+          "status": "not_computed"
+        },
+        "metric": "mape",
+        "source": "evaluation.yaml at 62c1325, which is the developer's own (SPEC §5.8: no tool may modify it)",
+        "threshold": 5
+      }
+    ],
+    "started_at": "2026-08-26T10:53:30.721Z",
+    "status": "SUCCEEDED",
+    "submission_id": "faehnhfp4pgnzdmcshbz3hpk54",
+    "tags": {
+      "branch": "main",
+      "commit_sha": "62c1325827f736cd404d5a202bc060600e496ee8",
+      "entrypoint": "python training.py",
+      "ode_experiment_id": "ful5oilsvhpds3jej2uquqije4",
+      "ode_source": "ode",
+      "ray_submission_id": "faehnhfp4pgnzdmcshbz3hpk54",
+      "repository": "jonah/pv-forecast",
+      "session_id": "27hhve7luinpi6wjslnvbfzncm"
+    }
+  },
+  "summary_at": "2026-08-26T10:54:30.721Z"
+}

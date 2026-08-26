@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 
@@ -17,5 +18,19 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
+  },
+  test: {
+    // Only the tests. A `*.test.ts` under src is never reached from index.html, so
+    // it is not in the bundle either — Rollup follows the entry, not the folder.
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    // node by default, because most of what is worth testing here is pure. The
+    // files that need a document say so with `// @vitest-environment jsdom`, which
+    // keeps the requirement next to the code that has it.
+    environment: "node",
+    // keycloak.ts refuses to load without this, on purpose: a deployment address
+    // must not be a committed default. The tests still have to import the modules
+    // that reach it, so they get an obviously-fake one — if a test ever talks to
+    // this host, that is the bug rather than a flake.
+    env: { VITE_KEYCLOAK_URL: "https://keycloak.invalid/auth" },
   },
 });

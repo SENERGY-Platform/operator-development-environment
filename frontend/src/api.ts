@@ -22,6 +22,13 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /**
+     * The error body, when the backend sent one. Kept because some refusals carry
+     * more than a sentence: the repo routes answer 409 with a `needs` field naming
+     * the step the developer has not taken, and the pane shows a connect card or a
+     * repository picker rather than an error on the strength of it.
+     */
+    readonly body?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "ApiError";
@@ -30,6 +37,12 @@ export class ApiError extends Error {
   /** 403 is final: the user lacks the developer role, or may not see this. */
   get isForbidden(): boolean {
     return this.status === 403;
+  }
+
+  /** What the backend says is missing, for the refusals that say so. */
+  get needs(): string | undefined {
+    const needs = this.body?.needs;
+    return typeof needs === "string" ? needs : undefined;
   }
 }
 
@@ -43,13 +56,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     let message = response.statusText;
+    let body: Record<string, unknown> | undefined;
     try {
-      const body = (await response.json()) as { error?: string };
-      if (body.error) message = body.error;
+      body = (await response.json()) as Record<string, unknown>;
+      if (typeof body.error === "string") message = body.error;
     } catch {
       // Response had no JSON body; the status text stands.
     }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, body);
   }
   // 204 carries no body, and calling json() on one throws. DELETE answers 204, so
   // this is the normal path rather than an edge case.
@@ -82,7 +96,12 @@ export interface Session {
     kernel: boolean;
     charts: boolean;
     relations: boolean;
+    repo: boolean;
+    experiments: boolean;
   };
+  /** Present only when the repo surface is configured (M7): what the GitHub
+   * consent screen will ask for, so the SPA can say it before GitHub does. */
+  repo?: { scopes: string[] };
   /** Present only when the LLM surface is configured (M3). */
   max_exposure_tier?: Tier;
   limits?: Limits;
@@ -90,6 +109,12 @@ export interface Session {
   providers?: ProviderInfo[];
   /** Present only when an execution backend is configured (M4). */
   kernel?: { workspace: string; kernel: string };
+  /** Present only when Ray and MLflow are configured (M8). The two URLs are what a
+   * browser should open — routinely a different host from the API base ODE calls —
+   * and `scoped_job_token` says whether a job gets a credential of its own
+   * (§3.1 item 6) or the developer's session token. The pane needs that before a
+   * developer starts a long run, not after one dies at hour two. */
+  experiments?: { ray_url: string; mlflow_url: string; scoped_job_token: boolean };
 }
 
 export interface AspectTreeNode {
@@ -427,6 +452,20 @@ export interface PeriodEvidence {
   method: string;
   strength: number;
   label: string;
+  /**
+   * How far either side of `period_s` the method cannot tell one period from
+   * another: half a bucket for a lag, half the spread between neighbouring bins
+   * for a frequency.
+   *
+   * Worth rendering rather than hiding. A period alone invites a precision that is
+   * not there — an FFT bin at 720 buckets covers 160h to 206h and was printed as
+   * "648000.0" seconds, which reads as a distinct cycle beside the 604800 the ACF
+   * found rather than as the same one seen through a wider lens.
+   *
+   * Absent on evidence computed before detector version 1.1.0, and omitted where
+   * the method reports no resolution.
+   */
+  resolution_s?: number;
 }
 
 export interface Trend {
@@ -1031,6 +1070,22 @@ export interface ChatMessage {
   role: ChatRole;
   content: ChatContent[];
   created_at: string;
+  /** Who put the message in the conversation (M9, §5.13).
+   *
+   * Absent or `""` is the developer, which is what every message written before M9
+   * was. `"ode"` is a message **ODE composed and injected** — today that means a
+   * finished run's structured summary, which the assistant then answers as though
+   * it had been asked.
+   *
+   * `replay()` has to render the two differently. An injected message carries a
+   * block of JSON and is stored with the user role because that is what a model
+   * reads as input; showing it in the developer's own voice would be a lie about
+   * who said it. */
+  origin?: "" | "ode";
+  /** What an injected message is about — the experiment id, for a run summary — so
+   * a pane can render it as a result card rather than as prose, and so a reader can
+   * find the message belonging to one run without parsing it. */
+  subject?: string;
 }
 
 export interface PendingConfirmation {
@@ -1621,6 +1676,495 @@ export interface KernelEvent {
   error?: string;
 }
 
+
+// --- M7 ---
+
+/** The GitHub account ODE holds a token for. Never the token (§5.11 item 1). */
+export interface GitHubIdentity {
+  login: string;
+  name?: string;
+  avatar_url?: string;
+  scopes?: string[];
+  connected_at: string;
+  /**
+   * What the grant lacks of what ODE asked for. A developer can narrow it on the
+   * consent screen, and without `workflow` a push that touches the build workflow
+   * is rejected — so this is shown before the first push, not after.
+   */
+  missing_scopes?: string[];
+}
+
+export interface RepoConnection {
+  connected: boolean;
+  scopes_requested: string[];
+  identity?: GitHubIdentity;
+}
+
+export interface RepoAuthorize {
+  url: string;
+  state: string;
+  scopes: string[];
+  /** Reported because it has to match the OAuth app's registered callback exactly. */
+  redirect_uri: string;
+}
+
+export interface GitHubRepository {
+  full_name: string;
+  name: string;
+  owner: string;
+  description?: string;
+  private: boolean;
+  default_branch: string;
+  clone_url: string;
+  html_url: string;
+  pushed_at?: string;
+  /** False means selecting it will work and pushing will not. */
+  can_push: boolean;
+  empty: boolean;
+}
+
+export interface RepoLink {
+  full_name: string;
+  name: string;
+  owner: string;
+  default_branch: string;
+  private: boolean;
+  clone_url: string;
+  html_url: string;
+  /** Where the checkout is, relative to the workspace on the developer's PVC. */
+  path: string;
+  /** The Operator Lib the scaffold pinned (D15). Absent if ODE did not scaffold it. */
+  operator_lib_ref?: string;
+  scaffolded_at?: string;
+  selected_at: string;
+}
+
+/** One entry of `git status`. A file can be both staged and unstaged. */
+export interface RepoChange {
+  path: string;
+  kind: "modified" | "added" | "deleted" | "renamed" | "copied" | "untracked" | "unmerged" | "typechange";
+  staged: boolean;
+  unstaged: boolean;
+  renamed_from?: string;
+}
+
+export interface RepoScaffoldState {
+  present: string[];
+  missing: string[];
+  complete: boolean;
+}
+
+export interface RepoStatus {
+  link: RepoLink;
+  cloned: boolean;
+  workspace: string;
+  branch?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  /** Ahead and behind at once: the case that needs a human. */
+  diverged: boolean;
+  detached: boolean;
+  /** A clone of an empty repository: a branch with no commits yet. */
+  unborn: boolean;
+  head?: string;
+  head_subject?: string;
+  head_date?: string;
+  remote?: string;
+  remote_mismatch?: boolean;
+  changes: RepoChange[];
+  dirty: boolean;
+  /** Whether this answer included a fetch. A stale zero is not agreement. */
+  fetched: boolean;
+  scaffold: RepoScaffoldState;
+}
+
+export interface RepoScaffoldResult {
+  written: string[];
+  skipped: string[];
+  operator_lib_ref: string;
+  hint: string;
+}
+
+export interface RepoCommit {
+  sha: string;
+  subject: string;
+  files: number;
+  branch: string;
+}
+
+export interface RepoPush {
+  branch: string;
+  remote: string;
+  /** git's own reporting: a rejected push and a pull request URL both arrive here. */
+  output?: string;
+  head_sha?: string;
+}
+
+/** One node of the working copy's tree. `.git` is the only thing excluded (D14). */
+export interface RepoNode {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  size: number;
+  modified?: string;
+  children?: RepoNode[];
+  /** Entries the walk was not allowed to report. */
+  elided?: number;
+}
+
+export interface RepoTree {
+  root: string;
+  tree: RepoNode;
+  excluded: string[];
+}
+
+export interface RepoFile {
+  path: string;
+  size: number;
+  text: string;
+  /** A binary file is shown as one rather than handed to an editor that would corrupt it. */
+  binary: boolean;
+  truncated: boolean;
+  modified?: string;
+  language?: string;
+}
+
+export interface RepoWriteResult {
+  path: string;
+  size: number;
+  repository: string;
+  /** Always false. Writing a file changes the working copy and nothing else. */
+  committed: boolean;
+}
+
+// --- M8 ---
+
+/** A Ray job's state, in Ray's own vocabulary (§5.12).
+ *
+ * Not translated: these are the strings the Ray dashboard beside the pane shows,
+ * and a second vocabulary would give a developer two answers to reconcile. */
+export type ExperimentStatus = "PENDING" | "RUNNING" | "STOPPED" | "SUCCEEDED" | "FAILED";
+
+/** One submitted experiment, as ODE records it.
+ *
+ * This is the only record of the join between a Ray submission, an MLflow run and
+ * the commit the job was built from: Ray forgets a submission when the cluster
+ * restarts, and MLflow knows the run but not which working copy produced it. */
+export interface Experiment {
+  experiment_id: string;
+  /** Ray's own id for the job. ODE mints it rather than letting Ray, so a
+   * resubmitted request is refused instead of becoming a second job. */
+  submission_id: string;
+  mlflow_run_id: string;
+  mlflow_experiment_id: string;
+  /** The per-user experiment name of D17, deterministic from the developer and the
+   * repository — so a developer's runs land in one experiment across sessions. */
+  mlflow_experiment_name: string;
+  /** The chat session it was launched from, when it was launched from one. */
+  session_id?: string;
+  repository: string;
+  /** The commit the job package was built from. §5.11 item 7: every run is
+   * reproducible from a specific code state, and this is that state. */
+  commit_sha: string;
+  branch?: string;
+  entrypoint: string;
+  /** The `gcs://` URI of the working directory Ray unpacks. Its name is a hash of
+   * the archive, which is why two launches from one commit share it. */
+  package_uri: string;
+  package_bytes: number;
+  /** True when the archive was already on the cluster and was not uploaded again. */
+  package_reused: boolean;
+  status: ExperimentStatus;
+  /** Ray's own message for a job that failed. Never a log. */
+  message?: string;
+  /** Whether the job carries a token minted for it (§3.1 item 6) or the
+   * developer's session token. False is a supported deployment and a stated
+   * limitation, not a fault — see `ExperimentCredential`. */
+  scoped_credential: boolean;
+  submitted_at: string;
+  updated_at: string;
+  started_at?: string;
+  ended_at?: string;
+}
+
+/** What the job will authenticate to the platform with, and for how long.
+ *
+ * Part of the launch answer rather than a log line because the difference decides
+ * whether a long run is viable: a job reads its training data from the platform
+ * directly (§5.3.4), and a session token expires while the run is still going. */
+export interface ExperimentCredential {
+  /** "exchanged" — minted for this job through the Keycloak token exchange — or
+   * "session", the developer's own. */
+  source: "exchanged" | "session";
+  /** As the issuer reported it. Absent for a session token: ODE does not validate
+   * tokens (§3.1 step 2) and does not read their expiry. */
+  expires_in_seconds?: number;
+  /** The limitation, stated. True means a run outliving the developer's session
+   * loses its platform access partway through. */
+  expires_with_session: boolean;
+  /** The sentence to show. Written by the backend so every surface says the same. */
+  note?: string;
+}
+
+/** One submission, made. */
+export interface ExperimentLaunch extends Experiment {
+  credential: ExperimentCredential;
+  /** Where a browser should open MLflow, so a run can be opened without the SPA
+   * knowing ODE's configuration. */
+  mlflow_tracking_uri?: string;
+  /** Things that did not stop the launch but that the developer should read — a
+   * token exchange that answered with a shorter lifetime than configured, say. */
+  warnings?: string[];
+}
+
+/** One metric, this run against the previous one (§5.13).
+ *
+ * `lower_is_better` is beside `direction` on purpose: whether a smaller number is
+ * an improvement is a property of the metric, and without the developer's
+ * evaluation criteria the backend goes by the metric's *name*. Showing the rule
+ * beside the verdict is what keeps it from reading as a judgement. */
+export interface MetricDelta {
+  metric: string;
+  previous: number;
+  current: number;
+  delta: number;
+  direction: "better" | "worse" | "unchanged";
+  lower_is_better: boolean;
+}
+
+/** An explicit non-result about an evaluation criterion (§5.4.6, D24).
+ *
+ * The same `status: "not_computed"` word `NotComputed` above uses, on purpose: a
+ * reader — and an assistant — should meet one vocabulary for "this could not be
+ * determined", not one per feature. The *reasons* are their own set, because the
+ * profiler's closed list is about reading a series and these are about reading a
+ * file in a repository. Rendering is shared; the repairs are not. */
+export interface CriterionNotComputed {
+  status: "not_computed";
+  /** Each names a different repair, which is the whole point of telling them
+   * apart. `no_developer_credential` in particular is not a fault: the summary was
+   * built when the run finished, with ODE's own Ray and MLflow credential and
+   * nobody connected, and `evaluation.yaml` is read on the developer's behalf. */
+  reason:
+    | "no_criteria_file"
+    | "criteria_unreadable"
+    | "criteria_unparseable"
+    | "no_criterion_stated"
+    | "no_threshold"
+    | "metric_not_reported"
+    | "no_developer_credential";
+  detail: string;
+}
+
+/** Whether a criterion was met: `true`, `false`, or an explicit non-result.
+ *
+ * **The third arm is not a nicety.** A missing `evaluation.yaml`, a file outside
+ * the subset ODE reads, a metric the run never logged and a summary built before
+ * the developer was back are four different facts, and a boolean would have
+ * flattened every one of them to "the run missed the target". Render the object
+ * form as *unknown with a reason*, never as a failure. */
+export type Verdict = boolean | CriterionNotComputed;
+
+/** One of the developer's evaluation criteria, applied to a run (§5.13, M9).
+ *
+ * Read out of `evaluation.yaml` **at the run's commit** — a criterion is part of
+ * the code state a run came from (§5.11 item 7), so a threshold the developer
+ * tightened while the job ran does not retroactively fail it. ODE reads that file
+ * and never writes it: §5.8 denies every tool that could, and `write_file` refuses
+ * the path.
+ *
+ * Where the developer's file names no metric, a criterion the run *tagged itself
+ * with* is the fallback, and `source` says which of the two this is. */
+export interface EvaluationCriterion {
+  /** Empty exactly when there was no criterion to evaluate; `met` then says why. */
+  metric?: string;
+  /** Absent when the criteria file names a metric and no target for it, and when
+   * there was no criterion at all. Present — and possibly `0` — when the developer
+   * wrote one, which the scaffold's own file does. Rendering an absent threshold as
+   * zero would show a target nobody set. */
+  threshold?: number;
+  /** What the run logged for the metric. Absent — not zero — when it logged none,
+   * because a metric of exactly zero is a real reading. */
+  value?: number;
+  met: Verdict;
+  /** `goal_stated` says whether the file named the direction or whether it was
+   * inferred from the metric's name. Shown beside the verdict for the reason
+   * `lower_is_better` is shown beside a delta: a verdict whose rule is invisible
+   * reads as a judgement. */
+  goal: "minimise" | "maximise";
+  goal_stated: boolean;
+  lower_is_better: boolean;
+  /** Where the criterion came from, so nobody reads it as ODE's judgement. */
+  source: string;
+}
+
+export interface ExperimentResourceUsage {
+  duration_s: number;
+  /** Only when the job logged a memory metric. Absent rather than zero, for D24's
+   * reason: a zero read as "used no memory" would be a fabricated finding. */
+  peak_memory_mb?: number;
+  peak_memory_source?: string;
+}
+
+/** §5.13's compact structured summary — the only shape a finished run is ever
+ * reduced to, for the pane and for the assistant alike.
+ *
+ * Params, metrics and tags. **Never logs**, never stdout, never an artifact: an
+ * LLM reading a training process's raw output is the same category of mistake as
+ * an LLM reading a raw series (§4). Logs have their own route. */
+export interface ExperimentSummary {
+  run_id: string;
+  experiment_id: string;
+  submission_id: string;
+  commit_sha: string;
+  repository?: string;
+  entrypoint?: string;
+  status: ExperimentStatus;
+  /** Whether the run is in a state it will not leave. A false here means the
+   * metrics below are a snapshot rather than a result. */
+  finished: boolean;
+  params: Record<string, string>;
+  /** The latest value per key, not the history. */
+  metrics: Record<string, number>;
+  tags: Record<string, string>;
+  /** Empty for the first run of an experiment, which the note says in words —
+   * an empty comparison means "nothing to compare against", never "no change". */
+  comparison_to_previous: MetricDelta[];
+  /** Always present, never absent. A run with no criteria file, a file ODE could
+   * not read, a summary built before the developer was back — each is a criterion
+   * whose `met` carries a reason, not a criterion that is missing. */
+  evaluation_criteria: EvaluationCriterion;
+  /** The other metrics the file asks to watch. Beyond §5.13's literal shape, and
+   * present because the scaffold's own `evaluation.yaml` has a `secondary_metrics`
+   * key and dropping it would make the summary a partial reading of it. */
+  secondary_criteria?: EvaluationCriterion[];
+  resource_usage: ExperimentResourceUsage;
+  /** What the comparison is against, so a claim about an improvement is checkable. */
+  previous_run_id?: string;
+  started_at?: string;
+  ended_at?: string;
+  note?: string;
+}
+
+/** The concrete next adjustment an interpretation proposed, or why there is none
+ * (§5.13, M9).
+ *
+ * A struct rather than a string because "the assistant proposed nothing" and "the
+ * assistant proposed the empty string" are different facts. `text` is present
+ * exactly when `status` is absent. */
+export interface Proposal {
+  /** A fingerprint of what was proposed, for this experiment. A decision is keyed
+   * by it, which is what makes a rejection survive the run being interpreted
+   * again — the same wording produces the same id. */
+  proposal_id?: string;
+  text?: string;
+  status?: "not_computed";
+  /** `not_interpreted_yet` is a turn that has not run because the developer has
+   * not been connected since the run finished; `no_proposal_stated` is an assistant
+   * that read the run and named no next step. Two different facts, and neither is
+   * "there is nothing to change". */
+  reason?: "no_proposal_stated" | "not_interpreted_yet";
+  detail?: string;
+}
+
+/** The three answers of §5.13's last sentence. */
+export type ProposalDecisionKind = "accepted" | "edited" | "rejected";
+
+/** One developer's verdict on one proposal, append-only.
+ *
+ * The same shape a `RuleDecision` and a `ProfileOverrideRecord` have, and for the
+ * same reason: a developer who changes their mind adds a record rather than
+ * replacing one, and "the assistant proposed X and the developer edited it to Y" is
+ * the finding. */
+export interface ProposalDecision {
+  decision_id: string;
+  created_at: string;
+  created_by: string;
+  experiment_id: string;
+  run_id?: string;
+  proposal_id: string;
+  decision: ProposalDecisionKind;
+  /** The assistant's own wording, copied into the record so it stays readable
+   * after the interpretation it came from has been recomputed. */
+  proposed: string;
+  /** The developer's own form of the adjustment. Present only for an edit. */
+  edited?: string;
+  note?: string;
+  /** **Always false**, and serialised rather than omitted so a reader meets D28
+   * rather than having to know it: accepting a proposal records agreement and
+   * changes nothing. */
+  binding: boolean;
+}
+
+/** One finished run, interpreted (§5.13).
+ *
+ * Recomputed rather than stored: the summary comes from MLflow, the interpretation
+ * from the conversation the assistant wrote it in, and only the decisions come from
+ * a table — the split §5.4.3 makes between a recomputable artifact and a record of
+ * human judgement.
+ *
+ * `interpreted_at` absent means the turn has not run yet, which for a run whose
+ * developer has not been connected since it finished is the normal state rather
+ * than a failure: the summary is built with ODE's own Ray and MLflow credential,
+ * and the turn waits for the developer's own token (§3.1 items 3 and 5). */
+export interface Interpretation {
+  experiment_id: string;
+  run_id: string;
+  session_id: string;
+  summary: ExperimentSummary;
+  /** When the summary was built, which is when the run finished — not when the
+   * developer came back to it. */
+  summary_at: string;
+  interpretation: string;
+  interpreted_at?: string;
+  proposal: Proposal;
+  /** The decision that currently stands, merged at read time. */
+  decision?: ProposalDecision;
+  /** The whole log for this proposal, oldest first. */
+  decisions: ProposalDecision[];
+}
+
+/** A job's driver output, tail-capped.
+ *
+ * The developer's own view. Deliberately not available to the assistant, which is
+ * §5.13 made structural rather than conventional: this has a route and no tool. */
+export interface ExperimentLogs {
+  submission_id: string;
+  logs: string;
+  truncated: boolean;
+}
+
+/** One service's framing verdict (D6).
+ *
+ * The backend half of the probe: it asks the service for its `X-Frame-Options`
+ * and `Content-Security-Policy: frame-ancestors`. The frontend half is still the
+ * pane's — a hidden iframe with a load timeout, falling back to a link-only card —
+ * because a header can permit framing while the page still refuses to render in
+ * one, and only a browser finds that out.
+ *
+ * **"unknown" is a real answer.** ODE is inside the cluster and the browser is
+ * not, so a service ODE cannot reach may frame perfectly: try the iframe anyway. */
+export interface EmbedProbe {
+  service: "ray" | "mlflow";
+  url: string;
+  embeddable: "yes" | "no" | "unknown";
+  /** The header that decided it, or why nothing did. A verdict without the header
+   * is not actionable by whoever would have to change it. */
+  reason: string;
+  probed_at: string;
+  /** Zero when the service answered nothing at all. */
+  status?: number;
+}
+
+export interface EmbedReport {
+  services: EmbedProbe[];
+  /** Whether this came from the TTL cache rather than a fresh probe. */
+  cached: boolean;
+  ttl: string;
+  as_of: string;
+}
+
 export const api = {
   session: () => get<Session>("/session"),
   aspectTree: () => get<{ tree: AspectTreeNode[] }>("/ontology/aspect-tree"),
@@ -1768,5 +2312,130 @@ export const api = {
   ruleDecisions: (ruleId: string) =>
     get<{ rule_id: string; decisions: RuleDecision[] }>(
       `/relations/rule-decisions${query({ rule_id: ruleId })}`,
+    ),
+
+  // --- M7 ---
+
+  repoConnection: () => get<RepoConnection>("/repo/connection"),
+  /** Begins the OAuth flow. The state is single-use and bound to this developer. */
+  repoAuthorize: () => post<RepoAuthorize>("/repo/connection/authorize", {}),
+  /** Completes it, with the code GitHub returned to the SPA's callback. */
+  repoConnect: (code: string, state: string) =>
+    post<GitHubIdentity>("/repo/connection", { code, state }),
+  repoDisconnect: () => del("/repo/connection"),
+
+  repoRepositories: () => get<{ repositories: GitHubRepository[] }>("/repo/repositories"),
+  /**
+   * Creates an *empty* repository and scaffolds the working copy. Nothing is
+   * committed: the developer's own commit is the repository's first (§5.11 item 5).
+   */
+  repoCreate: (body: {
+    name: string;
+    description?: string;
+    private?: boolean;
+    organisation?: string;
+    scaffold?: boolean;
+  }) => post<RepoStatus>("/repo/repositories", body),
+  repoSelect: (fullName: string, scaffold = false) =>
+    post<RepoStatus>("/repo/link", { full_name: fullName, scaffold }),
+  repoUnlink: () => del("/repo/link"),
+
+  /**
+   * `fetch` contacts the remote, which is what makes the divergence current. The
+   * pane asks for one when it opens and when the developer presses refresh, and
+   * not on every poll.
+   */
+  repoStatus: (fetch = false) => get<RepoStatus>(`/repo${query({ fetch: fetch || undefined })}`),
+  repoFetch: () => post<RepoStatus>("/repo/fetch", {}),
+  repoScaffold: () => post<RepoScaffoldResult>("/repo/scaffold", {}),
+
+  repoCommit: (message: string, paths?: string[]) =>
+    post<RepoCommit>("/repo/commit", { message, paths }),
+  repoPush: (branch?: string) => post<RepoPush>("/repo/push", { branch }),
+  repoStash: (message?: string) => post<RepoStatus>("/repo/stash", { message }),
+  /** The one destructive action, so the flag is required on both sides. */
+  repoDiscard: () => post<RepoStatus>("/repo/discard", { confirm: true }),
+
+  repoFiles: () => get<RepoTree>("/repo/files"),
+  repoFile: (path: string) => get<RepoFile>(`/repo/files/content${query({ path })}`),
+  repoWriteFile: (path: string, content: string) =>
+    put<RepoWriteResult>("/repo/files/content", { path, content }),
+  repoDeleteFile: (path: string, recursive = false) =>
+    del(`/repo/files/content${query({ path, recursive: recursive || undefined })}`),
+  repoMakeDir: (path: string) => post<{ created: boolean }>("/repo/files/directory", { path }),
+  // --- M8 ---
+
+  /**
+   * Submits a training run from the **committed** repository state and creates the
+   * MLflow run it will log to. A working copy with uncommitted changes answers 409
+   * with `needs: "commit"` and the paths — the pane offers a commit rather than an
+   * error, because a run's commit SHA is only meaningful if it is what ran.
+   */
+  launchExperiment: (body: {
+    entrypoint?: string;
+    env_vars?: Record<string, string>;
+    run_name?: string;
+    session_id?: string;
+  } = {}) => post<ExperimentLaunch>("/experiments", body),
+
+  /** The caller's own experiments, newest first. Statuses are refreshed from Ray
+   * for the runs that have not finished, and only those, so polling a list of
+   * finished runs costs the cluster nothing. */
+  experiments: (limit?: number) =>
+    get<{
+      experiments: Experiment[];
+      count: number;
+      ray_url: string;
+      mlflow_url: string;
+    }>(`/experiments${query({ limit })}`),
+
+  experiment: (id: string) => get<Experiment>(`/experiments/${encodeURIComponent(id)}`),
+
+  /** §5.13's structured summary, including the comparison against the previous run
+   * of the same experiment — usually the number that answers whether a change
+   * helped. Carries no logs. */
+  experimentResults: (id: string) =>
+    get<ExperimentSummary>(`/experiments/${encodeURIComponent(id)}/results`),
+
+  /** The developer's own view of a job's output. There is no LLM tool for this, and
+   * that is the design rather than an omission (§5.13). */
+  experimentLogs: (id: string) =>
+    get<ExperimentLogs>(`/experiments/${encodeURIComponent(id)}/logs`),
+
+  stopExperiment: (id: string) =>
+    post<Experiment>(`/experiments/${encodeURIComponent(id)}/stop`, {}),
+
+  /** D6's backend half. Pass `refresh` when the developer presses re-probe; the
+   * pane should still try a hidden iframe with a timeout regardless of the answer,
+   * because "unknown" means ODE could not tell rather than that framing fails. */
+  embedProbes: (refresh = false) =>
+    get<EmbedReport>(`/experiments/embed${query({ refresh: refresh || undefined })}`),
+
+  /** §5.13's interpretation of one finished run: the summary, the assistant's
+   * reading of it, the concrete next adjustment it proposed, and the developer's
+   * decision on that proposal if they have given one.
+   *
+   * The interpretation itself is delivered **into the conversation** — that is
+   * where the developer reads it — and this route is the pane's view of the same
+   * thing as a document. */
+  interpretation: (id: string) =>
+    get<Interpretation>(`/experiments/${encodeURIComponent(id)}/interpretation`),
+
+  /** Accept, edit or reject a proposed next experiment (§5.13's last sentence).
+   *
+   * `proposal_id` is what the developer was looking at, and a stale one answers
+   * **409** rather than recording agreement with something they never read — re-read
+   * the interpretation and decide on the proposal that stands.
+   *
+   * Nothing here is binding (D28). Accepting records agreement and launches
+   * nothing; promoting a value into `evaluation.yaml` or the operator config is a
+   * separate act the developer performs, and no tool exists for it (§5.8). */
+  decideProposal: (
+    id: string,
+    body: { proposal_id: string; decision: ProposalDecisionKind; edited?: string; note?: string },
+  ) =>
+    post<Interpretation>(
+      `/experiments/${encodeURIComponent(id)}/interpretation/decision`,
+      body,
     ),
 };

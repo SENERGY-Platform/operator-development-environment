@@ -32,6 +32,7 @@ import {
   type Usage,
 } from "./api";
 import { Cancelled, odeSocket, type SocketState } from "./ws";
+import { setParam, useParam } from "./router";
 import { Muted, Pane, Section, dateTime, describe, num, shortId } from "./ui";
 
 /**
@@ -75,10 +76,20 @@ export function ChatView({
   onOpenChart?: (chartId: string) => void;
 }) {
   const [sessions, setSessions] = useState<ChatSession[] | null>(null);
-  const [current, setCurrent] = useState<ChatSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [surface, setSurface] = useState<ToolSurface | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>(session.providers ?? []);
+
+  // Which conversation is open is the URL's, not this component's. It is the one
+  // piece of state that has to survive moving to the profiler and back, and a
+  // reload of any view — so it is a query parameter rather than a useState, and
+  // the pane derives from it instead of mirroring it. `?session=` is sticky in the
+  // router, so every link in the shell carries it forward.
+  const openId = useParam("session");
+  const current = sessions?.find((entry) => entry.id === openId) ?? null;
+  // A named session that is not in the list is a stale link or another account's,
+  // and saying so beats silently opening nothing.
+  const missingSession = sessions !== null && openId !== null && current === null;
 
   useEffect(() => {
     let cancelled = false;
@@ -104,21 +115,30 @@ export function ChatView({
       // ODE choosing the developer's data exposure for them.
       const created = await api.createChatSession({ provider, exposure_tier: "L0" });
       setSessions((existing) => [created, ...(existing ?? [])]);
-      setCurrent(created);
+      setParam("session", created.id);
     } catch (e: unknown) {
       setError(describe(e));
     }
   }, []);
 
-  const remove = useCallback(async (id: string) => {
-    try {
-      await api.deleteChatSession(id);
-      setSessions((existing) => (existing ?? []).filter((entry) => entry.id !== id));
-      setCurrent((open) => (open?.id === id ? null : open));
-    } catch (e: unknown) {
-      setError(describe(e));
-    }
-  }, []);
+  const remove = useCallback(
+    async (id: string) => {
+      try {
+        await api.deleteChatSession(id);
+        setSessions((existing) => (existing ?? []).filter((entry) => entry.id !== id));
+        // Deleting the open one leaves the parameter naming something that no longer
+        // exists, which would read as a broken link on the next reload. Only the open
+        // one: `session` is sticky, so clearing it unconditionally would close the
+        // conversation the developer is reading because they tidied up a different
+        // one — and close it on every /tools/… route at the same time, since the
+        // conversation sits in the left half of all of them.
+        if (id === openId) setParam("session", null);
+      } catch (e: unknown) {
+        setError(describe(e));
+      }
+    },
+    [openId],
+  );
 
   return (
     <main className="panes chat-layout">
@@ -131,11 +151,14 @@ export function ChatView({
         />
         {sessions === null && <Muted>Loading…</Muted>}
         {sessions?.length === 0 && <Muted>No sessions yet.</Muted>}
+        {missingSession && (
+          <Muted>The conversation named in the address is not in this account&apos;s list.</Muted>
+        )}
         {sessions && sessions.length > 0 && (
           <ul className="list session-list">
             {sessions.map((entry) => (
               <li key={entry.id} className={current?.id === entry.id ? "active" : ""}>
-                <button className="session-open" onClick={() => setCurrent(entry)}>
+                <button className="session-open" onClick={() => setParam("session", entry.id)}>
                   <span className="session-title">{entry.title || shortId(entry.id)}</span>
                   <span className="session-meta">
                     <span className={`tier tier-${entry.exposure_tier}`}>
@@ -168,7 +191,6 @@ export function ChatView({
           surface={surface}
           onOpenChart={onOpenChart}
           onSessionChange={(updated) => {
-            setCurrent(updated);
             setSessions((existing) =>
               (existing ?? []).map((entry) => (entry.id === updated.id ? updated : entry)),
             );

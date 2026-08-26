@@ -1,0 +1,24 @@
+{
+  "branch": "main",
+  "commit_sha": "31dc94c6a1cf04311466eb70a010a29499d9de50",
+  "credential": {
+    "expires_with_session": true,
+    "note": "this job carries the developer's interactive session token: a run that outlives the session will lose its access to the platform partway through. Configure keycloak_url, keycloak_realm, keycloak_client_id and keycloak_client_secret to mint a token scoped to the job instead (§3.1 item 6)",
+    "source": "session"
+  },
+  "entrypoint": "python training.py",
+  "experiment_id": "lmugnfezzjg75si2erwplfu6e4",
+  "mlflow_experiment_id": "1",
+  "mlflow_experiment_name": "ode/dev/jonah-pv-forecast",
+  "mlflow_run_id": "run-3",
+  "mlflow_tracking_uri": "http://127.0.0.1:42226",
+  "package_bytes": 6136,
+  "package_reused": false,
+  "package_uri": "gcs://_ray_pkg_a70706f1b13917733ca64d0c885e9074889abb3b1d7784b53b7df37ba80ba289.zip",
+  "repository": "jonah/pv-forecast",
+  "scoped_credential": false,
+  "status": "PENDING",
+  "submission_id": "ydbufokd4e7flu4rtmaqhenug4",
+  "submitted_at": "2026-08-26T10:53:31.254395954Z",
+  "updated_at": "2026-08-26T10:53:31.254395954Z"
+}

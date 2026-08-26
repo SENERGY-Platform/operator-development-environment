@@ -147,15 +147,23 @@ export function Pane({
   title,
   subtitle,
   actions,
+  className,
   children,
 }: {
   title: string;
   subtitle: string;
   actions?: React.ReactNode;
+  /**
+   * An extra class on the section, for a pane whose *contents* need laying out
+   * differently from the default column — the GitHub account card, which is a
+   * strip rather than a panel. Layout of the panes themselves stays in the grid
+   * rules; this is for what is inside one.
+   */
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="pane">
+    <section className={className === undefined ? "pane" : `pane ${className}`}>
       <div className="pane-head">
         <div>
           <h2>{title}</h2>
@@ -218,6 +226,25 @@ export function Row({ label, hint, children }: { label: string; hint?: string; c
 // --- the not_computed contract, made visible ---
 
 /**
+ * Any of D24's non-results, for the tag that draws them.
+ *
+ * Deliberately wider than `NotComputed`. The reason *sets* are per feature and
+ * closed — the profiler's five are about reading a series, `CriterionNotComputed`'s
+ * seven are about reading a file in a repository, and a proposal's two are about a
+ * turn that did or did not run — but each names a different repair, and telling
+ * them apart is the point of having separate sets. What they share is the shape and
+ * the rendering, which is what api.ts means by "rendering is shared; the repairs are
+ * not". Narrowing this back to one union would force a caller to either mislabel a
+ * reason or duplicate the tag, and both are worse than a `string` here: the closed
+ * set still holds where the value is produced, and this end only formats it.
+ */
+export interface NotComputedLike {
+  status: "not_computed";
+  reason: string;
+  detail: string;
+}
+
+/**
  * NotComputedTag is why this file exists.
  *
  * SPEC D24 makes absence and negation distinguishable in the data; rendering a
@@ -226,7 +253,7 @@ export function Row({ label, hint, children }: { label: string; hint?: string; c
  * that a missing periodicity means there is none. So a non-result is shown
  * explicitly, with its reason, and the detail is one click away.
  */
-export function NotComputedTag({ status }: { status: NotComputed }) {
+export function NotComputedTag({ status }: { status: NotComputedLike }) {
   const [open, setOpen] = useState(false);
   return (
     <span className="nc">
@@ -269,7 +296,13 @@ export function Val<T>({ value, render }: { value: Value<T>; render: (value: T) 
   if (value === null || value === undefined) {
     return (
       <NotComputedTag
-        status={{ status: "not_computed", reason: "out_of_scope", detail: "the field arrived as null" }}
+        status={
+          {
+            status: "not_computed",
+            reason: "out_of_scope",
+            detail: "the field arrived as null",
+          } satisfies NotComputed
+        }
       />
     );
   }

@@ -20,6 +20,12 @@ import type {
   ChartConfirmation,
   ChatSession,
   ChatSessionDetail,
+  EmbedReport,
+  Experiment,
+  ExperimentLaunch,
+  ExperimentLogs,
+  ExperimentSummary,
+  Interpretation,
   KernelFiles,
   KernelStatus,
   LLMProfileView,
@@ -30,6 +36,14 @@ import type {
   QuickProfileList,
   RelationProfile,
   RelationProposal,
+  RepoCommit,
+  RepoConnection,
+  RepoFile,
+  RepoPush,
+  RepoScaffoldResult,
+  RepoStatus,
+  RepoTree,
+  GitHubRepository,
   RuleDecision,
   SelectionResult,
   SeriesProfile,
@@ -55,6 +69,14 @@ import chatSession from "./chat_session.json";
 import chatSessions from "./chat_sessions.json";
 import chatTierChanges from "./chat_tier_changes.json";
 import chatTools from "./chat_tools.json";
+import experiment from "./experiment.json";
+import experimentEmbed from "./experiment_embed.json";
+import experimentInterpretation from "./experiment_interpretation.json";
+import experimentInterpretationDecided from "./experiment_interpretation_decided.json";
+import experimentLaunch from "./experiment_launch.json";
+import experimentLogs from "./experiment_logs.json";
+import experimentResults from "./experiment_results.json";
+import experimentList from "./experiments.json";
 import kernelFiles from "./kernel_files.json";
 import kernelStatus from "./kernel_status.json";
 import override from "./override.json";
@@ -66,6 +88,14 @@ import relation from "./relation.json";
 import relationDecision from "./relation_decision.json";
 import relationDecisions from "./relation_decisions.json";
 import relationSets from "./relation_sets.json";
+import repoCommit from "./repo_commit.json";
+import repoConnection from "./repo_connection.json";
+import repoFile from "./repo_file.json";
+import repoPush from "./repo_push.json";
+import repoRepositories from "./repo_repositories.json";
+import repoScaffold from "./repo_scaffold.json";
+import repoStatus from "./repo_status.json";
+import repoTree from "./repo_tree.json";
 import selection from "./selection.json";
 import platformSession from "./session.json";
 import sessions from "./sessions.json";
@@ -125,4 +155,43 @@ export const checked = {
   relation: relation satisfies Loose<RelationProfile>,
   relationDecision: relationDecision satisfies Loose<RuleDecision>,
   relationDecisions: relationDecisions.decisions satisfies Loose<RuleDecision[]>,
+
+  // M7. Emitted by the API test harness, and less of it is a fake's than the sets
+  // above: the status, the tree, the file and the commit come from a real git
+  // working copy in a temporary directory, so the fields in them are git's own
+  // answers. Only the GitHub identity and the repository list are invented.
+  repoConnection: repoConnection satisfies Loose<RepoConnection>,
+  repoRepositories: repoRepositories.repositories satisfies Loose<GitHubRepository[]>,
+  repoStatus: repoStatus satisfies Loose<RepoStatus>,
+  repoTree: repoTree satisfies Loose<RepoTree>,
+  repoFile: repoFile satisfies Loose<RepoFile>,
+  repoScaffold: repoScaffold satisfies Loose<RepoScaffoldResult>,
+  repoCommit: repoCommit satisfies Loose<RepoCommit>,
+  repoPush: repoPush satisfies Loose<RepoPush>,
+
+  // M8. Emitted by the API test harness, and split the way the M7 files are. The
+  // launch, the record and the listing come from a *real git working copy* and a
+  // real `git archive`, so the commit SHAs and the package sizes in them are git's
+  // own answers — and the two experiment_*.json runs are from two different commits
+  // on purpose, because that is what §5.11 item 7 is about. What is a double's: the
+  // metrics, the Ray statuses and the log line, since neither a cluster nor a
+  // tracking server can be had in a test.
+  experimentLaunch: experimentLaunch satisfies Loose<ExperimentLaunch>,
+  experiments: experimentList.experiments satisfies Loose<Experiment[]>,
+  experiment: experiment satisfies Loose<Experiment>,
+  experimentResults: experimentResults satisfies Loose<ExperimentSummary>,
+  experimentLogs: experimentLogs satisfies Loose<ExperimentLogs>,
+  embedProbes: experimentEmbed satisfies Loose<EmbedReport>,
+
+  // M9. Emitted by the API test harness through the *real* poller and the real
+  // chat engine, so the injected summary, the proposal's fingerprint and the
+  // decision record in here are the backend's own — only the model's wording is
+  // scripted. The evaluation criteria come from a real evaluation.yaml at a real
+  // commit, and the pair in experiment_results.json is deliberate: the primary
+  // criterion is a bare `met: true` and the secondary one is the `not_computed`
+  // object, so both arms of the verdict are checked rather than only whichever the
+  // fixture happened to produce.
+  experimentInterpretation: experimentInterpretation satisfies Loose<Interpretation>,
+  experimentInterpretationDecided:
+    experimentInterpretationDecided satisfies Loose<Interpretation>,
 };

@@ -4,10 +4,13 @@
   "features": {
     "charts": false,
     "chat": true,
+    "experiments": false,
     "kernel": false,
     "mcp": false,
     "profiler": false,
     "relations": false,
+    "repo": false,
+    "result_interpretation": false,
     "selection": false
   },
   "is_admin": true,
@@ -37,9 +40,9 @@
   ],
   "spend": {
     "cost": 0.0021,
-    "from": "2026-07-21T09:40:05.4838118Z",
+    "from": "2026-07-27T10:53:29.585285216Z",
     "requests": 2,
-    "to": "2026-08-20T09:40:05.48381199Z",
+    "to": "2026-08-26T10:53:29.585285419Z",
     "tokens": 173
   },
   "user_id": "user-123",

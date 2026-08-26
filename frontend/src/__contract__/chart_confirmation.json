@@ -16,11 +16,11 @@
     "confirmed_value": "kW",
     "created_at": "2026-08-17T00:00:00Z",
     "created_by": "user-123",
-    "detector_version": "1.0.0",
+    "detector_version": "1.1.0",
     "field_path": "value_semantics.unit",
     "note": "the inverter reports kilowatts",
     "override_id": "ovr-1",
-    "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+    "profile_id": "d93d4d8d2bc1db8a003bbe219e112526c1282ff6855f21c0e9cbd6bf9ec77c9c",
     "series_ref": {
       "device_id": "urn:infai:ses:device:1",
       "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",
@@ -31,7 +31,7 @@
     "index": 0,
     "label": "PV power",
     "notes": [],
-    "profile_id": "f30eb42d34e7c5f7eb408c0e4f78cb27dc899a55d0d499e82516d6d0941130e4",
+    "profile_id": "d93d4d8d2bc1db8a003bbe219e112526c1282ff6855f21c0e9cbd6bf9ec77c9c",
     "ref": {
       "device_id": "urn:infai:ses:device:1",
       "service_id": "urn:infai:ses:service:11111111-1111-1111-1111-111111111111",

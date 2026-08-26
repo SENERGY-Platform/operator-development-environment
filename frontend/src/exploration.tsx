@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type ChartAnnotation,
@@ -23,6 +23,7 @@ import {
   type ChartSeriesData,
   type ProfileOverrideRecord,
 } from "./api";
+import { setParam, useParam } from "./router";
 import { Muted, Pane, Section, dateTime, num, useAction, useLoad } from "./ui";
 
 /**
@@ -45,33 +46,55 @@ import { Muted, Pane, Section, dateTime, num, useAction, useLoad } from "./ui";
  * affordance; the profiler view can already confirm a unit from a table, but a
  * session boundary is a thing you have to see to judge.
  */
-export function ExplorationView({
-  focus,
-  onFocusHandled,
-}: {
-  /** A chart to open, from a chat tool result or from the profiler view. */
-  focus?: string | null;
-  onFocusHandled?: () => void;
-}) {
-  const [selected, setSelected] = useState<string | null>(focus ?? null);
+export function ExplorationView() {
   const [reloadKey, setReloadKey] = useState(0);
 
   // reloadKey is in the dependency list without being read in the body, which is
-  // the one legitimate use of that: bumping it is how another pane's new chart gets
+  // the one legitimate use of that: bumping it is how a chart derived here gets
   // into a listing that was loaded before it existed.
   const charts = useLoad(useCallback(() => api.charts({ limit: 100 }), [reloadKey]));
 
-  // A chart named from elsewhere wins over the selection, and the listing is
-  // refreshed with it: a chart the assistant has just proposed is not in the list
-  // that was loaded before it existed.
-  useEffect(() => {
-    if (!focus) return;
-    setSelected(focus);
-    setReloadKey((key) => key + 1);
-    onFocusHandled?.();
-  }, [focus, onFocusHandled]);
+  // Which chart is open is the URL's. A chart proposed in chat or built from a
+  // profile arrives as a navigation to ?chart=<id> rather than as state handed
+  // across panes by the shell, so it survives a reload and can be sent to someone
+  // — which for a claim a developer is being asked to confirm (§5.10) is the
+  // difference between "look at this" and "open the pane and find it".
+  const selected = useParam("chart");
 
   const specs = charts.data?.charts ?? [];
+
+  /*
+   * A chart can arrive while this view is already mounted.
+   *
+   * The developer is standing on /tools/exploration, the assistant in the chat pane
+   * beside it returns a render_chart result, and "Open in exploration" navigates to
+   * ?chart=X. Nothing remounts: the pane on the right is keyed on the id and loads
+   * X quite happily, but the listing on the left was fetched before X existed. So
+   * the chart being shown is missing from the column that names every chart, no
+   * entry is marked active, and only "Refresh" repairs it. Bumping the key is what
+   * the prop-driven version did before the id moved into the URL, and it is still
+   * the whole of the fix.
+   *
+   * Guarded on the id in a ref rather than on "is it in the list", because an empty
+   * list means two different things — not loaded yet, and failed to load — and a
+   * membership test cannot tell them apart. It would refetch on every render after
+   * a failed listing, which is a retry loop against the platform wearing a fix's
+   * clothes. One refresh per id this has not already seen; the value at mount
+   * counts as seen, because the first load is issued after the navigation that
+   * carried X and already returns it.
+   */
+  const refreshedFor = useRef(selected);
+  useEffect(() => {
+    if (selected === null || selected === refreshedFor.current) return;
+    refreshedFor.current = selected;
+    if (specs.some((spec) => spec.chart_id === selected)) return;
+    setReloadKey((key) => key + 1);
+  }, [selected, specs]);
+
+  // Falling back to the newest keeps a bare /tools/exploration useful. It is
+  // deliberately not written back: the parameter should say what the developer
+  // chose, so a link to the pane keeps meaning "the newest chart" rather than
+  // freezing whichever one happened to be newest when the link was made.
   const current = selected ?? specs[0]?.chart_id ?? null;
 
   return (
@@ -98,7 +121,7 @@ export function ExplorationView({
             <li key={spec.chart_id}>
               <button
                 className={spec.chart_id === current ? "chart-entry active" : "chart-entry"}
-                onClick={() => setSelected(spec.chart_id)}
+                onClick={() => setParam("chart", spec.chart_id)}
               >
                 <span className="chart-entry-title">{spec.title}</span>
                 <span className="chart-entry-meta">
@@ -117,7 +140,7 @@ export function ExplorationView({
           chartId={current}
           onChanged={() => setReloadKey((key) => key + 1)}
           onDerived={(chartId) => {
-            setSelected(chartId);
+            setParam("chart", chartId);
             setReloadKey((key) => key + 1);
           }}
         />
@@ -305,19 +328,30 @@ function ChartPane({
 // --- the canvas ---
 
 /**
- * Eight colours, which is also why a chart is capped at eight series: beyond that
+ * Eight slots, which is also why a chart is capped at eight series: beyond that
  * the lines stop being distinguishable and the chart stops being an argument.
+ *
+ * The slot is a class name and the colour behind it lives in `index.css`, as
+ * `--series-1` through `--series-8`. Two reasons for the indirection. The palette
+ * has to differ between the light and the dark theme — the same eight hues stepped
+ * for the surface they are drawn on, because a colour chosen against #161a22 is
+ * not readable on white — and a stylesheet can do that in a media query where an
+ * array of hex strings in here would need to re-render the chart to follow the
+ * theme. The set they replaced also failed on its own terms: its olive and its
+ * orange were ΔE 3.9 apart for a deuteranope and ΔE 12.4 apart for everyone else,
+ * so two adjacent series were one colour in practice.
+ *
+ * Keyed on `series.index` rather than on the position in the array being mapped.
+ * Those are usually the same number and must not be relied on to be: the index is
+ * assigned by the backend and belongs to the series, so a resolution that omits
+ * one would otherwise shift every colour after it — and shift the line without
+ * shifting the swatch in the list, which reads as two different series.
  */
-const COLOURS = [
-  "#6ea8fe",
-  "#4ec9a5",
-  "#e5c07b",
-  "#e06c75",
-  "#c678dd",
-  "#56b6c2",
-  "#d19a66",
-  "#98c379",
-];
+const SLOTS = 8;
+
+function slot(index: number): string {
+  return `s${(index % SLOTS) + 1}`;
+}
 
 const VIEW = { width: 1000, height: 340, left: 68, right: 14, top: 14, bottom: 44 };
 
@@ -384,11 +418,10 @@ function ChartCanvas({ data }: { data: ChartData }) {
         </g>
       ))}
 
-      {data.series.map((series, index) => (
+      {data.series.map((series) => (
         <g key={series.index}>
           <polyline
-            className="series-line"
-            stroke={COLOURS[index % COLOURS.length]}
+            className={`series-line ${slot(series.index)}`}
             points={series.points
               .map((point) => `${x(new Date(point.t).getTime())},${y(point.v)}`)
               .join(" ")}
@@ -402,8 +435,7 @@ function ChartCanvas({ data }: { data: ChartData }) {
             series.points.map((point) => (
               <circle
                 key={point.t}
-                className="series-point"
-                fill={COLOURS[index % COLOURS.length]}
+                className={`series-point ${slot(series.index)}`}
                 cx={x(new Date(point.t).getTime())}
                 cy={y(point.v)}
                 r={2}
@@ -557,7 +589,7 @@ function SeriesRow({
   return (
     <div className="series-row">
       <div className="series-head">
-        <span className="series-swatch" style={{ background: COLOURS[series.index % COLOURS.length] }} />
+        <span className={`series-swatch ${slot(series.index)}`} />
         <strong>{series.label}</strong>
         <code>{series.ref.variable_path}</code>
         <span className="tag">{series.transform}</span>

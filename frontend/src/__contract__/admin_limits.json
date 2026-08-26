@@ -1,10 +1,10 @@
 {
   "currency": "EUR",
   "declared": {
-    "kernel_cpu_default": "set on the KubeSpawner profile, not by ODE — see deploy/jupyterhub/README.md",
-    "kernel_cpu_max": "set on the KubeSpawner profile, not by ODE — see deploy/jupyterhub/README.md",
-    "kernel_mem_default": "set on the KubeSpawner profile, not by ODE — see deploy/jupyterhub/README.md",
-    "kernel_mem_max": "set on the KubeSpawner profile, not by ODE — see deploy/jupyterhub/README.md",
+    "kernel_cpu_default": "set on the KubeSpawner profile at spawn time, not by ODE: the Hub API selects a profile rather than carrying resource overrides",
+    "kernel_cpu_max": "set on the KubeSpawner profile at spawn time, not by ODE: the Hub API selects a profile rather than carrying resource overrides",
+    "kernel_mem_default": "set on the KubeSpawner profile at spawn time, not by ODE: the Hub API selects a profile rather than carrying resource overrides",
+    "kernel_mem_max": "set on the KubeSpawner profile at spawn time, not by ODE: the Hub API selects a profile rather than carrying resource overrides",
     "max_concurrent_ray_jobs": "M7 (experiments/, SPEC §5.12)"
   },
   "defaults": {

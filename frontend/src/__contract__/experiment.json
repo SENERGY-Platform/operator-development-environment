@@ -1,0 +1,21 @@
+{
+  "branch": "main",
+  "commit_sha": "62c1325827f736cd404d5a202bc060600e496ee8",
+  "ended_at": "2026-08-26T10:54:30.721Z",
+  "entrypoint": "python training.py",
+  "experiment_id": "ful5oilsvhpds3jej2uquqije4",
+  "mlflow_experiment_id": "1",
+  "mlflow_experiment_name": "ode/dev/jonah-pv-forecast",
+  "mlflow_run_id": "run-2",
+  "package_bytes": 7350,
+  "package_reused": false,
+  "package_uri": "gcs://_ray_pkg_5f77a68eec23d011baab2b309e2c62a53bf2a0a9707661970375aecd927d9fa6.zip",
+  "repository": "jonah/pv-forecast",
+  "scoped_credential": false,
+  "session_id": "27hhve7luinpi6wjslnvbfzncm",
+  "started_at": "2026-08-26T10:53:30.721Z",
+  "status": "SUCCEEDED",
+  "submission_id": "faehnhfp4pgnzdmcshbz3hpk54",
+  "submitted_at": "2026-08-26T10:53:30.72101519Z",
+  "updated_at": "2026-08-26T10:53:30.722358931Z"
+}

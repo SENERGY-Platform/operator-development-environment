@@ -31,6 +31,7 @@ import {
   type SessionPage,
 } from "./api";
 import { chartFromProfile } from "./exploration";
+import { setParam, useLocation, useParam } from "./router";
 import { profilerSocket, type SocketState } from "./ws";
 import {
   ConfidenceTag,
@@ -44,6 +45,7 @@ import {
   bytes,
   date,
   dateTime,
+  describe,
   num,
   percent,
   period,
@@ -71,13 +73,85 @@ export function ProfilerView({
    */
   onOpenChart?: (chartId: string) => void;
 } = {}) {
+  const { params } = useLocation();
+  const from = params.get("from");
+  const to = params.get("to");
+
+  /*
+   * The window is in the URL rather than in state, because both panes mean the
+   * same thing by it: the range the developer cares about. It ranks candidates by
+   * coverage at tier L0, and it is the analysis window a profile is computed over.
+   * Keeping it in one place is what stops the second use from silently not
+   * happening — and putting that place in the address means a reload does not
+   * quietly widen it back to everything.
+   *
+   * Memoised on the two strings rather than on the parameter bag: an unrelated
+   * parameter changing — the open conversation, say — must not look like a new
+   * window and set a fresh listing off against the platform.
+   */
+  const analysisWindow = useMemo<AppliedWindow>(
+    () => (from && to ? { from: `${from}T00:00:00Z`, to: `${to}T00:00:00Z` } : null),
+    [from, to],
+  );
+
   const [selected, setSelected] = useState<QuickProfile | null>(null);
-  // The window lives here rather than in the filter that sets it, because both
-  // panes mean the same thing by it: the range the developer cares about. It
-  // ranks candidates by coverage at tier L0, and it is the analysis window a
-  // profile is computed over. Keeping it in one place is what stops the second
-  // use from silently not happening.
-  const [analysisWindow, setAnalysisWindow] = useState<AppliedWindow>(null);
+  const seriesParam = params.get("series");
+
+  /*
+   * One entry point for both a click and a restore.
+   *
+   * When the listing hands back the candidate the address already names, the keys
+   * are equal and nothing is written — which is what leaves `?profile=` intact for
+   * the pane on the right to restore. When the developer picks a different series,
+   * the profile parameter goes with the old selection, because a profile belongs
+   * to the series it was computed for.
+   */
+  const select = useCallback(
+    (candidate: QuickProfile) => {
+      setSelected(candidate);
+      const key = seriesKey(candidate);
+      if (key === seriesParam) return;
+      setParam("series", key);
+      setParam("profile", null);
+    },
+    [seriesParam],
+  );
+
+  /*
+   * An address that names a profile but not the series it belongs to.
+   *
+   * Every URL this view writes carries both, because a profile can only be
+   * computed after a candidate has been picked. A link written by hand, or copied
+   * from a tool result, may carry only the profile id — and the pane on the right
+   * cannot render one without the candidate the pane on the left selects. The
+   * series is recoverable from the profile itself, so it is recovered, and the
+   * listing then selects the candidate the way it does for any other restore.
+   *
+   * The second read of the same document that this costs happens only on this
+   * path. A profile is immutable and stored (D21), so it is a store read and not
+   * a platform one.
+   */
+  const profileParam = params.get("profile");
+  useEffect(() => {
+    if (!profileParam || seriesParam) return;
+    let cancelled = false;
+    api
+      .profile(profileParam)
+      .then((stored) => {
+        if (cancelled) return;
+        const ref = stored.series_ref;
+        setParam("series", `${ref.device_id}|${ref.service_id}|${ref.variable_path}`);
+      })
+      .catch(() => {
+        // No such profile. The parameter is dropped rather than left pointing at
+        // nothing: what stays on screen is the candidate list, which is where a
+        // developer would have to start anyway.
+        if (!cancelled) setParam("profile", null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profileParam, seriesParam]);
 
   // Keying the right-hand pane resets everything it holds when the selection
   // moves to another service — a profile computed for one says nothing about
@@ -90,12 +164,7 @@ export function ProfilerView({
 
   return (
     <main className="panes profiler">
-      <CandidatesPane
-        selected={selected}
-        onSelect={setSelected}
-        analysisWindow={analysisWindow}
-        onAnalysisWindow={setAnalysisWindow}
-      />
+      <CandidatesPane selected={selected} onSelect={select} analysisWindow={analysisWindow} />
       <ProfilePane
         key={paneKey}
         candidate={selected}
@@ -175,25 +244,35 @@ function CandidatesPane({
   selected,
   onSelect,
   analysisWindow,
-  onAnalysisWindow,
 }: {
   selected: QuickProfile | null;
   onSelect: (candidate: QuickProfile) => void;
   analysisWindow: AppliedWindow;
-  onAnalysisWindow: (range: AppliedWindow) => void;
 }) {
-  const [form, setForm] = useState({
-    search: "",
-    from: "",
-    to: "",
-    includeUnqueryable: false,
-    limit: String(DEFAULT_DEVICE_LIMIT),
-  });
-  const [applied, setApplied] = useState({
-    search: "",
-    includeUnqueryable: false,
-    limit: DEFAULT_DEVICE_LIMIT,
-  });
+  const { params } = useLocation();
+
+  /*
+   * The applied query is the URL; the form is the draft above it.
+   *
+   * Restoring it costs nothing that was not going to be spent anyway: this listing
+   * loads on mount whatever the filters say, and at tier L0 it reads no values at
+   * all. So the honest thing is to load what the developer was actually looking at
+   * rather than the defaults. The form is seeded once, at mount, and follows the
+   * URL from there only through Apply — typing must not re-run a listing per
+   * keystroke.
+   */
+  const applied = {
+    search: params.get("q") ?? "",
+    includeUnqueryable: params.get("unreadable") === "1",
+    limit: deviceLimit(params.get("limit") ?? ""),
+  };
+  const [form, setForm] = useState(() => ({
+    search: params.get("q") ?? "",
+    from: params.get("from") ?? "",
+    to: params.get("to") ?? "",
+    includeUnqueryable: params.get("unreadable") === "1",
+    limit: params.get("limit") ?? String(DEFAULT_DEVICE_LIMIT),
+  }));
 
   // A half-filled range is refused rather than sent: the backend needs both ends,
   // and a 400 is a worse answer than a disabled button that says why.
@@ -216,9 +295,26 @@ function CandidatesPane({
         },
         signal,
       ),
-    [applied, analysisWindow],
+    // The fields rather than the object: `applied` is derived from the URL and is a
+    // new object on every render, so depending on it would re-list on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [applied.search, applied.limit, applied.includeUnqueryable, analysisWindow],
   );
   const { data, error, loading } = useLoad(load);
+
+  /*
+   * A selection restored from the address.
+   *
+   * The candidate itself is a row of this listing — it carries the device, the
+   * score and whether the series is readable at all — so it can only be handed up
+   * once the listing has arrived. Matched by the same key the rows are keyed on,
+   * which is what makes a restored selection and a clicked one the same object.
+   */
+  const restore = params.get("series");
+  const match = restore && data ? data.candidates.find((c) => seriesKey(c) === restore) : undefined;
+  useEffect(() => {
+    if (selected === null && match) onSelect(match);
+  }, [selected, match, onSelect]);
 
   return (
     <Pane
@@ -231,16 +327,48 @@ function CandidatesPane({
         onSubmit={(e) => {
           e.preventDefault();
           if (halfWindow || invertedWindow) return;
-          setApplied({
-            search: form.search,
-            includeUnqueryable: form.includeUnqueryable,
-            limit: deviceLimit(form.limit),
-          });
-          onAnalysisWindow(
-            form.from && form.to
-              ? { from: `${form.from}T00:00:00Z`, to: `${form.to}T00:00:00Z` }
-              : null,
-          );
+          // Applied by writing the address, which is also what re-runs the listing:
+          // the query below reads these back. Written with replace rather than push,
+          // so twenty filter tweaks cost one press of the back button to escape, not
+          // twenty. The clamped limit is written rather than the raw text, and a
+          // value that is already the default is left out — an address should name
+          // what was changed, not restate every default.
+          const limit = deviceLimit(form.limit);
+          setParam("q", form.search || null);
+          setParam("unreadable", form.includeUnqueryable ? "1" : null);
+          setParam("limit", limit === DEFAULT_DEVICE_LIMIT ? null : String(limit));
+
+          /*
+           * A profile is its window, so a changed window takes the profile with it.
+           *
+           * The pane on the right is keyed on the window and remounts, which is how
+           * a profile that no longer applies is meant to be discarded — but the
+           * remounted pane restores `?profile=` from the address, and the guard it
+           * restores through cannot refuse the one case that matters. Compare a
+           * stored two-day profile against a two-day window and the days match;
+           * against a *cleared* window there is nothing to compare it to, so it is
+           * let through, and a profile computed over two days reappears beside a
+           * candidate list ranked over the whole availability range. Nothing on
+           * screen says which of the two it is.
+           *
+           * The guard cannot be taught the null case either: a profile computed with
+           * no window stores the concrete range the platform resolved, so "was this
+           * computed over no window" is not a question its record can answer. What
+           * can be answered here is whether the developer just changed the window,
+           * and that is the question — so the parameter is dropped at the point the
+           * change is made rather than guessed at afterwards.
+           */
+          const from = form.from || null;
+          const to = form.to || null;
+          // The live address rather than the render's snapshot, for the reason
+          // setParam gives for reading it that way: three parameters have already
+          // been written by the time this runs.
+          const address = new URLSearchParams(window.location.search);
+          if (from !== (address.get("from") || null) || to !== (address.get("to") || null)) {
+            setParam("profile", null);
+          }
+          setParam("from", from);
+          setParam("to", to);
         }}
       >
         <input
@@ -295,6 +423,12 @@ function CandidatesPane({
       </form>
       {halfWindow && <Muted>A window needs both a start and an end, or neither.</Muted>}
       {invertedWindow && <Muted>The window ends before it starts.</Muted>}
+      {restore && data && !match && selected === null && (
+        <Muted>
+          The series named in the address is not in this listing. It is ranked out by the current
+          filters, or the account no longer reaches that device.
+        </Muted>
+      )}
 
       {loading && <Muted>Reading metadata for {applied.limit} devices…</Muted>}
       {error && <Muted>{error}</Muted>}
@@ -526,10 +660,24 @@ function ProfilePane({
   analysisWindow: AppliedWindow;
   onOpenChart?: (chartId: string) => void;
 }) {
-  const [tab, setTab] = useState<Tab>("quick");
+  const restoreId = useParam("profile");
+  const tabParam = useParam("tab");
+  // A restored profile opens on the profile rather than on the quick view: landing
+  // on the tab that does not show it would read as the restore having failed.
+  const [tab, setTab] = useState<Tab>(() => {
+    const named = TABS.find(([id]) => id === tabParam)?.[0];
+    return named ?? (restoreId ? "full" : "quick");
+  });
   const [computed, setComputed] = useState<ProfileResult | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
   const [rawDays, setRawDays] = useState("");
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+
+  const showTab = useCallback((next: Tab) => {
+    setTab(next);
+    // Quick is where the pane opens, so it is written as an absent parameter.
+    setParam("tab", next === "quick" ? null : next);
+  }, []);
 
   // Selecting a sibling of the same service deliberately does not remount this
   // pane — the computed batch covers every variable of the service, so switching
@@ -566,6 +714,11 @@ function ProfilePane({
           .then((result) => {
             setComputed(result);
             setViewing(path);
+            // Recorded so a reload comes back to this profile by id rather than by
+            // reading the platform again. The batch covers every variable of the
+            // service (D19); the one named is the one that was asked for.
+            const asked = result.profiles.find((p) => p.series_ref.variable_path === path);
+            if (asked) setParam("profile", asked.profile_id);
             return result;
           }),
       [analysisWindow, rawDays],
@@ -607,6 +760,57 @@ function ProfilePane({
     ),
   );
 
+  /*
+   * A profile restored from the address.
+   *
+   * Profiles are immutable and stored (D21), so this is a fetch by id — not the two
+   * reads that produced it. That is the whole reason the parameter is a profile id
+   * rather than a set of compute inputs: a reload is not consent to spend a
+   * developer's value reads a second time.
+   *
+   * What comes back is one profile rather than the service-scoped batch it was
+   * computed in, so the header is assembled from it: no value reads, because none
+   * were made, and one entry in from_cache, because that is exactly what happened.
+   * The sibling variables of the batch are not offered, because they were not
+   * fetched — and switching to one is a within-batch move the address does not
+   * describe, so a reload comes back to the profile it names.
+   */
+  useEffect(() => {
+    if (!restoreId || computed || !candidate) return;
+    let cancelled = false;
+    setRestoreError(null);
+    api
+      .profile(restoreId)
+      .then((stored) => {
+        if (cancelled) return;
+        if (!profileMatches(stored, candidate, analysisWindow)) {
+          // The address pairs a profile with a series or a window it was not
+          // computed for — a hand-edited URL, or a parameter left behind by a
+          // selection that has since moved. Wrong data under the right label is the
+          // one failure this screen exists to avoid, so the parameter is dropped
+          // rather than the profile shown.
+          setParam("profile", null);
+          return;
+        }
+        setComputed({
+          profiles: [stored],
+          reads: { availability: 0, usage: 0, values: 0 },
+          from_cache: [stored.profile_id],
+          analysis_window: stored.analysis_window,
+          raw_window: stored.raw_window,
+          // Nothing was grouped and nothing was read, so there is no group time to
+          // report. Empty, which the header leaves out rather than inventing.
+          group_time: "",
+        });
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setRestoreError(describe(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [restoreId, computed, candidate, analysisWindow]);
+
   if (!candidate) {
     return (
       <Pane title="Profile" subtitle="Pick a candidate on the left">
@@ -644,7 +848,7 @@ function ProfilePane({
           )}
           <div className="tabs">
             {TABS.map(([id, label]) => (
-              <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
+              <button key={id} className={tab === id ? "active" : ""} onClick={() => showTab(id)}>
                 {label}
               </button>
             ))}
@@ -727,6 +931,12 @@ function ProfilePane({
           </div>
           {!candidate.queryable && <Muted>{candidate.reason}</Muted>}
           {compute.error && <Muted>{compute.error}</Muted>}
+          {restoreError && (
+            <Muted>
+              The profile named in the address could not be read: {restoreError}. Computing it
+              again would cost the same two reads, so it is left to the button.
+            </Muted>
+          )}
         </div>
       )}
 
@@ -743,6 +953,37 @@ function ProfilePane({
         </>
       )}
     </Pane>
+  );
+}
+
+/**
+ * profileMatches guards a restore against an address that names the wrong pair.
+ *
+ * The series is compared in full, down to the variable, because the pane's title
+ * comes from the candidate and its body from the profile: a profile of a sibling
+ * variable would be rendered under another variable's name. The window is compared
+ * to the day, which is the resolution the filter above offers — a profile *is* its
+ * window, and one computed over a range the developer has since changed is the
+ * same mislabelling in a different guise.
+ */
+function profileMatches(
+  profile: SeriesProfile,
+  candidate: QuickProfile,
+  window: AppliedWindow,
+): boolean {
+  const stored = profile.series_ref;
+  const wanted = candidate.series_ref;
+  if (
+    stored.device_id !== wanted.device_id ||
+    stored.service_id !== wanted.service_id ||
+    stored.variable_path !== wanted.variable_path
+  ) {
+    return false;
+  }
+  if (!window) return true;
+  return (
+    profile.analysis_window.from.slice(0, 10) === window.from.slice(0, 10) &&
+    profile.analysis_window.to.slice(0, 10) === window.to.slice(0, 10)
   );
 }
 

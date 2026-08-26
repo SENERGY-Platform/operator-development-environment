@@ -18,7 +18,13 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { initKeycloak } from "./keycloak";
+import { refresh } from "./router";
+import { initTheme } from "./theme";
 import "./index.css";
+
+// Before the first render, not in an effect: an effect runs after the first paint,
+// so a developer who chose dark would get one frame of light on every load.
+initTheme();
 
 const root = createRoot(document.getElementById("root")!);
 
@@ -26,6 +32,9 @@ const root = createRoot(document.getElementById("root")!);
 // requires a token, so an unauthenticated shell would only show errors.
 initKeycloak()
   .then((authenticated) => {
+    // Keycloak rewrites the address to clear its own response parameters. The
+    // router took its first reading before that happened, so it takes another.
+    refresh();
     root.render(
       <StrictMode>{authenticated ? <App /> : <p>Authentication failed.</p>}</StrictMode>,
     );
