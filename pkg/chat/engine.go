@@ -1120,6 +1120,21 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 				"model", session.Model, "stop_reason", turn.stopReason)
 		}
 		if !ok {
+			// Abandoned — the provider reported an error, or the exchange's own
+			// context ended under it — and what it had already produced is stored
+			// anyway.
+			//
+			// It has to be. The developer watched this arrive, and the SPA replaces
+			// the streamed view with the stored history the moment the turn ends: a
+			// turn that stores nothing is therefore not merely unrecorded but wiped
+			// off the screen, with the alert announcing a reply that is not there.
+			// The CLI's own ten-minute turn timeout reaches exactly this line after a
+			// long turn, and the text and the tool activity of those ten minutes went
+			// with it.
+			//
+			// The same argument the usage record above already makes: it happened,
+			// whether or not the turn got to finish.
+			e.persistAbandoned(ctx, session.ID, turn)
 			return
 		}
 
@@ -1435,6 +1450,35 @@ func outOfBandResultMessage(results []llm.ToolResult) StoredMessage {
 		})
 	}
 	return StoredMessage{Role: llm.RoleUser, Content: content}
+}
+
+// persistAbandoned stores what a turn produced before it was abandoned.
+//
+// Detached from the exchange's context, because the usual reason a turn is
+// abandoned is that very context ending, and a write on it would fail for the
+// same reason — see appendToolResults, which retries detached for this reason.
+//
+// An assistant tool_use stored here may end up with no result, since nothing will
+// dispatch the calls now. That is the one shape both native protocols refuse, and
+// it is repaired on the way out by repairUnansweredToolCalls rather than by
+// dropping the record of what the model asked for.
+func (e *Engine) persistAbandoned(ctx context.Context, sessionID string, turn turnResult) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	if err := e.persistAssistant(writeCtx, sessionID, turn); err != nil {
+		slog.ErrorContext(ctx, "an abandoned turn's answer could not be stored, so the "+
+			"developer loses what they watched arrive",
+			"session", sessionID, "error", err)
+		return
+	}
+	if len(turn.results) > 0 {
+		if err := e.appendToolResults(writeCtx, sessionID,
+			outOfBandResultMessage(turn.results)); err != nil {
+			slog.ErrorContext(ctx, "an abandoned turn's tool results could not be stored",
+				"session", sessionID, "error", err)
+		}
+	}
 }
 
 func (e *Engine) persistAssistant(ctx context.Context, sessionID string, turn turnResult) error {

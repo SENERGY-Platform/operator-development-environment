@@ -329,6 +329,61 @@ func textTurn(text string) []llm.Event {
 	}
 }
 
+// errorTurn scripts a turn that says something and then fails, which is the shape
+// of the CLI hitting its own turn timeout: text and tool activity first, an error
+// last, and a done event carrying what it spent.
+func errorTurn(text string) []llm.Event {
+	return []llm.Event{
+		llm.TextEvent(text),
+		llm.ErrorEvent(errors.New("the provider gave up on this turn")),
+		llm.DoneEvent("error", llm.Usage{
+			InputTokens: 10, OutputTokens: 5, Provider: "fake", Model: "fake-model",
+		}),
+	}
+}
+
+/*
+ * What the developer watched arrive has to survive the turn failing.
+ *
+ * The SPA replaces the streamed view with the stored history when a turn ends, so
+ * a turn that stores nothing is not merely unrecorded — it is wiped off the screen,
+ * under an alert that says the reply is ready. That is what the CLI's own turn
+ * timeout did after ten minutes of work: text and tool calls both gone.
+ */
+func TestAnAbandonedTurnKeepsWhatItAlreadySaid(t *testing.T) {
+	h := newHarness(t, errorTurn("Here is half an answer"))
+	session := h.session(t, tools.L0)
+
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser,
+		session.ID, "do the thing")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	collected := drain(t, events)
+	if len(find(collected, EventError)) != 1 {
+		t.Fatalf("error events = %d, want 1", len(find(collected, EventError)))
+	}
+
+	stored, err := h.engine.Messages(context.Background(), testUser, session.ID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	var kept string
+	for _, message := range stored {
+		if message.Role != llm.RoleAssistant {
+			continue
+		}
+		for _, content := range message.Content {
+			if content.Type == llm.ContentText {
+				kept += content.Text
+			}
+		}
+	}
+	if kept != "Here is half an answer" {
+		t.Errorf("stored assistant text = %q, want the streamed half answer", kept)
+	}
+}
+
 // --- the tool loop ---
 
 func TestToolLoopRunsAndConcludes(t *testing.T) {
