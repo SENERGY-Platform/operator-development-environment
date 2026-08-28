@@ -188,12 +188,17 @@ describe("the desktop notification", () => {
     expect(document.title).toBe("● Reply ready");
   });
 
-  it("raises one when the alert is on and the permission granted", () => {
+  /*
+   * The title names ODE and the blink does not: the notification is read away
+   * from the tab, among notifications from everything else on the machine.
+   */
+  it("raises one naming ODE when the alert is on and the permission granted", () => {
     goAway();
     const raised = install("granted");
     store(true);
     announce("Reply ready", "the session");
-    expect(raised).toEqual([{ title: "Reply ready", body: "the session" }]);
+    expect(raised).toEqual([{ title: "ODE — Reply ready", body: "the session" }]);
+    expect(document.title).toBe("● Reply ready");
   });
 
   /*

@@ -47,6 +47,18 @@ const MARK = "●";
 /** How long each half of the blink lasts. */
 const FLASH_MS = 1200;
 
+/**
+ * Prefixed to the desktop notification's title.
+ *
+ * Not to the blinking title, which is already sitting in a tab the developer can
+ * see. A desktop notification is not: it arrives in a stack next to everything
+ * else on the machine, minutes after the developer left, with nothing but its
+ * first line to say who is talking. Chrome names the origin underneath, which on
+ * a development build is `localhost:5173` and on a deployed one a hostname
+ * nobody reads as ODE.
+ */
+const SOURCE = "ODE";
+
 /** What the browser will say about desktop notifications, plus the case where it has none. */
 export type Notifications = NotificationPermission | "unsupported";
 
@@ -174,7 +186,7 @@ function toast(headline: string, body: string): void {
   if (notifications() !== "granted") return;
   try {
     last?.close();
-    const note = new Notification(headline, { body });
+    const note = new Notification(`${SOURCE} — ${headline}`, { body });
     note.onclick = () => {
       // Bring ODE forward. Allowed here because the click is a user gesture, and
       // it is what the developer meant by clicking a notification about a tab.
