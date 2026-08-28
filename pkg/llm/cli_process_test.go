@@ -307,6 +307,48 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
 	}
 }
 
+/*
+A turn ODE stopped at its ceiling says so.
+
+`signal: killed` is what os/exec reports for a child CommandContext killed, and it
+reads the same whether ODE ended the turn at its ceiling or the machine ran out of
+memory. The first is the common case — a CLI turn that works for ten minutes — and
+it is the one ODE can name, so it does.
+*/
+func TestATurnKilledAtItsCeilingSaysSoRatherThanReportingTheSignal(t *testing.T) {
+	requireUnixShell(t)
+
+	// Says something, then outlives its ceiling.
+	binary := fakeCLI(t, `
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"working"}],"usage":{"input_tokens":11,"output_tokens":4}}}'
+sleep 30
+`)
+	provider := probedCLIProvider(t, binary, 150*time.Millisecond)
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("go")}, ToolEndpoint: testToolEndpoint("Bearer t"),
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	events := drainEvents(t, stream)
+
+	failures := eventsOfType(events, EventError)
+	if len(failures) != 1 {
+		t.Fatalf("error events = %d, want the timeout reported", len(failures))
+	}
+	if !strings.Contains(failures[0].Error, "ceiling") {
+		t.Errorf("error = %q, want it to name the ceiling it reached", failures[0].Error)
+	}
+	if strings.Contains(failures[0].Error, "signal: killed") {
+		t.Errorf("error = %q, which is the signal rather than the reason", failures[0].Error)
+	}
+	// And what it said before being stopped is still reported, along with what it
+	// spent — the developer watched that arrive.
+	if len(eventsOfType(events, EventTextDelta)) == 0 {
+		t.Error("the text the turn produced before its ceiling was dropped")
+	}
+}
+
 // The same for a turn the developer stops: the tokens were spent whether or not
 // anyone waited for the answer.
 func TestACancelledCLITurnStillReportsWhatItSpent(t *testing.T) {

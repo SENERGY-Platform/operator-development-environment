@@ -309,6 +309,29 @@ func (p *AnthropicCLIProvider) Stream(ctx context.Context, req Request) (<-chan 
 		}
 
 		waitErr := wait()
+
+		// A turn stopped at its own ceiling says so, before either branch below gets
+		// to describe the symptom instead.
+		//
+		// Both of them do. Killing the child closes the stdout pipe under the
+		// scanner, so this arrives either as `reading output: file already closed` or
+		// as `signal: killed` from Wait, depending on which of the two the goroutine
+		// reaches first — and `signal: killed` is the same six characters whether ODE
+		// ended the turn at Options.Timeout or the machine's OOM killer took the
+		// process. That is the question a developer is left holding, and this answers
+		// the half ODE knows: it says nothing when the context is still live, which is
+		// the OOM case and keeps the bare signal.
+		if errors.Is(turnCtx.Err(), context.DeadlineExceeded) && !errors.Is(ctx.Err(), context.Canceled) {
+			p.pricing.Apply(&usage)
+			detail := fmt.Sprintf(
+				"the turn reached its %s ceiling and the CLI was stopped", p.options.Timeout)
+			if stderrText := strings.TrimSpace(stderr.String()); stderrText != "" {
+				detail += ": " + stderrText
+			}
+			deliverDone(ctx, events, DoneEvent(StopReasonError, usage))
+			send(ctx, events, ErrorEvent(fmt.Errorf("llm: %s: %s", p.name, detail)))
+			return
+		}
 		if scanErr := scanner.Err(); scanErr != nil {
 			p.pricing.Apply(&usage)
 			deliverDone(ctx, events, DoneEvent(StopReasonError, usage))
