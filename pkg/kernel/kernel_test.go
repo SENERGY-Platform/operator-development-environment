@@ -358,6 +358,138 @@ func TestRunReportsAKernelExceptionAsAnErrorRatherThanAFailure(t *testing.T) {
 	}
 }
 
+/*
+ * A tool call waits where a developer's cell is refused.
+ *
+ * The refusal reaches the model as `{"error":"this kernel is already running
+ * code"}`, from which the best it can do is guess how long to leave it — and what
+ * it collides with is a cell that is over in seconds. So it queues, and the
+ * developer's own cell keeps the immediate answer, because they are in front of
+ * the pane and the interrupt is theirs to press.
+ */
+func TestAToolCallQueuesBehindARunningCell(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, nil)
+	bearer := unsignedToken("devuser")
+
+	if _, err := service.Ensure(context.Background(), ref(bearer)); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	release := make(chan struct{})
+	hub.Hang(release)
+
+	first, err := service.Run(context.Background(), ref(bearer), "slow()")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The developer's own second cell is still told at once.
+	if _, err := service.Run(context.Background(), ref(bearer), "mine()"); !errors.Is(err, kernel.ErrBusy) {
+		t.Errorf("a developer's second cell = %v, want ErrBusy", err)
+	}
+
+	queued := make(chan error, 1)
+	go func() {
+		events, err := service.RunQueued(context.Background(), ref(bearer), "theirs()")
+		if err != nil {
+			queued <- err
+			return
+		}
+		// Drained here rather than through collect, which reports through t and is
+		// not for another goroutine to call.
+		for range events {
+		}
+		queued <- nil
+	}()
+
+	// It must still be waiting: a queued call that came back before the kernel was
+	// free would mean it had run beside the cell holding it.
+	select {
+	case err := <-queued:
+		t.Fatalf("the queued call finished while the kernel was busy: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// The first cell has to be read to its end for its run to release the kernel,
+	// which is what the queued call is waiting for.
+	close(release)
+	collect(t, first)
+
+	select {
+	case err := <-queued:
+		if err != nil {
+			t.Errorf("the queued call = %v, want it to have run", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the queued call did not run after the kernel was free")
+	}
+}
+
+// And the bound is still a bound: a kernel held longer than the wait is reported,
+// rather than leaving a tool call hanging until the provider gives up on it.
+func TestAQueuedToolCallIsToldWhenTheWaitExpires(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, func(opts *kernel.Options) {
+		opts.AssistantWait = 50 * time.Millisecond
+	})
+	bearer := unsignedToken("devuser")
+
+	if _, err := service.Ensure(context.Background(), ref(bearer)); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	release := make(chan struct{})
+	hub.Hang(release)
+	defer close(release)
+
+	first, err := service.Run(context.Background(), ref(bearer), "slow()")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer func() { collect(t, first) }()
+
+	_, err = service.RunQueued(context.Background(), ref(bearer), "theirs()")
+	if !errors.Is(err, kernel.ErrBusy) {
+		t.Fatalf("a queued call behind a long cell = %v, want ErrBusy", err)
+	}
+	// The message has to say more than the refusal did, or the model learns nothing
+	// from having waited.
+	if !strings.Contains(err.Error(), "still busy after") {
+		t.Errorf("error = %q, want it to say the wait expired", err)
+	}
+}
+
+// A deployment that wants the old behaviour says so, and gets it on the tool path
+// too: a negative wait is the refusal without the queue.
+func TestANegativeAssistantWaitRefusesAToolCallOutright(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, func(opts *kernel.Options) {
+		opts.AssistantWait = -1
+	})
+	bearer := unsignedToken("devuser")
+
+	if _, err := service.Ensure(context.Background(), ref(bearer)); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	release := make(chan struct{})
+	hub.Hang(release)
+
+	first, err := service.Run(context.Background(), ref(bearer), "slow()")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	started := time.Now()
+	if _, err := service.RunQueued(context.Background(), ref(bearer), "theirs()"); !errors.Is(err, kernel.ErrBusy) {
+		t.Errorf("a queued call with the wait disabled = %v, want ErrBusy", err)
+	}
+	if waited := time.Since(started); waited > time.Second {
+		t.Errorf("it waited %s, which is not the refusal this option asks for", waited)
+	}
+
+	close(release)
+	collect(t, first)
+}
+
 func TestRunRefusesASecondCellWhileOneIsRunning(t *testing.T) {
 	hub := kerneltest.NewHub(t)
 	service := newService(t, hub, nil)

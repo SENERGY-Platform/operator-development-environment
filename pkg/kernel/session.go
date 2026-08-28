@@ -178,7 +178,10 @@ type bench struct {
 	// whenever running is zero. It is how a caller that is willing to wait hears
 	// that the kernel is free — closed rather than sent on, because every waiter
 	// has to be woken and only one of them will win the retry.
-	idle     chan struct{}
+	idle chan struct{}
+	// waiting counts the callers sitting on idle right now, so a queue too deep to
+	// serve inside anyone's bound is answered instead of joined. See maxQueuedClaims.
+	waiting  int
 	lastUsed time.Time
 }
 
@@ -350,21 +353,48 @@ func (s *Service) Status(ctx context.Context, ref Ref) (Status, error) {
 	return s.statusLocked(ctx, target)
 }
 
-// Run executes developer or LLM code in one workbench's kernel.
+// Run executes a developer's own cell in one workbench's kernel.
 //
 // It is the only entry point that both brings the session up and runs something,
 // which is deliberate: every caller then gets the token push, the keep-alive and
 // the workspace without having to remember them.
+//
+// No wait: a developer's cell that finds their own workbench busy is exactly the
+// case ErrBusy reports, and the pane's answer is the interrupt rather than a
+// queue — they are sitting in front of it and can decide. Another workbench being
+// busy does not reach here at all.
 func (s *Service) Run(
 	ctx context.Context, ref Ref, code string,
+) (<-chan ExecutionEvent, error) {
+	return s.run(ctx, ref, code, 0)
+}
+
+// RunQueued executes the assistant's code, queueing behind a busy kernel.
+//
+// The difference from Run is the answer to "who is waiting". A tool call is not a
+// person in front of a pane: refusing it produces
+// `{"error":"this kernel is already running code"}` in the model's context, from
+// which the best it can do is guess how long to leave it and ask again — and the
+// two callers it collides with are a cell the developer started seconds ago and
+// ODE's own workspace operations, both of which are over in seconds. Waiting is
+// what the developer would have done.
+//
+// The bound is Options.AssistantWait, and its expiry still answers ErrBusy: past
+// that, the kernel is held by something long enough that the model should be told
+// rather than left hanging on a tool call the provider will eventually give up on.
+func (s *Service) RunQueued(
+	ctx context.Context, ref Ref, code string,
+) (<-chan ExecutionEvent, error) {
+	return s.run(ctx, ref, code, s.opts.AssistantWait)
+}
+
+func (s *Service) run(
+	ctx context.Context, ref Ref, code string, wait time.Duration,
 ) (<-chan ExecutionEvent, error) {
 	if strings.TrimSpace(code) == "" {
 		return nil, fmt.Errorf("%w: there is no code to run", ErrInvalidRequest)
 	}
-	// No wait: a developer's cell that finds their own workbench busy is exactly the
-	// case ErrBusy reports, and the pane's answer is the interrupt rather than a
-	// queue. Another workbench being busy does not reach here at all.
-	target, conn, handle, user, run, err := s.claim(ctx, ref, 0)
+	target, conn, handle, user, run, err := s.claim(ctx, ref, wait)
 	if err != nil {
 		return nil, err
 	}
@@ -452,24 +482,58 @@ func (s *Service) claim(
 		// releases it through the same mutex, so holding it here would be the
 		// deadlock.
 		idle := target.idle
+		queued := target.waiting
 		target.mux.Unlock()
 
 		remaining := time.Until(deadline)
 		if remaining <= 0 || idle == nil {
 			return nil, nil, KernelHandle{}, user, 0, ErrBusy
 		}
+		// A queue this deep is not a collision any more.
+		//
+		// The cap is not about memory — a waiter is a goroutine on a timer. It is
+		// that a caller behind eight others will not be served inside any bound
+		// worth reporting, and answering it now is more use than answering it in
+		// four minutes. It also keeps a caller that retries on refusal from turning
+		// one busy kernel into an unbounded backlog.
+		if queued >= maxQueuedClaims {
+			return nil, nil, KernelHandle{}, user, 0, fmt.Errorf(
+				"%w: %d callers are already waiting for it", ErrBusy, queued)
+		}
+
+		target.mux.Lock()
+		target.waiting++
+		target.mux.Unlock()
 		timer := time.NewTimer(remaining)
 		select {
 		case <-idle:
 			timer.Stop()
 			// Free, and the retry may still lose it to another waiter — every one of
 			// them was woken. The loop is what makes that safe rather than a race.
+			//
+			// Deliberately not a queue with an order. Waiters here are independent
+			// callers — a tool call in one conversation, a workspace read in another,
+			// a cell the developer started — and there is no order between them to
+			// preserve; the calls that do have one, an assistant's own successive
+			// tool calls, are issued one after the other and never race. What the
+			// cap above bounds is the starvation this leaves possible.
 		case <-timer.C:
-			return nil, nil, KernelHandle{}, user, 0, ErrBusy
+			timer.Stop()
+			target.mux.Lock()
+			target.waiting--
+			target.mux.Unlock()
+			return nil, nil, KernelHandle{}, user, 0, fmt.Errorf(
+				"%w: it was still busy after %s", ErrBusy, wait)
 		case <-ctx.Done():
 			timer.Stop()
+			target.mux.Lock()
+			target.waiting--
+			target.mux.Unlock()
 			return nil, nil, KernelHandle{}, user, 0, ctx.Err()
 		}
+		target.mux.Lock()
+		target.waiting--
+		target.mux.Unlock()
 	}
 }
 

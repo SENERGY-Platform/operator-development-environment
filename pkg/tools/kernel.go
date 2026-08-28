@@ -72,7 +72,7 @@ func (s *surface) runCode(ctx context.Context, req Request) (any, error) {
 	}
 
 	req.Progress("kernel", "ensuring the developer's pod and kernel are up")
-	events, err := s.deps.Kernel.Run(ctx, kernel.Ref{
+	events, err := s.deps.Kernel.RunQueued(ctx, kernel.Ref{
 		Bearer: req.Token, Workbench: req.WorkbenchID,
 	}, in.Code)
 	if err != nil {

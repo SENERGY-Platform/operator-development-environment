@@ -163,6 +163,11 @@ type Options struct {
 	// them. Zero takes the default; negative disables the wait, which is the old
 	// behaviour of refusing the second caller outright.
 	WorkspaceWait time.Duration
+	// AssistantWait is how long a tool call queues for a kernel that is running
+	// something else before it answers ErrBusy — see RunQueued. Zero takes the
+	// default; negative refuses the second caller outright, which is what the
+	// developer's own cell does.
+	AssistantWait time.Duration
 
 	// Environment is pushed into the kernel alongside the platform token, so code
 	// in the pod can reach the same platform this ODE is configured against
@@ -192,6 +197,14 @@ const (
 	// A bring-up needs no allowance here, because it happens under the session
 	// mutex rather than under a run, so a second caller waits on the mutex.
 	defaultWorkspaceWait = 10 * time.Second
+	// defaultAssistantWait is longer than defaultWorkspaceWait because what a tool
+	// call queues behind is a whole cell rather than a repository operation, and
+	// cells of half a minute are ordinary. It stays well under the ten minutes a
+	// provider gives one tool call, so a kernel held longer than this is reported
+	// to the model while it can still say something about it.
+	defaultAssistantWait = 2 * time.Minute
+	// maxQueuedClaims bounds how many callers wait for one kernel at once.
+	maxQueuedClaims = 8
 	// tokenRenewBefore re-mints a per-user token this long before it expires, so
 	// an execution never starts on a credential that dies mid-cell.
 	tokenRenewBefore = 15 * time.Minute
@@ -281,6 +294,9 @@ func New(opts Options) (*Service, error) {
 	}
 	if opts.WorkspaceWait == 0 {
 		opts.WorkspaceWait = defaultWorkspaceWait
+	}
+	if opts.AssistantWait == 0 {
+		opts.AssistantWait = defaultAssistantWait
 	}
 
 	base, err := url.Parse(strings.TrimRight(opts.BaseURL, "/"))

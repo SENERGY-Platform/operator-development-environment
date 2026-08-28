@@ -155,7 +155,9 @@ type (
 	// methods run_code needs: the token identifies the developer, so nothing here
 	// takes a user.
 	Kernel interface {
-		Run(ctx context.Context, ref kernel.Ref, code string) (<-chan kernel.ExecutionEvent, error)
+		// RunQueued rather than Run: a tool call that finds the kernel busy waits
+		// for it, where a developer's own cell is told at once and can interrupt.
+		RunQueued(ctx context.Context, ref kernel.Ref, code string) (<-chan kernel.ExecutionEvent, error)
 		Workspace() string
 	}
 
