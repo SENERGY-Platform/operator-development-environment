@@ -62,6 +62,15 @@ let dropStream: (() => void) | undefined;
 let emit: ((event: unknown) => void) | undefined;
 /** Whether a turn is running server-side, which is what chat_attach answers with. */
 let live = false;
+/**
+ * Holds every read of the stored conversation until a test lets it go.
+ *
+ * Ordering is the whole subject of one test: on a reload during a turn, the read
+ * of the store and the reattach to the exchange are two round trips in flight at
+ * once, and which lands second decides what the developer sees. A mock that always
+ * resolves first can only ever test one of the two orders.
+ */
+let readGate: Promise<void> | null = null;
 /** What the developer has sent, which the backend stores before the turn starts. */
 let sent: string[] = [];
 /** Decisions sent through the non-streaming path, as [confirmation, approve]. */
@@ -246,6 +255,7 @@ vi.mock("./api", async (importOriginal) => {
       },
       chatSession: async () => {
         reloads += 1;
+        if (readGate) await readGate;
         // A fresh object each time, as a real read gives: the loop fed on exactly
         // this, because storing it re-rendered the pane above.
         const detail = JSON.parse(JSON.stringify(sessionDetail));
@@ -317,6 +327,7 @@ beforeEach(() => {
   report = null;
   dropWatch = null;
   live = false;
+  readGate = null;
   sent = [];
   listed = JSON.parse(JSON.stringify(sessionList.sessions)) as ChatSession[];
   benches = [];
@@ -572,6 +583,53 @@ it("keeps a streamed answer on screen when the socket drops mid-turn", async () 
   expect(host.querySelectorAll(".turn.assistant").length).toBeGreaterThan(0);
 });
 
+/** holdReads makes every read of the stored conversation wait. Returns the release. */
+function holdReads(): () => void {
+  let release = () => {};
+  readGate = new Promise<void>((resolve) => {
+    release = () => resolve();
+  });
+  return release;
+}
+
+/*
+ * Reloading the page during a turn, and the race that ate the answer.
+ *
+ * Mounting starts two round trips at once: the read of the stored conversation,
+ * and — as soon as the socket is up — the reattach, which replays everything the
+ * exchange has produced. The store deliberately holds none of that answer yet;
+ * messages are persisted when the turn ends. So whichever lands second wins the
+ * transcript, and when it was the read, the developer watched the answer they had
+ * come back for get replaced by their own question.
+ *
+ * The order is forced here rather than hoped for. Both orders are real — it
+ * depends on which round trip is slower on the day — and the fast one was the one
+ * the tests happened to exercise.
+ */
+it("keeps a reattached turn on screen when the stored read lands after it", async () => {
+  live = true;
+  const release = holdReads();
+
+  const host = await open();
+  await act(async () => openSocket());
+  await settle(3);
+
+  // The reattach, replaying a turn that started before the reload.
+  await act(async () => emit?.({ type: "text_delta", text: "the oven draws" }));
+  await settle(2);
+  expect(host.textContent, "the reattach never showed the turn").toContain("the oven draws");
+
+  // And now the store answers, with the question and nothing else.
+  await act(async () => {
+    release();
+  });
+  await settle(6);
+
+  expect(host.textContent, "the late store read wiped the reattached answer").toContain(
+    "the oven draws",
+  );
+});
+
 it("stopping a turn leaves the backend alone", async () => {
   const host = await open();
   // Mounting brings the connection up, so the pane has already attached once and
@@ -682,6 +740,49 @@ it("alerts differently when the turn ended on a decision", async () => {
   expect(announced).toEqual([["Your decision is needed", sessionDetail.session.title]]);
 });
 
+/*
+ * The alert belongs to the card arriving, not to the turn ending.
+ *
+ * A held call — run_code's is the one a developer meets dozens of times an
+ * afternoon — does not end its turn: the exchange keeps running while the card
+ * waits. An alert that fires on the ending therefore fired minutes late, and for
+ * a call the developer answered from the card it never fired at all. Which left
+ * the "Needs you" dot in the panel as the only signal, and a dot in a list nobody
+ * is looking at tells nobody anything.
+ *
+ * The ending still alerts — it is the only sighting of a confirmation asked for
+ * while the socket was away — so the pair has to be tested together: once for the
+ * card, and not again for the same decision.
+ */
+it("announces a decision when its card arrives, and not again when the turn ends", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  const confirmation = {
+    id: "conf-1",
+    tool: "run_code",
+    input: {},
+    tier: "L0",
+    created_at: "2026-01-01T00:00:00Z",
+    out_of_band: true,
+  };
+  await act(async () => emit?.({ type: "confirmation_required", confirmation }));
+  await settle(3);
+
+  expect(announced).toEqual([["Your decision is needed", sessionDetail.session.title]]);
+
+  // The same confirmation, still pending when the turn ends and the store is
+  // re-read. One decision, one alert.
+  pending = [confirmation];
+  await act(async () => finishSend?.());
+  await settle();
+
+  expect(announced, "the same decision was announced twice").toEqual([
+    ["Your decision is needed", sessionDetail.session.title],
+  ]);
+});
+
 // --- what the subscription is for, still working ---
 
 /*
@@ -689,6 +790,46 @@ it("alerts differently when the turn ended on a decision", async () => {
  * outlives the connection is exactly what it exists for. A genuine transition to
  * open, with nothing being watched here, must still attach — once.
  */
+// --- where the tier lives ---
+
+/*
+ * The tier is a strip across the pane, not a column in its header.
+ *
+ * It carries four things — the three tiers, what the current one exposes, the
+ * standing answer to run_code, and the way into the history — and the header gave
+ * them one narrow column to share, centred against the title. The pane's first
+ * two lines were a title on the left and a four-storey stack on the right with
+ * nothing between them.
+ *
+ * Asserted structurally rather than by looks, because the two properties that
+ * matter are structural: everything that was in the header is still on screen —
+ * the point was to lay the tier out, not to hide half of it — and the strip is a
+ * sibling of the transcript rather than something inside it, so it keeps its own
+ * height instead of scrolling away with the conversation.
+ */
+it("puts the tier strip in the pane rather than in its header", async () => {
+  const host = await open();
+  await settle(3);
+
+  expect(
+    host.querySelector(".pane-actions .tier-control"),
+    "the tier is stacked in the pane header again",
+  ).toBeNull();
+
+  const strip = host.querySelector(".tier-control");
+  expect(strip, "no tier strip in the conversation").not.toBeNull();
+  expect(
+    strip?.parentElement?.classList.contains("pane-body"),
+    "the tier strip is not a direct child of the pane body",
+  ).toBe(true);
+
+  // All four parts, still there.
+  expect(strip?.querySelector(".tier-buttons"), "no tier buttons").not.toBeNull();
+  expect(strip?.querySelector(".tier-exposes"), "no exposure sentence").not.toBeNull();
+  expect(strip?.querySelector(".auto-run"), "no standing answer").not.toBeNull();
+  expect(strip?.textContent).toContain("tier history");
+});
+
 // --- auto mode ---
 
 /*
@@ -761,9 +902,10 @@ it("a held confirmation is decided without opening a second stream", async () =>
  * reload is, and it is the moment a developer is most likely to meet a held call,
  * because the reason they still owe an answer is usually that they were away.
  *
- * The card has to come from the stored read alone. Nothing replays the event that
- * first announced it: `chat_attach` carries what happens next, not what already
- * happened, so a pane that waited for the socket to tell it would show nothing.
+ * The card has to come from the stored read alone: with no turn in flight there is
+ * no exchange to attach to, so a pane that waited for the socket to tell it would
+ * show nothing. (An attach onto a turn that *is* running replays that exchange's
+ * history, cards included — which is the other test above, and was a bug.)
  */
 it("shows a confirmation that was already waiting when the pane mounted", async () => {
   pending = [
@@ -792,6 +934,177 @@ it("shows a confirmation that was already waiting when the pane mounted", async 
   await press(host, "Approve");
   await settle(3);
   expect(decided).toEqual([["conf-3", true]]);
+});
+
+/*
+ * A turn that failed on its own stream, rather than by throwing.
+ *
+ * The relay closes tidily afterwards, so the stream resolves and the pane reloads
+ * the stored history — which holds no notices. That took the one line saying why
+ * the answer stopped off the screen a moment after it appeared, and announced
+ * "Reply ready" over the empty conversation it left. The CLI hitting its own turn
+ * timeout is exactly this shape.
+ */
+it("keeps the reason a turn failed, and does not call it a reply", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  await act(async () => emit?.({ type: "text_delta", text: "Here is half an answer" }));
+  await act(async () => emit?.({ type: "error", error: "the provider gave up on this turn" }));
+  await act(async () => finishSend?.());
+  await settle();
+
+  expect(host.textContent, "the reason the turn stopped was wiped by the reload").toContain(
+    "the provider gave up on this turn",
+  );
+  expect(announced).toEqual([["Turn failed", sessionDetail.session.title]]);
+});
+
+/*
+ * "Needs you" goes with the click, not with the next thing the engine says.
+ *
+ * Answering starts a turn and the engine reports it within a moment, which is
+ * exactly long enough for the mark to read as the click not having worked — the
+ * developer pressed Approve and the row still says the conversation is waiting for
+ * them to press Approve. Dropped locally, and put back by the engine if it
+ * disagrees.
+ */
+it("drops the needs-you mark as soon as the developer answers", async () => {
+  const host = await open();
+  await act(async () => openSocket());
+  await settle(3);
+
+  pending = [
+    {
+      id: "conf-7",
+      tool: "run_code",
+      input: {},
+      tier: "L0",
+      created_at: "2026-08-28T00:00:00Z",
+      out_of_band: true,
+    },
+  ];
+  // The engine's word first: this conversation is waiting for a decision.
+  await says("id-1", "waiting");
+  await settle(3);
+  expect(marks(host)[sessionDetail.session.title]).toBe("Needs you");
+
+  // The store no longer holds it open, as it would not once the decision landed.
+  pending = [];
+  await press(host, "Approve");
+  await settle(3);
+
+  expect(marks(host)[sessionDetail.session.title], "the mark outlived the answer").toBeUndefined();
+});
+
+/*
+ * The column of cards.
+ *
+ * chat_attach subscribes to the exchange, and an exchange replays its whole
+ * history to a new subscriber — every card it ever asked for, the answered ones
+ * among them, because a held turn does not end and so nothing has cleared them.
+ * Appending each of those is what turned one reload during a held turn into a
+ * stack of cards, most of them already decided, and beeped once per card.
+ */
+it("does not raise a second card for a confirmation it already shows", async () => {
+  const confirmation = {
+    id: "conf-4",
+    tool: "run_code",
+    input: { code: "df.head()" },
+    tier: "L0",
+    created_at: "2026-08-28T00:00:00Z",
+  };
+  pending = [confirmation];
+
+  const host = await open();
+  await settle(3);
+  expect(host.querySelectorAll(".confirmation").length).toBe(1);
+
+  // The same ask, replayed onto a stream this pane is watching.
+  await ask(host);
+  await settle(3);
+  await act(async () => emit?.({ type: "confirmation_required", confirmation }));
+  await settle(3);
+
+  expect(
+    host.querySelectorAll(".confirmation").length,
+    "the replayed ask raised a second card",
+  ).toBe(1);
+  expect(announced, "the replayed ask alerted a second time").toEqual([]);
+});
+
+/*
+ * The same conversation in two windows.
+ *
+ * The card is a fact about the conversation, not about the window that asked for
+ * it, so it has to leave both windows when either one answers. This is the half
+ * that arrives on the stream: the other window's decision, published on the
+ * exchange both are watching.
+ */
+it("takes the card down when the decision arrives on the stream", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  const confirmation = {
+    id: "conf-5",
+    tool: "run_code",
+    input: {},
+    tier: "L0",
+    created_at: "2026-08-28T00:00:00Z",
+    out_of_band: true,
+  };
+  await act(async () => emit?.({ type: "confirmation_required", confirmation }));
+  await settle(3);
+  expect(host.querySelector(".confirmation")).not.toBeNull();
+
+  await act(async () =>
+    emit?.({
+      type: "confirmation_resolved",
+      confirmation: { ...confirmation, decision: "approved" },
+    }),
+  );
+  await settle(3);
+
+  expect(
+    host.querySelector(".confirmation"),
+    "the card outlived the decision that settled it",
+  ).toBeNull();
+});
+
+/*
+ * And the half that does not arrive on the stream.
+ *
+ * A turn that stopped on a card left no exchange to attach to, so the window that
+ * did not answer has nothing watching. What it does have is the panel's per-user
+ * watch, and a change in what the engine says about this conversation is the
+ * signal to ask the store which cards are still open.
+ */
+it("takes the card down when the panel reports the conversation moved on", async () => {
+  const confirmation = {
+    id: "conf-6",
+    tool: "run_code",
+    input: {},
+    tier: "L0",
+    created_at: "2026-08-28T00:00:00Z",
+  };
+  pending = [confirmation];
+
+  const host = await open();
+  await settle(3);
+  expect(host.querySelector(".confirmation")).not.toBeNull();
+
+  // The other window answered: the store no longer holds it open, and the watch
+  // reports the conversation running again.
+  pending = [];
+  await act(async () => report?.({ session_id: "id-1", state: "running" }));
+  await settle(3);
+
+  expect(
+    host.querySelector(".confirmation"),
+    "a card answered in another window stayed on this one",
+  ).toBeNull();
 });
 
 /* And the ordinary one still resumes the turn it paused, which streams. */
@@ -915,6 +1228,46 @@ it("marks a conversation that has stopped on a decision", async () => {
   // a reload: a decision is owed until somebody makes it.
   await says("id-2", "waiting");
   expect(marks(host)["the other conversation"]).toBe("Needs you");
+});
+
+/*
+ * And it says so out loud, for the conversation that is not on screen.
+ *
+ * The mark alone was the whole signal, and it is in the one place the developer is
+ * not looking: they switched away precisely because that conversation was going
+ * to take a while. A decision stops it dead until they come back, so this is the
+ * ending worst to miss.
+ *
+ * Named, because a developer holding four conversations needs to know which one.
+ */
+it("alerts about a decision in a conversation the developer is not reading", async () => {
+  listed = [...listed, { ...listed[0], id: "id-2", title: "the other conversation" }];
+  // Mounted for its effects only: this is about what the developer is told, not
+  // about what the row says — the mark has its own test above.
+  await open();
+  await act(async () => openSocket());
+  await settle(3);
+
+  await says("id-2", "waiting");
+  expect(announced).toEqual([["Your decision is needed", "the other conversation"]]);
+
+  // The engine repeating its word on the same conversation is not a second
+  // decision. It says "waiting" on reconnect, and on every state it publishes
+  // while the card sits there.
+  await says("id-2", "waiting");
+  expect(announced, "the same waiting session alerted twice").toHaveLength(1);
+
+  // The open conversation is its own view's business: the card arrives in the
+  // stream it is watching and announces itself from there. Alerting here as well
+  // would beep twice for one decision.
+  announced.length = 0;
+  await says("id-1", "waiting");
+  expect(announced).toEqual([]);
+
+  // Not left latched either: answered, and asked again later, is two decisions.
+  await says("id-2", "idle");
+  await says("id-2", "waiting");
+  expect(announced).toEqual([["Your decision is needed", "the other conversation"]]);
 });
 
 it("keeps the live marks on the conversation on screen, and only drops 'reply ready'", async () => {

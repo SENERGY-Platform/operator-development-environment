@@ -53,6 +53,7 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
   useMessageScroller,
+  useMessageScrollerScrollable,
 } from "@/components/ui/message-scroller";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
@@ -234,8 +235,22 @@ type Watched = {
  * shows. What does survive is anything still running, because the watch opens with
  * a snapshot of it.
  */
-function useSessionMarks(openId: string | null): {
+function useSessionMarks(
+  openId: string | null,
+  /** What to call a session in an alert about it. Read through a ref, like openId. */
+  titleOf: (sessionId: string) => string,
+): {
   marks: Record<string, SessionMark>;
+  /**
+   * What the engine last said about each conversation, unsuppressed.
+   *
+   * Separate from `marks`, which is what a row should draw and therefore hides
+   * some of this. The open conversation reads it as a signal that something it
+   * cannot see happened — a second window answering a card, above all.
+   */
+  live: Record<string, "running" | "waiting">;
+  /** Drops the "needs you" mark, for a decision the developer has just answered. */
+  answered: (sessionId: string) => void;
   /** Drops everything held about a session, for when it is deleted. */
   forget: (sessionId: string) => void;
 } {
@@ -245,9 +260,36 @@ function useSessionMarks(openId: string | null): {
   // would close over the session that was open when the socket came up.
   const open = useRef(openId);
   open.current = openId;
+  const name = useRef(titleOf);
+  name.current = titleOf;
+
+  // What the engine last said about each session, mirrored outside the state
+  // below purely so the alert can tell a *change* to waiting from the engine
+  // repeating itself. It cannot be read off `watched` where it is wanted: this is
+  // a side effect and a state updater has to be pure — React calls one twice in
+  // development, and a beep is not something to do twice.
+  const known = useRef<Record<string, "running" | "waiting">>({});
 
   const apply = useCallback((activity: SessionActivity) => {
     const id = activity.session_id;
+    // The alert for a conversation the developer is not looking at.
+    //
+    // The open one is not announced here: its own view sees the confirmation
+    // arrive and says so from there, with the card in hand. This is the other
+    // side of that — a turn left running in another session that has stopped on a
+    // decision, which nothing in the tab used to report at all. The panel grew a
+    // "Needs you" dot for it, and a dot in a list nobody is looking at is not
+    // telling anyone anything.
+    if (
+      activity.state === "waiting" &&
+      known.current[id] !== "waiting" &&
+      id !== open.current
+    ) {
+      announce("Your decision is needed", name.current(id) || "A tool is waiting to run.");
+    }
+    if (activity.state === "idle") delete known.current[id];
+    else known.current[id] = activity.state;
+
     setWatched((state) => {
       if (activity.state !== "idle") {
         // Running and waiting are both the engine's word on the conversation, and
@@ -271,7 +313,29 @@ function useSessionMarks(openId: string | null): {
     });
   }, []);
 
+  /**
+   * The mark for a decision the developer has just answered, dropped on the spot.
+   *
+   * The engine says so too — answering starts a turn, and its activity event
+   * follows within a moment — but a moment is exactly long enough for the click to
+   * read as not having worked, and "Needs you" is the mark that says the
+   * conversation is waiting for the thing they just did.
+   *
+   * `known` is cleared with it, and that is not tidiness: it is what decides
+   * whether the *next* waiting state is a change worth alerting about. Left at
+   * "waiting", the following card would arrive in silence.
+   */
+  const answered = useCallback((sessionId: string) => {
+    delete known.current[sessionId];
+    setWatched((state) => {
+      if (state.live[sessionId] !== "waiting") return state;
+      const { [sessionId]: _decided, ...live } = state.live;
+      return { ...state, live };
+    });
+  }, []);
+
   const forget = useCallback((sessionId: string) => {
+    delete known.current[sessionId];
     setWatched((state) => {
       if (state.live[sessionId] === undefined && state.unread[sessionId] === undefined) {
         return state;
@@ -363,7 +427,7 @@ function useSessionMarks(openId: string | null): {
     return shown;
   }, [watched, openId]);
 
-  return { marks, forget };
+  return { marks, live: watched.live, answered, forget };
 }
 
 /**
@@ -417,7 +481,15 @@ export function ChatView({
   const openId = useParam("session");
   const current = sessions?.find((entry) => entry.id === openId) ?? null;
   // What the conversations the developer is *not* reading are doing.
-  const { marks, forget: forgetSession } = useSessionMarks(openId);
+  //
+  // The resolver is passed rather than the list: an alert about a conversation
+  // names it, and `sessions` is where the names are. Not memoised on purpose —
+  // the hook holds it in a ref, so a new identity per render costs nothing and a
+  // dependency array here would be one more thing to keep true.
+  const { marks, live, answered, forget: forgetSession } = useSessionMarks(openId, (id) => {
+    const entry = sessions?.find((candidate) => candidate.id === id);
+    return entry?.title || "";
+  });
   // A named session that is not in the list is a stale link or another account's,
   // and saying so beats silently opening nothing.
   const missingSession = sessions !== null && openId !== null && current === null;
@@ -703,6 +775,8 @@ export function ChatView({
         <Conversation
           key={current.id}
           session={current}
+          live={live[current.id]}
+          onAnswered={answered}
           maxTier={session.max_exposure_tier ?? "L2"}
           surface={surface}
           draft={drafts[current.id] ?? ""}
@@ -925,6 +999,8 @@ function ToolSurfaceSummary({ surface, tier }: { surface: ToolSurface; tier: Tie
 
 function Conversation({
   session,
+  live,
+  onAnswered,
   maxTier,
   surface,
   draft,
@@ -933,6 +1009,13 @@ function Conversation({
   onOpenChart,
 }: {
   session: ChatSession;
+  /**
+   * What the engine last said about this conversation, from the panel's per-user
+   * watch. Read as a change rather than as a value — see the effect that uses it.
+   */
+  live: "running" | "waiting" | undefined;
+  /** Told when the developer answers a card, so the panel's mark goes at once. */
+  onAnswered: (sessionId: string) => void;
   maxTier: Tier;
   surface: ToolSurface | null;
   /** What is in the composer, held above this component's key. */
@@ -943,6 +1026,33 @@ function Conversation({
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [pending, setPending] = useState<PendingConfirmation[]>([]);
+
+  // Every confirmation id this view has taken, still on screen or not.
+  //
+  // The list alone cannot answer "is this one new". A reattached exchange replays
+  // every card it ever asked for, and one that was answered ten minutes ago is
+  // absent from the list precisely because it is settled — so appending on that
+  // replay is what turned one reload during a held turn into a column of cards,
+  // most of them already decided, and alerting on it is what beeped once per card.
+  //
+  // A ref rather than state: it is read inside the stream callback, where a stale
+  // closure over state would defeat the point. The component is keyed by session
+  // id, so another conversation starts with an empty one.
+  const seen = useRef<Set<string>>(new Set());
+
+  /** Whether the re-read below is the mount's, which the load above already did. */
+  const firstLive = useRef(true);
+
+  /**
+   * Takes the store's answer, which is authoritative about what is still open.
+   *
+   * The ids are remembered as well as drawn, so the replay that arrives beside
+   * this read recognises them.
+   */
+  const syncPending = useCallback((open: PendingConfirmation[]) => {
+    for (const entry of open) seen.current.add(entry.id);
+    setPending(open);
+  }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
@@ -958,16 +1068,35 @@ function Conversation({
     [onDraftChange, session.id],
   );
 
+  // How many stream events this view has taken, as a generation counter.
+  //
+  // It exists for the read below, whose answer goes stale while it is in flight.
+  // Not a boolean: "a stream is running" is the wrong question — what matters is
+  // whether anything arrived *since this particular read started*.
+  const arrived = useRef(0);
+
   // Load the stored conversation. A resumed session shows its tool calls, because
   // the backend stores them structurally rather than flattening them to text.
   useEffect(() => {
     let cancelled = false;
+    // Mounting starts two round trips at once, and they race: this read, and — as
+    // soon as the socket is up — the reattach, which replays everything the
+    // exchange has produced so far. The store deliberately holds none of that
+    // answer yet, because messages are persisted when the turn ends. So a read
+    // that lands second replaced a reattached turn with the developer's own
+    // question, which is what reloading during a turn looked like: the answer they
+    // came back for, gone, and no sign that anything was still running.
+    //
+    // The stream wins, and it is not a close call. It carries everything the store
+    // has plus what the store cannot have yet, and the end of the turn reloads the
+    // history anyway — see `completed` in run().
+    const before = arrived.current;
     api
       .chatSession(session.id)
       .then((detail) => {
-        if (cancelled) return;
+        if (cancelled || arrived.current !== before) return;
         setTurns(replay(detail.messages));
-        setPending(detail.pending_confirmations);
+        syncPending(detail.pending_confirmations);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(describe(e));
@@ -977,20 +1106,97 @@ function Conversation({
     };
   }, [session.id]);
 
+  // What the second window learns.
+  //
+  // A confirmation is a fact about the conversation, not about the window that
+  // happened to ask for it: with the same session open twice, the card belongs in
+  // both, and it has to leave both the moment either one answers. The exchange's
+  // own events carry that to every window attached to it — which is not every
+  // window. A turn that stopped on a card has no exchange left to attach to, and a
+  // window that did not start the turn never had one.
+  //
+  // What every window does have is the panel's per-user watch. So a change in what
+  // the engine says about this conversation is the signal to ask the store which
+  // cards are still open, and the store is the one place that knows.
+  useEffect(() => {
+    if (firstLive.current) {
+      firstLive.current = false;
+      return;
+    }
+    let cancelled = false;
+    const before = arrived.current;
+    api
+      .chatSession(session.id)
+      .then((detail) => {
+        // An event since this read started means this window is watching the
+        // exchange itself, and what the stream says is newer than this answer.
+        if (cancelled || arrived.current !== before) return;
+        syncPending(detail.pending_confirmations);
+      })
+      .catch(() => {
+        // The cards stay as they are. This is a correction, not the only source:
+        // the window that answers has its own, and the next change asks again.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [live, session.id, syncPending]);
+
   // Detaching this view on unmount. It does not stop the exchange — that is the
   // point of detaching it server-side — so navigating away mid-profile leaves the
   // turn to finish and persist.
   useEffect(() => () => controller.current?.abort(), []);
 
 
-  const consume = useCallback((event: ChatEvent) => {
-    setTurns((existing) => apply(existing, event));
-    if (event.type === "confirmation_required" && event.confirmation) {
-      const confirmation = event.confirmation;
-      setPending((existing) => [...existing, confirmation]);
-    }
-    if (event.type === "usage" && event.usage) setUsage(event.usage);
-  }, []);
+  // Whether this run has already told the developer that a decision is waiting.
+  //
+  // A confirmation reaches the tab twice over: as the event below, the moment the
+  // engine records it, and again in the reload at the end of the turn — which is
+  // the only sighting when the socket was away while it was asked. Both endings
+  // want to alert, and one confirmation must not alert twice, so the event claims
+  // it and the ending defers to that.
+  const alerted = useRef(false);
+
+  // What a turn failed with, when it failed on its own stream rather than by
+  // throwing.
+  //
+  // An error event is a notice in the streamed view, and the reload at the end of
+  // the turn replaces that view with the stored history — which does not hold
+  // notices. So the one thing telling the developer why their answer stopped was
+  // removed a moment after it appeared, leaving an empty conversation under an
+  // alert that said the reply was ready.
+  const failure = useRef<string | null>(null);
+
+  const consume = useCallback(
+    (event: ChatEvent) => {
+      arrived.current += 1;
+      setTurns((existing) => apply(existing, event));
+      if (event.type === "confirmation_required" && event.confirmation) {
+        const confirmation = event.confirmation;
+        if (!seen.current.has(confirmation.id)) {
+          seen.current.add(confirmation.id);
+          setPending((existing) => [...existing, confirmation]);
+          // Announced here rather than only at the end of the turn, which is where
+          // this used to be. A held call — run_code's is the one a developer meets
+          // dozens of times an afternoon — does not end its turn: the exchange keeps
+          // running while the card waits, so an alert that fires on the ending fired
+          // minutes late or, for a call that was answered, never.
+          alerted.current = true;
+          announce("Your decision is needed", session.title || "A tool is waiting to run.");
+        }
+      }
+      if (event.type === "confirmation_resolved" && event.confirmation) {
+        // The card goes, whoever settled it: this window, the same conversation in
+        // another window, or nobody at all when a hold outlived its caller. Left in
+        // `seen`, so a later replay of the ask does not raise it again.
+        const settled = event.confirmation.id;
+        setPending((existing) => existing.filter((entry) => entry.id !== settled));
+      }
+      if (event.type === "error") failure.current = event.error ?? "Something failed.";
+      if (event.type === "usage" && event.usage) setUsage(event.usage);
+    },
+    [session.title],
+  );
 
   const run = useCallback(
     async (
@@ -1002,6 +1208,10 @@ function Conversation({
       controller.current = current;
       setBusy(true);
       setError(null);
+      // Cleared per run, not per confirmation: what must not repeat is the alert
+      // for one waiting decision, and answering it is what starts the next run.
+      alerted.current = false;
+      failure.current = null;
       // How the turn ended, for the alert in the finally. Null means there was
       // nothing to wait for — see the two cases below.
       let ending: "answered" | "failed" | null = null;
@@ -1073,7 +1283,14 @@ function Conversation({
             // away is picked up by that same reattach, which finds no exchange
             // running and comes through here with `completed` set.
             if (completed) setTurns(replay(detail.messages));
-            setPending(detail.pending_confirmations);
+            // Put the notice back on top of the stored history. Only when the
+            // history has just replaced the view — otherwise the streamed one is
+            // still on screen with the notice in it, and this would show it twice.
+            if (completed && failure.current !== null) {
+              const text = failure.current;
+              setTurns((existing) => [...existing, { kind: "notice", level: "error", text }]);
+            }
+            syncPending(detail.pending_confirmations);
             onSessionChange(detail.session);
             waiting = detail.pending_confirmations.length > 0;
           } catch {
@@ -1084,10 +1301,21 @@ function Conversation({
           // the developer needs to know is which of the three endings it was, and a
           // held confirmation is only visible in the reloaded session. announce()
           // stays silent while this window is in front of them.
+          // A turn that reported an error on its stream ended as badly as one that
+          // threw; the stream resolving afterwards says only that the relay closed
+          // tidily. Announcing "Reply ready" for it sent the developer back to an
+          // empty conversation.
+          if (ending === "answered" && failure.current !== null) ending = "failed";
           if (ending === "failed") {
             announce("Turn failed", session.title || "The assistant stopped early.");
           } else if (ending === "answered" && waiting) {
-            announce("Your decision is needed", session.title || "A tool is waiting to run.");
+            // The alert, unless the card already gave it. Nested rather than a
+            // third condition on this branch: a turn that ended on a decision is
+            // not a turn with a reply waiting, so falling through to "Reply ready"
+            // would be worse than saying nothing — which is what it did.
+            if (!alerted.current) {
+              announce("Your decision is needed", session.title || "A tool is waiting to run.");
+            }
           } else if (ending === "answered") {
             announce("Reply ready", session.title || "The assistant has finished.");
           }
@@ -1165,6 +1393,9 @@ function Conversation({
   const decide = useCallback(
     (confirmation: PendingConfirmation, approve: boolean) => {
       setPending((existing) => existing.filter((entry) => entry.id !== confirmation.id));
+      // The card goes from this pane and the mark goes from the panel in the same
+      // click. Both are put back by the engine if it disagrees.
+      onAnswered(session.id);
 
       // A held call is answered in place. The provider's own tool loop is still
       // running and its relay is still open, so the result of this decision arrives
@@ -1178,7 +1409,7 @@ function Conversation({
       }
       void run("chat_confirm", { confirmation_id: confirmation.id, approve });
     },
-    [run, session.id],
+    [onAnswered, run, session.id],
   );
 
   const setAutoRun = useCallback(
@@ -1226,21 +1457,30 @@ function Conversation({
     <Pane
       title={session.title || "Assistant"}
       subtitle={`${session.provider} · ${session.model}`}
-      actions={
-        <>
-          <WorkbenchControl session={session} benches={benches} busy={busy} onMove={move} />
-          <TierControl
-            tier={session.exposure_tier}
-            maxTier={maxTier}
-            sessionId={session.id}
-            surface={surface}
-            onChange={setTier}
-            autoRun={session.auto_run}
-            onAutoRunChange={setAutoRun}
-          />
-        </>
-      }
+      actions={<WorkbenchControl session={session} benches={benches} busy={busy} onMove={move} />}
     >
+      {/*
+        The tier is a strip across the pane rather than a stack in the header.
+
+        It carries four things — the three tiers, what the current one exposes, the
+        standing answer to run_code, and the way into the history — and in the
+        header they had one column to share. `items-center` on the action strip
+        then centred that column against the title, so the pane's first two lines
+        were a title on the left and a four-storey stack on the right with the
+        middle of the header empty. Across the pane each of them has a row's width
+        to sit in, and the header is back to what a header is: what this
+        conversation is, and where it acts.
+      */}
+      <TierControl
+        tier={session.exposure_tier}
+        maxTier={maxTier}
+        sessionId={session.id}
+        surface={surface}
+        onChange={setTier}
+        autoRun={session.auto_run}
+        onAutoRunChange={setAutoRun}
+      />
+
       {error && <Muted>{error}</Muted>}
 
       {/*
@@ -1374,6 +1614,14 @@ function Conversation({
           </MessageScrollerButton>
         </MessageScroller>
 
+      {/*
+        Turns and cards in one number on purpose: what the reader wants is the
+        bottom of the pane, and either kind of arrival moves it. Text streaming
+        into a turn already on screen does not change it — the scroller's own
+        anchoring has that, once the first arrival has put it back in
+        following-bottom.
+      */}
+      <FollowTail count={turns.length + pending.length} />
       {pending.map((confirmation) => (
         <ConfirmationPrompt
           key={confirmation.id}
@@ -1397,6 +1645,68 @@ function Conversation({
       </MessageScrollerProvider>
     </Pane>
   );
+}
+
+/**
+ * FollowTail keeps a reader who was at the tail at the tail when anything new
+ * arrives — a turn, a tool call, or a confirmation card.
+ *
+ * Two separate reasons the scroller does not do this itself.
+ *
+ * A card is not in the transcript. It is a strip between the scroller and the
+ * composer, so a decision stays reachable however far up the developer has
+ * scrolled — and it takes its height out of the viewport. Someone reading the
+ * last line of an answer has it pushed out of sight by the very card that wants
+ * something from them, and the scroller's anchoring has nothing to do about it,
+ * because nothing in the transcript changed.
+ *
+ * A new turn is in the transcript, and there the scroller *should* follow. It
+ * decides by a mode it holds — `following-bottom` or `free-scrolling` — and any
+ * wheel, touch or key event drops it to free-scrolling. The mode is restored only
+ * while handling a scroll or a resize, so a wheel notch at the bottom, where
+ * there is nothing left to scroll and therefore no scroll event, leaves it
+ * free-scrolling with the reader sitting at the tail. On the next arrival the
+ * primitive consults the mode and does not re-derive the position, so it does not
+ * follow — and by then the arrival has put content below the fold, so nothing
+ * puts the mode back either. It stays stuck, which is what a permanently visible
+ * "Jump to the latest" is a symptom of.
+ *
+ * So the position is re-derived here, from the scrollable state rather than from
+ * the mode, and `scrollToEnd` un-sticks the primitive as a side effect: it sets
+ * the mode back to following-bottom, so streaming follows again afterwards.
+ *
+ * Only for the reader it is true of, which is the whole condition: someone who
+ * had scrolled up to re-read a tool result stays where they were.
+ *
+ * Renders nothing. It exists to be *inside* the provider — `Conversation` renders
+ * the provider, so it cannot call the hooks itself — for the same reason the
+ * composer is a component of its own.
+ */
+function FollowTail({ count }: { count: number }) {
+  const { scrollToEnd } = useMessageScroller();
+  const { end: below } = useMessageScrollerScrollable();
+  const atTail = useRef(true);
+  const seen = useRef(count);
+
+  // Remembered rather than read when it is wanted, and that is the crux: by the
+  // time the effect below runs, the card has already taken its height and `below`
+  // is true *because of the card*. So it is recorded on every render that did not
+  // change the count, and the render that does changes nothing here. Ordered
+  // first because effects run in source order.
+  useEffect(() => {
+    if (count === seen.current) atTail.current = !below;
+  }, [below, count]);
+
+  useEffect(() => {
+    const appeared = count > seen.current;
+    seen.current = count;
+    // `smooth`, like the jump on send and unlike the anchoring during streaming:
+    // this happens once and the movement is what says the developer was taken
+    // somewhere, rather than the bottom of the transcript having silently changed.
+    if (appeared && atTail.current) scrollToEnd({ behavior: "smooth" });
+  }, [count, scrollToEnd]);
+
+  return null;
 }
 
 /**
@@ -1508,10 +1818,6 @@ function Composer({
 }
 
 /**
- * TierControl is §3.2's persistent surface, and the only way the tier changes:
- * there is no tool for it, so the assistant cannot raise its own exposure.
- */
-/**
  * WorkbenchControl moves the conversation to another working context.
  *
  * The workbench is chosen when a conversation is opened, which is before the
@@ -1598,6 +1904,16 @@ function WorkbenchControl({
   );
 }
 
+/**
+ * TierControl is §3.2's persistent surface, and the only way the tier changes:
+ * there is no tool for it, so the assistant cannot raise its own exposure.
+ *
+ * A strip across the top of the pane, not a control in its header. Persistent is
+ * the requirement — the tier is a standing constraint on the conversation, so it
+ * is on screen while the conversation is — and a strip is what carries the four
+ * parts of that answer side by side: which tier, what it exposes, whether
+ * recognised code still stops for a confirmation, and how it got here.
+ */
 function TierControl({
   tier,
   maxTier,
@@ -1619,82 +1935,109 @@ function TierControl({
   const ceiling = TIERS.indexOf(maxTier);
 
   return (
-    <div className="tier-control flex max-w-72 flex-col items-end gap-1.5">
-      {/*
-        A toggle group rather than three buttons, because the three are one choice
-        and only one of them can hold. `single` gives the group roving focus and
-        arrow-key movement, which three separate buttons did not have.
-      */}
-      <ToggleGroup
-        className="tier-buttons"
-        variant="outline"
-        size="sm"
-        value={[tier]}
-        // Single-select is the primitive's default, so the array holds at most one.
-        // Clicking the pressed tier un-presses it and reports an empty array; a
-        // session always has a tier, so that is read as "no change" rather than as
-        // a move to nothing.
-        onValueChange={(value) => {
-          const picked = value[0];
-          if (picked !== undefined && picked !== tier) onChange(picked as Tier);
-        }}
-        aria-label="Data exposure tier"
-      >
-        {TIERS.map((candidate, index) => (
-          <ToggleGroupItem
-            key={candidate}
-            value={candidate}
-            className={cn("tier-button", candidate === tier && `active tier-${candidate}`)}
-            disabled={index > ceiling}
+    /*
+      Full-bleed: the negative margin takes the strip out to the pane's edges so
+      its rule reads as a division of the pane rather than as a box drawn inside
+      it. `-mx-4` against the body's own `px-4`, and the padding is put back so
+      the controls stay on the same left edge as the transcript under them.
+
+      `shrink-0` because the pane body is a flex column whose other child is the
+      scroller: without it a long tier sentence would be taken out of the
+      transcript's height rather than out of the strip's own wrapping.
+    */
+    <div className="tier-control -mx-4 shrink-0 border-b px-4 pb-2">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {/*
+          A toggle group rather than three buttons, because the three are one choice
+          and only one of them can hold. `single` gives the group roving focus and
+          arrow-key movement, which three separate buttons did not have.
+        */}
+        <ToggleGroup
+          className="tier-buttons"
+          variant="outline"
+          size="sm"
+          value={[tier]}
+          // Single-select is the primitive's default, so the array holds at most one.
+          // Clicking the pressed tier un-presses it and reports an empty array; a
+          // session always has a tier, so that is read as "no change" rather than as
+          // a move to nothing.
+          onValueChange={(value) => {
+            const picked = value[0];
+            if (picked !== undefined && picked !== tier) onChange(picked as Tier);
+          }}
+          aria-label="Data exposure tier"
+        >
+          {TIERS.map((candidate, index) => (
+            <ToggleGroupItem
+              key={candidate}
+              value={candidate}
+              className={cn("tier-button", candidate === tier && `active tier-${candidate}`)}
+              disabled={index > ceiling}
+              title={
+                index > ceiling
+                  ? `An administrator has capped your exposure tier at ${maxTier}.`
+                  : TIER_EXPOSES[candidate]
+              }
+            >
+              {candidate}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        {/*
+          The sentence takes the space between the tiers and the switch — `flex-1`
+          with `min-w-0`, so it wraps inside the strip instead of pushing the
+          controls to the right of it off the row. Left-aligned now: it reads as a
+          caption on the buttons beside it rather than as a right-hand column, and
+          it is the same sentence the buttons carry in their titles.
+        */}
+        <p className="tier-exposes min-w-0 flex-1 text-xs text-muted-foreground">
+          {TIER_EXPOSES[tier]}
+        </p>
+        {/*
+          Beside the tier, because the two are the same kind of decision — what this
+          conversation is allowed to do without being interrupted — and a developer
+          weighing one is weighing both.
+
+          The wording is doing real work. "Run obvious code without asking" says what
+          happens; the title says what "obvious" means and, more importantly, what it
+          does not mean. Calling this "safe code" would be a lie the interface tells
+          on the backend's behalf: nothing here judges safety, it recognises a small
+          vocabulary, and everything outside it is still confirmed.
+        */}
+        <label className="auto-run flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+          <Switch
+            checked={autoRun}
+            onCheckedChange={(on) => onAutoRunChange(on)}
+            aria-label="Run recognised code without asking"
+          />
+          <span
             title={
-              index > ceiling
-                ? `An administrator has capped your exposure tier at ${maxTier}.`
-                : TIER_EXPOSES[candidate]
+              "Runs a code cell without asking when it is recognisably an inspection of " +
+              "data already in the kernel — reading a dataframe's shape, its columns, a " +
+              "column's mean. Anything else is still confirmed. This is not a safety " +
+              "check: code runs in your own pod with your own token either way, and the " +
+              "confirmation is what you are waiving, not what protects you."
             }
           >
-            {candidate}
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
-      <p className="tier-exposes text-right text-xs text-muted-foreground">{TIER_EXPOSES[tier]}</p>
-      {surface && <RaiseHint tier={tier} surface={surface} />}
-      {/*
-        Beside the tier, because the two are the same kind of decision — what this
-        conversation is allowed to do without being interrupted — and a developer
-        weighing one is weighing both.
-
-        The wording is doing real work. "Run obvious code without asking" says what
-        happens; the title says what "obvious" means and, more importantly, what it
-        does not mean. Calling this "safe code" would be a lie the interface tells
-        on the backend's behalf: nothing here judges safety, it recognises a small
-        vocabulary, and everything outside it is still confirmed.
-      */}
-      <label className="auto-run flex items-center gap-2 text-xs text-muted-foreground">
-        <Switch
-          checked={autoRun}
-          onCheckedChange={(on) => onAutoRunChange(on)}
-          aria-label="Run recognised code without asking"
-        />
-        <span
-          title={
-            "Runs a code cell without asking when it is recognisably an inspection of " +
-            "data already in the kernel — reading a dataframe's shape, its columns, a " +
-            "column's mean. Anything else is still confirmed. This is not a safety " +
-            "check: code runs in your own pod with your own token either way, and the " +
-            "confirmation is what you are waiving, not what protects you."
-          }
+            Run obvious code without asking
+          </span>
+        </label>
+        <Button
+          variant="link"
+          size="xs"
+          className="link h-auto shrink-0 p-0"
+          onClick={() => setShowAudit(!showAudit)}
         >
-          Run obvious code without asking
-        </span>
-      </label>
-      <Button
-        variant="link"
-        size="xs"
-        className="link h-auto p-0"
-        onClick={() => setShowAudit(!showAudit)}
-      >
-        {showAudit ? "Hide" : "Show"} tier history
-      </Button>
+          {showAudit ? "Hide" : "Show"} tier history
+        </Button>
+      </div>
+      {/*
+        Under the row rather than in it. Both are answers to "what would change if
+        I moved this", which is a second question the developer asks only sometimes
+        — and either can be several lines, which in the row would set the height of
+        every control in it.
+      */}
+      {surface && <RaiseHint tier={tier} surface={surface} />}
       {showAudit && <TierAudit sessionId={sessionId} />}
     </div>
   );

@@ -1262,6 +1262,7 @@ export interface ChatEvent {
     | "done"
     | "error"
     | "confirmation_required"
+    | "confirmation_resolved"
     | "limit_exceeded"
     | "warning"
     | "usage"
