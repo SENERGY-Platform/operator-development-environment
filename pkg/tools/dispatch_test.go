@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -310,9 +311,12 @@ func TestAvailableExcludesHigherTiersAndUnbuiltTools(t *testing.T) {
 	tracker := &ran{}
 	registry, _, _ := testSurface(t, tracker)
 
+	// Named rather than counted: adding a tool to the surface should say which
+	// one turned up unexpectedly, not that a number moved.
 	available := names(registry.Available(L0))
-	if len(available) != 2 {
-		t.Fatalf("L0 advertises %v, want the two L0 tools", available)
+	wantAvailable := []string{"confirmed_tool", "l0_tool", "recognising_tool"}
+	if !slices.Equal(available, wantAvailable) {
+		t.Fatalf("L0 advertises %v, want %v", available, wantAvailable)
 	}
 	for _, name := range available {
 		if name == "l1_tool" || name == "l2_tool" {
@@ -329,8 +333,8 @@ func TestAvailableExcludesHigherTiersAndUnbuiltTools(t *testing.T) {
 	}
 
 	// The declaration still lists everything: that is the published §5.8 table.
-	if got := len(registry.Definitions()); got != 5 {
-		t.Errorf("Definitions() = %d entries, want all 5 declared", got)
+	if got := len(registry.Definitions()); got != 6 {
+		t.Errorf("Definitions() = %d entries, want all 6 declared", got)
 	}
 }
 
