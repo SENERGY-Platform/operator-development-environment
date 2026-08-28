@@ -499,6 +499,7 @@ Rules are **candidates**. The developer confirms, rejects, or edits. Confirmed r
 
 - No `SubprocessKernel` fallback is needed. Build directly against the Hub from M4.
 - The repo working copy (§5.11) lives on the user's PVC at a stable path, e.g. `~/ode/{repo-name}`. ODE clones once and reuses it; a returning developer resumes an existing checkout rather than re-cloning.
+- **A developer holds several of these at once (D32).** One *workbench* is one checkout plus one kernel plus its own busy state, and each chat session names the one it acts in. The kernels are several processes in the one singleuser pod — no JupyterHub configuration, but the spawner profile's memory has to carry them. See [kernel-and-repository.md](kernel-and-repository.md), which also has the rejected alternatives.
 - Session state that must survive a pod restart belongs on the PVC, not in ODE's session store. Keep ODE's `session/` for conversation, confirmations and quota only.
 - Because the Hub username derives from the same Keycloak subject as the ODE token, no username mapping table is required — resolve the Hub user directly from the validated token claim.
 
@@ -523,7 +524,7 @@ ODE registers as a **JupyterHub service** whose token holds `servers`, `tokens`,
 
 1. **Custom singleuser image** containing Operator Lib (latest, per D15), `ray[client]`, `mlflow`, pandas, and the ontology/timeseries clients. Version alongside Operator Lib; rebuild on release. Decide whether this replaces the current image for all users or is offered as an additional profile — **an additional KubeSpawner profile is preferable**, so existing notebook users are unaffected.
 2. **NetworkPolicy on singleuser pods.** The one genuine gap: JupyterHub isolates users from one another but does not by itself restrict egress. Restrict to device-repository, timescale-wrapper, MLflow, Ray, `ghcr.io` and PyPI. **This is M10 and it does not go away** — it is now the only hard security prerequisite before external users.
-3. **Idle culling exceptions.** Send keep-alives during an active ODE session, or configure a cull exception for ODE-spawned servers. The PVC preserves files, but a culled pod loses in-memory kernel state mid-task.
+3. **Idle culling exceptions — two different cullers.** The Hub's culler stops pods, and ODE's keep-alive addresses it: send keep-alives during an active session, or configure a cull exception for ODE-spawned servers. The PVC preserves files, but a culled pod loses in-memory kernel state mid-task. The singleuser server has a *second* culler of its own, `MappingKernelManager.cull_idle_timeout`, which stops kernels rather than pods and hears nothing from the keep-alive — with several workbenches in one pod it silently kills whichever one the developer is not currently typing in, so it has to be off or long.
 4. **Platform token refresh.** Spawn-time env vars cannot be refreshed, so push the current Keycloak token into the kernel via a hidden `execute` at session start and on each refresh.
 
 **Spawn latency** remains a UX consideration rather than a work item: cold start is 10–60s, so pre-warm on session open, show progress, and never block the chat pane on spawn.

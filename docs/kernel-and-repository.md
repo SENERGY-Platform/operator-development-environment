@@ -103,6 +103,38 @@ real resource isolation, and costs Hub configuration, a rewrite of every
 not work at all where the per-user PVC is `ReadWriteOnce`, because two pods cannot
 both mount the volume the checkouts live on.
 
+### A kernel's working directory is its workbench's checkout
+
+`open("notes.txt")` from a cell lands next to `op.py`, because each kernel is created
+with a `path` of its own checkout and `jupyter_server` derives the cwd from it.
+
+This changed behaviour once, and the change is worth knowing when reading an old
+conversation: before workbenches, a cell's relative path landed in the workspace
+root. Files written there before the change are still there; new ones are not.
+
+*Rejected*: keeping the workspace root for every kernel. It would leave two kernels
+sharing one cwd, and a cell writing a relative path could not say which operator it
+belonged to — the first thing a second workbench would have broken.
+
+### Why the name is "workbench"
+
+*Rejected*: `workspace`, which is already the PVC root in `kernel.Options` and
+`kernel.Status`, so the same word would have meant two nested things one type apart;
+and `code session`, which would have been the fourth meaning of "session" in this
+codebase, two of them in the same package.
+
+### The schema change was additive, and adoption is lazy
+
+`database.Migrate` is idempotent DDL with no version table, and says in its own
+comment that a destructive change has no home in it. So `ode_repo_links` is left
+where it is and read once, per the adoption above. The table can be dropped in a
+later release; nothing reads it after a developer's first load.
+
+*Rejected*: repurposing `ode_repo_links` by changing its primary key, which is the
+destructive shape that migration style cannot carry. *Also rejected*: a SQL-side
+backfill to mint the first workbench, which would have created ids outside
+`pkg/identifiers` — and these ids appear in URLs, so they must not be guessable.
+
 ### The pod state and the kernel state are split, and the lock order is one-way
 
 `pkg/kernel` holds a `pod` per developer and a `bench` per workbench. Anything the
