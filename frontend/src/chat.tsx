@@ -60,6 +60,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { announce } from "./attention";
+import { CodeView } from "./codeview";
 import { Markdown } from "./markdown";
 import { Cancelled, odeSocket, type SocketState } from "./ws";
 import { setParam, useParam } from "./router";
@@ -2098,6 +2099,20 @@ function TierAudit({ sessionId }: { sessionId: string }) {
   );
 }
 
+/**
+ * The code a run_code confirmation is about, or null for any other call.
+ *
+ * Read defensively rather than cast: the input is whatever the model sent, and a
+ * card that threw on a missing field would take the pane down with the one call
+ * the developer most needs to answer.
+ */
+function codeOf(confirmation: PendingConfirmation): string | null {
+  if (confirmation.tool !== "run_code") return null;
+  const input = confirmation.input as { code?: unknown } | null | undefined;
+  if (input === null || input === undefined || typeof input !== "object") return null;
+  return typeof input.code === "string" && input.code.trim() !== "" ? input.code : null;
+}
+
 /** ConfirmationPrompt is D11: the developer decides, with the arguments in view. */
 function ConfirmationPrompt({
   confirmation,
@@ -2106,16 +2121,23 @@ function ConfirmationPrompt({
   confirmation: PendingConfirmation;
   onDecide: (confirmation: PendingConfirmation, approve: boolean) => void;
 }) {
+  const code = codeOf(confirmation);
   return (
     <div className="confirmation mt-3 shrink-0 rounded-lg border border-primary/40 bg-card p-3">
       <div className="confirmation-head text-sm">
         <strong className="font-semibold">{confirmation.tool}</strong> needs your confirmation
       </div>
       {/* The arguments travel with the prompt: approving a tool name alone would be
-          agreeing to something you cannot see. */}
-      <pre className="json mt-2 max-h-56 overflow-auto rounded-md bg-muted p-2 font-mono text-xs">
-        {JSON.stringify(confirmation.input, null, 2)}
-      </pre>
+          agreeing to something you cannot see. And for the one call whose argument
+          is a program, that means reading it as a program — a cell of Python inside
+          a JSON string is one line of `\n` escapes. */}
+      {code === null ? (
+        <pre className="json mt-2 max-h-56 overflow-auto rounded-md bg-muted p-2 font-mono text-xs">
+          {JSON.stringify(confirmation.input, null, 2)}
+        </pre>
+      ) : (
+        <CodeView code={code} />
+      )}
       <div className="confirmation-actions mt-3 flex gap-2">
         <Button size="sm" onClick={() => onDecide(confirmation, true)}>
           Approve

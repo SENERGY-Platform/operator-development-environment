@@ -98,6 +98,24 @@ let report: ((activity: { session_id: string; state: string }) => void) | null =
 /** Fails the open watch, which is what a dropped connection does to it. */
 let dropWatch: (() => void) | null = null;
 
+/** What the confirmation card handed to Monaco, in order. */
+let shown: string[] = [];
+
+// The card renders run_code's argument as code, and Monaco does not run under
+// jsdom — it wants workers and a layout. Mocked to the surface CodeView touches,
+// recording the value so a test can see what the developer would be reading.
+vi.mock("./monaco", () => ({
+  monaco: {
+    editor: {
+      create: (_host: HTMLElement, options: { value?: string }) => {
+        shown.push(options.value ?? "");
+        return { getModel: () => null, dispose: () => {} };
+      },
+    },
+  },
+  monacoLanguage: () => "python",
+}));
+
 vi.mock("./attention", () => ({
   announce: (headline: string, body: string) => {
     announced.push([headline, body]);
@@ -319,6 +337,7 @@ beforeEach(() => {
   finishSend = null;
   decided = [];
   pending = [];
+  shown = [];
   announced = [];
   listeners = [];
   socketState = "idle";
@@ -925,9 +944,11 @@ it("shows a confirmation that was already waiting when the pane mounted", async 
 
   expect(host.querySelector(".confirmation"), "no confirmation card after a reload").not.toBeNull();
   expect(host.textContent).toContain("run_code");
-  // The arguments travel with it. Approving a tool name alone would be agreeing to
-  // something the developer cannot see.
-  expect(host.textContent).toContain("print(1)");
+  // The argument travels with it, and for run_code it travels as code rather than
+  // as a JSON string: approving a tool name alone would be agreeing to something
+  // the developer cannot see, and a program behind `\n` escapes is the same thing
+  // one step further on.
+  expect(shown).toEqual(["print(1)"]);
 
   // And it is answerable from here, on the held path rather than by opening a
   // second stream into a turn that never stopped.
@@ -1105,6 +1126,31 @@ it("takes the card down when the panel reports the conversation moved on", async
     host.querySelector(".confirmation"),
     "a card answered in another window stayed on this one",
   ).toBeNull();
+});
+
+/*
+ * And a call whose argument is not a program keeps the JSON.
+ *
+ * That rendering is right for a handful of ids — it shows the shape as well as the
+ * values, and there is nothing to highlight. The editor is for the one tool whose
+ * argument the developer has to read as code.
+ */
+it("shows a confirmation's arguments as JSON when they are not code", async () => {
+  pending = [
+    {
+      id: "conf-8",
+      tool: "create_export",
+      input: { import_id: "urn:infai:ses:import:7", offset: "smallest" },
+      tier: "L0",
+      created_at: "2026-08-28T00:00:00Z",
+    },
+  ];
+
+  const host = await open();
+  await settle(3);
+
+  expect(host.textContent).toContain("urn:infai:ses:import:7");
+  expect(shown, "an export's arguments went to the code editor").toEqual([]);
 });
 
 /* And the ordinary one still resumes the turn it paused, which streams. */
