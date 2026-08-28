@@ -473,15 +473,27 @@ func startM3(
 	if err != nil {
 		return fmt.Errorf("config: chat_confirmation_timeout: %w", err)
 	}
+	cliTimeout, err := cliTurnTimeout(config)
+	if err != nil {
+		return err
+	}
 	// A hold has to fit inside the turn that is waiting on it. The CLI provider is
-	// the one that holds calls, and its turn ends on llm.DefaultCLITimeout — so a
-	// confirmation window at or beyond that would time the turn out from under the
+	// the one that holds calls, and its turn ends on that ceiling — so a
+	// confirmation window at or beyond it would time the turn out from under the
 	// card the developer is reading, and their approval would run a tool whose
 	// caller had gone.
-	if config.ClaudeCliEnabled && confirmationTimeout+confirmationHeadroom >= llm.DefaultCLITimeout {
+	if config.ClaudeCliEnabled && confirmationTimeout+confirmationHeadroom >= cliTimeout {
 		slog.Warn("chat_confirmation_timeout leaves no room inside a CLI turn: a developer who "+
 			"takes that long to decide will find the turn already over",
-			"chat_confirmation_timeout", confirmationTimeout, "cli_turn_timeout", llm.DefaultCLITimeout)
+			"chat_confirmation_timeout", confirmationTimeout, "cli_turn_timeout", cliTimeout)
+	}
+	// And the exchange is the outer bound of both: a turn cannot outlive the
+	// exchange carrying it, so a CLI ceiling above chat_exchange_timeout is a number
+	// that can never be reached.
+	if config.ClaudeCliEnabled && cliTimeout >= exchangeTimeout {
+		slog.Warn("claude_cli_timeout is at or above chat_exchange_timeout, so the exchange "+
+			"ends first and the CLI ceiling is unreachable",
+			"claude_cli_timeout", cliTimeout, "chat_exchange_timeout", exchangeTimeout)
 	}
 
 	// ctx, not a background context: an exchange is detached from the request that
@@ -1118,9 +1130,14 @@ func buildProviders(
 	}
 
 	if config.ClaudeCliEnabled {
+		timeout, err := cliTurnTimeout(config)
+		if err != nil {
+			return nil, err
+		}
 		provider := llm.NewAnthropicCLIProvider("claude-cli", llm.CLIOptions{
-			Binary: config.ClaudeCliBinary,
-			Models: config.ClaudeCliModels,
+			Binary:  config.ClaudeCliBinary,
+			Models:  config.ClaudeCliModels,
+			Timeout: timeout,
 		}, pricing)
 		// Probed at startup, as §5.7 requires. It never fails startup: a missing CLI
 		// degrades this one provider and leaves the others alone.
@@ -1131,6 +1148,22 @@ func buildProviders(
 	}
 
 	return registry, nil
+}
+
+// cliTurnTimeout is the configured ceiling on one CLI turn, or llm's default.
+//
+// Read in two places — the provider that enforces it and the startup check that
+// compares it against the confirmation window — so it is one function rather than
+// two readings that could drift.
+func cliTurnTimeout(config configuration.Config) (time.Duration, error) {
+	if strings.TrimSpace(config.ClaudeCliTimeout) == "" {
+		return llm.DefaultCLITimeout, nil
+	}
+	parsed, err := time.ParseDuration(config.ClaudeCliTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("config: claude_cli_timeout: %w", err)
+	}
+	return parsed, nil
 }
 
 func mcpEndpoint(config configuration.Config) string {

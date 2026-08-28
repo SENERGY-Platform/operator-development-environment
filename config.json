@@ -53,13 +53,17 @@
   "compatible_models": [],
   "compatible_tools": false,
 
-  "//claude_cli": "A development convenience for working without an API key. Reaches ODE's tools over MCP, so it needs public_url to be set.",
+  "//claude_cli": "A development convenience for working without an API key. Reaches ODE's tools over MCP, so it needs public_url to be set. claude_cli_timeout bounds one turn, which for this provider is a whole agent loop rather than one model call: it is the ceiling a held confirmation has to fit inside, and a turn that reaches it is stopped with SIGKILL and reported as having reached its ceiling. It has to stay under chat_exchange_timeout, which bounds the exchange carrying the turn — startup warns when it does not. Empty takes the ten minutes in llm.DefaultCLITimeout.",
   "claude_cli_enabled": false,
   "claude_cli_binary": "claude",
   "claude_cli_models": [],
+  "claude_cli_timeout": "60m",
 
   "//chat_confirmation_timeout": "How long a tool call that needs the developer's confirmation (D11) is held open waiting for their answer. It only applies where a provider runs its own tool loop, which today means the CLI above: the call blocks on ODE's side while the card is on screen, and the decision becomes its result. It is not chat_exchange_timeout, which bounds the whole turn, and it has to stay well under the CLI's own ten-minute turn timeout — a turn that ends underneath the card leaves an approval with nothing to run into. Startup warns when it does not.",
   "chat_confirmation_timeout": "5m",
+
+  "//chat_exchange_timeout": "Bounds one detached exchange: everything one message sets off, including the whole tool loop. It is the outer bound on a turn rather than a turn's own ceiling, so it has to stay above claude_cli_timeout — a CLI ceiling above this one can never be reached, because the exchange ends first and takes the turn with it. Empty takes 30m.",
+  "chat_exchange_timeout": "90m",
 
   "public_url": "http://localhost:8080",
 

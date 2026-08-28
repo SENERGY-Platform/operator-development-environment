@@ -169,6 +169,12 @@ type ConfigStruct struct {
 	ClaudeCliEnabled bool     `json:"claude_cli_enabled"`
 	ClaudeCliBinary  string   `json:"claude_cli_binary"`
 	ClaudeCliModels  []string `json:"claude_cli_models"`
+	// ClaudeCliTimeout bounds one CLI turn: the whole agent loop the CLI runs for
+	// itself, not one model call. Empty takes llm.DefaultCLITimeout. It is the
+	// ceiling a held confirmation has to fit inside, so raising it gives a developer
+	// more room to answer a card and lowering it takes room away — startup warns
+	// when chat_confirmation_timeout no longer fits.
+	ClaudeCliTimeout string `json:"claude_cli_timeout"`
 
 	// PublicUrl is how a subprocess reaches this ODE. Needed only by the CLI
 	// provider, which points the CLI's MCP client back at /mcp.
