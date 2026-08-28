@@ -958,6 +958,66 @@ it("shows a confirmation that was already waiting when the pane mounted", async 
 });
 
 /*
+ * A run of tool calls is one row, and it is shut.
+ *
+ * A turn that answers through fourteen `run_code` calls put fourteen rows between
+ * the question and the answer, and the developer wanted none of them: the
+ * interesting thing is the conclusion, and the calls are there for when it is
+ * wrong. A run of one keeps its own row, because that row already carries the
+ * tool's name.
+ */
+it("folds a run of tool calls into one shut row", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  for (const id of ["c1", "c2", "c3"]) {
+    await act(async () =>
+      emit?.({ type: "tool_call", tool_call: { id, name: "run_code", input: {} } }),
+    );
+    await act(async () =>
+      emit?.({
+        type: "tool_result",
+        tool_result: { call_id: id, tool: "run_code", outcome: "ok", content: {} },
+      }),
+    );
+  }
+  await settle(3);
+
+  const group = host.querySelector(".tool-group");
+  expect(group, "three calls did not fold into a group").not.toBeNull();
+  expect(group?.textContent).toContain("3 tool calls");
+  expect(group?.textContent).toContain("run_code");
+  // Shut: the calls themselves are not on screen until it is opened.
+  expect(host.querySelectorAll(".tool-turn").length).toBe(0);
+
+  // Clicked through the trigger itself: its label carries the badge and the
+  // count, which is more than `press` matches on.
+  const trigger = group?.querySelector("button.tool-head") as HTMLElement | null;
+  expect(trigger, "the group has no disclosure to open").not.toBeNull();
+  await act(async () => {
+    trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  await settle(3);
+  expect(host.querySelectorAll(".tool-turn").length).toBe(3);
+});
+
+/* And a single call stays the row it was, name and all. */
+it("leaves a single tool call as its own row", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  await act(async () =>
+    emit?.({ type: "tool_call", tool_call: { id: "c9", name: "quick_profile", input: {} } }),
+  );
+  await settle(3);
+
+  expect(host.querySelector(".tool-group"), "one call was folded away").toBeNull();
+  expect(host.querySelector(".tool-turn")?.textContent).toContain("quick_profile");
+});
+
+/*
  * A turn that failed on its own stream, rather than by throwing.
  *
  * The relay closes tidily afterwards, so the stream resolves and the pane reloads

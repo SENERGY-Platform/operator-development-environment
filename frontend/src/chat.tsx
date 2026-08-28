@@ -118,6 +118,53 @@ type Turn =
     }
   | { kind: "notice"; level: "info" | "warn" | "error"; text: string };
 
+/** One tool call in the transcript, named because a run of them is grouped. */
+type ToolCallTurn = Extract<Turn, { kind: "tool" }>;
+
+/** A transcript row: one turn, or a run of tool calls folded into one. */
+type Row =
+  | { kind: "turn"; turn: Turn; index: number }
+  | { kind: "tools"; calls: ToolCallTurn[]; index: number };
+
+/**
+ * rows folds a run of consecutive tool calls into a single row.
+ *
+ * A turn that answers a question through fourteen `run_code` calls used to put
+ * fourteen rows between the question and the answer, and the developer wanted
+ * none of them: the interesting thing is what the assistant concluded, and the
+ * calls are there to be looked into when it is wrong. Folded, the transcript
+ * reads as the conversation again, with one line saying what it took.
+ *
+ * A run of one is left as it is. The row already carries the tool's name, which
+ * is the useful label, and putting it behind "1 tool call" would cost a click to
+ * learn less.
+ */
+function rows(turns: Turn[]): Row[] {
+  const out: Row[] = [];
+  for (let i = 0; i < turns.length; i += 1) {
+    const turn = turns[i];
+    if (turn.kind !== "tool") {
+      out.push({ kind: "turn", turn, index: i });
+      continue;
+    }
+    const from = i;
+    const calls: ToolCallTurn[] = [];
+    while (i < turns.length) {
+      const next = turns[i];
+      if (next.kind !== "tool") break;
+      calls.push(next);
+      i += 1;
+    }
+    i -= 1;
+    out.push(
+      calls.length === 1
+        ? { kind: "turn", turn: calls[0], index: from }
+        : { kind: "tools", calls, index: from },
+    );
+  }
+  return out;
+}
+
 /**
  * What the sessions panel marks a conversation with.
  *
@@ -1552,10 +1599,10 @@ function Conversation({
                   ontology, not from device names.
                 </Muted>
               )}
-              {turns.map((turn, index) => (
+              {rows(turns).map((row) => (
                 <MessageScrollerItem
-                  key={index}
-                  messageId={String(index)}
+                  key={row.index}
+                  messageId={String(row.index)}
                   /*
                     The item ships with `content-visibility: auto` and an intrinsic
                     size of 10rem, which is a bet that off-screen turns are all
@@ -1572,7 +1619,11 @@ function Conversation({
                   */
                   className="[content-visibility:visible] [contain-intrinsic-size:auto]"
                 >
-                  <TurnView turn={turn} onOpenChart={onOpenChart} />
+                  {row.kind === "tools" ? (
+                    <ToolGroup calls={row.calls} onOpenChart={onOpenChart} />
+                  ) : (
+                    <TurnView turn={row.turn} onOpenChart={onOpenChart} />
+                  )}
                 </MessageScrollerItem>
               ))}
               {/*
@@ -2371,6 +2422,83 @@ function ToolTurn({
             </pre>
           </div>
         )}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/**
+ * ToolGroup is a run of tool calls as one row, shut.
+ *
+ * Shut even while the run is still going, which is deliberate: the pane already
+ * says "Working…" under the transcript for as long as a turn lasts, so opening
+ * this to report the same thing would spend the reader's screen on it twice. What
+ * the row carries instead is what cannot be read off that marker — how many calls,
+ * which tools, whether any of them failed, and the progress line of the one still
+ * running.
+ *
+ * Each call inside keeps its own disclosure. Two levels is one more than anybody
+ * wants, and it is still the right shape: the outer one is "was there tool work
+ * here", the inner one is "what did that call actually say", and a developer
+ * reading a wrong answer wants exactly one of the fourteen.
+ */
+function ToolGroup({
+  calls,
+  onOpenChart,
+}: {
+  calls: ToolCallTurn[];
+  onOpenChart?: (chartId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const running = calls.find((entry) => entry.result === undefined);
+  const failed = calls.filter((entry) => entry.result?.is_error).length;
+  const names = [...new Set(calls.map((entry) => entry.call.name))];
+  const shown = names.slice(0, 2).join(", ");
+  const label = names.length > 2 ? `${shown} +${names.length - 2}` : shown;
+
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      render={
+        <div
+          className={cn(
+            "tool-group rounded-md border bg-card/50 px-3 py-2",
+            failed > 0 && "border-destructive/40",
+          )}
+        />
+      }
+    >
+      <CollapsibleTrigger
+        render={<Marker render={<button type="button" />} className="tool-head cursor-default" />}
+      >
+        <MarkerIcon>
+          <ChevronRightIcon className={cn("transition-transform", open && "rotate-90")} />
+        </MarkerIcon>
+        <MarkerContent className="tool-group-name">
+          {calls.length} tool calls <span className="font-mono text-foreground">{label}</span>
+        </MarkerContent>
+        {running !== undefined && running.progress !== undefined && (
+          <span className="tool-progress ml-auto text-xs">{running.progress}</span>
+        )}
+        <Badge
+          variant={failed > 0 ? "destructive" : "secondary"}
+          className={cn("tool-outcome ml-auto font-normal", running !== undefined && "ml-2")}
+        >
+          {running !== undefined ? "running" : failed > 0 ? `${failed} failed` : "ok"}
+        </Badge>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="tool-group-body mt-2 flex flex-col gap-2">
+        {calls.map((entry) => (
+          <ToolTurn
+            key={entry.call.id}
+            call={entry.call}
+            result={entry.result}
+            progress={entry.progress}
+            onOpenChart={onOpenChart}
+          />
+        ))}
       </CollapsibleContent>
     </Collapsible>
   );
