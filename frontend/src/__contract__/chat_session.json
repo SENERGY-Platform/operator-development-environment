@@ -29,6 +29,7 @@
   "session": {
     "created_at": "2026-08-27T07:20:45.973826086Z",
     "exposure_tier": "L1",
+    "auto_run": false,
     "id": "id-1",
     "message_count": 2,
     "model": "stub-model",

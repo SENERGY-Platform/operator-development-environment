@@ -17,6 +17,11 @@ own marshalling of its own types, which is what this check is about — but its
 platform. The ids and the names in that block are invented, so do not read them as
 evidence of anything; the field set around them is still the backend's.
 
+`chat_sessions.json` and `chat_session.json` each carry one **hand-added** field:
+`auto_run`, added when the column was, rather than recaptured. The value is the
+one the migration gives an existing session — false — so the shape and the value
+are both what a capture would have produced.
+
 `profile.json`, `projection.json`, `sessions.json` and `override.json` are real
 captures and carry `detector_version: "1.0.0"`, which the profiler has since left
 behind — the counter, periodicity, FFT-resolution and hysteresis fixes took it to

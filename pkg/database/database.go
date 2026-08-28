@@ -184,6 +184,17 @@ ALTER TABLE ode_chat_sessions
     ADD COLUMN IF NOT EXISTS workbench_id TEXT NOT NULL DEFAULT ''`,
 	},
 	{
+		// The session's standing answer to a run_code confirmation it recognises.
+		//
+		// Additive with a default of false, so every existing session keeps being
+		// asked — the setting is something a developer turns on deliberately and
+		// never something a migration turns on for them.
+		name: "ode_chat_sessions_auto_run",
+		sql: `
+ALTER TABLE ode_chat_sessions
+    ADD COLUMN IF NOT EXISTS auto_run BOOLEAN NOT NULL DEFAULT FALSE`,
+	},
+	{
 		name: "ode_chat_messages",
 		sql: `
 CREATE TABLE IF NOT EXISTS ode_chat_messages (

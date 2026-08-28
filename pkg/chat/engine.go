@@ -531,6 +531,39 @@ func moveNotice(workbenchID, label string) StoredMessage {
 	}
 }
 
+/*
+SetAutoRun sets a session's standing answer to a recognised `run_code`.
+
+Deliberately thinner than SetTier, and the difference says what the setting is. A
+tier bounds what the assistant may *see*, so raising one is checked against the
+admin ceiling and written to an audit trail. This changes only who is asked before
+something runs, inside a session that could already run that code the moment the
+developer clicked approve — so there is no ceiling to check and no separate log to
+keep.
+
+What it is not is a widening of authority, and that is why no tool can call it:
+`set_auto_run` is in the denied set. The developer turns it on; the model lives
+with the answer.
+*/
+func (e *Engine) SetAutoRun(ctx context.Context, sub, id string, on bool) (Session, error) {
+	session, err := e.Session(ctx, sub, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if session.AutoRun == on {
+		return session, nil
+	}
+	session.AutoRun = on
+	if err := e.store.UpdateSession(ctx, session); err != nil {
+		return Session{}, err
+	}
+	// At info, because "it ran without being asked" is answered by two things: the
+	// per-call line in Dispatch, and this — when the standing answer was given.
+	slog.InfoContext(ctx, "auto mode changed for a session",
+		"session", id, "user", sub, "auto_run", on)
+	return session, nil
+}
+
 // SetTier changes a session's exposure tier.
 //
 // The developer's control from §3.2, bounded by the admin ceiling from §3.3, and
@@ -909,6 +942,7 @@ func (e *Engine) Confirm(
 			// session's tier *now* rather than the one recorded when the model asked.
 			result = e.dispatcher.Confirm(ctx, tools.Request{
 				Token: token.bearer(), UserSub: sub, SessionID: sessionID, Tier: session.Tier,
+				AutoRun:     session.AutoRun,
 				WorkbenchID: session.WorkbenchID,
 				Report: func(progress tools.Progress) {
 					exchange.publish(Event{Type: EventProgress, Progress: &progress})
@@ -1231,6 +1265,7 @@ func (e *Engine) dispatch(
 			// into that operator's checkout and runs in that operator's kernel.
 			WorkbenchID: session.WorkbenchID,
 			Tier:        session.Tier,
+			AutoRun:     session.AutoRun,
 			// Published as it happens, so a long tool is visibly working. publish never
 			// blocks, which is what makes this safe to call from inside a platform read.
 			Report: func(progress tools.Progress) {

@@ -97,6 +97,13 @@ func testSurface(t *testing.T, tracker *ran) (*Registry, *Dispatcher, *recording
 			Schema: json.RawMessage(emptySchema), executor: tracker.executor("l2_tool")},
 		Definition{Name: "confirmed_tool", Description: "d", MinTier: L0, Confirm: true,
 			Schema: json.RawMessage(emptySchema), executor: tracker.executor("confirmed_tool")},
+		// A confirmed tool that can recognise its own input, the way run_code does.
+		// "dull" is recognised; anything else is not.
+		Definition{Name: "recognising_tool", Description: "d", MinTier: L0, Confirm: true,
+			Schema: json.RawMessage(emptySchema), executor: tracker.executor("recognising_tool"),
+			AutoApprove: func(input json.RawMessage) (bool, string) {
+				return string(input) == `{"code":"dull"}`, "it is not the dull one"
+			}},
 		Definition{Name: "future_tool", Description: "d", MinTier: L0,
 			Schema: json.RawMessage(emptySchema), Unavailable: "requires a thing this deployment has not got"},
 	)
@@ -603,5 +610,76 @@ func TestDispatchDoesNotBlock(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("a tier refusal took longer than two seconds")
+	}
+}
+
+// --- auto mode ---
+
+/*
+Auto mode is a standing answer to one tool's question, not a waiver of the rule.
+
+Three properties, and the middle one is the one that would be dangerous to get
+wrong: a session that asked for it skips the prompt on input the tool recognises;
+a confirmed tool with no predicate is untouched however the session is configured;
+and unrecognised input is still confirmed. The second is what makes it safe to
+have at all — `create_export` and `delete_import_instance` cannot be swept in by a
+setting, because they carry no AutoApprove and nothing can give them one at
+runtime.
+*/
+func TestAutoModeSkipsTheConfirmationOnlyForRecognisedInput(t *testing.T) {
+	tracker := &ran{}
+	_, dispatcher, _ := testSurface(t, tracker)
+
+	auto := Request{UserSub: "u", SessionID: "s", Tier: L0, AutoRun: true}
+
+	result := dispatcher.Dispatch(context.Background(), auto,
+		Call{ID: "c1", Name: "recognising_tool", Input: json.RawMessage(`{"code":"dull"}`)})
+	if result.Outcome != OutcomeOK {
+		t.Errorf("recognised input was not run: outcome = %q", result.Outcome)
+	}
+	if !tracker.was("recognising_tool") {
+		t.Error("recognised input did not reach the executor")
+	}
+
+	// Not recognised: the developer is still asked, which is the whole of the
+	// safety story here — the subset is small and everything outside it prompts.
+	result = dispatcher.Dispatch(context.Background(), auto,
+		Call{ID: "c2", Name: "recognising_tool", Input: json.RawMessage(`{"code":"import os"}`)})
+	if result.Outcome != OutcomeAwaitingConfirmation {
+		t.Errorf("unrecognised input skipped the confirmation: outcome = %q", result.Outcome)
+	}
+}
+
+// The property that bounds the blast radius of the whole feature.
+func TestAutoModeCannotWaiveAToolThatHasNoPredicate(t *testing.T) {
+	tracker := &ran{}
+	_, dispatcher, _ := testSurface(t, tracker)
+
+	result := dispatcher.Dispatch(context.Background(),
+		Request{UserSub: "u", SessionID: "s", Tier: L0, AutoRun: true},
+		Call{ID: "c1", Name: "confirmed_tool", Input: json.RawMessage(`{}`)})
+
+	if result.Outcome != OutcomeAwaitingConfirmation {
+		t.Errorf("auto mode waived a tool with no way to recognise its input: %q", result.Outcome)
+	}
+	if tracker.was("confirmed_tool") {
+		t.Fatal("a tool with no predicate ran without the developer being asked")
+	}
+}
+
+// And a session that did not ask for it is unaffected, predicate or not.
+func TestWithoutAutoModeEvenRecognisedInputIsConfirmed(t *testing.T) {
+	tracker := &ran{}
+	_, dispatcher, _ := testSurface(t, tracker)
+
+	result := dispatcher.Dispatch(context.Background(),
+		Request{UserSub: "u", SessionID: "s", Tier: L0},
+		Call{ID: "c1", Name: "recognising_tool", Input: json.RawMessage(`{"code":"dull"}`)})
+
+	if result.Outcome != OutcomeAwaitingConfirmation {
+		t.Errorf("a session that did not ask for auto mode got it anyway: %q", result.Outcome)
+	}
+	if tracker.was("recognising_tool") {
+		t.Fatal("recognised input ran in a session with auto mode off")
 	}
 }

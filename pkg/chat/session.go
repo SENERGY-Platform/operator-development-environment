@@ -67,6 +67,18 @@ type Session struct {
 	// has since been closed. Both resolve to the developer's only workbench when
 	// they have one, so no conversation loses its code context.
 	WorkbenchID string `json:"workbench_id,omitempty"`
+	// AutoRun is the developer's standing answer to a `run_code` confirmation whose
+	// code pkg/plaincode recognises: run it rather than asking again.
+	//
+	// Per session, not per developer, because the exposure a conversation is
+	// working at is already a per-session decision and this belongs beside it. Off
+	// unless turned on, and turning it on is a developer action with no tool behind
+	// it — `set_auto_run` is in the denied set for the same reason
+	// `set_exposure_tier` is, so a model cannot widen what it is allowed to do
+	// without being asked.
+	//
+	// It is a convenience and not a boundary. See pkg/plaincode.
+	AutoRun bool `json:"auto_run"`
 
 	// Selection is the data selection the developer has confirmed, if any (§5.2's
 	// last step). Stored on the session because §5.10 says confirmations persist as

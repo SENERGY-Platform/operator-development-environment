@@ -1043,6 +1043,84 @@
                 ]
             }
         },
+        "/chat/sessions/{id}/auto-run": {
+            "put": {
+                "description": "Auto mode runs a `run_code` call without asking when its code is\nrecognised as an inspection of data already in the kernel — see\npkg/plaincode for what that means and, importantly, what it does not.\nIt is relief from repeated prompting, **not** a security boundary:\nthe boundary is unchanged and is the developer's own pod and token.\nAnything unrecognised is still confirmed, and no other confirmed\ntool is affected. No LLM tool exists for this.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chat"
+                ],
+                "summary": "Turn auto mode on or off for a session",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "session id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "whether to run recognised code without asking",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "auto_run": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/chat.Session"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
         "/chat/sessions/{id}/tier": {
             "put": {
                 "description": "The developer's control from §3.2. No LLM tool exists for this\n(tools.Denied), so this route is the only way a tier changes. Every\nchange is written to the session's audit trail.",
@@ -6028,6 +6106,10 @@
         "chat.Session": {
             "type": "object",
             "properties": {
+                "auto_run": {
+                    "description": "AutoRun is the developer's standing answer to a `run_code` confirmation whose\ncode pkg/plaincode recognises: run it rather than asking again.\n\nPer session, not per developer, because the exposure a conversation is\nworking at is already a per-session decision and this belongs beside it. Off\nunless turned on, and turning it on is a developer action with no tool behind\nit — `set_auto_run` is in the denied set for the same reason\n`set_exposure_tier` is, so a model cannot widen what it is allowed to do\nwithout being asked.\n\nIt is a convenience and not a boundary. See pkg/plaincode.",
+                    "type": "boolean"
+                },
                 "created_at": {
                     "type": "string"
                 },

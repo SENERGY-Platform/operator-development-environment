@@ -55,6 +55,7 @@ import {
   useMessageScroller,
 } from "@/components/ui/message-scroller";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { announce } from "./attention";
@@ -1180,6 +1181,18 @@ function Conversation({
     [run, session.id],
   );
 
+  const setAutoRun = useCallback(
+    async (on: boolean) => {
+      setError(null);
+      try {
+        onSessionChange(await api.setAutoRun(session.id, on));
+      } catch (e: unknown) {
+        setError(describe(e));
+      }
+    },
+    [onSessionChange, session.id],
+  );
+
   const setTier = useCallback(
     async (tier: Tier) => {
       setError(null);
@@ -1222,6 +1235,8 @@ function Conversation({
             sessionId={session.id}
             surface={surface}
             onChange={setTier}
+            autoRun={session.auto_run}
+            onAutoRunChange={setAutoRun}
           />
         </>
       }
@@ -1589,12 +1604,16 @@ function TierControl({
   sessionId,
   surface,
   onChange,
+  autoRun,
+  onAutoRunChange,
 }: {
   tier: Tier;
   maxTier: Tier;
   sessionId: string;
   surface: ToolSurface | null;
   onChange: (tier: Tier) => void;
+  autoRun: boolean;
+  onAutoRunChange: (on: boolean) => void;
 }) {
   const [showAudit, setShowAudit] = useState(false);
   const ceiling = TIERS.indexOf(maxTier);
@@ -1639,6 +1658,35 @@ function TierControl({
       </ToggleGroup>
       <p className="tier-exposes text-right text-xs text-muted-foreground">{TIER_EXPOSES[tier]}</p>
       {surface && <RaiseHint tier={tier} surface={surface} />}
+      {/*
+        Beside the tier, because the two are the same kind of decision — what this
+        conversation is allowed to do without being interrupted — and a developer
+        weighing one is weighing both.
+
+        The wording is doing real work. "Run obvious code without asking" says what
+        happens; the title says what "obvious" means and, more importantly, what it
+        does not mean. Calling this "safe code" would be a lie the interface tells
+        on the backend's behalf: nothing here judges safety, it recognises a small
+        vocabulary, and everything outside it is still confirmed.
+      */}
+      <label className="auto-run flex items-center gap-2 text-xs text-muted-foreground">
+        <Switch
+          checked={autoRun}
+          onCheckedChange={(on) => onAutoRunChange(on)}
+          aria-label="Run recognised code without asking"
+        />
+        <span
+          title={
+            "Runs a code cell without asking when it is recognisably an inspection of " +
+            "data already in the kernel — reading a dataframe's shape, its columns, a " +
+            "column's mean. Anything else is still confirmed. This is not a safety " +
+            "check: code runs in your own pod with your own token either way, and the " +
+            "confirmation is what you are waiving, not what protects you."
+          }
+        >
+          Run obvious code without asking
+        </span>
+      </label>
       <Button
         variant="link"
         size="xs"

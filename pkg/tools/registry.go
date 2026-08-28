@@ -69,6 +69,21 @@ type Definition struct {
 	// Schema is the JSON Schema for the tool's input, as handed to the provider.
 	Schema json.RawMessage `json:"schema"`
 
+	// AutoApprove lets a confirmed tool waive its own confirmation for input it
+	// recognises, when the session has asked for that (Request.AutoRun).
+	//
+	// Per tool and nil by default, which is the safety property worth stating: auto
+	// mode cannot skip the confirmation on `create_export` or
+	// `delete_import_instance` however it is configured, because those tools do not
+	// carry a predicate and no amount of session state gives them one. Exactly one
+	// tool sets it — `run_code`, whose confirmation a developer meets dozens of
+	// times a session — and what it recognises is documented in pkg/plaincode,
+	// including why that recognition is not a security argument.
+	//
+	// It answers with a reason when it declines, which reaches the audit line and
+	// the developer rather than the model.
+	AutoApprove func(input json.RawMessage) (bool, string) `json:"-"`
+
 	// Unavailable says why the tool cannot be called in this deployment, and is
 	// the honest answer to "why can I see this in the table but not call it".
 	// Two causes read the same way to a model and are therefore one field: the
@@ -133,6 +148,13 @@ type Request struct {
 	// tool that shapes its own answer by tier rather than being all-or-nothing;
 	// it is *not* where the gate lives, and an executor must not re-check it.
 	Tier Tier
+	// AutoRun is the session's standing answer to a confirmation it recognises.
+	//
+	// Set from chat.Session.AutoRun by whoever builds the request, the same way
+	// Tier is, so that both are read once per call from the session rather than
+	// cached anywhere. It only ever reaches a tool that carries an AutoApprove
+	// predicate; on every other confirmed tool it is inert.
+	AutoRun bool
 	// Input is the raw arguments. Executors unmarshal into their own type.
 	Input json.RawMessage
 
@@ -278,6 +300,7 @@ func Denied() map[string]string { return deniedSet() }
 func deniedSet() map[string]string {
 	return map[string]string{
 		"set_exposure_tier":      "the exposure tier is the developer's control over what the LLM may see; a tool to raise it would defeat the control entirely",
+		"set_auto_run":           "auto mode is the developer's standing answer to a run_code confirmation; a tool to turn it on would let the model stop itself being asked, which is the confirmation it exists to be subject to",
 		"set_admin_limits":       "admin limits bound the LLM's own spend, so the LLM must not be able to move them",
 		"write_profile_override": "a ProfileOverride is a human confirmation of derived semantics and an empirical record; an LLM-written one would be fabricated ground truth",
 		// Not in §5.8's own list, because the relational rule came after it and the

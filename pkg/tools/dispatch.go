@@ -284,6 +284,23 @@ func (d *Dispatcher) dispatch(ctx context.Context, req Request, call Call) Resul
 	}
 
 	if definition.Confirm {
+		// The session's standing answer, for a tool that has a way of recognising
+		// its own input. Both halves are required: a session that did not ask for
+		// this is unaffected, and a tool with no predicate can never take this
+		// branch — see Definition.AutoApprove.
+		//
+		// Audited whichever way it goes, because "it ran without being asked" is
+		// exactly the thing someone reading the log later needs to find.
+		if req.AutoRun && definition.AutoApprove != nil {
+			if recognised, why := definition.AutoApprove(call.Input); recognised {
+				slog.InfoContext(ctx, "a confirmed tool ran without asking, on the session's standing answer",
+					"tool", call.Name, "session", req.SessionID, "user", req.UserSub)
+				return d.execute(ctx, req, call, definition)
+			} else {
+				slog.DebugContext(ctx, "auto mode did not recognise the input, so the developer is asked",
+					"tool", call.Name, "session", req.SessionID, "reason", why)
+			}
+		}
 		pending := &PendingConfirmation{
 			ID:        d.ids.NewID(),
 			SessionID: req.SessionID,

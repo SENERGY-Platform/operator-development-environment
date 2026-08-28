@@ -54,6 +54,8 @@ let reloads = 0;
 let cancelled: string[] = [];
 /** Resolves the in-flight chat_send, standing in for the turn ending. */
 let finishSend: (() => void) | null = null;
+/** Auto-mode changes that reached the backend, as [session, on]. */
+let autoRunSet: [string, boolean][] = [];
 /** Rejects the live stream the way a dropped socket does. */
 let dropStream: (() => void) | undefined;
 /** The live stream's event sink, so a test can stream a partial answer. */
@@ -217,6 +219,13 @@ vi.mock("./api", async (importOriginal) => {
       workbenches: async () => ({ workbenches: benches, max: 3 }),
       toolSurface: async () => toolSurface as unknown as ReturnType<typeof actual.api.toolSurface>,
       providers: async () => ({ providers: [], default: "stub" }),
+      setAutoRun: async (id: string, on: boolean) => {
+        autoRunSet.push([id, on]);
+        const entry = listed.find((candidate) => candidate.id === id);
+        if (!entry) throw new Error(`auto-run set on a session that is not listed: ${id}`);
+        entry.auto_run = on;
+        return JSON.parse(JSON.stringify(entry));
+      },
       chatSession: async () => {
         reloads += 1;
         // A fresh object each time, as a real read gives: the loop fed on exactly
@@ -275,6 +284,7 @@ const SESSION = {
 const mounted: Root[] = [];
 
 beforeEach(() => {
+  autoRunSet = [];
   streamed = [];
   reloads = 0;
   cancelled = [];
@@ -661,6 +671,37 @@ it("alerts differently when the turn ended on a decision", async () => {
  * outlives the connection is exactly what it exists for. A genuine transition to
  * open, with nothing being watched here, must still attach — once.
  */
+// --- auto mode ---
+
+/*
+ * The developer's standing answer, and what the interface promises about it.
+ *
+ * The switch sits beside the tier because it is the same kind of decision: what
+ * this conversation may do without interrupting. What it must not do is claim to
+ * be a safety check — the backend recognises a small vocabulary and confirms
+ * everything else, and code runs in the developer's own pod either way. So the
+ * label says what happens ("without asking") rather than what it is not doing
+ * ("safe"), and this asserts that, because the wording is the part a later edit
+ * would soften without noticing.
+ */
+it("offers auto mode beside the tier, and sends the developer's answer", async () => {
+  const host = await open();
+  await settle(3);
+
+  const control = host.querySelector(".auto-run");
+  expect(control, "no auto-mode control in the conversation").not.toBeNull();
+  expect(control?.textContent).toContain("without asking");
+  // Never sold as a safety property. The title carries the caveat in full.
+  expect(control?.textContent?.toLowerCase()).not.toContain("safe");
+
+  const toggle = control?.querySelector("[role='switch']") as HTMLElement;
+  expect(toggle, "the control is not a switch").not.toBeNull();
+  await act(async () => toggle.click());
+  await settle(3);
+
+  expect(autoRunSet).toEqual([["id-1", true]]);
+});
+
 // --- answering a confirmation ---
 
 /*

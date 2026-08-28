@@ -1127,6 +1127,14 @@ export interface ChatSession {
   model: string;
   exposure_tier: Tier;
   /**
+   * Whether this conversation runs a recognised `run_code` without asking.
+   *
+   * Off unless the developer turned it on. It changes who is asked, not what the
+   * assistant may do: the tier still bounds what it can see, and anything the
+   * backend does not recognise is still confirmed.
+   */
+  auto_run: boolean;
+  /**
    * The working context this conversation acts in: whose checkout `write_file`
    * writes into and whose kernel `run_code` runs in. Absent on a session created
    * before workbenches existed, which the backend reads as "my only one".
@@ -2399,6 +2407,12 @@ export const api = {
   /** The developer's tier control (§3.2). There is no LLM tool for this. */
   setTier: (id: string, tier: Tier) =>
     put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/tier`, { exposure_tier: tier }),
+  /**
+   * The standing answer to a `run_code` confirmation whose code the backend
+   * recognises as an inspection. Also has no LLM tool, for the same reason.
+   */
+  setAutoRun: (id: string, on: boolean) =>
+    put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/auto-run`, { auto_run: on }),
   tierChanges: (id: string) =>
     get<{ changes: TierChange[] }>(`/chat/sessions/${encodeURIComponent(id)}/tier-changes`),
 

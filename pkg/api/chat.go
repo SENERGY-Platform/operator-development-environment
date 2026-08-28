@@ -345,6 +345,55 @@ func handleSetTier(engine *chat.Engine) gin.HandlerFunc {
 	}
 }
 
+// handleSetAutoRun is the developer's standing answer to a `run_code`
+// confirmation. Like the tier, there is deliberately no LLM tool for it
+// (tools.Denied), so this route is the only way it changes.
+//
+// @Summary		Turn auto mode on or off for a session
+// @Description	Auto mode runs a `run_code` call without asking when its code is
+// @Description	recognised as an inspection of data already in the kernel — see
+// @Description	pkg/plaincode for what that means and, importantly, what it does not.
+// @Description	It is relief from repeated prompting, **not** a security boundary:
+// @Description	the boundary is unchanged and is the developer's own pod and token.
+// @Description	Anything unrecognised is still confirmed, and no other confirmed
+// @Description	tool is affected. No LLM tool exists for this.
+// @Tags			chat
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			id		path		string				true	"session id"
+// @Param			request	body		object{auto_run=bool}	true	"whether to run recognised code without asking"
+// @Success		200		{object}	chat.Session
+// @Failure		400		{object}	map[string]string
+// @Failure		401		{object}	map[string]string
+// @Failure		404		{object}	map[string]string
+// @Router			/chat/sessions/{id}/auto-run [put]
+func handleSetAutoRun(engine *chat.Engine) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			AutoRun *bool `json:"auto_run"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		// A pointer, so an absent field is refused rather than read as "off". The
+		// two are different requests and only one of them was made.
+		if body.AutoRun == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "auto_run is required"})
+			return
+		}
+
+		token := auth.MustFromContext(c)
+		session, err := engine.SetAutoRun(c.Request.Context(), token.Sub, c.Param("id"), *body.AutoRun)
+		if err != nil {
+			respondChatError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, session)
+	}
+}
+
 // @Summary		A session's exposure-tier history
 // @Description	§3.2 requires every tier change to be logged. This is that record.
 // @Tags			chat

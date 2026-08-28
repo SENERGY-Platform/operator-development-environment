@@ -32,6 +32,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/imports"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/plaincode"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
@@ -1066,6 +1067,21 @@ func NewSurface(deps Deps) (*Registry, error) {
 			Effect:  "execute in kernel",
 			MinTier: L0,
 			Confirm: true,
+			// The one tool with a standing answer, and the reason auto mode exists: a
+			// developer reading a dataframe meets this confirmation dozens of times an
+			// afternoon, and `df.head()` is the same question every time.
+			//
+			// What is recognised — and why recognising is not the same as judging safe
+			// — is in pkg/plaincode. Inert unless the session asked for it, and the
+			// only predicate on the whole surface, so no configuration can turn auto
+			// mode into a waiver for the tools that create or delete platform objects.
+			AutoApprove: func(input json.RawMessage) (bool, string) {
+				var in runCodeInput
+				if err := json.Unmarshal(input, &in); err != nil {
+					return false, "the arguments did not parse"
+				}
+				return plaincode.Recognised(in.Code)
+			},
 			Schema: json.RawMessage(`{
 			  "type": "object",
 			  "properties": {

@@ -155,6 +155,44 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/j
 curl -s -H "Authorization: Bearer $TOKEN" $BASE/chat/sessions/$SID/tier-changes | jq .
 ```
 
+## Auto mode: a standing answer, not a weaker gate
+
+A developer reading a dataframe meets `run_code`'s confirmation dozens of times an
+afternoon, and most of those are `df.head()`. Auto mode is a per-session switch —
+`PUT /chat/sessions/{id}/auto-run`, off by default — that answers that question in
+advance for code the backend *recognises*.
+
+**It is not a security control, and the code says so in every place it appears.**
+It cannot be one. Python has no sound static answer to "is this safe": a denylist
+is walked around with `getattr(__builtins__, "ev" + "al")` or `__import__`, and the
+party writing the code is the model — the same party the confirmation exists to
+check. What is actually protecting anything is unchanged and is stated in
+[kernel-and-repository.md](kernel-and-repository.md): the code runs in the
+developer's own pod under the developer's own platform token, and it can reach
+exactly what they can reach. Auto mode changes who is asked, never what is
+possible.
+
+What `pkg/plaincode` does is *recognition*, not detection. It knows a fixed
+vocabulary — reading a dataframe's shape, its columns, a column's mean, printing,
+comprehensions over those — and anything it does not positively know is
+unrecognised. The failure it produces is therefore an unnecessary prompt, which is
+the end it is deliberately wrong at. A recogniser that erred the other way would be
+the boundary it refuses to be.
+
+Three properties bound it, and each has a test in `pkg/tools/dispatch_test.go`:
+
+- a session that did not turn it on is unaffected;
+- unrecognised input is still confirmed;
+- **a confirmed tool with no recogniser of its own can never be waived.** The
+  predicate lives on the tool (`Definition.AutoApprove`) and exactly one tool has
+  one. No session setting, and no configuration, gives `create_export` or
+  `delete_import_instance` a way past their confirmation — they carry no predicate
+  and nothing can attach one at runtime.
+
+There is no LLM tool for the switch. `set_auto_run` is in `tools.Denied()` for the
+same reason `set_exposure_tier` is: a model able to stop itself being asked is not
+subject to the confirmation at all.
+
 ## The same gate over MCP
 
 The MCP transport is the CLI provider's route to the tools, and it enforces the

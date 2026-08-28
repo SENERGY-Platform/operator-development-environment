@@ -259,17 +259,17 @@ func (s *PostgresStore) CreateSession(ctx context.Context, session Session) erro
 	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO ode_chat_sessions (id, user_sub, title, provider, model, tier, selection,
-		                               workbench_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())`,
+		                               workbench_id, auto_run, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())`,
 		session.ID, session.UserSub, session.Title, session.Provider, session.Model,
-		session.Tier.String(), selection, session.WorkbenchID)
+		session.Tier.String(), selection, session.WorkbenchID, session.AutoRun)
 	return err
 }
 
 func (s *PostgresStore) Session(ctx context.Context, id string) (Session, bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT s.id, s.user_sub, s.title, s.provider, s.model, s.tier, s.selection,
-		       s.workbench_id, s.created_at, s.updated_at,
+		       s.workbench_id, s.auto_run, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM ode_chat_messages m WHERE m.session_id = s.id)
 		FROM ode_chat_sessions s WHERE s.id = $1`, id)
 
@@ -289,7 +289,7 @@ func (s *PostgresStore) Sessions(ctx context.Context, userSub string, limit int)
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT s.id, s.user_sub, s.title, s.provider, s.model, s.tier, s.selection,
-		       s.workbench_id, s.created_at, s.updated_at,
+		       s.workbench_id, s.auto_run, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM ode_chat_messages m WHERE m.session_id = s.id)
 		FROM ode_chat_sessions s
 		WHERE s.user_sub = $1 AND s.archived_at IS NULL
@@ -319,10 +319,10 @@ func (s *PostgresStore) UpdateSession(ctx context.Context, session Session) erro
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE ode_chat_sessions
 		SET title = $2, provider = $3, model = $4, tier = $5, selection = $6,
-		    workbench_id = $7, updated_at = now()
+		    workbench_id = $7, auto_run = $8, updated_at = now()
 		WHERE id = $1`,
 		session.ID, session.Title, session.Provider, session.Model,
-		session.Tier.String(), selection, session.WorkbenchID)
+		session.Tier.String(), selection, session.WorkbenchID, session.AutoRun)
 	if err != nil {
 		return err
 	}
@@ -513,8 +513,8 @@ func scanSession(row scanner) (Session, error) {
 	var tier string
 	var selection []byte
 	if err := row.Scan(&session.ID, &session.UserSub, &session.Title, &session.Provider,
-		&session.Model, &tier, &selection, &session.WorkbenchID, &session.CreatedAt,
-		&session.UpdatedAt, &session.MessageCount); err != nil {
+		&session.Model, &tier, &selection, &session.WorkbenchID, &session.AutoRun,
+		&session.CreatedAt, &session.UpdatedAt, &session.MessageCount); err != nil {
 		return Session{}, err
 	}
 	// An unparseable tier falls back to L0 rather than erroring: L0 exposes

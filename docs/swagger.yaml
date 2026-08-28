@@ -755,6 +755,20 @@ definitions:
     type: object
   chat.Session:
     properties:
+      auto_run:
+        description: |-
+          AutoRun is the developer's standing answer to a `run_code` confirmation whose
+          code pkg/plaincode recognises: run it rather than asking again.
+
+          Per session, not per developer, because the exposure a conversation is
+          working at is already a per-session decision and this belongs beside it. Off
+          unless turned on, and turning it on is a developer action with no tool behind
+          it — `set_auto_run` is in the denied set for the same reason
+          `set_exposure_tier` is, so a model cannot widen what it is allowed to do
+          without being asked.
+
+          It is a convenience and not a boundary. See pkg/plaincode.
+        type: boolean
       created_at:
         type: string
       exposure_tier:
@@ -3956,6 +3970,63 @@ paths:
       security:
       - Bearer: []
       summary: One session, its messages and anything awaiting confirmation
+      tags:
+      - chat
+  /chat/sessions/{id}/auto-run:
+    put:
+      consumes:
+      - application/json
+      description: |-
+        Auto mode runs a `run_code` call without asking when its code is
+        recognised as an inspection of data already in the kernel — see
+        pkg/plaincode for what that means and, importantly, what it does not.
+        It is relief from repeated prompting, **not** a security boundary:
+        the boundary is unchanged and is the developer's own pod and token.
+        Anything unrecognised is still confirmed, and no other confirmed
+        tool is affected. No LLM tool exists for this.
+      parameters:
+      - description: session id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: whether to run recognised code without asking
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            auto_run:
+              type: boolean
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/chat.Session'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Turn auto mode on or off for a session
       tags:
       - chat
   /chat/sessions/{id}/tier:
