@@ -642,6 +642,48 @@ it("a held confirmation is decided without opening a second stream", async () =>
   expect(streamed.filter((type) => type === "chat_confirm")).toHaveLength(0);
 });
 
+/*
+ * A reload lands on the decision that is still owed.
+ *
+ * The cold case, and the one the other two do not cover: no socket, no turn
+ * watched from its start, nothing in this tab's memory — just the pane mounting
+ * against a session that already has a confirmation waiting. That is what a browser
+ * reload is, and it is the moment a developer is most likely to meet a held call,
+ * because the reason they still owe an answer is usually that they were away.
+ *
+ * The card has to come from the stored read alone. Nothing replays the event that
+ * first announced it: `chat_attach` carries what happens next, not what already
+ * happened, so a pane that waited for the socket to tell it would show nothing.
+ */
+it("shows a confirmation that was already waiting when the pane mounted", async () => {
+  pending = [
+    {
+      id: "conf-3",
+      tool: "run_code",
+      input: { code: "print(1)" },
+      tier: "L0",
+      created_at: "2026-08-27T00:00:00Z",
+      out_of_band: true,
+    },
+  ];
+
+  // No ask(), no openSocket(): a mount and nothing else.
+  const host = await open();
+  await settle(3);
+
+  expect(host.querySelector(".confirmation"), "no confirmation card after a reload").not.toBeNull();
+  expect(host.textContent).toContain("run_code");
+  // The arguments travel with it. Approving a tool name alone would be agreeing to
+  // something the developer cannot see.
+  expect(host.textContent).toContain("print(1)");
+
+  // And it is answerable from here, on the held path rather than by opening a
+  // second stream into a turn that never stopped.
+  await press(host, "Approve");
+  await settle(3);
+  expect(decided).toEqual([["conf-3", true]]);
+});
+
 /* And the ordinary one still resumes the turn it paused, which streams. */
 it("an ordinary confirmation is answered on a stream", async () => {
   pending = [
