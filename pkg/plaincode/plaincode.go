@@ -59,6 +59,15 @@ import (
 // The reason is for the developer and for the audit line, not for the model: it
 // names the construct that stopped it, so "why was I asked again" has an answer.
 func Recognised(code string) (bool, string) {
+	// Both of these read the source before the literals are blanked, because both
+	// are questions about what is inside one: `open`'s mode, and the handful of
+	// paths whose contents are credentials.
+	if reason := openReadsOnly(code); reason != "" {
+		return false, reason
+	}
+	if reason := noCredentialPaths(code); reason != "" {
+		return false, reason
+	}
 	stripped, err := stripLiterals(code)
 	if err != "" {
 		return false, err
@@ -73,6 +82,194 @@ func Recognised(code string) (bool, string) {
 		return false, "there is nothing to run"
 	}
 	return true, ""
+}
+
+/*
+openReadsOnly refuses an `open` that is not opening a file to read it.
+
+`open` is in the vocabulary because reading a file in the developer's own pod is
+what they do all day — the cell that reads `cycles.py` out of the checkout and
+prints a function from it is inspection, and being asked about it forty times is
+the thing auto mode exists to stop. Writing is a different act, and the only
+thing that distinguishes them is the mode argument.
+
+Which is why this runs on the raw source. stripLiterals blanks the contents of
+every literal, and the mode *is* a literal: after the strip, `open(p, "w")` and
+`open(p)` are the same three tokens.
+
+A mode that is not a literal — `open(p, mode)` — is refused rather than read. So
+is `+`, which makes a read handle a write handle.
+*/
+func openReadsOnly(code string) string {
+	runes := []rune(code)
+	for i := 0; i < len(runes); i++ {
+		if !isNameStart(runes[i]) {
+			continue
+		}
+		start := i
+		for i < len(runes) && isNameRune(runes[i]) {
+			i++
+		}
+		word := string(runes[start:i])
+		i--
+		if word != "open" || precededByDot(runes, start) {
+			continue
+		}
+
+		open := i + 1
+		for open < len(runes) && (runes[open] == ' ' || runes[open] == '\t') {
+			open++
+		}
+		if open >= len(runes) || runes[open] != '(' {
+			// A bare `open` that calls nothing is a reference to the builtin, and
+			// nothing in this subset has a use for one.
+			return "`open` used as a value rather than to read a file"
+		}
+		mode, found, reason := secondArgument(runes, open+1)
+		if reason != "" {
+			return reason
+		}
+		if found && !readOnlyMode(mode) {
+			return "`open` with a mode that is not reading"
+		}
+	}
+	return ""
+}
+
+// secondArgument returns the second argument of a call whose parentheses start at
+// `at`, as a string literal's text.
+//
+// Reports whether there was one at all, and refuses anything it cannot read as a
+// plain literal — an expression, a name, a concatenation.
+func secondArgument(runes []rune, at int) (string, bool, string) {
+	depth := 0
+	for i := at; i < len(runes); i++ {
+		switch runes[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				// The call ended with one argument.
+				return "", false, ""
+			}
+			depth--
+		case '\'', '"':
+			end, reason := skipLiteral(runes, i, runes[i])
+			if reason != "" {
+				return "", false, reason
+			}
+			i = end
+		case ',':
+			if depth != 0 {
+				continue
+			}
+			// The mode, which has to be a literal this can read.
+			j := i + 1
+			for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\n') {
+				j++
+			}
+			if j >= len(runes) || (runes[j] != '\'' && runes[j] != '"') {
+				return "", false, "`open` with a mode this check cannot read"
+			}
+			quote := runes[j]
+			end, reason := skipLiteral(runes, j, quote)
+			if reason != "" {
+				return "", false, reason
+			}
+			return string(runes[j+1 : end]), true, ""
+		}
+	}
+	return "", false, "an unclosed call to `open`"
+}
+
+// readOnlyMode reports whether a mode string opens a file for reading and nothing
+// else. `+` counts as writing, because it is what turns a read handle into one.
+func readOnlyMode(mode string) bool {
+	if mode == "" {
+		return false
+	}
+	for _, c := range mode {
+		if c != 'r' && c != 'b' && c != 't' {
+			return false
+		}
+	}
+	return strings.ContainsRune(mode, 'r')
+}
+
+/*
+noCredentialPaths refuses a cell that names one of the few paths whose contents
+are a credential.
+
+This is a floor, not a boundary, and it is the same kind of floor as
+neverVariables: it catches the literal, and a path assembled at runtime walks
+straight past it. What makes that acceptable is what auto mode is — relief from
+being asked, inside the developer's own pod, where the boundary is their token and
+not this function. What makes it worth having anyway is the asymmetry of the
+mistake: reading a source file into the model's context is the developer's own
+work, and reading their SSH key into it is a credential leaving the pod, from a
+cell nobody was asked about.
+
+Deliberately short and specific. `token`, `secret` and `password` as substrings
+would refuse `tokenizer.py` and `secrets_test.py`, which are ordinary files in an
+operator repository.
+*/
+func noCredentialPaths(code string) string {
+	for _, literal := range literals(code) {
+		lower := strings.ToLower(literal)
+		if strings.Contains(lower, secretsMount) {
+			return "`" + secretsMount + "`, which is where a pod's credentials are mounted"
+		}
+		// By path component, not by substring: `.env` inside `os.environ` is not a
+		// file, and refusing it there would report a credential where there is none.
+		for _, component := range strings.Split(lower, "/") {
+			if credentialNames[component] {
+				return "`" + component + "`, whose contents are a credential"
+			}
+		}
+	}
+	return ""
+}
+
+// literals is the text inside every string literal in the source, unread by the
+// scans that follow — this is the one check that has to look inside one.
+func literals(code string) []string {
+	runes := []rune(code)
+	out := []string{}
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '#' {
+			for i < len(runes) && runes[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if runes[i] != '\'' && runes[i] != '"' {
+			continue
+		}
+		quote := runes[i]
+		end, reason := skipLiteral(runes, i, quote)
+		if reason != "" {
+			// Unterminated, which stripLiterals refuses for itself in a moment.
+			return out
+		}
+		width := 1
+		if end-i >= 5 && runes[i+1] == quote && runes[i+2] == quote {
+			width = 3
+		}
+		if i+width <= end-width+1 {
+			out = append(out, string(runes[i+width:end-width+1]))
+		}
+		i = end
+	}
+	return out
+}
+
+const secretsMount = "/var/run/secrets"
+
+var credentialNames = map[string]bool{
+	".ssh": true, ".aws": true, ".kube": true, ".gnupg": true,
+	".netrc": true, ".pgpass": true, ".git-credentials": true, ".env": true,
+	"id_rsa": true, "id_ed25519": true, "id_ecdsa": true, "shadow": true,
+	"credentials": true, "authorized_keys": true,
 }
 
 /*
@@ -407,7 +604,11 @@ func literalPrefix(runes []rune, at int) string {
 
 // forbidden characters, each with what it would let through.
 var forbiddenChars = map[rune]string{
-	';':  "several statements on one line",
+	// `;` is deliberately absent. It joins two statements, and both of them are
+	// scanned here anyway — the vocabulary is what decides, so a semicolon adds
+	// nothing a scan of the whole text does not already see. Refusing it cost a
+	// prompt on `import pandas as pd; df = load()`, which is a shape a developer
+	// types without thinking.
 	'\\': "a line continuation",
 	'@':  "a decorator",
 	'!':  "a shell escape",
@@ -529,12 +730,37 @@ func looksLikeVariable(word string) bool {
 	if word == "" || word[0] == '_' {
 		return false
 	}
+	// SCREAMING_SNAKE_CASE is a constant the developer's own code bound — `WS` for
+	// the workspace, `LIB` for a library path — and the reason capitals were
+	// refused does not reach it: what the rule is keeping out is `Exception`,
+	// `DataFrame`, `__builtins__`, and none of those is spelled in upper case
+	// throughout. A name with no lower-case letter in it is therefore admitted, and
+	// CamelCase still is not.
+	if isConstantName(word) {
+		return true
+	}
 	for _, c := range word {
 		if unicode.IsUpper(c) {
 			return false
 		}
 	}
 	return true
+}
+
+// isConstantName reports the shape of a module-level constant: upper case,
+// digits and underscores, with at least one letter.
+func isConstantName(word string) bool {
+	letters := false
+	for _, c := range word {
+		switch {
+		case unicode.IsUpper(c):
+			letters = true
+		case unicode.IsDigit(c) || c == '_':
+		default:
+			return false
+		}
+	}
+	return letters
 }
 
 func isNameStart(c rune) bool { return c == '_' || unicode.IsLetter(c) }
@@ -549,8 +775,17 @@ var keywords = map[string]bool{
 
 // statementKeywords are named separately so refusing one can say what it is,
 // rather than reporting a keyword as an unknown name.
+//
+// `import` is not among them, and `from` is. The asymmetry is the point: `import
+// socket` binds the name `socket`, and every use of it is an attribute access this
+// package still gates — `socket.create_connection` is refused because
+// `create_connection` is not an attribute it knows. `from socket import
+// create_connection` binds a *bare* lower-case name instead, and the variable hole
+// below waves those through on the grounds that the developer's own code bound
+// them. So the dotted form is gated by the vocabulary and the from-form is not,
+// which is why one is recognised and the other is not.
 var statementKeywords = map[string]bool{
-	"import": true, "from": true, "def": true, "class": true, "lambda": true,
+	"from": true, "def": true, "class": true, "lambda": true,
 	"global": true, "nonlocal": true, "del": true, "try": true, "except": true,
 	"finally": true, "raise": true, "with": true, "while": true, "assert": true,
 	"yield": true, "return": true, "pass": true, "break": true, "continue": true,
@@ -567,6 +802,11 @@ var names = map[string]bool{
 	"print": true, "range": true, "repr": true, "reversed": true, "round": true,
 	"set": true, "sorted": true, "str": true, "sum": true, "tuple": true,
 	"zip": true,
+	// Reading a file is inspection. `open` is admitted only for reading, which is
+	// checked before the literals are blanked — see openReadsOnly — and `Path`
+	// builds a path object whose useful members are all in the attribute list
+	// while `write_text`, `unlink` and `rmdir` are not.
+	"open": true, "Path": true,
 }
 
 /*
@@ -585,17 +825,27 @@ attribute, not by this. It is a floor under the hole above, no more.
 */
 var neverVariables = map[string]bool{
 	// builtins that execute, read or reach into the object model
-	"eval": true, "exec": true, "compile": true, "open": true, "input": true,
+	"eval": true, "exec": true, "compile": true, "input": true,
 	"globals": true, "locals": true, "vars": true, "dir": true, "help": true,
 	"getattr": true, "setattr": true, "delattr": true, "hasattr": true,
 	"breakpoint": true, "exit": true, "quit": true, "id": true, "memoryview": true,
 	"super": true, "object": true, "type": true, "iter": true, "next": true,
 	"callable": true, "staticmethod": true, "classmethod": true, "property": true,
-	// modules that are a way out, whether or not they happen to be imported
-	"os": true, "sys": true, "subprocess": true, "shutil": true, "socket": true,
+	// the environment, which is where the credentials are: reading a file in the
+	// developer's own pod is what they do all day, and reading `os.environ` into
+	// the model's context is not the same act at all.
+	"environ": true, "getenv": true, "putenv": true,
+	// modules that are a way out, whether or not they happen to be imported.
+	//
+	// `os` and `pathlib` are not here any more. They were belt-and-braces — the
+	// real gate is the attribute list, which admits `os.path.join` and refuses
+	// `os.system`, `os.remove` and `os.environ` because those are not members it
+	// knows. Keeping the modules out as well only refused the path arithmetic that
+	// every read of a repository file is written with.
+	"sys": true, "subprocess": true, "shutil": true, "socket": true,
 	"pickle": true, "marshal": true, "ctypes": true, "importlib": true,
 	"builtins": true, "requests": true, "urllib": true, "httpx": true,
-	"pathlib": true, "glob": true, "tempfile": true, "signal": true,
+	"glob": true, "tempfile": true, "signal": true,
 	"threading": true, "multiprocessing": true, "asyncio": true, "shlex": true,
 	"platform": true, "runpy": true, "code": true, "codeop": true, "gc": true,
 	"inspect": true, "traceback": true, "atexit": true, "webbrowser": true,
@@ -629,7 +879,17 @@ var attributes = map[string]bool{
 	// containers and text
 	"keys": true, "items": true, "get": true, "strip": true, "lower": true,
 	"upper": true, "split": true, "join": true, "startswith": true,
-	"endswith": true, "format": true, "replace": true,
+	"endswith": true, "format": true, "replace": true, "splitlines": true,
+	"find": true, "rfind": true,
+	// reading a file, and the path arithmetic every read is written with. Nothing
+	// that writes, removes or lists a directory tree: `write_text`, `unlink`,
+	// `rmdir`, `mkdir`, `walk` and `system` are all absent, and absent is what
+	// refuses them.
+	"read": true, "readline": true, "readlines": true, "read_text": true,
+	"path": true, "basename": true, "dirname": true, "exists": true,
+	"isfile": true, "isdir": true, "splitext": true, "abspath": true,
+	"stem": true, "suffix": true, "parent": true, "is_file": true,
+	"is_dir": true, "close": true, "Path": true,
 	// time
 	"year": true, "month": true, "day": true, "hour": true, "minute": true,
 	"second": true, "date": true, "time": true, "total_seconds": true, "dt": true,

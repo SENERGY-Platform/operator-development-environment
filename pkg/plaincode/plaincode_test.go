@@ -61,10 +61,13 @@ package refuses to make.
 func TestAnythingElseIsNotRecognised(t *testing.T) {
 	cases := map[string]string{
 		// reaching out of the process
-		"import os":                         "an import",
+		//
+		// `import os` is recognised now, and `os.system` is what is refused — see
+		// TestReadingIsInspectionAndWritingIsNot. What stays here is the import form
+		// that binds a bare name the variable hole would wave through.
 		"from os import system":             "a from-import",
 		"__import__(\"os\").system(\"ls\")": "a dunder import",
-		"open(\"/etc/passwd\").read()":      "opening a file",
+		"open(\"out.csv\", \"w\")":          "opening a file to write",
 		"eval(\"1+1\")":                     "eval",
 		"exec(\"x=1\")":                     "exec",
 		"compile(\"x\", \"f\", \"eval\")":   "compile",
@@ -81,9 +84,9 @@ func TestAnythingElseIsNotRecognised(t *testing.T) {
 		// writing, which is not inspection
 		"df.to_csv(\"out.csv\")":    "writing a file",
 		"model.save(\"model.pkl\")": "saving",
-		// shape that would let two statements wear the shape of one
-		"x = 1; import os": "two statements on a line",
-		"x = \\\n  1":      "a line continuation",
+		// a semicolon launders nothing: both statements are scanned
+		"x = 1; os.system(\"ls\")": "a call through os behind a semicolon",
+		"x = \\\n  1":              "a line continuation",
 		// defining rather than inspecting
 		"def f():\n    return 1": "a definition",
 		"lambda x: x":            "a lambda",
@@ -93,6 +96,73 @@ func TestAnythingElseIsNotRecognised(t *testing.T) {
 		"   ": "blank",
 	}
 	for code, what := range cases {
+		ok, why := plaincode.Recognised(code)
+		if ok {
+			t.Errorf("recognised %s, which must be asked about: %q", what, code)
+			continue
+		}
+		if strings.TrimSpace(why) == "" {
+			t.Errorf("refused %q without saying why", code)
+		}
+	}
+}
+
+/*
+Reading is inspection; writing is not.
+
+The cell that reads a file out of the checkout and prints part of it is the same
+kind of thing as `df.head()` — a developer looking at their own work in their own
+pod — and it was being asked about because `open` was absent from the vocabulary
+and `os` was refused outright. What separates it from writing is the mode, and
+what separates it from a credential leaving the pod is a short list of paths.
+
+The refusals below are the load-bearing half. Every one of them is refused by the
+vocabulary rather than by a rule about danger: `os.system` because `system` is not
+an attribute this package knows, `from os import system` because that form binds a
+bare name the variable hole would admit, `open(p, mode)` because a mode this
+cannot read is one it will not claim to have read.
+*/
+func TestReadingIsInspectionAndWritingIsNot(t *testing.T) {
+	recognised := []string{
+		// The cell this was written for.
+		"src = open(os.path.join(WS, 'cycles.py')).read()\n" +
+			"i = src.index('def state_window')\n" +
+			"print(src[i:i+5200])",
+		`print(open("cycles.py").read())`,
+		`print(open(path, "rb").read())`,
+		// An import binds a name whose every use is still gated.
+		"import numpy as np\nprint(np.mean(xs))",
+		"import os\nprint(os.path.exists(p))",
+		// A semicolon is two statements, both of them scanned.
+		"total = df.size; print(total)",
+		// A constant the developer's own code bound.
+		"print(os.path.join(WS, 'cycles.py'))",
+		`print(pathlib.Path("cycles.py").read_text()[:200])`,
+	}
+	for _, code := range recognised {
+		if ok, why := plaincode.Recognised(code); !ok {
+			t.Errorf("not recognised: %q\n  because: %s", code, why)
+		}
+	}
+
+	refused := map[string]string{
+		`open("out.csv", "w").write("x")`:                "writing",
+		`open("out.csv", "a")`:                           "appending",
+		`open("f", "r+")`:                                "a read handle that can write",
+		`open(p, mode)`:                                  "a mode this check cannot read",
+		`f = open`:                                       "the builtin as a value",
+		`os.system("ls")`:                                "a call through os",
+		`os.remove(p)`:                                   "removing a file",
+		`print(os.environ)`:                              "the environment",
+		`print(os.getenv("JUPYTERHUB_API_TOKEN"))`:       "an environment read",
+		`from pathlib import Path`:                       "a from-import",
+		`print(open("/home/jovyan/.ssh/id_rsa").read())`: "an SSH key",
+		`print(open("/var/run/secrets/kubernetes.io/serviceaccount/token").read())`: "a service account token",
+		`print(pathlib.Path(p).write_text("x"))`:                                    "writing through pathlib",
+		`shutil.rmtree(p)`:                                                          "removing a tree",
+		`print(SomeClass)`:                                                          "a CamelCase name",
+	}
+	for code, what := range refused {
 		ok, why := plaincode.Recognised(code)
 		if ok {
 			t.Errorf("recognised %s, which must be asked about: %q", what, code)
@@ -146,9 +216,9 @@ func TestAnFStringIsReadThroughItsFields(t *testing.T) {
 
 	refused := map[string]string{
 		// The field is scanned, so what is in it decides.
-		`print(f"{open('/etc/passwd').read()}")`: "opening a file in a field",
-		`print(f"{eval('1+1')}")`:                "eval in a field",
-		`print(f"{df.to_csv('out.csv')}")`:       "writing from a field",
+		`print(f"{open('out.txt', 'w')}")`: "opening a file to write in a field",
+		`print(f"{eval('1+1')}")`:          "eval in a field",
+		`print(f"{df.to_csv('out.csv')}")`: "writing from a field",
 		// A nested f-string is evaluated; blanking it would hide that.
 		`print(f"{f'{eval(chr(1))}'}")`: "a nested f-string",
 		// Syntax this scan does not follow.
@@ -192,9 +262,9 @@ func TestStringContentsAreNeitherReadNorTrusted(t *testing.T) {
 // it rather than say "no".
 func TestTheReasonNamesWhatStoppedIt(t *testing.T) {
 	for code, want := range map[string]string{
-		"import os":          "import",
+		"os.environ":         "environ",
 		"df.to_csv(\"a\")":   "to_csv",
-		"x = 1; y = 2":       "one line",
+		"open(p, mode)":      "mode",
 		"getattr(df, \"x\")": "getattr",
 	} {
 		ok, why := plaincode.Recognised(code)
