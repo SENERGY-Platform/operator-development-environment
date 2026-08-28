@@ -447,6 +447,29 @@ func TestSurfaceDeclaresTheWholeAllowList(t *testing.T) {
 		"run_code":               {L0, true},
 		"launch_experiment":      {L0, true},
 		"get_experiment_results": {L0, false},
+		// The simulation surface (docs/simulation.md).
+		// The reads are structure and sit at L0; get_simulation_state is the one that
+		// reads values and sits at L1 for the same reason every other value read does.
+		"list_simulations":             {L0, false},
+		"get_simulation":               {L0, false},
+		"list_simulation_templates":    {L0, false},
+		"list_simulation_device_types": {L0, false},
+		"list_simulation_datasets":     {L0, false},
+		"get_backfill_status":          {L0, false},
+		"get_simulation_state":         {L1, false},
+		// Confirmed for the reason the four import writes are, plus one of their own:
+		// a simulated asset is a device in the device repository, so it is inventory
+		// other people's applications see until somebody removes it. backfill_simulation
+		// is confirmed because a backfilled row is indistinguishable from a live one
+		// once it is in timescale, and the window is what the developer should see
+		// before it happens.
+		"create_simulation":         {L0, true},
+		"add_simulated_asset":       {L0, true},
+		"set_channel_source":        {L0, true},
+		"set_simulation_context":    {L0, true},
+		"delete_simulation":         {L0, true},
+		"backfill_simulation":       {L0, true},
+		"upload_simulation_dataset": {L0, true},
 	}
 
 	declared := registry.Definitions()

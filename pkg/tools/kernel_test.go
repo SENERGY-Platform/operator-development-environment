@@ -19,6 +19,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -32,9 +33,29 @@ type fakeKernel struct {
 	events []kernel.ExecutionEvent
 	code   []string
 	err    error
+
+	// files is what the workspace holds, by path, for upload_simulation_dataset.
+	files map[string]kernel.FileContent
+	// readErr fails a read, so a tool that has to refuse rather than upload
+	// something it could not read can be tested.
+	readErr error
+	// read records the paths that were asked for.
+	read []string
 }
 
 func (f *fakeKernel) Workspace() string { return "data/ode" }
+
+func (f *fakeKernel) ReadFile(_ context.Context, _ kernel.Ref, path string, _ int) (kernel.FileContent, error) {
+	f.read = append(f.read, path)
+	if f.readErr != nil {
+		return kernel.FileContent{}, f.readErr
+	}
+	content, found := f.files[path]
+	if !found {
+		return kernel.FileContent{}, fmt.Errorf("no such file: %s", path)
+	}
+	return content, nil
+}
 
 func (f *fakeKernel) RunQueued(_ context.Context, _ kernel.Ref, code string) (<-chan kernel.ExecutionEvent, error) {
 	if f.err != nil {

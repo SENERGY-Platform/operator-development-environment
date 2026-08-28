@@ -62,6 +62,13 @@ type fakeClient struct {
 	groupErr   error
 	groupCode  int
 
+	// deviceTypeCalls records every whole-device-type lookup, which is how the
+	// tests check that the ids are asked for in one request rather than one each.
+	deviceTypeCalls []model.DeviceTypeListOptions
+	deviceTypes     []models.DeviceType
+	deviceTypeErr   error
+	deviceTypeCode  int
+
 	// graphCalls records every graph listing. §5.5 asks for the device relationship
 	// graph to be consulted, and the filter it is asked with is what keeps that from
 	// enumerating the platform's whole topology.
@@ -108,6 +115,32 @@ func (f *fakeClient) ListCharacteristics(model.CharacteristicListOptions) ([]mod
 
 func (f *fakeClient) ListConceptsWithCharacteristics(model.ConceptListOptions) ([]models.ConceptWithCharacteristics, int64, error, int) {
 	return []models.ConceptWithCharacteristics{{Id: "concept-power"}}, 1, nil, 200
+}
+
+// ListDeviceTypesV3 is the attributes route: every other projection ODE reads
+// drops them, and `senergy/time_path` is what decides whether a channel on a
+// service can carry a historical timestamp at all.
+func (f *fakeClient) ListDeviceTypesV3(
+	_ string, options model.DeviceTypeListOptions,
+) ([]models.DeviceType, int64, error, int) {
+	f.mux.Lock()
+	f.deviceTypeCalls = append(f.deviceTypeCalls, options)
+	f.mux.Unlock()
+
+	if f.deviceTypeErr != nil {
+		return nil, 0, f.deviceTypeErr, f.deviceTypeCode
+	}
+	wanted := map[string]bool{}
+	for _, id := range options.Ids {
+		wanted[id] = true
+	}
+	out := []models.DeviceType{}
+	for _, deviceType := range f.deviceTypes {
+		if len(wanted) == 0 || wanted[deviceType.Id] {
+			out = append(out, deviceType)
+		}
+	}
+	return out, int64(len(out)), nil, 200
 }
 
 func (f *fakeClient) GetDeviceClasses() ([]models.DeviceClass, error, int) {

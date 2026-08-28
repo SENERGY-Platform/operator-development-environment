@@ -60,6 +60,10 @@ type Client interface {
 	// wired, which is the stronger statement of the two.
 	ListDeviceGroups(token string, options model.DeviceGroupListOptions) ([]models.DeviceGroup, int64, error, int)
 	ListGraphs(token string, options model.GraphListOptions) ([]models.Graph, int64, error, int)
+	// ListDeviceTypesV3 is the only route to a device type's service *attributes*,
+	// which every other projection ODE reads drops. It takes the token the same way
+	// the two above do. See DeviceTypesByID.
+	ListDeviceTypesV3(token string, options model.DeviceTypeListOptions) ([]models.DeviceType, int64, error, int)
 }
 
 // Snapshot is one consistent read of the ontology.

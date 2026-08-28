@@ -15,7 +15,7 @@
  */
 
 // Package imports reads import types and import instances on behalf of the
-// calling user (PLAN §2).
+// calling user; the reasoning is in docs/imports-as-operator-inputs.md.
 //
 // An import is the platform's second kind of operator input: a containerised
 // adapter that pulls data from outside and publishes it to one Kafka topic. It

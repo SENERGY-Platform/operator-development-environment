@@ -120,12 +120,13 @@ Startup logs what came up:
 
 ```json
 {"level":"INFO","msg":"llm surface ready","providers":["claude-cli"],
- "tools_declared":27,"tools_available_at_l0":10,"persistent":false}
+ "tools_declared":41,"tools_available_at_l0":10,"persistent":false}
 ```
 
 `tools_declared` is the whole published table — §5.8's eighteen, the eight the
-import surface adds, and `probe_export_data`; `tools_available_at_l0` is what a
-session can actually reach at the default tier. The gap between the two is the tier doing its work.
+import surface adds, `probe_export_data`, and the fourteen of the simulation
+surface; `tools_available_at_l0` is what a session can actually reach at the
+default tier. The gap between the two is the tier doing its work.
 
 The four tools that need your confirmation — `run_code`, `propose_data_selection`,
 `propose_operator_input`, `launch_experiment` — work here as they do on an API key.
@@ -391,6 +392,62 @@ WARN  no keycloak token exchange is configured: a Ray job carries the developer'
 ```
 
 That warning is discussed below.
+
+## Simulation
+
+*what to do when the platform has no data for the case*
+
+This needs a `MOSES_URL` pointing at the platform's environment simulator. Without
+one the fourteen simulation tools are declared and not callable, which is a
+working deployment — the startup line says so:
+
+```text
+WARN  no moses_url configured: an operator whose data the platform does not carry
+      yet cannot be given a simulated site to develop against, and the fourteen
+      simulation tools are declared but not callable
+```
+
+With one, ask the assistant for something the platform has no data for — `I need
+four weeks of PV generation to develop a forecast against, and I do not think we
+have any` is the case it is built around. In order:
+
+1. **It should look for real data first.** Watch for a `resolve_semantic_selection`
+   before anything simulated. If it proposes a simulation without having looked,
+   that is the system prompt failing rather than the tools.
+2. **`list_simulation_templates`, then `list_simulation_device_types`.** The
+   first says what has to be bound; the second says what this platform actually
+   has. An empty catalogue is the interesting failure: it means no device type on
+   this platform publishes through the simulator's protocol, and the answer says
+   so as a modelling gap in the device repository rather than as "nothing matched".
+
+   **Look at `backfillable` on each service.** It says whether a channel there
+   could ever hold a historical row, and it is decided by the `senergy/time_path`
+   attribute on the device type, which is optional and unset on most types. If
+   nothing on your platform says `possible`, a simulation built here can only
+   accumulate history from now on — the assistant should say so rather than
+   proposing a backfill that would skip everything. This is the one thing worth
+   checking before anything is created, because afterwards it costs a device in
+   the repository and two confirmations to have found out.
+3. **`create_simulation` holds for your confirmation.** Read what it says it will
+   do before agreeing — every asset becomes a device in the device repository.
+   After it lands, `resolve_semantic_selection` finds those devices like any
+   others, which is the property the whole integration rests on.
+4. **`backfill_simulation`, and then read the skipped channels.** The call warns
+   up front about channels that cannot carry a historical timestamp, so most of
+   what step 2 would have caught is caught again here. Read the status anyway: a
+   job can finish `done` having published nothing, and `get_backfill_status`
+   reports every skipped channel with its reason. The assistant is instructed to
+   read that list out rather than reporting the job as done.
+5. **Example data.** Ask for something a shape cannot give — `use a real hall's
+   load, not a made-up one`. The best answer costs nothing: a `dataset` source
+   with origin `platform` replays a real device's own history into the simulated
+   channel. Failing that, it should fetch an open dataset with `run_code` into
+   your workspace and hand the path to `upload_simulation_dataset` — the file is
+   read out of your pod rather than through the model, which is why that tool
+   takes a path and not content.
+
+The reasoning is in [simulation.md](simulation.md), including the two fields
+MOSES decides and the one the plan said to strip that must not be.
 
 ## Interpretation
 

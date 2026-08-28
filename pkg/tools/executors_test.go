@@ -37,10 +37,39 @@ import (
 
 // --- fakes ---
 
-type fakeOntology struct{ snapshot *ontology.Snapshot }
+type fakeOntology struct {
+	snapshot *ontology.Snapshot
+
+	// deviceTypes is the whole-device-type answer, by id, and is what the backfill
+	// precondition reads. Empty is the honest default for most tests: a device type
+	// the repository does not return leaves the verdict unknown rather than no.
+	deviceTypes map[string]models.DeviceType
+	// deviceTypeErr makes the repository refuse, so the "unknown is not no" path can
+	// be reached.
+	deviceTypeErr error
+	// deviceTypeCalls records the id sets asked for, which is how a test checks that
+	// one request covers the whole catalogue.
+	deviceTypeCalls [][]string
+}
 
 func (f *fakeOntology) Snapshot(context.Context, string) (*ontology.Snapshot, error) {
 	return f.snapshot, nil
+}
+
+func (f *fakeOntology) DeviceTypesByID(
+	_ context.Context, _ string, ids []string,
+) (map[string]models.DeviceType, error) {
+	f.deviceTypeCalls = append(f.deviceTypeCalls, ids)
+	if f.deviceTypeErr != nil {
+		return nil, f.deviceTypeErr
+	}
+	out := map[string]models.DeviceType{}
+	for _, id := range ids {
+		if deviceType, found := f.deviceTypes[id]; found {
+			out[id] = deviceType
+		}
+	}
+	return out, nil
 }
 
 // fakeDevices records the permission each call asked for, which is what the

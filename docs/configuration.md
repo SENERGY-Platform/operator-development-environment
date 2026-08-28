@@ -93,6 +93,32 @@ is in
 | `export_timestamp_format` | none | What the export worker parses the timestamp with. Empty means "copy it from the newest export this platform already has", reported in the answer's `derived`; with nothing to copy, creating an export is refused. Overridable per export, and belongs with a per-export `export_time_path` |
 | `export_database_id` | none | Where the export writes. Empty means "the one this platform offers", resolved from `GET /databases`; two is a refusal naming both, because putting an export in the wrong database is found only by the history lookup coming back empty |
 
+## Simulation
+
+MOSES, the platform's environment simulator, is what ODE creates test scenarios
+with when the platform has no data for the case. The reasoning is in
+[simulation.md](simulation.md).
+
+| Key | Default | What it decides |
+| --- | --- | --- |
+| `moses_url` | none | The switch for the whole simulation half. Empty leaves the fourteen simulation tools declared and not callable, the same degradation an empty `ray_url` gives the two experiment tools. Nothing in ODE requires a simulator |
+| `moses_request_timeout` | `60s` | Bounds one call. Generous by metadata standards, because storing an environment registers a platform device per new asset — one call each — before MOSES answers at all |
+| `moses_max_dataset_bytes` | `10485760` | Bounds one uploaded timeseries. A bound on ODE's own memory rather than a policy about file sizes: the file travels out of the developer's pod base64-encoded and then through ODE whole. A file over it is **refused rather than uploaded truncated**, because a cut-off CSV parses and then plays silence from wherever it was cut |
+
+**There is no token here, and there will not be one.** MOSES takes an
+environment's owner from the caller's token, so a service account would create
+simulations belonging to ODE: nobody could find them in the MOSES UI, and nothing
+could delete them. This is the only place in ODE where a service account would be
+technically easy and is refused on that ground alone — contrast the Ray and
+MLflow tokens, which are permitted precisely because neither service has a
+per-user identity to act as.
+
+`upload_simulation_dataset` additionally needs `jupyterhub_url`. The file it
+uploads is read out of the developer's own workspace, so without a pod there is
+nothing to read; the tool is then declared and not callable, and startup says so.
+A simulated channel can still replay a real platform device's history without it,
+which is the better source of example data anyway.
+
 ## Profiler
 
 The bounds and the two-pass read they describe are in

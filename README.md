@@ -151,7 +151,10 @@ there before deriving a service's behaviour from its code again.
   run, and why the interpretation waits for the developer
 - [docs/imports-as-operator-inputs.md](docs/imports-as-operator-inputs.md) — how
   an import is found and wired, the four ways it differs from a device, and the
-  only two things ODE creates on the platform: an import and its export
+  first two things ODE creates on the platform: an import and its export
+- [docs/simulation.md](docs/simulation.md) — what to do when the platform has no
+  data for the case: a simulated site through MOSES, why the model picks a
+  template rather than writing the document, and what a backfill does not produce
 
 ## Licence
 

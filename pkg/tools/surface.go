@@ -37,6 +37,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/simulation"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -46,6 +47,14 @@ import (
 type (
 	Ontology interface {
 		Snapshot(ctx context.Context, token string) (*ontology.Snapshot, error)
+		// DeviceTypesByID reads whole device types, with the service attributes every
+		// other projection ODE holds drops. It is the only route to
+		// `senergy/time_path`, which decides whether a channel published through a
+		// service can ever carry a historical timestamp — see
+		// simulation.CheckTimePath. Nothing else on this interface needs it, which is
+		// why it is here rather than in a second dependency: the device repository is
+		// required configuration and this is one more read of it.
+		DeviceTypesByID(ctx context.Context, token string, ids []string) (map[string]models.DeviceType, error)
 	}
 
 	Devices interface {
@@ -80,7 +89,8 @@ type (
 		Resolve(ctx context.Context, token string, req selection.Request) (selection.Result, error)
 	}
 
-	// Imports is the second kind of operator input (PLAN). Discovery is not here:
+	// Imports is the second kind of operator input
+	// (docs/imports-as-operator-inputs.md). Discovery is not here:
 	// an import is found through resolve_semantic_selection like a device, because
 	// a developer asking for a signal has no business knowing which of the two the
 	// platform happens to deliver it from. What is here is what discovery cannot
@@ -151,13 +161,23 @@ type (
 		MaxMembers() int
 	}
 
-	// Kernel runs code in the developer's own pod (§5.6). Narrowed to the two
-	// methods run_code needs: the token identifies the developer, so nothing here
-	// takes a user.
+	// Kernel runs code in the developer's own pod (§5.6). The token identifies the
+	// developer, so nothing here takes a user.
+	//
+	// Narrow, and the one method beyond run_code's two is worth its own sentence.
+	// ReadFile is how upload_simulation_dataset gets at a CSV the assistant just
+	// produced in the developer's workspace, and it is not new authority: run_code
+	// can already read any file on that pod, under the same identity and behind the
+	// same confirmation. What it buys is that the bytes travel as bytes rather than
+	// through a model's context, which for a year of measurements is the difference
+	// between a working tool and an impossible one.
 	Kernel interface {
 		// RunQueued rather than Run: a tool call that finds the kernel busy waits
 		// for it, where a developer's own cell is told at once and can interrupt.
 		RunQueued(ctx context.Context, ref kernel.Ref, code string) (<-chan kernel.ExecutionEvent, error)
+		// ReadFile reads one file of the developer's workspace, bounded. A file over
+		// the bound comes back marked truncated rather than short and silent.
+		ReadFile(ctx context.Context, ref kernel.Ref, path string, maxBytes int) (kernel.FileContent, error)
 		Workspace() string
 	}
 
@@ -180,6 +200,41 @@ type (
 		Results(ctx context.Context, req experiments.Request, id string) (experiments.Summary, error)
 		List(ctx context.Context, req experiments.Request, limit int) ([]experiments.Experiment, error)
 	}
+
+	// Simulation is MOSES, the platform's environment simulator
+	// (docs/simulation.md).
+	//
+	// It is the answer to the case the import surface cannot reach: an operator
+	// needs data before it can be developed, and when the platform has none the
+	// developer's only options were to wait or to leave ODE. A simulated asset is
+	// an ordinary platform device, so everything else in this surface already finds
+	// what one publishes — what was missing was bringing one into existence.
+	//
+	// The write half is wide by the standards of this file, and deliberately: an
+	// environment is written whole, so every change is Get, edit, Replace. What is
+	// *not* here is the shape of the document — the executors build it from a
+	// template, never from what a model wrote.
+	Simulation interface {
+		List(ctx context.Context, token string) ([]simulation.Environment, error)
+		Get(ctx context.Context, token, id string) (simulation.Environment, error)
+		Create(ctx context.Context, token string, env simulation.Environment) (simulation.Environment, error)
+		Replace(ctx context.Context, token string, env simulation.Environment) (simulation.Environment, error)
+		Delete(ctx context.Context, token, id string) error
+
+		State(ctx context.Context, token, id string) (simulation.EnvironmentState, error)
+		Patch(ctx context.Context, token, id string, change simulation.StateChange) error
+
+		Backfill(ctx context.Context, token, id string, from, to time.Time) (simulation.BackfillStatus, error)
+		BackfillStatusOf(ctx context.Context, token, id string) (simulation.BackfillStatus, error)
+
+		DeviceTypes(ctx context.Context, token string) ([]simulation.DeviceType, error)
+
+		Datasets(ctx context.Context, token string) ([]simulation.Dataset, error)
+		UploadDataset(ctx context.Context, token, name, timezone string, content []byte) (simulation.Dataset, error)
+		// MaxDatasetBytes lets a caller refuse a file before reading it out of the
+		// developer's pod rather than after carrying it across.
+		MaxDatasetBytes() int
+	}
 )
 
 // Deps carries the services the executors need. Every field is optional: a
@@ -193,6 +248,15 @@ type CreationKind string
 const (
 	CreatedImportInstance CreationKind = "import_instance"
 	CreatedExport         CreationKind = "export"
+	// CreatedSimulation is one simulated environment, and with it a platform device
+	// per asset. Deleting it destroys those devices and their timeseries, which is
+	// why it is recorded under the same rule as the two above: a session removes
+	// what that session created, and nothing else.
+	CreatedSimulation CreationKind = "simulation"
+	// CreatedSimulationDataset is an uploaded timeseries. Recorded for the record
+	// rather than for a delete tool — there is none — so that a session can say what
+	// it put there.
+	CreatedSimulationDataset CreationKind = "simulation_dataset"
 )
 
 // Creation is one platform object a session created.
@@ -226,6 +290,7 @@ type Deps struct {
 	Relations     Relations
 	Repo          Repo
 	Experiments   Experiments
+	Simulation    Simulation
 
 	// ProfileTokenBudget bounds the projection handed to the model (D26). The
 	// stored profile is unbounded; what an LLM reads never is.
@@ -1167,6 +1232,396 @@ func NewSurface(deps Deps) (*Registry, error) {
 			}`),
 			Unavailable: "requires ray_url and mlflow_url",
 			executor:    ifPresent(s.getExperimentResults, deps.Experiments),
+		},
+
+		// ---- MOSES: simulated environments as a source of test scenarios ----
+		//
+		// Read first, then author, then drive, then backfill — the order a developer
+		// meets them. Everything that changes the platform is confirmed, for the
+		// reason the four import tools are: a simulated device appears in the device
+		// repository and is inventory until somebody removes it.
+		Definition{
+			Name: "list_simulations",
+			Description: "List the simulated environments this developer owns. A simulation is a " +
+				"site, building or apartment MOSES computes and publishes as if it were real " +
+				"hardware — every asset in one is an ordinary platform device, so what it " +
+				"publishes is found and profiled by the same tools as anything else.\n\n" +
+				"Reach for simulations when the data an operator needs does not exist yet: a " +
+				"forecast that wants weeks of history on the day the work starts, a cycle " +
+				"detector with no machine that cycles, a submetering operator with no meter tree. " +
+				"An existing real series is always the better answer; this is what to do when " +
+				"there is none.",
+			Effect:  "read the simulator's environment list",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "search": {"type": "string", "description": "Keep only simulations whose name contains this."}
+			  }
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.listSimulations, deps.Simulation),
+		},
+		Definition{
+			Name: "get_simulation",
+			Description: "Read one simulation's structure: its zones, the assets in them, the " +
+				"channels each asset publishes and what drives them. No measurements.\n\n" +
+				"Two ids in the answer matter beyond this tool. `device_id` on an asset and " +
+				"`service_id` on a channel are the platform device and service that asset " +
+				"publishes through, so they address the series everywhere else in this surface. " +
+				"`version` is not something you send anywhere — every tool that changes a " +
+				"simulation reads it again and carries it itself. It is here because it " +
+				"explains a refusal you may meet: MOSES stores the whole document and rejects " +
+				"a write against a version that has moved on, which means somebody else edited " +
+				"the simulation between the read and the write.",
+			Effect:  "read one environment document",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "simulation_id": {"type": "string"}
+			  },
+			  "required": ["simulation_id"]
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.getSimulation, deps.Simulation),
+		},
+		Definition{
+			Name: "list_simulation_templates",
+			Description: "The scenarios a simulation can be created from, with what each one asks " +
+				"you to decide. Read this before create_simulation: a template names the asset " +
+				"roles you have to bind to device types, the channel roles you have to bind to " +
+				"services, and the parameters it takes — and it says what the scenario does not " +
+				"simulate, which is what you have to know before trusting data from it.",
+			Effect:  "read ODE's own scenario catalogue",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {}
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.listSimulationTemplates, deps.Simulation),
+		},
+		Definition{
+			Name: "list_simulation_device_types",
+			Description: "The platform device types a simulated asset can be built from, with the " +
+				"services of each: id, name, direction and characteristic. Only types publishing " +
+				"through the simulator's own protocol are here, which is what makes a type " +
+				"simulatable at all.\n\n" +
+				"The characteristic of the service you bind decides the unit of everything that " +
+				"channel publishes. Pick the service that describes the quantity you mean; never " +
+				"carry a characteristic from one service to another.\n\n" +
+				"`backfillable` on each service is the other half of the choice, and it is why " +
+				"this is worth reading before proposing anything. A channel on a service that " +
+				"does not declare where its message carries the event time can never hold a " +
+				"historical row — and history is usually the reason a simulation is being built " +
+				"at all. Prefer a service that says `possible`; when none does, say so, because " +
+				"the fix is a change to the device type in the device repository rather than " +
+				"another attempt from here.",
+			Effect:  "read the simulator's device type catalogue",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {}
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.listSimulationDeviceTypes, deps.Simulation),
+		},
+		Definition{
+			Name: "get_simulation_state",
+			Description: "The live state of a running simulation: the shared context, and the " +
+				"state of every zone and asset, resolved to one instant.\n\n" +
+				"This is the one simulation tool that reads values, which is why it needs a " +
+				"higher tier than the rest. A simulation that is stored but not running on the " +
+				"instance asked answers with no state and says so — that is the normal condition " +
+				"of one just written, not a failure.",
+			Effect:  "read live simulation state",
+			MinTier: L1,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "simulation_id": {"type": "string"}
+			  },
+			  "required": ["simulation_id"]
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.getSimulationState, deps.Simulation),
+		},
+
+		Definition{
+			Name: "create_simulation",
+			Description: "Create a simulated environment from a template. **The developer must " +
+				"confirm.**\n\n" +
+				"This registers a platform device for every asset the template builds, so the " +
+				"simulation appears in the device repository and every application that reads it " +
+				"sees those devices. It is inventory until somebody removes it — propose one only " +
+				"when the data the developer needs does not exist on this platform, and say so.\n\n" +
+				"You do not write the environment document. Call list_simulation_templates for " +
+				"what a template asks for, list_simulation_device_types for what this platform " +
+				"has, then bind each asset role to a device type and each channel role to one of " +
+				"that type's services. The characteristic and the unit come from the service you " +
+				"bind.\n\n" +
+				"A new simulation publishes from now on and has no past. Use backfill_simulation " +
+				"if the operator needs history.",
+			Effect:  "create an environment and one platform device per asset",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "template": {"type": "string", "description": "The scenario, as list_simulation_templates names it."},
+			    "name": {"type": "string", "description": "What the developer will find this simulation and its devices under."},
+			    "seed": {"type": "integer", "description": "Makes the scenario reproducible: the same document, seed and window produce the same values. Any number will do; change it for a different draw of the same scenario."},
+			    "rationale": {"type": "string", "description": "Why this platform has no data for the case, and why this scenario is the right stand-in."},
+			    "params": {
+			      "type": "object",
+			      "description": "The template's parameters by name. Each is a number; list_simulation_templates gives the default and the range of every one. Anything omitted takes its default; a name the template does not have is refused rather than ignored.",
+			      "additionalProperties": {"type": "number"}
+			    },
+			    "bindings": {
+			      "type": "object",
+			      "description": "One entry per asset role of the template, keyed by the role's name.",
+			      "additionalProperties": {
+			        "type": "object",
+			        "properties": {
+			          "device_type_id": {"type": "string", "description": "The device type this asset is built from, from list_simulation_device_types."},
+			          "channels": {
+			            "type": "object",
+			            "description": "One entry per channel role, keyed by the role's name, whose value is the id of a service of that same device type.",
+			            "additionalProperties": {"type": "string"}
+			          }
+			        },
+			        "required": ["device_type_id", "channels"]
+			      }
+			    }
+			  },
+			  "required": ["template", "name", "bindings", "rationale"]
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.createSimulation, deps.Simulation),
+		},
+		Definition{
+			Name: "add_simulated_asset",
+			Description: "Add one asset to an existing simulation. **The developer must confirm**, " +
+				"because this registers another platform device.\n\n" +
+				"Read the simulation first — get_simulation is where the zone ids come from.\n\n" +
+				"`submetered_by` is what makes a meter tree: it names the asset whose meter " +
+				"already measures this one. An aggregate channel on that asset then sums this one " +
+				"too, without being edited — the tree is the configuration.",
+			Effect:  "add an asset to an environment, and a platform device with it",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "simulation_id": {"type": "string"},
+			    "zone_id": {"type": "string", "description": "Which zone it goes in, as get_simulation reports it."},
+			    "name": {"type": "string", "description": "What the platform device will be called."},
+			    "kind": {"type": "string", "enum": ["meter", "inverter", "machine", "sensor", "actuator"]},
+			    "device_type_id": {"type": "string", "description": "From list_simulation_device_types."},
+			    "submetered_by": {"type": "string", "description": "The asset id of the meter above this one, if there is one. It has to be in the same top level zone."},
+			    "rationale": {"type": "string", "description": "Why the scenario needs this asset."},
+			    "channels": {
+			      "type": "array",
+			      "description": "What this asset publishes. Each channel is one service of the chosen device type.",
+			      "items": {
+			        "type": "object",
+			        "properties": {
+			          "name": {"type": "string", "description": "Omit to take the service's own name."},
+			          "service_id": {"type": "string", "description": "A service of device_type_id. Its characteristic decides the unit."},
+			          "interval_seconds": {"type": "integer", "description": "How often it publishes. Omit for 60. This is what decides how many rows a backfill writes."},
+			          "source": ` + sourceSchema + `
+			        },
+			        "required": ["service_id", "source"]
+			      }
+			    }
+			  },
+			  "required": ["simulation_id", "zone_id", "name", "kind", "device_type_id", "channels", "rationale"]
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.addSimulatedAsset, deps.Simulation),
+		},
+		Definition{
+			Name: "set_channel_source",
+			Description: "Change what one channel of a simulation publishes. **The developer must " +
+				"confirm**: this changes what a device other applications can read is sending.\n\n" +
+				"This is how example data gets into a scenario. A `dataset` source with origin " +
+				"`platform` replays a real device's own history into the simulated channel, which " +
+				"is the truest stand-in there is when the platform has the signal somewhere but " +
+				"not where the operator needs it. Origin `file` replays something uploaded with " +
+				"upload_simulation_dataset.\n\n" +
+				"What was already published does not change. A series whose source was swapped " +
+				"has two regimes in it, and a profile over the whole window will say so.",
+			Effect:  "change what a simulated device publishes",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "simulation_id": {"type": "string"},
+			    "channel_id": {"type": "string", "description": "From get_simulation."},
+			    "interval_seconds": {"type": "integer", "description": "Change how often it publishes as well. Omit to leave it."},
+			    "rationale": {"type": "string", "description": "Why this channel should publish something else."},
+			    "source": ` + sourceSchema + `
+			  },
+			  "required": ["simulation_id", "channel_id", "source", "rationale"]
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.setChannelSource, deps.Simulation),
+		},
+		Definition{
+			Name: "delete_simulation",
+			Description: "Remove a simulation **that this session created**. Any other id is " +
+				"refused: a simulation that was already there is not yours to propose removing.\n\n" +
+				"The developer must confirm. This deletes the platform devices MOSES created for " +
+				"it and everything they published — a timeseries belongs to its device, so " +
+				"anything trained on this scenario has no data behind it afterwards. A device the " +
+				"developer attached themselves is left alone, with its own history.",
+			Effect:  "remove a simulation this session created, its devices and their timeseries",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "simulation_id": {"type": "string", "description": "Must be one this session created."},
+			    "rationale": {"type": "string", "description": "Why it should be removed."}
+			  },
+			  "required": ["simulation_id", "rationale"]
+			}`),
+			Unavailable: "requires moses_url and a chat store",
+			executor:    ifPresent(s.deleteSimulation, deps.Simulation, deps.Creations),
+		},
+
+		Definition{
+			Name: "set_simulation_context",
+			Description: "Set boundary conditions on a running simulation: a context value the " +
+				"whole site reads, a zone's state, an asset's state. **The developer must " +
+				"confirm** — the devices are publishing, and this changes what they send.\n\n" +
+				"It writes the live state, not the definition: it is gone when the simulation " +
+				"restarts. That makes it right for \"what does the operator do when the hall is " +
+				"at 30 °C\" and wrong for \"this hall runs warm\", which is a change to the " +
+				"document.\n\n" +
+				"One call sets one state and there is no scheduling here. Ramping a value over an " +
+				"hour is your own run_code against the same endpoint.",
+			Effect:  "patch the live state of a running simulation",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "simulation_id": {"type": "string"},
+			    "rationale": {"type": "string", "description": "What this is meant to provoke, and why."},
+			    "context": {"type": "object", "description": "Shared values every zone reads, e.g. outdoor temperature or irradiance. Keys as get_simulation reports them."},
+			    "zones": {"type": "object", "description": "State per zone, keyed by zone id.", "additionalProperties": {"type": "object"}},
+			    "assets": {"type": "object", "description": "State per asset, keyed by asset id.", "additionalProperties": {"type": "object"}}
+			  },
+			  "required": ["simulation_id", "rationale"]
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.setSimulationContext, deps.Simulation),
+		},
+
+		Definition{
+			Name: "backfill_simulation",
+			Description: "Reconstruct a simulation over a window that has already passed, " +
+				"publishing every reading with the timestamp it would have had. **The developer " +
+				"must confirm**: this writes weeks of rows through the ordinary connector, and " +
+				"once they are in timescale a backfilled row is indistinguishable from a live " +
+				"one.\n\n" +
+				"This is what makes a simulation worth building. The same document and the same " +
+				"window produce the same data, so a model can be retrained on it.\n\n" +
+				"Three limits shape what to ask for. A window may not end in the future, may not " +
+				"span more than 366 days, and a backfill is **not idempotent** — running the same " +
+				"window twice writes every row twice and nothing downstream de-duplicates. Only " +
+				"profile and dataset channels are reconstructed; a script, formula or aggregate " +
+				"channel is skipped and says so, as is any channel whose device type does not " +
+				"declare where its message carries the event time.\n\n" +
+				"Name the window to the developer before asking them to confirm it.",
+			Effect:  "publish a reconstructed past window into timescale",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "simulation_id": {"type": "string"},
+			    "from": {"type": "string", "description": "RFC3339. There is no default: how far back to reach is the developer's decision and it is what the run costs."},
+			    "to": {"type": "string", "description": "RFC3339, not in the future."},
+			    "rationale": {"type": "string", "description": "What needs this history, and why this window."}
+			  },
+			  "required": ["simulation_id", "from", "to", "rationale"]
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.backfillSimulation, deps.Simulation),
+		},
+		Definition{
+			Name: "get_backfill_status",
+			Description: "Follow a backfill job: how far it got, how many rows it published, and " +
+				"— the part to read first — which channels it skipped and why.\n\n" +
+				"A job can report itself done with every channel skipped. Read the skipped list " +
+				"before concluding anything about the data, and profile the series rather than " +
+				"reporting the published count as what a query would return.",
+			Effect:  "read the simulator's job status",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "simulation_id": {"type": "string"}
+			  },
+			  "required": ["simulation_id"]
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.getBackfillStatus, deps.Simulation),
+		},
+
+		Definition{
+			Name: "list_simulation_datasets",
+			Description: "The uploaded timeseries a simulated channel can replay, with the span " +
+				"and point count of each column. Look here before uploading: a dataset that is " +
+				"already there is the better answer, and a dataset is immutable, so what it " +
+				"plays cannot change under a scenario built on it.",
+			Effect:  "read the simulator's dataset list",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {}
+			}`),
+			Unavailable: "requires moses_url",
+			executor:    ifPresent(s.listSimulationDatasets, deps.Simulation),
+		},
+		Definition{
+			Name: "upload_simulation_dataset",
+			Description: "Upload a timeseries file from the developer's workspace into the " +
+				"simulator, so a simulated channel can replay it. **The developer must confirm**: " +
+				"the data becomes something other applications can be made to see.\n\n" +
+				"This is how you bring example data onto the platform when the platform has none. " +
+				"Look for data that fits the case first — a real device whose history resembles " +
+				"it, which set_channel_source replays directly with origin `platform` and needs " +
+				"no upload at all; then an open dataset you can fetch with run_code into the " +
+				"developer's own workspace as CSV; then a file the developer already has there. " +
+				"Write the file with run_code, then name its path here.\n\n" +
+				"The file is a CSV: a header line, the time column first, one or more named value " +
+				"columns. MOSES parses it before it stores it, so a broken file is refused here " +
+				"with a line number rather than playing silence later. Say where the data came " +
+				"from in the rationale — a scenario built on data of unknown provenance is not " +
+				"evidence of anything.\n\n" +
+				"`timezone` is not cosmetic. A file of local timestamps without an offset read in " +
+				"the wrong zone shifts every value by an hour or two, which is invisible in the " +
+				"data and wrong in everything trained on it.",
+			Effect:  "store an uploaded timeseries in the simulator",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "workspace_path": {"type": "string", "description": "The CSV in the developer's workspace, relative to its root. Write it there with run_code first."},
+			    "name": {"type": "string", "description": "What the developer will find this dataset under."},
+			    "timezone": {"type": "string", "description": "IANA zone the offsetless timestamps are in, e.g. \"Europe/Berlin\" or \"UTC\". Omit only when every timestamp in the file carries its own offset."},
+			    "rationale": {"type": "string", "description": "Where this data came from and why it fits the case."}
+			  },
+			  "required": ["workspace_path", "name", "rationale"]
+			}`),
+			Unavailable: "requires moses_url and jupyterhub_url",
+			executor:    ifPresent(s.uploadSimulationDataset, deps.Simulation, deps.Kernel),
 		},
 	)
 }

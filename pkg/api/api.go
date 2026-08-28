@@ -63,7 +63,8 @@ type Deps struct {
 	Profiler   *profiler.Profiler
 	Selection  *selection.Resolver
 
-	// Imports is the second kind of operator input (PLAN). Absent when no
+	// Imports is the second kind of operator input
+	// (docs/imports-as-operator-inputs.md). Absent when no
 	// device_selection_url is configured, in which case semantic selection reports
 	// devices only and says so, and the three import tools stay
 	// declared-but-unavailable.

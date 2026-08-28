@@ -157,6 +157,7 @@ func TestEveryToolOfSection58IsImplementedWithItsServicesPresent(t *testing.T) {
 		Relations:     &fakeRelations{},
 		Repo:          &fakeRepo{},
 		Experiments:   &fakeExperiments{},
+		Simulation:    &fakeSimulation{},
 	})
 	if err != nil {
 		t.Fatalf("NewSurface: %v", err)
@@ -175,9 +176,12 @@ func TestEveryToolOfSection58IsImplementedWithItsServicesPresent(t *testing.T) {
 	// type catalogue, one confirmed wiring proposal and the four that change the
 	// platform — plus probe_export_data, which is the export half of
 	// probe_availability and has to be its own tool because the platform's
-	// availability endpoint is device-scoped.
-	if got := len(registry.Definitions()); got != 27 {
-		t.Errorf("declared %d tools, want 27", got)
+	// availability endpoint is device-scoped, plus the fourteen of the simulation
+	// surface: five reads, a template catalogue, four that author a scenario, one
+	// that drives a running one, two for a backfill and one that uploads example
+	// data for a channel to replay.
+	if got := len(registry.Definitions()); got != 41 {
+		t.Errorf("declared %d tools, want 41", got)
 	}
 }
 

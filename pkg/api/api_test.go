@@ -105,6 +105,15 @@ func (fakeOntologyClient) ListDeviceGroups(
 // ListGraphs answers with the sub-metering topology of §5.5: the two kitchen devices
 // meet at a circuit, and a site meter downstream of it is deliberately *not* under the
 // Kitchen aspect — which is the cross-level pair a graph exists to surface.
+// No device type carries a `senergy/time_path` attribute here, which is the
+// ordinary state of the platform: it is optional and set only where somebody
+// wanted a publisher to write history.
+func (fakeOntologyClient) ListDeviceTypesV3(
+	_ string, _ drmodel.DeviceTypeListOptions,
+) ([]models.DeviceType, int64, error, int) {
+	return []models.DeviceType{}, 0, nil, 200
+}
+
 func (fakeOntologyClient) ListGraphs(
 	_ string, _ drmodel.GraphListOptions,
 ) ([]models.Graph, int64, error, int) {

@@ -47,6 +47,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/simulation"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
@@ -117,7 +118,8 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		Devices:  deviceService,
 	}
 
-	// Imports as the second kind of operator input (PLAN). Optional the way the
+	// Imports as the second kind of operator input
+	// (docs/imports-as-operator-inputs.md). Optional the way the
 	// timescale-wrapper is: without a device_selection_url a resolution finds
 	// devices exactly as before and says in its notes that the import half was not
 	// searched, rather than pretending the platform has no imports.
@@ -424,6 +426,16 @@ func startM3(
 	// Start has returned, so the indirection is never observed as a nil.
 	sink := &sessionSink{}
 
+	// MOSES, the source of test scenarios. Built here rather than in New because
+	// nothing but the tool surface reads it: there is no simulation route on the
+	// HTTP API — a simulation pane was deliberately left last and not built, see
+	// docs/simulation.md — so a deployment
+	// without an LLM provider has no use for a client to it.
+	simulationService, err := startSimulation(config)
+	if err != nil {
+		return err
+	}
+
 	registry, err := tools.NewSurface(tools.Deps{
 		Ontology:            ontologyRepo,
 		Devices:             deviceService,
@@ -438,6 +450,7 @@ func startM3(
 		Relations:           relationsOrNil(deps.Relations),
 		Repo:                repoOrNil(repoService),
 		Experiments:         experimentsOrNil(experimentService),
+		Simulation:          simulationOrNil(simulationService),
 		ProfileTokenBudget:  int(config.ToolProfileTokenBudget),
 		ProfileMaxProfiles:  int(config.ToolProfileMaxProfiles),
 		QuickTokenBudget:    int(config.ToolQuickTokenBudget),
@@ -1430,6 +1443,37 @@ func startImports(config configuration.Config) (*imports.Service, error) {
 	return imports.New(deps)
 }
 
+// startSimulation wires the client for MOSES, or returns nil when no simulator is
+// configured.
+//
+// One URL decides it, and there is nothing else to get wrong: no token, because
+// the environment's owner comes from the caller's token, and no second service,
+// because MOSES talks to the device repository itself. That is why this is three
+// lines where startImports is thirty.
+func startSimulation(config configuration.Config) (*simulation.Service, error) {
+	if config.MosesUrl == "" {
+		return nil, nil
+	}
+	timeout, err := time.ParseDuration(config.MosesRequestTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("config: moses_request_timeout: %w", err)
+	}
+	return simulation.New(config.MosesUrl, simulation.Options{
+		Timeout:         timeout,
+		MaxDatasetBytes: int(config.MosesMaxDatasetBytes),
+	}), nil
+}
+
+// simulationOrNil hands the tool surface an interface that is actually nil when
+// there is no simulator, rather than one wrapping a typed nil pointer — the
+// footgun ifPresent's isNil documents from the other side.
+func simulationOrNil(service *simulation.Service) tools.Simulation {
+	if service == nil {
+		return nil
+	}
+	return service
+}
+
 // confirmationHeadroom is the slack a held confirmation needs inside a turn: the
 // margin the provider's own tool timeout is given, plus room for the tool to
 // actually run once it is approved.
@@ -1492,6 +1536,20 @@ func validate(config configuration.Config) error {
 		slog.Warn("no ray_url or mlflow_url configured: a developer cannot launch an " +
 			"experiment, and launch_experiment and get_experiment_results are declared " +
 			"but not callable (§5.12)")
+	}
+	if config.MosesUrl == "" {
+		// Not a tidiness warning either. Without a simulator, a case ODE otherwise has
+		// a complete answer for — the operator needs data the platform does not have —
+		// has no answer at all, and the assistant is not told the simulator is missing
+		// so much as never told one could exist.
+		slog.Warn("no moses_url configured: an operator whose data the platform does not " +
+			"carry yet cannot be given a simulated site to develop against, and the fourteen " +
+			"simulation tools are declared but not callable")
+	} else if config.JupyterhubUrl == "" {
+		slog.Warn("moses_url is set but jupyterhub_url is not: a simulated channel can still " +
+			"replay a real device's own history, but upload_simulation_dataset is declared " +
+			"and not callable — the file it uploads is read out of the developer's pod, and " +
+			"there is no pod")
 	}
 	if config.PostgresUrl == "" {
 		// Not a warning about tidiness. §3.3's per-user spend cap is computed from

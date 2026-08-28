@@ -33,11 +33,12 @@
 //     those by refusing at dispatch time would be weaker: the tool would still
 //     be advertised, and the model would keep asking.
 //
-// The registry declares the eighteen tools of §5.8 plus the nine beyond it — the
-// eight the import surface adds and probe_export_data, which is the export half of
-// probe_availability and has to be its own tool because the platform's
-// availability endpoint is device-scoped. Every one of them has an executor —
-// where the service behind it is configured. The declaration is
+// The registry declares the eighteen tools of §5.8 plus the twenty-three beyond
+// it — the eight the import surface adds, probe_export_data, which is the export
+// half of probe_availability and has to be its own tool because the platform's
+// availability endpoint is device-scoped, and the fourteen of the simulation
+// surface (docs/simulation.md). Every one of them
+// has an executor — where the service behind it is configured. The declaration is
 // the tier table — one source of truth for the published table, the settings UI and the
 // tests — while only a tool with an executor is advertised to a provider. A tool
 // whose dependency is absent therefore cannot be called and never appears in
@@ -323,6 +324,18 @@ func deniedSet() map[string]string {
 			"made in the same chat session, with the developer confirming again, and refuse " +
 			"every other id; nothing removes a device, a series, an ontology entry or an " +
 			"import that was already there",
-		"write_timeseries": "ODE reads the timeseries store and never writes to it",
+		// Reworded when the simulation surface arrived, for the reason
+		// delete_platform_data was: the flat sentence stopped being true, and a denial
+		// that is not quite true is worse than none. backfill_simulation causes rows to
+		// appear in timescale — that is what it is for — and the difference from the
+		// capability this name denies is worth stating rather than hiding. ODE never
+		// writes a value against somebody's series. It asks a simulator the developer
+		// owns to run its own devices over a past window, and those devices publish
+		// through the ordinary connector like every other device on the platform.
+		"write_timeseries": "no tool writes a value into the timeseries store. " +
+			"backfill_simulation is not an exception under another name: it asks MOSES to " +
+			"run a simulation the developer owns over a past window, and the simulated " +
+			"devices publish through the ordinary connector. Nothing anywhere reaches a " +
+			"series ODE did not create the device behind",
 	}
 }

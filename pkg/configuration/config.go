@@ -44,7 +44,8 @@ type ConfigStruct struct {
 	OntologyCacheTtl      string `json:"ontology_cache_ttl"`
 	OntologyInvalidateInt string `json:"ontology_invalidate_interval"`
 
-	// Imports as operator inputs (PLAN). An operator can take an import as an
+	// Imports as operator inputs (docs/imports-as-operator-inputs.md). An operator
+	// can take an import as an
 	// input the way it takes a device, and an import type carries the same content
 	// variables a device type does — so semantic selection finds both, or the
 	// answer is quietly missing a class of candidate.
@@ -97,6 +98,25 @@ type ConfigStruct struct {
 	ExportTimePath        string `json:"export_time_path"`
 	ExportTimestampFormat string `json:"export_timestamp_format"`
 	ExportDatabaseID      string `json:"export_database_id"`
+
+	// MOSES, the platform's environment simulator (docs/simulation.md). Empty
+	// moses_url leaves the fourteen simulation tools
+	// declared-but-unavailable, exactly as an empty ray_url does for the two
+	// experiment tools — nothing in ODE requires a simulator.
+	//
+	// There is no token here and there deliberately never will be. MOSES takes an
+	// environment's owner from the caller's token, so a service account would
+	// create simulations belonging to ODE: nobody could find them, and nobody could
+	// delete them.
+	//
+	// MosesMaxDatasetBytes bounds one uploaded timeseries. It is a bound on ODE's
+	// own memory rather than a policy about file sizes — the file travels out of
+	// the developer's pod base64-encoded and then through ODE whole — and a file
+	// over it is refused rather than uploaded truncated, because a cut-off CSV
+	// parses and then plays silence from wherever it was cut.
+	MosesUrl             string `json:"moses_url"`
+	MosesRequestTimeout  string `json:"moses_request_timeout"`
+	MosesMaxDatasetBytes int64  `json:"moses_max_dataset_bytes"`
 
 	// ImportRequestTimeout bounds a single request to any of the four services
 	// above. Held separately from TimeseriesRequestTimeout because these are
