@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -395,3 +396,102 @@ func TestOnlyTheOwnerCanDecideAHeldCall(t *testing.T) {
 	}
 }
 
+// What the session panel is told when a hold is abandoned.
+//
+// The reported symptom is a row that says "Needs you" opening onto a conversation
+// with no confirmation in it. Two halves have to agree for that not to happen: the
+// confirmation is retired from the store, and the panel is told the session no
+// longer wants anything. This asserts the second, because the first already has a
+// test above and the pair of them is what the developer sees.
+func TestAnAbandonedHoldStopsTheSessionAskingForADecision(t *testing.T) {
+	h := newHeldHarness(t, tools.L0)
+	h.engine.opts.ConfirmationTimeout = 50 * time.Millisecond
+
+	states, stop := h.engine.Watch(testUser)
+	defer stop()
+
+	results := h.hold(tools.L0, "confirmed_tool")
+	awaitResult(t, results)
+
+	// The turn is still open — the model was told the call did not run and would
+	// carry on — so the states seen here are the ones the panel acts on while the
+	// conversation is still alive.
+	var seen []ActivityState
+	deadline := time.After(2 * time.Second)
+	waiting := false
+collect:
+	for {
+		select {
+		case activity, ok := <-states:
+			if !ok {
+				break collect
+			}
+			if activity.SessionID != h.session.ID {
+				continue
+			}
+			seen = append(seen, activity.State)
+			if activity.State == ActivityWaiting {
+				waiting = true
+			}
+			// The one that matters: after the hold gave up, something has to say the
+			// session is no longer waiting. Whether it reports running or idle is the
+			// turn's business, not this test's.
+			if waiting && activity.State != ActivityWaiting {
+				return
+			}
+		case <-deadline:
+			break collect
+		}
+	}
+
+	t.Errorf("the panel was never told the session stopped waiting; it saw %v", seen)
+}
+
+// An abandoned hold says so in the conversation.
+//
+// The developer was elsewhere when it expired, so the panel mark and the card are
+// both gone by the time they come back. Without a note the only trace is a tool
+// call marked failed, which does not say that it was *their* missing answer that
+// refused it — and a developer reading it later has no way to tell an expired
+// confirmation from a tool that broke.
+func TestAnAbandonedHoldLeavesANoteInTheConversation(t *testing.T) {
+	h := newHeldHarness(t, tools.L0)
+	h.engine.opts.ConfirmationTimeout = 50 * time.Millisecond
+
+	awaitResult(t, h.hold(tools.L0, "confirmed_tool"))
+
+	messages, err := h.engine.Messages(context.Background(), testUser, h.session.ID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+
+	var note *StoredMessage
+	for i := range messages {
+		if messages[i].Injected() && strings.Contains(text(messages[i]), "confirmed_tool") {
+			note = &messages[i]
+			break
+		}
+	}
+	if note == nil {
+		t.Fatal("an abandoned hold left no note in the conversation")
+	}
+
+	// In ODE's voice. Stored with the user role because that is what a model reads
+	// as input, but marked so the SPA does not draw it as something the developer
+	// typed — they never saw the question, let alone answered it.
+	if !note.Injected() {
+		t.Error("the note is not marked as ODE's, so it renders in the developer's voice")
+	}
+	if got := text(*note); !strings.Contains(got, "did not run") {
+		t.Errorf("the note does not say the call did not run: %q", got)
+	}
+}
+
+// text flattens a stored message's content for assertions.
+func text(message StoredMessage) string {
+	var out strings.Builder
+	for _, content := range message.Content {
+		out.WriteString(content.Text)
+	}
+	return out.String()
+}

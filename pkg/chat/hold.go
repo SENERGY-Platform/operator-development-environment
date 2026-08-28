@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
 
@@ -273,8 +274,51 @@ func (e *Engine) abandonHold(ctx context.Context, confirmation Confirmation, rea
 		slog.ErrorContext(ctx, "could not retire an abandoned confirmation",
 			"confirmation", confirmation.ID, "error", err)
 	}
+	// The note is why this function is more than a store write.
+	//
+	// The developer was not there — that is the usual reason a hold expires — so
+	// without it the only trace is a tool call marked failed. Reopening the session
+	// an hour later shows a refusal with nothing saying who refused it or why, and
+	// the confirmation it belonged to is gone from the panel by then too.
+	//
+	// Appended rather than sent: this is not a question, and starting a turn to have
+	// it answered would spend the developer's budget on the word "understood". The
+	// next turn reads it as input, the same way a workbench move's note is read.
+	notice := abandonedNotice(confirmation, reason)
+	notice.SessionID = confirmation.SessionID
+	if err := e.store.AppendMessages(writeCtx, confirmation.SessionID, notice); err != nil {
+		// Logged, not returned: the call is already refused and the model has already
+		// been told. At error rather than warn, because the developer is now the only
+		// party with no record of it.
+		slog.ErrorContext(ctx, "a held tool call was abandoned without a note in its history",
+			"confirmation", confirmation.ID, "session", confirmation.SessionID, "error", err)
+	}
+
 	slog.InfoContext(ctx, "a held tool call was abandoned",
 		"confirmation", confirmation.ID, "tool", confirmation.Tool, "reason", reason)
+}
+
+// abandonedSubjectPrefix marks an abandonment note's subject, for the same reason
+// moveSubjectPrefix exists: this field is read elsewhere as a bare experiment id.
+const abandonedSubjectPrefix = "abandoned:"
+
+// abandonedNotice is what an unanswered confirmation leaves behind.
+//
+// In ODE's voice, not the developer's. They did not decline it — they never saw
+// it — and a refusal written in their words would put a decision in their mouth
+// that nobody made.
+func abandonedNotice(confirmation Confirmation, reason string) StoredMessage {
+	text := "ODE did not run " + confirmation.Tool + ", because " + reason +
+		". It needed the developer's confirmation and never got one, so nothing" +
+		" happened: no code ran, nothing was written and no state changed. If it is" +
+		" still what you want, ask for it again rather than assuming it took effect."
+
+	return StoredMessage{
+		Role:    llm.RoleUser,
+		Content: []llm.Content{{Type: llm.ContentText, Text: text}},
+		Origin:  OriginODE,
+		Subject: abandonedSubjectPrefix + confirmation.ID,
+	}
 }
 
 // heldFailure is what the model is told when a hold ended without a decision.
