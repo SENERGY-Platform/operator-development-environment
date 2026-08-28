@@ -32,7 +32,7 @@ import (
 )
 
 // EventType is what the SPA receives over SSE. The five from §5.7's normalised
-// stream, plus four ODE-specific ones that have no provider equivalent.
+// stream, plus the ODE-specific ones below, which have no provider equivalent.
 type EventType string
 
 const (
@@ -44,6 +44,17 @@ const (
 
 	// EventConfirmation asks the developer to decide on a held tool call (D11).
 	EventConfirmation EventType = "confirmation_required"
+	// EventConfirmationResolved says a held call has been decided, so a view
+	// drawing its card can take it down.
+	//
+	// It exists because a confirmation has more than one audience. A developer with
+	// the same conversation open in two windows must see the card in both — that is
+	// what a per-exchange event stream gives — and must see it go from both when
+	// either one answers, which nothing used to say. The other reader is a window
+	// reattaching to a still-running exchange: the replay hands it every card the
+	// exchange ever asked for, and without the resolutions among them a reload
+	// during a held turn drew a column of cards, most of them already answered.
+	EventConfirmationResolved EventType = "confirmation_resolved"
 	// EventLimit reports a §3.3 cap breach, carrying the structured refusal.
 	EventLimit EventType = "limit_exceeded"
 	// EventWarning is a soft limit crossed. The turn continues.
@@ -963,6 +974,11 @@ func (e *Engine) Confirm(
 		if err := e.store.PutConfirmation(ctx, resolved); err != nil {
 			slog.ErrorContext(ctx, "could not record a confirmation decision", "error", err)
 		}
+		// Published even though this exchange is a new one that no other window is
+		// watching yet: publish appends to the exchange's history, so a window that
+		// reattaches — which is what the second window does when the panel tells it
+		// this session started running again — reads the decision with the rest.
+		publishResolution(exchange, resolved)
 
 		// propose_data_selection is the one confirmed tool whose approval changes
 		// session state the assistant then has to see, so the session is re-read.

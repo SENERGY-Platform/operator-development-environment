@@ -605,6 +605,51 @@ func TestConfirmationHoldsTheExchange(t *testing.T) {
 	}
 }
 
+// The native path resumes on a *new* exchange, which no other window is watching
+// when the decision is taken. The event still has a reader: publish keeps it in
+// that exchange's history, and a window told by the panel that this conversation
+// is running again reattaches and replays it.
+func TestConfirmAnnouncesTheDecisionOnTheResumedExchange(t *testing.T) {
+	h := newHarness(t,
+		toolTurn("call-1", "confirmed_tool"),
+		textTurn("Thank you for confirming."),
+	)
+	session := h.session(t, tools.L0)
+
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser,
+		session.ID, "do the thing")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	pending, err := h.engine.PendingConfirmations(context.Background(), testUser, session.ID)
+	if err != nil {
+		t.Fatalf("PendingConfirmations: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending confirmations = %d, want 1", len(pending))
+	}
+
+	resumed, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
+		session.ID, pending[0].ID, true)
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	collected := drain(t, resumed)
+
+	announced := find(collected, EventConfirmationResolved)
+	if len(announced) != 1 {
+		t.Fatalf("resolution events = %d, want 1", len(announced))
+	}
+	if announced[0].Confirmation["id"] != pending[0].ID {
+		t.Errorf("resolved id = %v, want %s", announced[0].Confirmation["id"], pending[0].ID)
+	}
+	if announced[0].Confirmation["decision"] != DecisionApproved {
+		t.Errorf("decision = %v, want %q", announced[0].Confirmation["decision"], DecisionApproved)
+	}
+}
+
 func TestRejectingAConfirmationDoesNotRunTheTool(t *testing.T) {
 	h := newHarness(t,
 		toolTurn("call-1", "confirmed_tool"),

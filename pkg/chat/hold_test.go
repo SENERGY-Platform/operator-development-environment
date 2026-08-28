@@ -336,6 +336,67 @@ func TestAHeldCallGivesUpWhenNobodyDecides(t *testing.T) {
 	}
 }
 
+// awaitEvent reads an exchange's stream until the kind arrives, which is what
+// every window with this conversation open would see.
+func awaitEvent(t *testing.T, events <-chan Event, kind EventType) Event {
+	t.Helper()
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case event, open := <-events:
+			if !open {
+				t.Fatalf("the exchange ended without a %s event", kind)
+				return Event{}
+			}
+			if event.Type == kind {
+				return event
+			}
+		case <-deadline:
+			t.Fatalf("no %s event within 20s", kind)
+			return Event{}
+		}
+	}
+}
+
+// The second window: a card answered in one has to go from the other, and the
+// event is the only thing the other has to go on.
+func TestADecidedHoldIsAnnouncedOnTheExchange(t *testing.T) {
+	h := newHeldHarness(t, tools.L0)
+	events, detach := h.exchange.Subscribe()
+	defer detach()
+
+	results := h.hold(tools.L0, "confirmed_tool")
+	id := h.awaitConfirmation(t)
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	awaitResult(t, results)
+
+	resolved := awaitEvent(t, events, EventConfirmationResolved)
+	if resolved.Confirmation["id"] != id {
+		t.Errorf("resolved id = %v, want %s", resolved.Confirmation["id"], id)
+	}
+	if resolved.Confirmation["decision"] != DecisionApproved {
+		t.Errorf("decision = %v, want %q", resolved.Confirmation["decision"], DecisionApproved)
+	}
+}
+
+// A card nobody answered is exactly as wrong to leave on screen as one that was
+// answered, so the timeout says so too.
+func TestAnAbandonedHoldIsAnnouncedOnTheExchange(t *testing.T) {
+	h := newHeldHarness(t, tools.L0)
+	h.engine.opts.ConfirmationTimeout = 50 * time.Millisecond
+	events, detach := h.exchange.Subscribe()
+	defer detach()
+
+	awaitResult(t, h.hold(tools.L0, "confirmed_tool"))
+
+	resolved := awaitEvent(t, events, EventConfirmationResolved)
+	if resolved.Confirmation["decision"] != DecisionRejected {
+		t.Errorf("decision = %v, want %q", resolved.Confirmation["decision"], DecisionRejected)
+	}
+}
+
 // Confirm and Decide are not interchangeable. Confirm would dispatch the tool a
 // second time and start a turn beside the one still streaming, so a held call is
 // refused there and answered where it waits.

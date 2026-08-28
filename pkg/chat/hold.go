@@ -166,7 +166,7 @@ func (e *Engine) Hold(ctx context.Context, req tools.Request, call tools.Call) (
 		if !e.claimHold(confirmation.ID) {
 			return e.resolveHold(ctx, req, confirmation, exchange, <-waiting.decided), true, nil
 		}
-		e.abandonHold(ctx, confirmation, reason)
+		e.abandonHold(ctx, exchange, confirmation, reason)
 		return heldFailure(confirmation, told), true, nil
 	}
 
@@ -215,6 +215,7 @@ func (e *Engine) resolveHold(
 		slog.ErrorContext(ctx, "could not record a confirmation decision",
 			"confirmation", confirmation.ID, "error", err)
 	}
+	publishResolution(exchange, resolved)
 
 	if !approve {
 		return tools.Result{
@@ -255,16 +256,38 @@ func (e *Engine) resolveHold(
 	}, confirmation.PendingConfirmation)
 }
 
+// publishResolution tells every view of an exchange that a confirmation is
+// settled, whoever settled it and however.
+//
+// Deliberately published on all three endings — approved, rejected, and retired
+// without an answer — rather than only on the two the developer causes. A card
+// that cannot be answered any more is exactly as wrong to leave on screen as one
+// that already was, and the reload that used to clear it only ran when the turn
+// ended, which a held call does not do.
+func publishResolution(exchange *Exchange, confirmation Confirmation) {
+	exchange.publish(Event{
+		Type: EventConfirmationResolved, Confirmation: confirmation.Describe(),
+	})
+}
+
 // abandonHold retires a confirmation nobody can answer any more.
 //
 // Recorded as rejected rather than left pending, because pending is what the SPA
 // draws a card for: a hold whose caller has gone would otherwise leave the
 // developer an approve button that runs a tool into nothing.
-func (e *Engine) abandonHold(ctx context.Context, confirmation Confirmation, reason string) {
+func (e *Engine) abandonHold(
+	ctx context.Context, exchange *Exchange, confirmation Confirmation, reason string,
+) {
 	now := e.now()
 	resolved := confirmation
 	resolved.ResolvedAt = &now
 	resolved.Decision = DecisionRejected
+	// Before the store write, and unconditionally. A card whose caller has gone is
+	// the one case where the developer is most likely to be looking at a second
+	// window, because the usual reason a hold expires is that nobody was at the
+	// first one. publish is a no-op once the exchange has closed, which is one of
+	// the three ways this is reached.
+	publishResolution(exchange, resolved)
 
 	// Detached from ctx: one of the ways this is reached is that very context being
 	// cancelled, and the write says nothing about whether the store would take it.

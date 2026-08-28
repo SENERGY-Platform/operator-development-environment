@@ -195,5 +195,10 @@ func (c Confirmation) Describe() map[string]any {
 	if c.OutOfBand {
 		described["out_of_band"] = true
 	}
+	// Carried so a resolution event says which way it went. Absent while pending,
+	// which is what every other reader of this map expects to see.
+	if c.Decision != "" {
+		described["decision"] = c.Decision
+	}
 	return described
 }
