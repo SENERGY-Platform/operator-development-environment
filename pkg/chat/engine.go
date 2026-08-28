@@ -1732,6 +1732,24 @@ func (e *Engine) TierFor(ctx context.Context, userSub, sessionID string) (tools.
 	return session.Tier, nil
 }
 
+// State implements mcp.Sessions: everything a call made in this session's name is
+// gated by, checked against its owner.
+//
+// The same two properties TierFor documents, for the same reason — the ownership
+// check and the admin clamp both come from going through Session rather than the
+// store — and one more that only shows on this transport: a provider running its
+// own tool loop reaches the tools through here, so a field this does not return is
+// a gate that will read a zero value on every call the CLI makes.
+func (e *Engine) State(ctx context.Context, userSub, sessionID string) (
+	tools.Tier, string, bool, error,
+) {
+	session, err := e.Session(ctx, userSub, sessionID)
+	if err != nil {
+		return tools.DefaultTier, "", false, err
+	}
+	return session.Tier, session.WorkbenchID, session.AutoRun, nil
+}
+
 // RecordCreation and Creations implement tools.Creations, so the confirmed create
 // tools can record what they made and the confirmed delete tools can check it.
 //

@@ -39,9 +39,11 @@ import (
 // that these go over HTTP with a real MCP client.
 
 type fakeSessions struct {
-	mux   sync.RWMutex
-	tiers map[string]tools.Tier
-	owner map[string]string
+	mux         sync.RWMutex
+	tiers       map[string]tools.Tier
+	owner       map[string]string
+	workbenches map[string]string
+	autoRun     map[string]bool
 
 	// hold stands in for the chat engine's confirmation hold. Two things a test
 	// sets: whether a call is held at all, and what the developer answers.
@@ -54,7 +56,10 @@ type fakeSessions struct {
 }
 
 func newFakeSessions() *fakeSessions {
-	return &fakeSessions{tiers: map[string]tools.Tier{}, owner: map[string]string{}}
+	return &fakeSessions{
+		tiers: map[string]tools.Tier{}, owner: map[string]string{},
+		workbenches: map[string]string{}, autoRun: map[string]bool{},
+	}
 }
 
 // Hold answers the way the engine does: refuse when nothing could ask the
@@ -107,17 +112,28 @@ func (s *fakeSessions) add(sessionID, userSub string, tier tools.Tier) {
 	s.owner[sessionID] = userSub
 }
 
-func (s *fakeSessions) TierFor(_ context.Context, userSub, sessionID string) (tools.Tier, error) {
+// setWork records what the session acts in and whether it holds the standing
+// answer, which the transport has to carry as faithfully as the tier.
+func (s *fakeSessions) setWork(sessionID, workbench string, autoRun bool) {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	s.workbenches[sessionID] = workbench
+	s.autoRun[sessionID] = autoRun
+}
+
+func (s *fakeSessions) State(_ context.Context, userSub, sessionID string) (
+	tools.Tier, string, bool, error,
+) {
 	s.mux.RLock()
 	defer s.mux.RUnlock()
 	if s.owner[sessionID] != userSub {
-		return tools.DefaultTier, errors.New("no such session for this user")
+		return tools.DefaultTier, "", false, errors.New("no such session for this user")
 	}
 	tier, found := s.tiers[sessionID]
 	if !found {
-		return tools.DefaultTier, errors.New("no such session")
+		return tools.DefaultTier, "", false, errors.New("no such session")
 	}
-	return tier, nil
+	return tier, s.workbenches[sessionID], s.autoRun[sessionID], nil
 }
 
 type ran struct {
@@ -130,7 +146,12 @@ func (r *ran) executor(name string) tools.Executor {
 		r.mux.Lock()
 		defer r.mux.Unlock()
 		r.called = append(r.called, name)
-		return map[string]any{"ran": name, "tier": req.Tier.String(), "session": req.SessionID}, nil
+		return map[string]any{
+			"ran": name, "tier": req.Tier.String(), "session": req.SessionID,
+			// Reported so a test can see what the transport carried, rather than only
+			// that the call arrived.
+			"workbench": req.WorkbenchID, "auto_run": req.AutoRun,
+		}, nil
 	}
 }
 
@@ -428,6 +449,59 @@ func TestMCPRefusesAConfirmedToolWithNobodyToAsk(t *testing.T) {
 	}
 	if !strings.Contains(callText(t, result), "confirmation_unavailable") {
 		t.Errorf("refusal = %s, want confirmation_unavailable", callText(t, result))
+	}
+}
+
+/*
+The transport carries the whole session, not the parts it remembered.
+
+Two gates read a session field that this handler used to leave at its zero value,
+and both failures are on the CLI provider only, because it is the one that reaches
+the tools through here rather than through the engine's own loop:
+
+  - the workbench, without which write_file answers "2 workbenches are open, so the
+    request has to name the one it means" and run_code lands in whichever kernel an
+    unnamed workbench resolves to — the worse of the two, because it succeeds;
+  - the standing answer of D33, without which auto mode did nothing at all on this
+    transport and every recognised `run_code` was still put to the developer.
+*/
+func TestMCPCarriesTheSessionsWorkbenchAndStandingAnswer(t *testing.T) {
+	h := newHarness(t)
+	h.sessions.add("sess-l0", "alice", tools.L0)
+	h.sessions.setWork("sess-l0", "wb-two", true)
+	session := h.connect(t, "alice", "sess-l0")
+
+	result, err := session.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "l0_tool", Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	text := callText(t, result)
+	if !strings.Contains(text, `"workbench":"wb-two"`) {
+		t.Errorf("result = %s, want the session's workbench", text)
+	}
+	if !strings.Contains(text, `"auto_run":true`) {
+		t.Errorf("result = %s, want the session's standing answer", text)
+	}
+}
+
+// And a session that holds neither says so, rather than the handler having a
+// default of its own.
+func TestMCPCarriesTheAbsenceOfBothToo(t *testing.T) {
+	h := newHarness(t)
+	h.sessions.add("sess-l0", "alice", tools.L0)
+	session := h.connect(t, "alice", "sess-l0")
+
+	result, err := session.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "l0_tool", Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	text := callText(t, result)
+	if !strings.Contains(text, `"workbench":""`) || !strings.Contains(text, `"auto_run":false`) {
+		t.Errorf("result = %s, want an empty workbench and no standing answer", text)
 	}
 }
 

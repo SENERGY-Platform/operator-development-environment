@@ -56,11 +56,22 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
 
-// Sessions is the slice of the chat engine this package needs: which tier a
-// session is at and who owns it, and somewhere to park a call that needs the
-// developer's agreement.
+// Sessions is the slice of the chat engine this package needs: what a session is,
+// and somewhere to park a call that needs the developer's agreement.
 type Sessions interface {
-	TierFor(ctx context.Context, userSub, sessionID string) (tools.Tier, error)
+	// State is every fact about the session that a gate downstream reads.
+	//
+	// One call rather than one per field, and deliberately not three: the tier, the
+	// workbench and the standing answer are read together per request, from the same
+	// session, and a transport that fetched only the one it remembered to ask for is
+	// how two of them came to be missing here — a tool call arriving with no
+	// workbench, and auto mode never applying to a provider that runs its own tool
+	// loop.
+	// Primitives rather than a struct of this package's: the engine implements
+	// this, and a transport's type in the engine's signature is the wrong way round
+	// for a dependency — which is why TierFor never took one either.
+	State(ctx context.Context, userSub, sessionID string) (
+		tier tools.Tier, workbench string, autoRun bool, err error)
 
 	// Hold dispatches a call needing confirmation (D11) and waits for the
 	// developer to decide, returning the outcome as an ordinary tool result.
@@ -91,12 +102,29 @@ func New(dispatcher *tools.Dispatcher, sessions Sessions, version string) (*Serv
 	return &Server{dispatcher: dispatcher, sessions: sessions, version: version}, nil
 }
 
+// sessionState is what one chat session says about the calls made in its name.
+type sessionState struct {
+	// Tier is the exposure tier every dispatched call is gated at.
+	Tier tools.Tier
+	// WorkbenchID is the checkout and kernel the session acts in (D32). Without it
+	// a developer with two workbenches open gets "the request has to name the one
+	// it means" from the repository tools, and run_code lands in whichever kernel
+	// an unnamed workbench resolves to — which is the worse of the two failures,
+	// because it succeeds.
+	WorkbenchID string
+	// AutoRun is the session's standing answer to run_code's confirmation (D33).
+	// It belongs on this transport for the same reason it belongs on the native
+	// one: it is the developer's setting about their session, not a property of how
+	// the model happens to reach the tools.
+	AutoRun bool
+}
+
 // caller is what one MCP request establishes about who is asking.
 type caller struct {
 	token     string
 	userSub   string
 	sessionID string
-	tier      tools.Tier
+	session   sessionState
 }
 
 type callerKey struct{}
@@ -135,16 +163,21 @@ func (s *Server) Handler(authenticate func(*http.Request) (userSub, token string
 			return
 		}
 
-		// The tier comes from the session, on every request. Not from a header, and
-		// not cached: a client that could name its own tier would be choosing its own
-		// data exposure, which is precisely what §3.2 gives to the developer.
-		tier, err := s.sessions.TierFor(request.Context(), userSub, sessionID)
+		// Read from the session, on every request. Not from a header, and not cached:
+		// a client that could name its own tier would be choosing its own data
+		// exposure, which is precisely what §3.2 gives to the developer — and the same
+		// argument covers the other two fields, since a client that could name its own
+		// workbench could write into an operator the developer is not working on.
+		tier, workbench, autoRun, err := s.sessions.State(request.Context(), userSub, sessionID)
 		if err != nil {
 			writeJSONError(writer, http.StatusNotFound, "no such chat session for this user")
 			return
 		}
 
-		who := caller{token: token, userSub: userSub, sessionID: sessionID, tier: tier}
+		who := caller{
+			token: token, userSub: userSub, sessionID: sessionID,
+			session: sessionState{Tier: tier, WorkbenchID: workbench, AutoRun: autoRun},
+		}
 		streamable.ServeHTTP(writer, request.WithContext(
 			context.WithValue(request.Context(), callerKey{}, who)))
 	})
@@ -166,10 +199,10 @@ func (s *Server) serverFor(who caller) *sdk.Server {
 			"ODE's tool surface for the SENERGY IoT platform. This session is at data "+
 				"exposure tier %s: %s The developer controls the tier and no tool changes it. "+
 				"Statistics come from ODE's profiler; never compute them yourself.",
-			who.tier, who.tier.Exposes()),
+			who.session.Tier, who.session.Tier.Exposes()),
 	})
 
-	for _, definition := range s.dispatcher.Registry().Available(who.tier) {
+	for _, definition := range s.dispatcher.Registry().Available(who.session.Tier) {
 		s.addTool(server, definition, who)
 	}
 	return server
@@ -198,7 +231,13 @@ func (s *Server) addTool(server *sdk.Server, definition tools.Definition, who ca
 			Token:     who.token,
 			UserSub:   who.userSub,
 			SessionID: who.sessionID,
-			Tier:      who.tier,
+			Tier:      who.session.Tier,
+			// Carried whole, so this transport gates exactly as the native tool loop
+			// does. Every field left out here is a gate reading a zero value: an
+			// unnamed workbench, and a standing answer the developer gave that never
+			// reached the tool it was given for.
+			WorkbenchID: who.session.WorkbenchID,
+			AutoRun:     who.session.AutoRun,
 		}
 		call := tools.Call{
 			ID:    request.Params.Name + ":mcp",
@@ -231,7 +270,7 @@ func (s *Server) addTool(server *sdk.Server, definition tools.Definition, who ca
 		return toolResult(definition.Name, result)
 	})
 
-	slog.Debug("mcp tool published", "tool", definition.Name, "tier", who.tier.String())
+	slog.Debug("mcp tool published", "tool", definition.Name, "tier", who.session.Tier.String())
 }
 
 // toolResult renders a dispatched call in MCP's own shape.
