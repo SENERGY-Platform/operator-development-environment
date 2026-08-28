@@ -636,7 +636,12 @@ export function ChatView({
                   ) : (
                     <>
                       <button
-                        className="session-open flex min-w-0 flex-1 flex-col gap-1 rounded-md px-2 py-1.5 text-left focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+                        // `items-stretch` is load-bearing: a <button> carries `align-items: center` in
+                        // the UA stylesheet, so as a flex column it shrink-wraps its rows to their
+                        // content. The title row was then only as wide as the title, which left the
+                        // `ml-auto` on the mark nothing to push against and parked it beside the name
+                        // instead of at the right edge.
+                        className="session-open flex min-w-0 flex-1 flex-col items-stretch gap-1 rounded-md px-2 py-1.5 text-left focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
                         onClick={() => setParam("session", entry.id)}
                       >
                         <span className="session-title flex min-w-0 items-center gap-2">
@@ -1219,7 +1224,21 @@ function Conversation({
         moment they scroll away — offering the jump-back button instead. Each turn is
         wrapped in a `MessageScrollerItem` so it can be measured and anchored to.
       */}
-      <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor">
+      {/*
+        `autoScroll` and nothing else, which is the whole of the live-edge pattern:
+        while the reader is at the tail the transcript follows a streamed reply, and
+        the moment they scroll away it stops and leaves them where they are.
+
+        Deliberately no `scrollAnchor` on the turns. Marking the developer's
+        messages as turn boundaries reads well in a transcript being browsed, but it
+        changes what *sending* does: the component scrolls the new question to the
+        top of the viewport — padding with a spacer so it can get there even with
+        nothing below it yet — and every previous answer goes above the fold. It
+        looks exactly like the conversation was cleared, and it comes back only as
+        the reply grows and the spacer collapses. Following the bottom is what was
+        wanted; jumping to the top on send was not.
+      */}
+      <MessageScrollerProvider autoScroll defaultScrollPosition="end">
         <MessageScroller className="conversation relative min-h-0 flex-1">
           <MessageScrollerViewport
             /*
@@ -1262,23 +1281,6 @@ function Conversation({
                 <MessageScrollerItem
                   key={index}
                   messageId={String(index)}
-                  /*
-                    The developer's own turns are the anchors, and that is what
-                    makes a streamed reply read properly.
-
-                    Without them `autoScroll` only pins the very bottom, so a long
-                    answer arrives with its first line already scrolled off the top
-                    — the reader watches the tail of something whose beginning they
-                    never saw. Marking the question as the turn boundary lets the
-                    scroller hold *it* near the top and let the reply grow
-                    underneath, which is the shape the component is built for.
-
-                    It is also what `last-anchor` above resolves to: opening a
-                    session lands on the start of the most recent exchange rather
-                    than on the last line of it, unless the whole exchange fits, in
-                    which case the component scrolls to the end anyway.
-                  */
-                  scrollAnchor={opensATurn(turn)}
                   /*
                     The item ships with `content-visibility: auto` and an intrinsic
                     size of 10rem, which is a bet that off-screen turns are all
@@ -1328,7 +1330,12 @@ function Conversation({
             `inset-x-0 mx-auto` overrode the `left: 50%` while leaving the translate
             in place, so the button ended up half its own width left of centre.
           */}
-          <MessageScrollerButton direction="end" className="w-fit shadow-sm">
+          {/*
+            `size="sm"` rather than the component's default `icon-sm`, which is a
+            fixed `size-7` square meant for the bare arrow. With a label in it the
+            text ran to both edges.
+          */}
+          <MessageScrollerButton direction="end" size="sm" className="shadow-sm">
             Jump to the latest
           </MessageScrollerButton>
         </MessageScroller>
@@ -1709,18 +1716,6 @@ function ConfirmationPrompt({
       </div>
     </div>
   );
-}
-
-/**
- * Whether a turn is the start of an exchange, for the scroller to anchor on.
- *
- * The developer's own messages, and only those. An ODE-injected turn is stored
- * with the user role but nobody asked it, so anchoring there would park the reader
- * at a note they did not write; and the assistant's turns are the thing being
- * followed, not the thing to hold still.
- */
-function opensATurn(turn: Turn): boolean {
-  return turn.kind === "message" && turn.message.role === "user" && turn.message.origin !== "ode";
 }
 
 /**
