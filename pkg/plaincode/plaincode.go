@@ -90,8 +90,9 @@ refused rather than half-read. Same for a line continuation, which would let one
 statement wear the shape of two.
 */
 func stripLiterals(code string) (string, string) {
-	var out strings.Builder
-	out.Grow(len(code))
+	// A rune slice rather than a Builder: the f-string branch below has to take
+	// back the prefix letter it has already written.
+	out := make([]rune, 0, len(code))
 
 	runes := []rune(code)
 	for i := 0; i < len(runes); i++ {
@@ -103,21 +104,41 @@ func stripLiterals(code string) (string, string) {
 				i++
 			}
 			if i < len(runes) {
-				out.WriteRune('\n')
+				out = append(out, '\n')
 			}
 			continue
 		}
 
 		if c != '"' && c != '\'' {
-			out.WriteRune(c)
+			out = append(out, c)
 			continue
 		}
 
-		// An f-string, or any other prefixed literal whose prefix says the contents
-		// are more than text. `f` is the one that executes; the rest are refused
-		// with it rather than enumerated, because a prefix this scan does not know
-		// is a literal it cannot claim to have read.
-		if prefix := literalPrefix(runes, i); prefix != "" {
+		prefix := literalPrefix(runes, i)
+		// An f-string is read rather than refused, because two thirds of the
+		// confirmations auto mode was meant to spare a developer were f-strings:
+		// `print(f"{df.shape}")` is the same inspection as `print(df.shape)` and was
+		// being asked about because of the quotes around it.
+		//
+		// What makes that safe to do is that the fields are put back into the scan
+		// rather than trusted — see readFString. The text between them stays data,
+		// as in any other literal.
+		if isFString(prefix) {
+			// The prefix letters are in the output already, written as a bare name by
+			// the loop above. An f-string is not a name, so they come back off.
+			out = out[:len(out)-len(prefix)]
+			fields, next, reason := readFString(runes, i)
+			if reason != "" {
+				return "", reason
+			}
+			out = append(out, fields...)
+			i = next
+			continue
+		}
+		// Any other prefixed literal whose prefix says the contents are more than
+		// text. Refused rather than enumerated, because a prefix this scan does not
+		// know is a literal it cannot claim to have read.
+		if prefix != "" {
 			return "", "an " + prefix + "-string, whose contents this check does not read"
 		}
 
@@ -150,7 +171,7 @@ func stripLiterals(code string) (string, string) {
 			// Newlines inside a triple-quoted literal are kept, so line-based
 			// reasoning downstream still sees the right number of lines.
 			if runes[i] == '\n' {
-				out.WriteRune('\n')
+				out = append(out, '\n')
 			}
 			i++
 		}
@@ -159,9 +180,209 @@ func stripLiterals(code string) (string, string) {
 		}
 		// The literal becomes a bare pair of quotes: an expression to the scans
 		// below, with nothing inside for them to read.
-		out.WriteString(`""`)
+		out = append(out, '"', '"')
 	}
-	return out.String(), ""
+	return string(out), ""
+}
+
+// isFString reports whether a literal prefix is one whose braces are evaluated.
+//
+// `r` rides along because raw only changes what a backslash means, and a backslash
+// inside a field is refused below either way.
+func isFString(prefix string) bool {
+	return prefix == "f" || prefix == "rf" || prefix == "fr"
+}
+
+/*
+readFString reads an f-string, keeping its fields and dropping its text.
+
+The output is what the scans downstream should judge: the text becomes an empty
+literal, and every `{...}` becomes a parenthesised expression in the stream of
+code. `print(f"rows: {df.shape[0]}")` therefore reads as `print("" (df.shape[0]) )`
+and stands or falls on `shape` being an attribute this package knows — exactly as
+`print(df.shape[0])` does.
+
+That is the whole idea: an f-string is as dull as what it interpolates, and this
+package is not entitled to an opinion beyond that. Anything about the syntax it
+cannot follow — a nested f-string, a backslash, a field left open — is refused
+rather than half-read, which is the same direction as everything else here.
+
+Returns the index of the literal's final quote.
+*/
+func readFString(runes []rune, at int) ([]rune, int, string) {
+	quote := runes[at]
+	width := 1
+	if at+2 < len(runes) && runes[at+1] == quote && runes[at+2] == quote {
+		width = 3
+	}
+
+	// The text of the literal, as data. The fields are appended after it.
+	out := []rune{'"', '"'}
+
+	for i := at + width; i < len(runes); i++ {
+		c := runes[i]
+
+		if c == quote {
+			if width == 1 {
+				return out, i, ""
+			}
+			if i+2 < len(runes) && runes[i+1] == quote && runes[i+2] == quote {
+				return out, i + 2, ""
+			}
+		}
+		switch {
+		case c == '\\':
+			// Two characters of text, whatever they are.
+			i++
+		case c == '{' && i+1 < len(runes) && runes[i+1] == '{':
+			// An escaped brace is a brace in the output text, not a field.
+			i++
+		case c == '}' && i+1 < len(runes) && runes[i+1] == '}':
+			i++
+		case c == '}':
+			return nil, 0, "a `}` in an f-string with no field to close"
+		case c == '{':
+			field, next, reason := readField(runes, i+1, quote)
+			if reason != "" {
+				return nil, 0, reason
+			}
+			out = append(out, '(')
+			out = append(out, field...)
+			out = append(out, ')', ' ')
+			i = next
+		case c == '\n':
+			// Kept for the line-based checks, as in a plain triple-quoted literal.
+			out = append(out, '\n')
+		}
+	}
+	return nil, 0, "an unterminated string literal"
+}
+
+/*
+readField reads one `{...}` of an f-string, from just after the brace.
+
+Returns the expression as code and the index of the closing brace. What is left out
+is what Python does not evaluate: the conversion (`!r`), the format spec after `:`,
+and the contents of any string literal inside the field.
+
+Two characters get replaced rather than copied, because scanCharacters forbids them
+outright and they are operators here rather than the shell escapes it is looking
+for: the `!` of `!=`, and the `=` of the `{x=}` debug form. Dropping an operator
+costs the scans nothing — they read names, not syntax.
+*/
+func readField(runes []rune, at int, outer rune) ([]rune, int, string) {
+	out := []rune{}
+	depth := 0
+
+	for i := at; i < len(runes); i++ {
+		c := runes[i]
+
+		switch {
+		case c == '\\':
+			// A backslash in a field is a syntax error before Python 3.12 and an
+			// escape this scan does not follow after it.
+			return nil, 0, "a backslash in an f-string field"
+		case c == '\n':
+			return nil, 0, "a line break in an f-string field"
+		case c == '(' || c == '[':
+			depth++
+			out = append(out, c)
+		case c == ')' || c == ']':
+			depth--
+			if depth < 0 {
+				return nil, 0, "an unbalanced bracket in an f-string field"
+			}
+			out = append(out, c)
+		case c == '{':
+			// A dict or set literal inside the field. Its own braces are not the end
+			// of the field, and its `:` is not a format spec.
+			depth++
+			out = append(out, c)
+		case c == '}':
+			if depth == 0 {
+				return out, i, ""
+			}
+			depth--
+			out = append(out, c)
+		case c == '\'' || c == '"':
+			if c == outer {
+				// Legal from Python 3.12, and this scan does not track which quote
+				// belongs to which literal well enough to claim it read it.
+				return nil, 0, "a field quoted with the f-string's own quote"
+			}
+			// A nested f-string is evaluated, so blanking it would hide the one thing
+			// worth reading. Refused rather than read, because its fields would need
+			// this function to be re-entrant about the outer quote.
+			if prefix := literalPrefix(runes, i); prefix != "" {
+				return nil, 0, "an " + prefix + "-string inside an f-string field"
+			}
+			end, reason := skipLiteral(runes, i, c)
+			if reason != "" {
+				return nil, 0, reason
+			}
+			out = append(out, '"', '"')
+			i = end
+		case c == '!':
+			// `!=` is a comparison; anything else at the top level of a field is the
+			// conversion, which Python applies to the value rather than evaluating.
+			if i+1 < len(runes) && runes[i+1] == '=' {
+				out = append(out, ' ', ' ')
+				i++
+				continue
+			}
+			if depth != 0 {
+				return nil, 0, "a `!` inside an f-string field"
+			}
+			if i+1 >= len(runes) || !strings.ContainsRune("rsa", runes[i+1]) {
+				return nil, 0, "an f-string conversion this check does not know"
+			}
+			i++
+		case c == ':' && depth == 0:
+			// The format spec is data — but a spec may itself contain a field, and
+			// this does not read one inside another.
+			for i++; i < len(runes); i++ {
+				if runes[i] == '}' {
+					return out, i, ""
+				}
+				if runes[i] == '{' {
+					return nil, 0, "a field inside an f-string format spec"
+				}
+			}
+			return nil, 0, "an unterminated f-string field"
+		case c == '=':
+			// The debug form `{x=}`, or part of `==`, `<=`, `>=`. Either way not a
+			// name, and an assignment is not possible here.
+			out = append(out, ' ')
+		default:
+			out = append(out, c)
+		}
+	}
+	return nil, 0, "an unterminated f-string field"
+}
+
+// skipLiteral finds the end of a plain string literal starting at its opening
+// quote, and reports the index of the last quote character.
+func skipLiteral(runes []rune, at int, quote rune) (int, string) {
+	width := 1
+	if at+2 < len(runes) && runes[at+1] == quote && runes[at+2] == quote {
+		width = 3
+	}
+	for i := at + width; i < len(runes); i++ {
+		if runes[i] == '\\' {
+			i++
+			continue
+		}
+		if runes[i] != quote {
+			continue
+		}
+		if width == 1 {
+			return i, ""
+		}
+		if i+2 < len(runes) && runes[i+1] == quote && runes[i+2] == quote {
+			return i + 2, ""
+		}
+	}
+	return 0, "an unterminated string literal"
 }
 
 // literalPrefix names the prefix on a string literal starting at `at`, or "" for a

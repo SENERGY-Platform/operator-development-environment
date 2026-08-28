@@ -77,7 +77,7 @@ func TestAnythingElseIsNotRecognised(t *testing.T) {
 		// the obfuscation a denylist would miss, caught because the *names* are
 		// unknown rather than because the strings were read
 		"getattr(__builtins__, \"ev\" + \"al\")(\"1\")": "a built name",
-		"f\"{__import__('os').system('ls')}\"":          "an f-string",
+		"f\"{__import__('os').system('ls')}\"":          "a dunder inside an f-string field",
 		// writing, which is not inspection
 		"df.to_csv(\"out.csv\")":    "writing a file",
 		"model.save(\"model.pkl\")": "saving",
@@ -93,6 +93,71 @@ func TestAnythingElseIsNotRecognised(t *testing.T) {
 		"   ": "blank",
 	}
 	for code, what := range cases {
+		ok, why := plaincode.Recognised(code)
+		if ok {
+			t.Errorf("recognised %s, which must be asked about: %q", what, code)
+			continue
+		}
+		if strings.TrimSpace(why) == "" {
+			t.Errorf("refused %q without saying why", code)
+		}
+	}
+}
+
+/*
+An f-string is as dull as what it interpolates.
+
+The fields are put back into the scan and the text between them stays data, so
+`print(f"{df.shape}")` is judged exactly as `print(df.shape)` is — which is the
+point: two thirds of the confirmations auto mode was meant to spare a developer
+were f-strings, refused for the quotes rather than for anything inside them.
+
+The refusals below are the other half of that. Everything this scan cannot follow
+is refused rather than half-read, and the one that matters most is a nested
+f-string: blanking it as an ordinary literal would hide a field that Python does
+evaluate.
+*/
+func TestAnFStringIsReadThroughItsFields(t *testing.T) {
+	recognised := []string{
+		`print(f"rows: {df.shape[0]}")`,
+		`print(f"{df.shape}")`,
+		// The format spec and the conversion are applied to the value, not evaluated.
+		`print(f"{df.size:.2f}")`,
+		`print(f"{df.columns!r}")`,
+		// The debug form, which is a name and an equals sign.
+		`print(f"{df.empty=}")`,
+		// Escaped braces are text.
+		`print(f"{{literal}} {df.ndim}")`,
+		// A literal inside a field, quoted the other way.
+		`print(f"{df.loc['a']}")`,
+		// A comparison inside a field, whose `!` is not a shell escape.
+		`print(f"{df.size != 0}")`,
+		// A dict literal inside a field: its brace does not end the field and its
+		// colon is not a format spec.
+		`print(f"{ {'a': df.ndim}['a'] }")`,
+		// Triple-quoted, over two lines.
+		"print(f\"\"\"{df.ndim}\n{df.size}\"\"\")",
+	}
+	for _, code := range recognised {
+		if ok, why := plaincode.Recognised(code); !ok {
+			t.Errorf("not recognised: %q — %s", code, why)
+		}
+	}
+
+	refused := map[string]string{
+		// The field is scanned, so what is in it decides.
+		`print(f"{open('/etc/passwd').read()}")`: "opening a file in a field",
+		`print(f"{eval('1+1')}")`:                "eval in a field",
+		`print(f"{df.to_csv('out.csv')}")`:       "writing from a field",
+		// A nested f-string is evaluated; blanking it would hide that.
+		`print(f"{f'{eval(chr(1))}'}")`: "a nested f-string",
+		// Syntax this scan does not follow.
+		`print(f"{df.loc["a"]}")`:     "a field in the string's own quote",
+		`print(f"{df.ndim:{width}}")`: "a field inside a format spec",
+		`print(f"{df.ndim")`:          "an unterminated field",
+		`print(f"unclosed {df.ndim}`:  "an unterminated literal",
+	}
+	for code, what := range refused {
 		ok, why := plaincode.Recognised(code)
 		if ok {
 			t.Errorf("recognised %s, which must be asked about: %q", what, code)
