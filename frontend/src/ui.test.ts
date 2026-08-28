@@ -84,7 +84,7 @@ it("a named cycle keeps the length that was actually measured", () => {
 });
 
 // Just outside the tolerance. Naming it "daily" here would assert a cycle the
-// profiler did not detect — SPEC §5.4.13 item 6 is about reporting the name when
+// profiler did not detect — §5.4.13 item 6 is about reporting the name when
 // it holds, not about rounding towards one.
 it("a cycle outside the tolerance is reported as a duration rather than named", () => {
   expect(period(77760)).toBe("21.6 h");
@@ -100,12 +100,29 @@ it("a number of unknown magnitude keeps three significant figures", () => {
   expect(num(999.5)).toBe("999.5");
 });
 
-// The two ends where the fixed notation stops carrying information.
-it("a number leaves fixed notation at a thousand and at a hundredth", () => {
-  expect(num(1000)).toBe("1.00e+3");
+// Exponential notation is never reached: "6.95e+3" is a form the reader has to
+// decode, and every caller of num() writes into a table cell or a chart axis.
+it("a large number is grouped rather than written as a power of ten", () => {
+  expect(num(1000)).toBe("1,000");
+  expect(num(6950)).toBe("6,950");
+  expect(num(-1234)).toBe("-1,234");
+  expect(num(999999)).toBe("999,999");
+});
+
+// Past a million the digits stop being countable, so the magnitude moves into
+// an SI suffix instead of into an exponent.
+it("a number past a million carries an SI suffix", () => {
+  expect(num(1_234_567)).toBe("1.23M");
+  expect(num(2_500_000_000)).toBe("2.5G");
+  expect(num(-4.56e12)).toBe("-4.56T");
+});
+
+// The small end, where the old form wrote 9.00e-3 for nine thousandths.
+it("a small number keeps its leading zeros", () => {
   expect(num(0.01)).toBe("0.01");
-  expect(num(0.009)).toBe("9.00e-3");
-  expect(num(-1234)).toBe("-1.23e+3");
+  expect(num(0.009)).toBe("0.009");
+  expect(num(0.00123456)).toBe("0.00123");
+  expect(num(-0.000004567)).toBe("-0.00000457");
 });
 
 // A non-finite value is a non-result reaching a formatter. An em dash says so;

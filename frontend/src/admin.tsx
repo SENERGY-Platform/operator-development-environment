@@ -24,7 +24,11 @@ import {
   type ToolCallRecord,
   type UsageRecord,
 } from "./api";
-import { Muted, Pane, Section, dateTime, describe, num, shortId } from "./ui";
+import { Busy, Muted, Pane, Section, dateTime, describe, num, shortId } from "./ui";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**
  * The admin surface of §3.3, behind the `admin` realm role.
@@ -32,8 +36,9 @@ import { Muted, Pane, Section, dateTime, describe, num, shortId } from "./ui";
  * Two things it makes visible that a plain form would hide:
  *
  *   - which limits this build actually enforces. The kernel and Ray caps are §3.3
- *     fields whose enforcement points arrive with M4 and M7; storing them silently
- *     would let an administrator believe a resource cap was in force.
+ *     fields ODE stores and does not act on: the kernel caps belong to the
+ *     KubeSpawner profile and no Ray submission counts what is already running.
+ *     Storing them silently would let an administrator believe a cap was in force.
  *   - whether a cost cap can bind at all. A cost cap is computed from ODE's own
  *     price table, so a model with no configured price accrues zero cost and the
  *     cap quietly does not apply to it.
@@ -71,7 +76,7 @@ export function AdminView() {
   );
 
   if (error && !surface) return <Muted>{error}</Muted>;
-  if (!surface) return <Muted>Loading…</Muted>;
+  if (!surface) return <Busy>Loading…</Busy>;
 
   const global = surface.limits.find((record) => record.subject === "");
   const perUser = surface.limits.filter((record) => record.subject !== "");
@@ -158,12 +163,12 @@ function LimitsForm({
       <span>
         {label}
         {!isEnforced(String(field)) && (
-          <span className="badge" title={declared[String(field)]}>
+          <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs" title={declared[String(field)]}>
             not yet enforced
           </span>
         )}
       </span>
-      <input
+      <Input
         type="number"
         min={0}
         step="any"
@@ -178,7 +183,7 @@ function LimitsForm({
           })
         }
       />
-      <span className="hint">{hint}</span>
+      <span className="hint text-xs text-muted-foreground">{hint}</span>
     </label>
   );
 
@@ -192,12 +197,12 @@ function LimitsForm({
     >
       <label className="limit-field">
         <span>Period</span>
-        <input
+        <Input
           value={draft.period ?? ""}
           placeholder="720h"
           onChange={(e) => setDraft({ ...draft, period: e.target.value || undefined })}
         />
-        <span className="hint">A Go duration. Caps apply over this window.</span>
+        <span className="hint text-xs text-muted-foreground">A Go duration. Caps apply over this window.</span>
       </label>
 
       {numberField("token_cap", "Token cap", "Hard cap on input + output tokens per period.")}
@@ -221,29 +226,35 @@ function LimitsForm({
 
       <label className="limit-field">
         <span>Maximum exposure tier</span>
-        <select
+        <Select
           value={draft.max_tier ?? ""}
-          onChange={(e) =>
-            setDraft({ ...draft, max_tier: (e.target.value || undefined) as Tier | undefined })
+          onValueChange={(value) =>
+            setDraft({ ...draft, max_tier: (value || undefined) as Tier | undefined })
           }
         >
-          <option value="">no limit (L2)</option>
-          {TIERS.map((tier) => (
-            <option key={tier} value={tier}>
-              {tier}
-            </option>
-          ))}
-        </select>
-        <span className="hint">
-          The highest tier a developer may raise a session to (§3.2). They always keep the ability
+          <SelectTrigger size="sm" aria-label="Maximum exposure tier" className="w-auto min-w-36">
+            <SelectValue>{(value: string | null) => value || "no limit (L2)"}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">no limit (L2)</SelectItem>
+            {TIERS.map((tier) => (
+              <SelectItem key={tier} value={tier}>
+                {tier}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span className="hint text-xs text-muted-foreground">
+          The highest tier a developer may raise a session to. They always keep the ability
           to lower it.
         </span>
       </label>
 
       <Section title="Kernel and Ray caps" defaultOpen={false}>
         <Muted>
-          Stored now so the schema and this form do not change when the enforcement points arrive.
-          Nothing here binds in this build.
+          Stored and served, and nothing here binds. The kernel caps belong to the KubeSpawner
+          profile the Hub picks at spawn time, and ODE submits a Ray job without counting the ones
+          a developer already has running. Each badge names its reason.
         </Muted>
         {(
           [
@@ -256,25 +267,29 @@ function LimitsForm({
           <label className="limit-field" key={String(field)}>
             <span>
               {label}
-              <span className="badge" title={declared[String(field)]}>
+              <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs" title={declared[String(field)]}>
                 not yet enforced
               </span>
             </span>
-            <input
+            <Input
               value={(draft[field] as string | undefined) ?? ""}
               placeholder="unset"
               onChange={(e) => setDraft({ ...draft, [field]: e.target.value || undefined })}
             />
           </label>
         ))}
-        {numberField("max_concurrent_ray_jobs", "Concurrent Ray jobs", "Arrives with M7.")}
+        {numberField(
+          "max_concurrent_ray_jobs",
+          "Concurrent Ray jobs",
+          "How many Ray jobs one developer may have running.",
+        )}
       </Section>
 
       <div className="form-actions">
-        <button type="submit">Save</button>
-        <button type="button" onClick={() => setDraft(initial)}>
+        <Button variant="outline" type="submit">Save</Button>
+        <Button variant="outline" type="button" onClick={() => setDraft(initial)}>
           Reset
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -295,15 +310,15 @@ function AddOverride({ onSave }: { onSave: (subject: string, limits: Limits) => 
         }
       }}
     >
-      <input
+      <Input
         value={subject}
         onChange={(e) => setSubject(e.target.value)}
         placeholder="Keycloak subject (sub)"
         aria-label="Keycloak subject"
       />
-      <button type="submit" disabled={!subject.trim()}>
+      <Button variant="outline" type="submit" disabled={!subject.trim()}>
         Add override
-      </button>
+      </Button>
     </form>
   );
 }
@@ -326,26 +341,26 @@ function PricingTable({ surface }: { surface: LimitsSurface }) {
           cannot bind. Token caps still work. Set <code>llm_pricing</code> in the configuration.
         </Muted>
       ) : (
-        <table className="grid">
-          <thead>
-            <tr>
-              <th>Model or prefix</th>
-              <th>Input / MTok</th>
-              <th>Output / MTok</th>
-              <th>Cached input</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="grid">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Model or prefix</TableHead>
+              <TableHead>Input / MTok</TableHead>
+              <TableHead>Output / MTok</TableHead>
+              <TableHead>Cached input</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {surface.pricing.map((price) => (
-              <tr key={price.model}>
-                <td>{price.model}</td>
-                <td>{price.input_per_mtok}</td>
-                <td>{price.output_per_mtok}</td>
-                <td>{price.cached_input_per_mtok || <span className="muted">as input</span>}</td>
-              </tr>
+              <TableRow key={price.model}>
+                <TableCell>{price.model}</TableCell>
+                <TableCell>{price.input_per_mtok}</TableCell>
+                <TableCell>{price.output_per_mtok}</TableCell>
+                <TableCell>{price.cached_input_per_mtok || <span className="muted text-muted-foreground">as input</span>}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
       <Muted>
         A price matches a model exactly, or as the longest matching prefix — so one entry can
@@ -387,23 +402,23 @@ function UsageReport({ currency }: { currency: string }) {
           void load();
         }}
       >
-        <input
+        <Input
           value={subject}
           onChange={(e) => setSubject(e.target.value)}
           placeholder="All developers"
           aria-label="Keycloak subject"
         />
-        <input
+        <Input
           value={period}
           onChange={(e) => setPeriod(e.target.value)}
           placeholder="720h"
           aria-label="Period"
         />
-        <button type="submit">Load</button>
+        <Button variant="outline" type="submit">Load</Button>
       </form>
 
       {error && <Muted>{error}</Muted>}
-      {!data && <Muted>Loading…</Muted>}
+      {!data && <Busy>Loading…</Busy>}
       {data && (
         <>
           <dl className="kv">
@@ -419,46 +434,46 @@ function UsageReport({ currency }: { currency: string }) {
           {data.usage.length === 0 ? (
             <Muted>No requests in this period.</Muted>
           ) : (
-            <table className="grid">
-              <thead>
-                <tr>
-                  <th>When</th>
-                  <th>Developer</th>
-                  <th>Model</th>
-                  <th>Tokens</th>
-                  <th>Cost</th>
-                </tr>
-              </thead>
-              <tbody>
+            <Table className="grid">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>When</TableHead>
+                  <TableHead>Developer</TableHead>
+                  <TableHead>Model</TableHead>
+                  <TableHead>Tokens</TableHead>
+                  <TableHead>Cost</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {data.usage.map((record, index) => (
-                  <tr key={index}>
-                    <td>{dateTime(record.at)}</td>
-                    <td title={record.user_sub}>{shortId(record.user_sub)}</td>
-                    <td>
+                  <TableRow key={index}>
+                    <TableCell>{dateTime(record.at)}</TableCell>
+                    <TableCell title={record.user_sub}>{shortId(record.user_sub)}</TableCell>
+                    <TableCell>
                       {record.provider} / {record.model}
-                    </td>
-                    <td>
+                    </TableCell>
+                    <TableCell>
                       {num(record.input_tokens + record.output_tokens)}
                       {record.cached_input_tokens ? (
-                        <span className="muted" title="Cached input, priced separately">
+                        <span className="muted text-muted-foreground" title="Cached input, priced separately">
                           {" "}
                           +{num(record.cached_input_tokens)} cached
                         </span>
                       ) : null}
-                    </td>
-                    <td>
+                    </TableCell>
+                    <TableCell>
                       {record.cost_estimated ? (
                         record.cost.toFixed(4)
                       ) : (
-                        <span className="muted" title="This model has no configured price, so a cost cap cannot see it">
+                        <span className="muted text-muted-foreground" title="This model has no configured price, so a cost cap cannot see it">
                           unpriced
                         </span>
                       )}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           )}
         </>
       )}
@@ -490,7 +505,7 @@ function ToolAudit() {
   }, []);
 
   if (error) return <Muted>{error}</Muted>;
-  if (!calls) return <Muted>Loading…</Muted>;
+  if (!calls) return <Busy>Loading…</Busy>;
   if (calls.length === 0) return <Muted>No tool calls recorded.</Muted>;
 
   const refused = calls.filter((call) => call.outcome !== "ok").length;
@@ -500,32 +515,32 @@ function ToolAudit() {
       <Muted>
         {num(calls.length)} calls, {num(refused)} refused or failed.
       </Muted>
-      <table className="grid">
-        <thead>
-          <tr>
-            <th>When</th>
-            <th>Developer</th>
-            <th>Tool</th>
-            <th>Tier</th>
-            <th>Outcome</th>
-          </tr>
-        </thead>
-        <tbody>
+      <Table className="grid">
+        <TableHeader>
+          <TableRow>
+            <TableHead>When</TableHead>
+            <TableHead>Developer</TableHead>
+            <TableHead>Tool</TableHead>
+            <TableHead>Tier</TableHead>
+            <TableHead>Outcome</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {calls.map((call, index) => (
-            <tr key={index}>
-              <td>{dateTime(call.at)}</td>
-              <td title={call.user_sub}>{shortId(call.user_sub)}</td>
-              <td>{call.tool}</td>
-              <td>
+            <TableRow key={index}>
+              <TableCell>{dateTime(call.at)}</TableCell>
+              <TableCell title={call.user_sub}>{shortId(call.user_sub)}</TableCell>
+              <TableCell>{call.tool}</TableCell>
+              <TableCell>
                 <span className={`tier tier-${call.tier}`}>{call.tier}</span>
-              </td>
-              <td>
+              </TableCell>
+              <TableCell>
                 <span className={`tool-outcome outcome-${call.outcome}`}>{call.outcome}</span>
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </>
   );
 }

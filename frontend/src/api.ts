@@ -78,6 +78,75 @@ const put = <T>(path: string, body: unknown) =>
   request<T>(path, { method: "PUT", body: JSON.stringify(body) });
 const del = (path: string) => request<void>(path, { method: "DELETE" });
 
+/**
+ * Which workbench the repository and kernel calls act in.
+ *
+ * Module-level rather than a parameter on thirty functions, and it sits here for
+ * the reason the queue below does: this is the layer that knows what the SPA is
+ * doing as a whole. The panes show one workbench at a time — opening a chat session
+ * switches to that session's — so a single value is what "the one on screen" means.
+ *
+ * Empty means "my only workbench", which is what the backend assumes for a request
+ * that names none. So a developer who has one never sees any of this.
+ */
+let activeWorkbench = "";
+
+export const setActiveWorkbench = (id: string | null) => {
+  activeWorkbench = id ?? "";
+};
+
+export const getActiveWorkbench = () => activeWorkbench;
+
+/**
+ * Appends a workbench to a path that acts in one.
+ *
+ * The workbench is a parameter rather than read from `activeWorkbench` here,
+ * because a queued call builds its URL when it *runs* — and by then the developer
+ * may have switched panes. Taking it from the queue's own captured value is what
+ * stops a file read that was issued against one operator being sent to another.
+ * Callers that are not queued build their URL immediately and take the active one.
+ */
+const inWorkbench = (path: string, workbench = activeWorkbench): string => {
+  if (!workbench) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}workbench=${encodeURIComponent(workbench)}`;
+};
+
+/**
+ * The queues the repository operations run through — one per workbench.
+ *
+ * Every one of them executes a cell in the developer's pod, and a kernel runs one
+ * cell at a time. The backend waits a bounded while for an idle one rather than
+ * refusing the second caller, so a collision is no longer an error — but it is
+ * still a queue, and this is the only place that knows which requests the SPA
+ * issued itself. A page load asks for the repository status, the file tree and the
+ * open file at once; sending them one after another means they wait in the browser
+ * rather than each holding a request open on the way to the same kernel.
+ *
+ * Per workbench, because each has its own kernel: one queue for all of them would
+ * put a file read in one operator behind a clone in another, which is precisely
+ * what having several is meant to avoid.
+ *
+ * Only the operations that run in the pod go through here. The GitHub connection
+ * and the repository list are ODE's own reads, and putting them behind a clone
+ * would make the picker feel like the clone.
+ */
+const workspaceQueues = new Map<string, Promise<unknown>>();
+const workspace = <T>(call: (workbench: string) => Promise<T>): Promise<T> => {
+  // Captured now and handed to the call when it runs: the queue a call joins and
+  // the workbench it names are both the ones it was issued against, whatever the
+  // panes switch to while it waits.
+  const key = activeWorkbench;
+  const run = () => call(key);
+  const tail = workspaceQueues.get(key) ?? Promise.resolve();
+  // Both handlers are the same call: the queue is a chain of attempts, and one
+  // that failed must not keep the ones behind it from being made. The tail is
+  // caught separately so a rejection a caller already handles is not also an
+  // unhandled one here.
+  const next = tail.then(run, run);
+  workspaceQueues.set(key, next.catch(() => undefined));
+  return next;
+};
+
 // --- M0 ---
 
 export interface Session {
@@ -192,8 +261,19 @@ export function isNotComputed<T>(value: Value<T>): value is NotComputed {
 export type Confidence = "certain" | "likely" | "uncertain";
 
 export interface SeriesRef {
+  /**
+   * A series is addressed by a device's service or by an export, and the backend
+   * omits whichever pair does not apply. Both are declared required here because
+   * every profile this SPA asks for is a device's: no pane requests an export
+   * profile, so no response it can elicit carries `export_id` instead. Widening
+   * these to optional is the first step of adding one.
+   */
   device_id: string;
   service_id: string;
+  /** Set instead of the two above on a profile of an export, where the variable
+   * path is the export's column name. Only the LLM tool surface and `POST
+   * /profiles` with an `export_id` produce one today. */
+  export_id?: string;
   variable_path: string;
 }
 
@@ -1046,6 +1126,12 @@ export interface ChatSession {
   provider: string;
   model: string;
   exposure_tier: Tier;
+  /**
+   * The working context this conversation acts in: whose checkout `write_file`
+   * writes into and whose kernel `run_code` runs in. Absent on a session created
+   * before workbenches existed, which the backend reads as "my only one".
+   */
+  workbench_id?: string;
   selection?: ProposedSelection;
   created_at: string;
   updated_at: string;
@@ -1094,6 +1180,13 @@ export interface PendingConfirmation {
   input: unknown;
   tier: Tier;
   created_at: string;
+  /**
+   * Set while a provider's own tool loop is holding this call open, waiting for the
+   * decision. It changes what answering means: a held call is answered in place on
+   * the stream already being watched, while an ordinary confirmation resumes a turn
+   * that stopped. Never persisted — nothing waits across a restart.
+   */
+  out_of_band?: boolean;
 }
 
 export interface ChatSessionDetail {
@@ -1175,6 +1268,25 @@ export interface ChatEvent {
   limit?: Record<string, unknown>;
   stop_reason?: string;
   error?: string;
+}
+
+/**
+ * What one conversation is doing, as reported by `chat_watch`.
+ *
+ * Separate from ChatEvent, and deliberately thin: this is what a list row needs,
+ * not what a conversation needs. The stream of a turn belongs to whoever has that
+ * conversation open; this says only which session changed and to what, for every
+ * session at once, so the panel can mark a conversation the developer is not
+ * currently looking at.
+ */
+export interface SessionActivity {
+  session_id: string;
+  /**
+   * `running` is a turn in flight, `waiting` one stopped on a confirmation the
+   * developer owes an answer to, `idle` no turn at all.
+   */
+  state: "running" | "waiting" | "idle";
+  at: string;
 }
 
 // --- M5: the exploration pane (SPEC §5.9, §5.10) ---
@@ -1636,12 +1748,26 @@ export interface KernelStatus {
   server_url?: string;
   started?: string;
   last_activity?: string;
+  /** Which workbench's kernel this is, absent for the default one. */
+  workbench?: string;
   kernel_id?: string;
+  /**
+   * How many kernels ODE is holding in this pod. Each is a Python process under one
+   * memory limit, which is what a developer needs to see when a run is OOM-killed.
+   */
+  kernel_count: number;
   kernel_name?: string;
   profile?: string;
+  /** Busy in *this* workbench. Another one being busy says nothing about this. */
   busy: boolean;
   /** The persistent working directory. Only what is written here survives the pod. */
   workspace: string;
+  /**
+   * Where this kernel actually runs, relative to the workspace and empty for its
+   * root — the workbench's checkout, so a cell's relative paths land beside the
+   * operator's code.
+   */
+  directory?: string;
   workspace_ready: boolean;
 }
 
@@ -1724,6 +1850,8 @@ export interface GitHubRepository {
 }
 
 export interface RepoLink {
+  /** The working context this checkout belongs to. */
+  workbench_id: string;
   full_name: string;
   name: string;
   owner: string;
@@ -1753,6 +1881,28 @@ export interface RepoScaffoldState {
   missing: string[];
   complete: boolean;
 }
+
+/**
+ * One working context: a repository checkout on the developer's PVC and the kernel
+ * that runs in it.
+ *
+ * A workbench holds at most one repository, and a repository is open in at most one
+ * workbench — two kernels and two streams of git commands in one working tree is a
+ * corrupted index, so the backend refuses it.
+ */
+export interface Workbench {
+  id: string;
+  /** The developer's own name for it. Empty falls back to the repository. */
+  title?: string;
+  /** The repository open in it. `full_name` is empty until one is selected. */
+  link: RepoLink;
+  created_at: string;
+  last_used_at: string;
+}
+
+/** What a workbench is called on screen, in the order the backend falls back. */
+export const workbenchLabel = (bench: Workbench): string =>
+  bench.title || bench.link.full_name || bench.id;
 
 export interface RepoStatus {
   link: RepoLink;
@@ -2213,10 +2363,39 @@ export const api = {
   toolSurface: () => get<ToolSurface>("/llm/tools"),
 
   chatSessions: () => get<{ sessions: ChatSession[] }>("/chat/sessions"),
-  createChatSession: (body: { title?: string; provider?: string; model?: string; exposure_tier?: Tier }) =>
-    post<ChatSession>("/chat/sessions", body),
+  createChatSession: (body: {
+    title?: string;
+    provider?: string;
+    model?: string;
+    exposure_tier?: Tier;
+    /** The working context to act in. Absent means the developer's only one. */
+    workbench_id?: string;
+  }) => post<ChatSession>("/chat/sessions", body),
   chatSession: (id: string) => get<ChatSessionDetail>(`/chat/sessions/${encodeURIComponent(id)}`),
   deleteChatSession: (id: string) => del(`/chat/sessions/${encodeURIComponent(id)}`),
+  /**
+   * The developer's own name for a conversation, in place of the first few words of
+   * its opening message. An empty title clears it, and the next message titles the
+   * session again.
+   */
+  renameChatSession: (id: string, title: string) =>
+    put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/title`, { title }),
+  /**
+   * Moves a conversation to another workbench: which checkout its file tools write
+   * into, and which kernel its cells run in.
+   *
+   * An empty id clears the assignment, which the backend reads as "my only one".
+   * The move leaves a note in the conversation — every file and cell result above it
+   * happened in the previous checkout — so a caller showing the history has to read
+   * it back afterwards.
+   *
+   * Refused with 400 while a turn is running on the session: that turn is acting in
+   * the workbench the move would take it away from.
+   */
+  moveChatSession: (id: string, workbenchId: string) =>
+    put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/workbench`, {
+      workbench_id: workbenchId,
+    }),
   /** The developer's tier control (§3.2). There is no LLM tool for this. */
   setTier: (id: string, tier: Tier) =>
     put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/tier`, { exposure_tier: tier }),
@@ -2243,18 +2422,19 @@ export const api = {
   // --- M4 ---
 
   /** Reads what is running. Starts nothing, so it is safe to poll. */
-  kernelStatus: () => get<KernelStatus>("/kernel"),
+  kernelStatus: () => get<KernelStatus>(inWorkbench("/kernel")),
   /**
    * Spawns the pod, starts a kernel and installs the platform token. Called on
    * pane open: a cold start is up to a minute, and §5.6 wants that spent while
    * the developer is still reading rather than after they press run.
    */
-  kernelEnsure: () => post<KernelStatus>("/kernel", {}),
-  kernelRestart: () => post<KernelStatus>("/kernel/restart", {}),
-  kernelInterrupt: () => post<{ interrupted: boolean }>("/kernel/interrupt", {}),
+  kernelEnsure: () => post<KernelStatus>(inWorkbench("/kernel"), {}),
+  kernelRestart: () => post<KernelStatus>(inWorkbench("/kernel/restart"), {}),
+  kernelInterrupt: () => post<{ interrupted: boolean }>(inWorkbench("/kernel/interrupt"), {}),
   /** Ends the kernel. The pod stays: it is the developer's, and their files are on it. */
-  kernelShutdown: () => del("/kernel"),
-  kernelFiles: (path?: string) => get<KernelFiles>(`/kernel/files${query({ path })}`),
+  kernelShutdown: () => del(inWorkbench("/kernel")),
+  kernelFiles: (path?: string) =>
+    get<KernelFiles>(inWorkbench(`/kernel/files${query({ path })}`)),
 
   // --- M5 ---
 
@@ -2316,6 +2496,19 @@ export const api = {
 
   // --- M7 ---
 
+  /**
+   * The developer's working contexts. One repository checkout and one kernel each,
+   * so two operators can be in flight at once without either one's working copy
+   * moving under the other.
+   */
+  workbenches: () => get<{ workbenches: Workbench[]; max: number }>("/workbenches"),
+  /** Opens an empty one. The repository is chosen afterwards, with repoSelect. */
+  createWorkbench: (title?: string) => post<Workbench>("/workbenches", { title: title ?? "" }),
+  renameWorkbench: (id: string, title: string) =>
+    put<Workbench>(`/workbenches/${encodeURIComponent(id)}`, { title }),
+  /** Closes one. The checkout stays on the PVC — it may hold uncommitted work. */
+  deleteWorkbench: (id: string) => del(`/workbenches/${encodeURIComponent(id)}`),
+
   repoConnection: () => get<RepoConnection>("/repo/connection"),
   /** Begins the OAuth flow. The state is single-use and bound to this developer. */
   repoAuthorize: () => post<RepoAuthorize>("/repo/connection/authorize", {}),
@@ -2335,34 +2528,47 @@ export const api = {
     private?: boolean;
     organisation?: string;
     scaffold?: boolean;
-  }) => post<RepoStatus>("/repo/repositories", body),
+  }) => workspace((wb) => post<RepoStatus>(inWorkbench("/repo/repositories", wb), body)),
   repoSelect: (fullName: string, scaffold = false) =>
-    post<RepoStatus>("/repo/link", { full_name: fullName, scaffold }),
-  repoUnlink: () => del("/repo/link"),
+    workspace((wb) =>
+      post<RepoStatus>(inWorkbench("/repo/link", wb), { full_name: fullName, scaffold }),
+    ),
+  repoUnlink: () => del(inWorkbench("/repo/link")),
 
   /**
    * `fetch` contacts the remote, which is what makes the divergence current. The
    * pane asks for one when it opens and when the developer presses refresh, and
    * not on every poll.
    */
-  repoStatus: (fetch = false) => get<RepoStatus>(`/repo${query({ fetch: fetch || undefined })}`),
-  repoFetch: () => post<RepoStatus>("/repo/fetch", {}),
-  repoScaffold: () => post<RepoScaffoldResult>("/repo/scaffold", {}),
+  repoStatus: (fetch = false) =>
+    workspace((wb) => get<RepoStatus>(inWorkbench(`/repo${query({ fetch: fetch || undefined })}`, wb))),
+  repoFetch: () => workspace((wb) => post<RepoStatus>(inWorkbench("/repo/fetch", wb), {})),
+  repoScaffold: () =>
+    workspace((wb) => post<RepoScaffoldResult>(inWorkbench("/repo/scaffold", wb), {})),
 
   repoCommit: (message: string, paths?: string[]) =>
-    post<RepoCommit>("/repo/commit", { message, paths }),
-  repoPush: (branch?: string) => post<RepoPush>("/repo/push", { branch }),
-  repoStash: (message?: string) => post<RepoStatus>("/repo/stash", { message }),
+    workspace((wb) => post<RepoCommit>(inWorkbench("/repo/commit", wb), { message, paths })),
+  repoPush: (branch?: string) =>
+    workspace((wb) => post<RepoPush>(inWorkbench("/repo/push", wb), { branch })),
+  repoStash: (message?: string) =>
+    workspace((wb) => post<RepoStatus>(inWorkbench("/repo/stash", wb), { message })),
   /** The one destructive action, so the flag is required on both sides. */
-  repoDiscard: () => post<RepoStatus>("/repo/discard", { confirm: true }),
+  repoDiscard: () =>
+    workspace((wb) => post<RepoStatus>(inWorkbench("/repo/discard", wb), { confirm: true })),
 
-  repoFiles: () => get<RepoTree>("/repo/files"),
-  repoFile: (path: string) => get<RepoFile>(`/repo/files/content${query({ path })}`),
+  repoFiles: () => workspace((wb) => get<RepoTree>(inWorkbench("/repo/files", wb))),
+  repoFile: (path: string) =>
+    workspace((wb) => get<RepoFile>(inWorkbench(`/repo/files/content${query({ path })}`, wb))),
   repoWriteFile: (path: string, content: string) =>
-    put<RepoWriteResult>("/repo/files/content", { path, content }),
+    workspace((wb) =>
+      put<RepoWriteResult>(inWorkbench("/repo/files/content", wb), { path, content }),
+    ),
   repoDeleteFile: (path: string, recursive = false) =>
-    del(`/repo/files/content${query({ path, recursive: recursive || undefined })}`),
-  repoMakeDir: (path: string) => post<{ created: boolean }>("/repo/files/directory", { path }),
+    workspace((wb) =>
+      del(inWorkbench(`/repo/files/content${query({ path, recursive: recursive || undefined })}`, wb)),
+    ),
+  repoMakeDir: (path: string) =>
+    workspace((wb) => post<{ created: boolean }>(inWorkbench("/repo/files/directory", wb), { path })),
   // --- M8 ---
 
   /**

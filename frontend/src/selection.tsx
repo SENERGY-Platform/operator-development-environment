@@ -33,10 +33,15 @@ import type {
 import { CandidateRow, DEFAULT_DEVICE_LIMIT, ReadCounter, ScoreBar, seriesKey } from "./profiler";
 import { setParam, useLocation } from "./router";
 import { profilerSocket } from "./ws";
-import { Muted, Pane, Section, date, shortId, useAction } from "./ui";
+import { Busy, Muted, Pane, Section, date, shortId, useAction } from "./ui";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**
- * The M2 surface: semantic data selection (SPEC §5.2).
+ * The selection surface: semantic data selection (§5.2).
  *
  * An intent in words becomes concrete series through the ontology, and the view
  * is built to make each step auditable rather than to hide them. The matcher is
@@ -45,8 +50,8 @@ import { Muted, Pane, Section, date, shortId, useAction } from "./ui";
  * says the whole thing cost no value read, which is the tier-L0 claim of §3.2.
  *
  * There is no path from here into the profiler. Promoting a resolved series to a
- * selection is `propose_data_selection`, which needs developer confirmation and
- * arrives with the tool surface in M3.
+ * selection is `propose_data_selection`, a tool on the assistant's surface that
+ * needs developer confirmation.
  */
 /** The interactions the form offers, and the guard for one arriving from a URL. */
 const INTERACTIONS = ["event", "event+request", "request", "any"] as const;
@@ -116,19 +121,19 @@ export function SelectionView() {
         title="Intent"
         subtitle="Resolved against the platform ontology — no model, no values, tier L0"
       >
-        <form className="filters" onSubmit={submit}>
-          <input
+        <form className="filters flex flex-wrap items-center gap-2" onSubmit={submit}>
+          <Input
             value={form.intent}
             onChange={(e) => setForm({ ...form, intent: e.target.value })}
             placeholder="forecast PV generation for this site"
             aria-label="Intent"
           />
           <label
-            className="filter-check"
+            className="filter-check flex items-center gap-2 text-sm"
             title="Availability is one call per device and cannot be batched, so this is what decides how long a resolution takes"
           >
             <span>Devices</span>
-            <input
+            <Input
               value={form.limit}
               onChange={(e) => setForm({ ...form, limit: e.target.value })}
               inputMode="numeric"
@@ -136,57 +141,60 @@ export function SelectionView() {
             />
           </label>
           <label
-            className="filter-check"
+            className="filter-check flex items-center gap-2 text-sm"
             title="A request-only service is polled on demand and streams nothing, so no series exists for it"
           >
             <span>Interaction</span>
-            <select
+            <Select
               value={form.interaction}
-              onChange={(e) =>
+              onValueChange={(value) => {
+                if (value === null) return;
                 setForm({
                   ...form,
-                  interaction: e.target.value as NonNullable<SelectionRequest["interaction"]>,
-                })
-              }
-              aria-label="Interaction"
+                  interaction: value as NonNullable<SelectionRequest["interaction"]>,
+                });
+              }}
             >
-              <option value="event">event</option>
-              <option value="event+request">event+request</option>
-              <option value="request">request</option>
-              <option value="any">any</option>
-            </select>
+              <SelectTrigger size="sm" aria-label="Interaction" className="w-auto min-w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="event">event</SelectItem>
+                <SelectItem value="event+request">event+request</SelectItem>
+                <SelectItem value="request">request</SelectItem>
+                <SelectItem value="any">any</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
-          <label className="filter-check">
-            <input
-              type="checkbox"
+          <label className="filter-check flex items-center gap-2 text-sm">
+            <Checkbox
               checked={form.includeControlling}
-              onChange={(e) => setForm({ ...form, includeControlling: e.target.checked })}
+              onCheckedChange={(checked) => setForm({ ...form, includeControlling: checked })}
             />
             <span title="A series is something measured; controlling functions actuate">
               controlling too
             </span>
           </label>
-          <label className="filter-check">
-            <input
-              type="checkbox"
+          <label className="filter-check flex items-center gap-2 text-sm">
+            <Checkbox
               checked={form.rank}
-              onChange={(e) => setForm({ ...form, rank: e.target.checked })}
+              onCheckedChange={(checked) => setForm({ ...form, rank: checked })}
             />
             <span title="Ranking reads availability per device. Unticked, the resolution is ontology only and costs no per-device call">
               rank by QuickProfile
             </span>
           </label>
-          <button type="submit" disabled={resolve.pending || form.intent.trim() === ""}>
+          <Button variant="outline" type="submit" disabled={resolve.pending || form.intent.trim() === ""}>
             Resolve
-          </button>
+          </Button>
           {resolve.pending && (
-            <button type="button" onClick={resolve.abort}>
+            <Button variant="outline" type="button" onClick={resolve.abort}>
               Cancel
-            </button>
+            </Button>
           )}
         </form>
 
-        {resolve.pending && <Muted>Resolving through the ontology…</Muted>}
+        {resolve.pending && <Busy>Resolving through the ontology…</Busy>}
         {resolve.error && <Muted>{resolve.error}</Muted>}
         {!result && !resolve.pending && !resolve.error && (
           <Muted>
@@ -225,7 +233,7 @@ function Resolution({ result }: { result: SelectionResult }) {
         {result.terms.map((term) => (
           <span
             key={term}
-            className={`tag ${result.unmatched_terms.includes(term) ? "warn" : "ok-tag"}`}
+            className={`tag ${result.unmatched_terms.includes(term) ? "warn text-foreground" : "ok-tag inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs"}`}
             title={
               result.unmatched_terms.includes(term)
                 ? "No ontology entity used this word"
@@ -245,7 +253,7 @@ function Resolution({ result }: { result: SelectionResult }) {
       )}
 
       {result.notes.length > 0 && (
-        <ul className="list notes">
+        <ul className="list notes flex flex-col gap-1 list-disc pl-4 text-xs text-muted-foreground">
           {result.notes.map((note) => (
             <li key={note}>{note}</li>
           ))}
@@ -302,24 +310,24 @@ function Resolution({ result }: { result: SelectionResult }) {
       >
         {result.criteria.length === 0 && <Muted>Nothing was queried.</Muted>}
         {result.criteria.length > 0 && (
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Function</th>
-                <th>Aspect</th>
-                <th title="How many device types this combination returned">Types</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table className="grid">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Function</TableHead>
+                <TableHead>Aspect</TableHead>
+                <TableHead title="How many device types this combination returned">Types</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {result.criteria.map((criterion: Criterion) => (
-                <tr key={criterionKey(criterion)}>
-                  <td>{criterion.function_id ? shortId(criterion.function_id) : <Any />}</td>
-                  <td>{criterion.aspect_id ? shortId(criterion.aspect_id) : <Any />}</td>
-                  <td className="numeric">{criterion.device_types}</td>
-                </tr>
+                <TableRow key={criterionKey(criterion)}>
+                  <TableCell>{criterion.function_id ? shortId(criterion.function_id) : <Any />}</TableCell>
+                  <TableCell>{criterion.aspect_id ? shortId(criterion.aspect_id) : <Any />}</TableCell>
+                  <TableCell className="numeric text-right tabular-nums">{criterion.device_types}</TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
         <Muted>
           The platform ANDs a criteria list, so alternatives are separate requests and
@@ -336,7 +344,7 @@ function criterionKey(criterion: Criterion): string {
 }
 
 function Any() {
-  return <span className="muted-inline">any</span>;
+  return <span className="muted-inline text-xs text-muted-foreground">any</span>;
 }
 
 function MatchRow({ name, id, matched }: { name: string; id: string; matched: Matched }) {
@@ -349,11 +357,11 @@ function MatchRow({ name, id, matched }: { name: string; id: string; matched: Ma
         <ScoreBar score={matched.score} />
       </span>
       <span className="match-basis">
-        <span className="tag" title="Which label the match rests on">
+        <span className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs" title="Which label the match rests on">
           {matched.basis.replace(/_/g, " ")}
         </span>
         {matched.matched_terms.map((term) => (
-          <span key={term} className="tag ok-tag">
+          <span key={term} className="tag ok-tag inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">
             {term}
           </span>
         ))}
@@ -390,25 +398,25 @@ function Resolved({ result }: { result: SelectionResult }) {
       </Muted>
 
       {ranked && (
-        <table className="grid candidates">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Device</th>
-              <th>Variable</th>
-              <th>Unit</th>
-              <th title="Days between the first and last available point">Span</th>
-              <th title="Share of the requested window the data actually spans">Cover</th>
-              <th title="Newest point within a day, and the device is not offline">Live</th>
-              <th title="0.3 span + 0.4 coverage + 0.3 liveness">Score</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="grid candidates">
+          <TableHeader>
+            <TableRow>
+              <TableHead>#</TableHead>
+              <TableHead>Device</TableHead>
+              <TableHead>Variable</TableHead>
+              <TableHead>Unit</TableHead>
+              <TableHead title="Days between the first and last available point">Span</TableHead>
+              <TableHead title="Share of the requested window the data actually spans">Cover</TableHead>
+              <TableHead title="Newest point within a day, and the device is not offline">Live</TableHead>
+              <TableHead title="0.3 span + 0.4 coverage + 0.3 liveness">Score</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {result.candidates.map((candidate, index) => (
               <CandidateRow key={seriesKey(candidate)} candidate={candidate} rank={index + 1} />
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
 
       {!ranked && result.selectables.length > 0 && (
@@ -428,45 +436,45 @@ function Resolved({ result }: { result: SelectionResult }) {
           <Muted>The criteria matched no device type on this platform.</Muted>
         )}
         {result.selectables.length > 0 && (
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Device type</th>
-                <th>Variable</th>
-                <th>Unit</th>
-                <th>Aspect</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table className="grid">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Device type</TableHead>
+                <TableHead>Variable</TableHead>
+                <TableHead>Unit</TableHead>
+                <TableHead>Aspect</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {result.selectables.map((selectable: Selectable) => (
-                <tr
+                <TableRow
                   key={`${selectable.device_type_id}|${selectable.service_id}|${selectable.path}`}
                   className={selectable.queryable ? "" : "unreadable"}
                   title={selectable.reason}
                 >
-                  <td title={selectable.device_type_id}>
+                  <TableCell title={selectable.device_type_id}>
                     {selectable.device_type_name || shortId(selectable.device_type_id)}
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     <code>{selectable.path}</code>
-                    {!selectable.queryable && <span className="tag warn">unreadable</span>}
+                    {!selectable.queryable && <span className="tag warn inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs text-foreground">unreadable</span>}
                     {selectable.ontology_completeness.status === "partial" && (
                       <span
-                        className="tag"
+                        className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs"
                         title={selectable.ontology_completeness.consequence}
                       >
                         partial
                       </span>
                     )}
-                  </td>
-                  <td>
-                    {selectable.unit || <span className="muted-inline">unknown</span>}
-                  </td>
-                  <td>{selectable.aspect_name || shortId(selectable.aspect_id ?? "")}</td>
-                </tr>
+                  </TableCell>
+                  <TableCell>
+                    {selectable.unit || <span className="muted-inline text-xs text-muted-foreground">unknown</span>}
+                  </TableCell>
+                  <TableCell>{selectable.aspect_name || shortId(selectable.aspect_id ?? "")}</TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
       </Section>
 
@@ -485,7 +493,7 @@ function Resolved({ result }: { result: SelectionResult }) {
                 {gap.device_type_name || shortId(gap.device_type_id)}
               </span>
               {gap.missing.map((missing) => (
-                <span key={missing} className="tag warn">
+                <span key={missing} className="tag warn inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs text-foreground">
                   no {missing.replace(/_/g, " ")}
                 </span>
               ))}
@@ -502,43 +510,43 @@ function Resolved({ result }: { result: SelectionResult }) {
 
       {result.candidate_devices.length > 0 && (
         <Section title={`Devices (${result.candidate_devices.length})`} defaultOpen={false}>
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Device</th>
-                <th>State</th>
-                <th title="How many resolved series this device contributes">Series</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table className="grid">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Device</TableHead>
+                <TableHead>State</TableHead>
+                <TableHead title="How many resolved series this device contributes">Series</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {result.candidate_devices.map((device: CandidateDevice) => (
-                <tr key={device.device_id}>
-                  <td title={device.device_id}>
+                <TableRow key={device.device_id}>
+                  <TableCell title={device.device_id}>
                     {device.name || shortId(device.device_id)}
                     <span className="device-type" title={device.device_type_id}>
                       {device.device_type_name || shortId(device.device_type_id)}
                     </span>
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     <span className={`state ${device.connection_state || "unknown"}`}>
                       {device.connection_state || "unknown"}
                     </span>
-                  </td>
-                  <td className="numeric">{device.series}</td>
-                </tr>
+                  </TableCell>
+                  <TableCell className="numeric text-right tabular-nums">{device.series}</TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </Section>
       )}
 
       {result.skipped.length > 0 && (
         <Section title={`Skipped devices (${result.skipped.length})`} defaultOpen={false}>
-          <ul className="list">
+          <ul className="list flex flex-col gap-1">
             {result.skipped.map((skip) => (
               <li key={skip.device_id}>
                 <strong>{skip.name || shortId(skip.device_id)}</strong>
-                <span className="muted-inline"> — {skip.reason}</span>
+                <span className="muted-inline text-xs text-muted-foreground"> — {skip.reason}</span>
               </li>
             ))}
           </ul>

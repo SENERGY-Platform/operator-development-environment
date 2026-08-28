@@ -33,20 +33,30 @@ where a document is needed. It covers the router — sticky `?session=` in an hr
 the base path under `/` and under `/ode/`, and which movements push a history
 entry and which replace one — the resolution of a path to a pane, including a
 route whose backend this deployment does not serve and an address that names no
-view, and the formatters that render durations, sizes and ratios. One test reads
-`index.css` and asserts that nothing below the container queries at the end of the
-file can override them, which is the property those queries depend on and the one
-that broke once with `tsc` and `vite build` both green.
+view, and the formatters that render durations, sizes and ratios.
 
-What it does not cover is most of the SPA: no pane is driven through a real
-interaction, the WebSocket layer and the chat, profiler and exploration views have
-no tests of their own, and nothing here runs in a browser, so a rule that renders
-differently in Firefox than in jsdom's model of CSS is still found by a person.
-The suite is narrow on purpose — a broad shallow one would cost more to maintain
-than it would catch.
+`theme.test.ts` reads `index.css` and asserts the shape of the theme: three
+scopes rather than shadcn's two, every colour the light theme names restated by
+both dark ones, and a `--series-n` for each of the eight lines a chart can draw.
+That last set is the failure mode worth a test — a token added to one scope and
+not the others is a colour that keeps its light value on a dark page, which is
+legible in the theme its author had open and wrong in the other.
 
-The M3 to M7 fixtures are regenerated from the API test harness rather than a
-platform:
+Several panes are mounted and read: the chat pane and its conversation, the code
+pane, the workbench bar, and the experiments run document, whose three-state
+criteria and empty comparison are assertions about rendered output rather than
+about the helpers underneath it. Those tests select on the semantic class names
+the markup still carries — `form.composer`, `.turn.ode`, `button.session-open` —
+which is why those names survived the move to Tailwind: they are hooks now rather
+than styling, and removing one is a test-visible change rather than a silent one.
+
+What it does not cover is most of the SPA: the WebSocket layer and the profiler
+and exploration views have no tests of their own, and nothing here runs in a
+browser, so a rule that renders differently in Firefox than in jsdom's model of
+CSS is still found by a person. The suite is narrow on purpose — a broad shallow
+one would cost more to maintain than it would catch.
+
+The fixtures are regenerated from the API test harness rather than a platform:
 
 ```bash
 ODE_WRITE_CONTRACT=$PWD/frontend/src/__contract__ \
@@ -118,7 +128,7 @@ runs 19:00–22:00 nightly and 10:00–10:30 each morning, lights that follow on
 evening run, and therefore a confidence of exactly 6/7 with a 06:00–12:00 exception.
 
 Detector correctness is checked against fixtures with known answers rather than
-against the platform (SPEC §5.4.14): a synthesised 15-minute series with an
+against the platform (§5.4.14): a synthesised 15-minute series with an
 injected gap, a monotonic counter with two resets, a bimodal washing-machine
 load, white noise against a random walk. That is what makes the profiler testable
 without an LLM and without the cluster.

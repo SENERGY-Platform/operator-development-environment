@@ -30,6 +30,8 @@ import {
 } from "./routes";
 import { Header, Split } from "./shell";
 import { Centered, describe } from "./ui";
+import { WorkbenchProvider } from "./workbench";
+import { Button } from "@/components/ui/button";
 
 /**
  * The Code view is loaded on demand, unlike every other pane.
@@ -52,7 +54,7 @@ const NO_PROVIDER =
 /** What is missing from a deployment that cannot hold a repository. */
 const NO_REPO =
   "`github_client_id` is not configured, so a developer cannot connect a repository and " +
-  "`write_file` is declared but not callable (§5.11). The surface also needs a `jupyterhub_url`, " +
+  "`write_file` is declared but not callable. The surface also needs a `jupyterhub_url`, " +
   "because the working copy lives on the developer's own pod.";
 
 /**
@@ -155,8 +157,13 @@ export default function App() {
   }, [callback]);
 
   if (error) return <FatalError message={error} />;
-  if (!session) return <Centered>Loading session…</Centered>;
-  if (callback) return <Centered>Completing the GitHub authorisation…</Centered>;
+  if (!session) return <Centered><span className="busy animate-pulse">Loading session…</span></Centered>;
+  if (callback)
+    return (
+      <Centered>
+        <span className="busy animate-pulse">Completing the GitHub authorisation…</span>
+      </Centered>
+    );
 
   return (
     <div className="app">
@@ -169,10 +176,18 @@ export default function App() {
             whether they meant to cancel or want to try again, and the button that
             starts the flow over is in the code pane below this line.
           */}
-          <button onClick={() => setConnectError(null)}>Dismiss</button>
+          <Button variant="outline" onClick={() => setConnectError(null)}>Dismiss</Button>
         </p>
       )}
-      <Routed session={session} pathname={pathname} />
+      {/*
+        Around the routed panes rather than inside one of them: the Code pane shows
+        the workbench, and the chat pane needs to know which one a new conversation
+        should act in. A deployment with no repository surface has no workbenches,
+        and the provider answers with an empty state.
+      */}
+      <WorkbenchProvider>
+        <Routed session={session} pathname={pathname} />
+      </WorkbenchProvider>
     </div>
   );
 }
@@ -205,7 +220,7 @@ function Routed({ session, pathname }: { session: Session; pathname: string }) {
 
   if (pathname === "/") {
     const code = session.features.repo ? (
-      <Suspense fallback={<Centered>Loading the editor…</Centered>}>
+      <Suspense fallback={<Centered><span className="busy animate-pulse">Loading the editor…</span></Centered>}>
         <CodeView session={session} />
       </Suspense>
     ) : (
@@ -285,7 +300,7 @@ function FatalError({ message }: { message: string }) {
       <div className="fatal">
         <h1>ODE could not start</h1>
         <p>{message}</p>
-        <button onClick={logout}>Sign out</button>
+        <Button variant="outline" onClick={logout}>Sign out</Button>
       </div>
     </Centered>
   );

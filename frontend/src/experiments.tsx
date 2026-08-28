@@ -33,8 +33,14 @@ import {
   type ProposalDecisionKind,
   type Session,
 } from "./api";
+import { Markdown } from "./markdown";
 import { Link, setParam, useParam } from "./router";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
+  Busy,
   KV,
   Muted,
   NotComputedTag,
@@ -51,8 +57,8 @@ import {
 } from "./ui";
 
 /**
- * The M8 and M9 surface: Ray jobs, their MLflow runs, and what the assistant made
- * of the ones that finished (SPEC §5.12, §5.13).
+ * Ray jobs, their MLflow runs, and what the assistant made of the ones that
+ * finished (§5.12, §5.13).
  *
  * The pane is ordered by what a developer wants in the order they want it. The
  * list on the left is their own runs, newest first, each carrying the commit it was
@@ -135,16 +141,16 @@ export function ExperimentsView({ session }: { session: Session }) {
     <main className="panes experiments">
       <Pane
         title="Experiments"
-        subtitle="Ray jobs and their MLflow runs, each tagged with the commit it was built from (§5.12)"
+        subtitle="Ray jobs and their MLflow runs, each tagged with the commit it was built from"
         actions={
-          <button onClick={() => void load()} disabled={loading}>
+          <Button variant="outline" onClick={() => void load()} disabled={loading}>
             Refresh
-          </button>
+          </Button>
         }
       >
         <LaunchCard session={session} onLaunched={load} />
-        {listError && <p className="error">{listError}</p>}
-        {loading && !experiments && <Muted>Reading your experiments…</Muted>}
+        {listError && <p className="error text-destructive">{listError}</p>}
+        {loading && !experiments && <Busy>Reading your experiments…</Busy>}
         {experiments && (
           <RunList
             experiments={experiments}
@@ -272,44 +278,48 @@ function LaunchCard({ session, onLaunched }: { session: Session; onLaunched: () 
   return (
     <div className="exp-launch">
       <form
-        className="filters"
+        className="filters flex flex-wrap items-center gap-2"
         onSubmit={(event) => {
           event.preventDefault();
           void launch.invoke();
         }}
       >
-        <input
+        <Input
           value={entrypoint}
           onChange={(event) => setEntrypoint(event.target.value)}
           placeholder="Entrypoint (blank: the repository's own)"
           aria-label="Entrypoint"
         />
-        <input
+        <Input
           value={runName}
           onChange={(event) => setRunName(event.target.value)}
           placeholder="Run name (optional)"
           aria-label="Run name"
         />
-        <button className="primary" type="submit" disabled={launch.pending}>
+        <Button variant="default"
+          className={launch.pending ? "primary busy animate-pulse" : "primary"}
+          type="submit"
+          disabled={launch.pending}
+        >
           {launch.pending ? "Submitting…" : "Launch"}
-        </button>
+        </Button>
       </form>
 
-      <p className="muted">
+      <p className="muted text-muted-foreground">
         The job is built from the repository's current <strong>commit</strong>, not from the
-        working copy: a run's commit SHA is only worth recording if it is what ran (§5.11 item 7).
+        working copy: a run's commit SHA is only worth recording if it is what ran.
         {sessionId ? " This run will be tied to the open conversation." : ""}
       </p>
 
       {!scoped && (
         <p className="notice notice-warn exp-credential-warning">
           This deployment mints no scoped job token, so a job carries your interactive session
-          token (§3.1 item 6). A run that outlives your session loses its access to the platform
+          token. A run that outlives your session loses its access to the platform
           partway through — worth knowing before a long one, not after a 401 in a Ray log.
         </p>
       )}
 
-      {launch.error && <p className="error">{launch.error}</p>}
+      {launch.error && <p className="error text-destructive">{launch.error}</p>}
       {refusal && <Refusal refusal={refusal} />}
       {launched && <Launched launch={launched} />}
     </div>
@@ -379,13 +389,13 @@ function Refusal({ refusal }: { refusal: LaunchRefusal }) {
       <p className="exp-refusal-title">{REFUSAL_TITLE[refusal.needs] ?? "The launch was refused"}</p>
       <p>{refusal.message}</p>
       {refusal.paths && refusal.paths.length > 0 && (
-        <ul className="list tight exp-uncommitted">
+        <ul className="list tight exp-uncommitted flex flex-col gap-1 leading-tight">
           {refusal.paths.map((path) => (
             <li key={path}>
               <code>{path}</code>
             </li>
           ))}
-          {refusal.elided && <li className="muted">…and more</li>}
+          {refusal.elided && <li className="muted text-muted-foreground">…and more</li>}
         </ul>
       )}
       {refusal.size && (
@@ -393,7 +403,7 @@ function Refusal({ refusal }: { refusal: LaunchRefusal }) {
           {bytes(refusal.size.bytes)} against a limit of {bytes(refusal.size.limit)}.
         </p>
       )}
-      {refusal.hint && <p className="muted">{refusal.hint}</p>}
+      {refusal.hint && <p className="muted text-muted-foreground">{refusal.hint}</p>}
       {/*
         Every one of these refusals is answered in the workspace — the commit box,
         the repository picker and the connect card all live there — so the way out
@@ -417,9 +427,9 @@ function Launched({ launch }: { launch: ExperimentLaunch }) {
       </p>
       <CredentialLine credential={launch.credential} />
       {launch.warnings && launch.warnings.length > 0 && (
-        <ul className="list tight">
+        <ul className="list tight flex flex-col gap-1 leading-tight">
           {launch.warnings.map((warning, index) => (
-            <li key={index} className="warn">
+            <li key={index} className="warn text-foreground">
               {warning}
             </li>
           ))}
@@ -438,9 +448,9 @@ function Launched({ launch }: { launch: ExperimentLaunch }) {
  */
 function CredentialLine({ credential }: { credential: ExperimentCredential }) {
   return (
-    <p className={credential.expires_with_session ? "warn" : "muted"}>
+    <p className={credential.expires_with_session ? "warn text-foreground" : "muted text-muted-foreground"}>
       {credential.source === "exchanged"
-        ? "The job carries a token minted for it (§3.1 item 6)"
+        ? "The job carries a token minted for it"
         : "The job carries your interactive session token"}
       {credential.expires_in_seconds !== undefined
         ? `, good for ${seconds(credential.expires_in_seconds)}`
@@ -468,18 +478,18 @@ function RunList({
   }
 
   return (
-    <table className="grid exp-list">
-      <thead>
-        <tr>
-          <th>Status</th>
-          <th>Commit</th>
-          <th>Repository</th>
-          <th>Entrypoint</th>
-          <th>Submitted</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
+    <Table className="grid exp-list">
+      <TableHeader>
+        <TableRow>
+          <TableHead>Status</TableHead>
+          <TableHead>Commit</TableHead>
+          <TableHead>Repository</TableHead>
+          <TableHead>Entrypoint</TableHead>
+          <TableHead>Submitted</TableHead>
+          <TableHead />
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {experiments.map((run) => (
           <RunRow
             key={run.experiment_id}
@@ -489,8 +499,8 @@ function RunList({
             onChanged={onChanged}
           />
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
@@ -512,35 +522,39 @@ function RunRow({
   });
 
   return (
-    <tr className={selected ? "exp-row selected" : "exp-row"}>
-      <td>
-        <button className="exp-open" onClick={onSelect}>
+    <TableRow className={selected ? "exp-row selected" : "exp-row"}>
+      <TableCell>
+        <Button variant="ghost" size="sm" className="exp-open" onClick={onSelect}>
           <span className={`exp-status ${statusTone(run.status)}`}>{run.status}</span>
-        </button>
-      </td>
+        </Button>
+      </TableCell>
       {/*
         The commit, in the list rather than only in the document. §5.11 item 7 is
         about a run being reproducible from a code state, and two runs of the same
         entrypoint from two different commits are the case that makes the point.
       */}
-      <td>
+      <TableCell>
         <code title={run.commit_sha}>{run.commit_sha.slice(0, 7)}</code>
-        {run.branch ? <span className="muted-inline"> · {run.branch}</span> : null}
-      </td>
-      <td className="wrap">{run.repository}</td>
-      <td className="wrap">
+        {run.branch ? <span className="muted-inline text-xs text-muted-foreground"> · {run.branch}</span> : null}
+      </TableCell>
+      <TableCell className="wrap">{run.repository}</TableCell>
+      <TableCell className="wrap">
         <code>{run.entrypoint}</code>
-      </td>
-      <td>{dateTime(run.submitted_at)}</td>
-      <td>
+      </TableCell>
+      <TableCell>{dateTime(run.submitted_at)}</TableCell>
+      <TableCell>
         {canStop(run.status) && (
-          <button onClick={() => void stop.invoke()} disabled={stop.pending}>
+          <Button variant="outline"
+            className={stop.pending ? "busy animate-pulse" : undefined}
+            onClick={() => void stop.invoke()}
+            disabled={stop.pending}
+          >
             {stop.pending ? "Stopping…" : "Stop"}
-          </button>
+          </Button>
         )}
-        {stop.error && <span className="error">{stop.error}</span>}
-      </td>
-    </tr>
+        {stop.error && <span className="error text-destructive">{stop.error}</span>}
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -551,7 +565,7 @@ function RunDocument({ experiment }: { experiment: Experiment | null }) {
     return (
       <Pane title="Run" subtitle="Pick an experiment on the left">
         <Muted>
-          A run's document is its §5.13 summary — params, metrics and the comparison against the
+          A run's document is its summary — params, metrics and the comparison against the
           previous run — with the assistant's reading of it and the adjustment it proposed.
         </Muted>
       </Pane>
@@ -564,7 +578,7 @@ function RunDocument({ experiment }: { experiment: Experiment | null }) {
       subtitle={`${experiment.repository} at ${experiment.commit_sha.slice(0, 7)} — ${experiment.status}`}
     >
       {experiment.message && (
-        <p className="error exp-ray-message" title="Ray's own message for this job. Never a log.">
+        <p className="error exp-ray-message text-destructive" title="Ray's own message for this job. Never a log.">
           {experiment.message}
         </p>
       )}
@@ -622,14 +636,14 @@ function Results({ experiment }: { experiment: Experiment }) {
   if (loading && !summary) {
     return (
       <Section title="Results">
-        <Muted>Reading the run from MLflow…</Muted>
+        <Busy>Reading the run from MLflow…</Busy>
       </Section>
     );
   }
   if (error) {
     return (
       <Section title="Results">
-        <p className="error">{error}</p>
+        <p className="error text-destructive">{error}</p>
       </Section>
     );
   }
@@ -661,10 +675,10 @@ function Results({ experiment }: { experiment: Experiment }) {
         {summary.secondary_criteria?.map((criterion, index) => (
           <CriterionCard key={`${criterion.metric ?? "criterion"}-${index}`} criterion={criterion} />
         ))}
-        <p className="advisory">
+        <p className="advisory text-xs text-muted-foreground">
           Read out of your <code>evaluation.yaml</code> at the run's own commit, so a threshold
           tightened while the job ran does not retroactively fail it. ODE reads that file and never
-          writes it (§5.8).
+          writes it.
         </p>
       </Section>
 
@@ -676,7 +690,7 @@ function Results({ experiment }: { experiment: Experiment }) {
           <Row label="Status">
             <span className={`exp-status ${statusTone(summary.status)}`}>{summary.status}</span>
             {!summary.finished && (
-              <span className="muted-inline">
+              <span className="muted-inline text-xs text-muted-foreground">
                 {" "}
                 — a snapshot rather than a result; the run has not settled
               </span>
@@ -685,7 +699,7 @@ function Results({ experiment }: { experiment: Experiment }) {
           <Row label="Duration">{seconds(summary.resource_usage.duration_s)}</Row>
           {/*
             Absent rather than zero, and shown as absent. A peak memory of zero would
-            read as "used no memory", which is a finding nobody measured (D24).
+            read as "used no memory", which is a finding nobody measured.
           */}
           <Row label="Peak memory">
             {summary.resource_usage.peak_memory_mb !== undefined ? (
@@ -738,38 +752,38 @@ function Comparison({ summary }: { summary: ExperimentSummary }) {
   }
 
   return (
-    <table className="grid exp-comparison">
-      <thead>
-        <tr>
-          <th>Metric</th>
-          <th className="numeric">Previous</th>
-          <th className="numeric">Current</th>
-          <th className="numeric">Delta</th>
-          <th>Direction</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table className="grid exp-comparison">
+      <TableHeader>
+        <TableRow>
+          <TableHead>Metric</TableHead>
+          <TableHead className="numeric text-right tabular-nums">Previous</TableHead>
+          <TableHead className="numeric text-right tabular-nums">Current</TableHead>
+          <TableHead className="numeric text-right tabular-nums">Delta</TableHead>
+          <TableHead>Direction</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {summary.comparison_to_previous.map((delta) => (
           <ComparisonRow key={delta.metric} delta={delta} />
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
 function ComparisonRow({ delta }: { delta: MetricDelta }) {
   return (
-    <tr>
-      <td>
+    <TableRow>
+      <TableCell>
         <code>{delta.metric}</code>
-      </td>
-      <td className="numeric">{num(delta.previous)}</td>
-      <td className="numeric">{num(delta.current)}</td>
-      <td className="numeric">
+      </TableCell>
+      <TableCell className="numeric text-right tabular-nums">{num(delta.previous)}</TableCell>
+      <TableCell className="numeric text-right tabular-nums">{num(delta.current)}</TableCell>
+      <TableCell className="numeric text-right tabular-nums">
         {delta.delta > 0 ? "+" : ""}
         {num(delta.delta)}
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         <span className={`exp-direction ${delta.direction}`}>{delta.direction}</span>
         {/*
           The rule beside the verdict, for the reason the API type puts them beside
@@ -777,9 +791,9 @@ function ComparisonRow({ delta }: { delta: MetricDelta }) {
           from the metric's *name*, and a verdict whose rule is invisible reads as a
           judgement rather than as a convention.
         */}
-        <span className="muted-inline"> · {delta.lower_is_better ? "lower" : "higher"} is better</span>
-      </td>
-    </tr>
+        <span className="muted-inline text-xs text-muted-foreground"> · {delta.lower_is_better ? "lower" : "higher"} is better</span>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -805,7 +819,7 @@ function CriterionCard({
       <div className="exp-criterion-head">
         <span className="exp-criterion-metric">
           {criterion.metric ? <code>{criterion.metric}</code> : <em>no criterion stated</em>}
-          {primary && <span className="badge">primary</span>}
+          {primary && <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">primary</span>}
         </span>
         {verdict === "met" && <span className="exp-verdict met">met</span>}
         {verdict === "missed" && <span className="exp-verdict missed">not met</span>}
@@ -822,14 +836,14 @@ function CriterionCard({
           {criterion.threshold !== undefined ? (
             num(criterion.threshold)
           ) : (
-            <span className="muted-inline">none stated in the file</span>
+            <span className="muted-inline text-xs text-muted-foreground">none stated in the file</span>
           )}
         </Row>
         <Row label="Value">
           {criterion.value !== undefined ? (
             num(criterion.value)
           ) : (
-            <span className="muted-inline">the run logged none</span>
+            <span className="muted-inline text-xs text-muted-foreground">the run logged none</span>
           )}
         </Row>
         <Row
@@ -837,13 +851,13 @@ function CriterionCard({
           hint="Whether the file named the direction, or whether it was inferred from the metric's name"
         >
           {criterion.goal}
-          <span className="muted-inline">
+          <span className="muted-inline text-xs text-muted-foreground">
             {" "}
             · {criterion.goal_stated ? "stated in the file" : "inferred from the metric name"}
           </span>
         </Row>
         <Row label="Source">
-          <span className="muted-inline">{criterion.source}</span>
+          <span className="muted-inline text-xs text-muted-foreground">{criterion.source}</span>
         </Row>
       </KV>
     </div>
@@ -897,7 +911,7 @@ function Submission({ experiment }: { experiment: Experiment }) {
         </Row>
         <Row
           label="MLflow experiment"
-          hint="Deterministic from the developer and the repository, so your runs land in one experiment across sessions (D17)"
+          hint="Deterministic from the developer and the repository, so your runs land in one experiment across sessions"
         >
           <span className="wrap">{experiment.mlflow_experiment_name}</span>
         </Row>
@@ -907,7 +921,7 @@ function Submission({ experiment }: { experiment: Experiment }) {
         <Row label="Package">
           {bytes(experiment.package_bytes)}
           {experiment.package_reused && (
-            <span className="muted-inline"> · already on the cluster, not uploaded again</span>
+            <span className="muted-inline text-xs text-muted-foreground"> · already on the cluster, not uploaded again</span>
           )}
           <br />
           <code className="wrap">{experiment.package_uri}</code>
@@ -918,11 +932,11 @@ function Submission({ experiment }: { experiment: Experiment }) {
           not stored on the record, so a run selected from the list can say which of
           the two kinds of token it carried and not how long that token was good for.
         */}
-        <Row label="Credential" hint="SPEC §3.1 item 6">
+        <Row label="Credential" hint="The token the job runs with">
           {experiment.scoped_credential ? (
             "a token minted for the job"
           ) : (
-            <span className="warn">
+            <span className="warn text-foreground">
               your interactive session token — a run outliving the session loses platform access
               partway through
             </span>
@@ -963,18 +977,22 @@ function LogsSection({ experiment }: { experiment: Experiment }) {
 
   return (
     <Section title="Logs" note="your view only — never the assistant's" defaultOpen={false}>
-      <p className="muted">
-        §5.13 builds the assistant a compact structured summary and never gives it raw output.
+      <p className="muted text-muted-foreground">
+        ODE builds the assistant a compact structured summary and never gives it raw output.
         There is a route for this and deliberately no tool, so what follows is yours alone.
       </p>
-      <button onClick={() => void fetchLogs.invoke()} disabled={fetchLogs.pending}>
+      <Button variant="outline"
+        className={fetchLogs.pending ? "busy animate-pulse" : undefined}
+        onClick={() => void fetchLogs.invoke()}
+        disabled={fetchLogs.pending}
+      >
         {fetchLogs.pending ? "Reading…" : logs ? "Read again" : "Show logs"}
-      </button>
-      {fetchLogs.error && <p className="error">{fetchLogs.error}</p>}
+      </Button>
+      {fetchLogs.error && <p className="error text-destructive">{fetchLogs.error}</p>}
       {logs && (
         <>
           {logs.truncated && (
-            <p className="muted">Tail only — the driver wrote more than the cap keeps.</p>
+            <p className="muted text-muted-foreground">Tail only — the driver wrote more than the cap keeps.</p>
           )}
           <pre className="exp-logs">{logs.logs || "(the job wrote nothing to its driver)"}</pre>
         </>
@@ -1026,7 +1044,7 @@ function InterpretationSection({ experiment }: { experiment: Experiment }) {
     return (
       <Section title="Interpretation">
         <Muted>
-          The run has not settled. §5.13's summary is built when it does, and the assistant reads
+          The run has not settled. The summary is built when it does, and the assistant reads
           it then.
         </Muted>
       </Section>
@@ -1034,12 +1052,12 @@ function InterpretationSection({ experiment }: { experiment: Experiment }) {
   }
 
   return (
-    <Section title="Interpretation and proposal" note="§5.13 — advisory only (D28)">
-      {loading && !interpretation && <Muted>Reading the interpretation…</Muted>}
-      {error && !interpretation && <p className="error">{error}</p>}
+    <Section title="Interpretation and proposal" note="advisory only">
+      {loading && !interpretation && <Busy>Reading the interpretation…</Busy>}
+      {error && !interpretation && <p className="error text-destructive">{error}</p>}
       {interpretation && (
         <>
-          <p className="muted">
+          <p className="muted text-muted-foreground">
             Delivered into the conversation this run belongs to — that is where the assistant
             wrote it and where you can take it further.{" "}
             <Link to={`/chat?session=${encodeURIComponent(interpretation.session_id)}`}>
@@ -1049,7 +1067,7 @@ function InterpretationSection({ experiment }: { experiment: Experiment }) {
           </p>
 
           {interpretation.interpreted_at ? (
-            <p className="exp-interpretation">{interpretation.interpretation}</p>
+            <Markdown className="exp-interpretation" text={interpretation.interpretation} />
           ) : (
             /*
               Not a failure. The summary is built with ODE's own Ray and MLflow
@@ -1057,7 +1075,7 @@ function InterpretationSection({ experiment }: { experiment: Experiment }) {
               developer's own token, so a run that settled while they were away waits
               rather than fails (§3.1 items 3 and 5).
             */
-            <p className="muted">
+            <p className="muted text-muted-foreground">
               Not interpreted yet. The summary was built when the run finished, with ODE's own
               credential; the assistant's turn waits for you to be connected.
             </p>
@@ -1149,7 +1167,7 @@ function ProposalCard({
       {proposal.proposal_id && (
         <>
           {editing && (
-            <textarea
+            <Textarea
               className="exp-edit"
               value={edited}
               onChange={(event) => setEdited(event.target.value)}
@@ -1159,32 +1177,32 @@ function ProposalCard({
             />
           )}
           <div className="rule-actions">
-            <input
+            <Input
               value={note}
               onChange={(event) => setNote(event.target.value)}
               placeholder="why (recorded with your decision)"
               aria-label="Note"
             />
-            <button onClick={() => void decide.invoke("accepted")} disabled={decide.pending}>
+            <Button variant="outline" onClick={() => void decide.invoke("accepted")} disabled={decide.pending}>
               Accept
-            </button>
+            </Button>
             {editing ? (
-              <button
+              <Button variant="outline"
                 onClick={() => void decide.invoke("edited")}
                 disabled={decide.pending || edited.trim() === ""}
               >
                 Save your version
-              </button>
+              </Button>
             ) : (
-              <button onClick={() => setEditing(true)} disabled={decide.pending}>
+              <Button variant="outline" onClick={() => setEditing(true)} disabled={decide.pending}>
                 Edit…
-              </button>
+              </Button>
             )}
-            <button onClick={() => void decide.invoke("rejected")} disabled={decide.pending}>
+            <Button variant="outline" onClick={() => void decide.invoke("rejected")} disabled={decide.pending}>
               Reject
-            </button>
+            </Button>
           </div>
-          {decide.error && <p className="error">{decide.error}</p>}
+          {decide.error && <p className="error text-destructive">{decide.error}</p>}
         </>
       )}
 
@@ -1195,10 +1213,10 @@ function ProposalCard({
         performs by hand — §5.8 denies every tool that could do it — which is why
         there is no button on this card that would.
       */}
-      <p className="advisory">
+      <p className="advisory text-xs text-muted-foreground">
         Advisory only. Accepting records that you agree; it launches no run and changes no file.
         Promoting a value into <code>evaluation.yaml</code> or the operator config is yours to do,
-        and there is deliberately no tool for it (D28, §5.8).
+        and there is deliberately no tool for it.
       </p>
 
       {interpretation.decisions.length > 1 && (
@@ -1249,7 +1267,7 @@ function DecisionRecord({
       {decision.edited && (
         <>
           <br />
-          <span className="muted-inline">their version: {decision.edited}</span>
+          <span className="muted-inline text-xs text-muted-foreground">their version: {decision.edited}</span>
         </>
       )}
       {/*
@@ -1257,7 +1275,7 @@ function DecisionRecord({
         instead of having to know it, which makes it worth rendering rather than
         skipping as a constant.
       */}
-      {!decision.binding && <span className="muted-inline"> · not binding</span>}
+      {!decision.binding && <span className="muted-inline text-xs text-muted-foreground"> · not binding</span>}
     </p>
   );
 }
@@ -1309,16 +1327,20 @@ function Dashboards() {
   return (
     <Pane
       title="Dashboards"
-      subtitle="Ray and MLflow, embedded where framing allows and linked where it does not (D6)"
+      subtitle="Ray and MLflow, embedded where framing allows and linked where it does not"
       actions={
-        <button onClick={() => void probe.invoke(true)} disabled={probe.pending}>
+        <Button variant="outline"
+          className={probe.pending ? "busy animate-pulse" : undefined}
+          onClick={() => void probe.invoke(true)}
+          disabled={probe.pending}
+        >
           {probe.pending ? "Probing…" : "Re-probe"}
-        </button>
+        </Button>
       }
     >
-      {error && <p className="error">{error}</p>}
-      {probe.error && <p className="error">{probe.error}</p>}
-      {!report && !error && <Muted>Probing…</Muted>}
+      {error && <p className="error text-destructive">{error}</p>}
+      {probe.error && <p className="error text-destructive">{probe.error}</p>}
+      {!report && !error && <Busy>Probing…</Busy>}
       {report && (
         <>
           <div className="exp-embeds">
@@ -1326,7 +1348,7 @@ function Dashboards() {
               <EmbedCard key={service.service} probe={service} attempt={attempt} />
             ))}
           </div>
-          <p className="muted">
+          <p className="muted text-muted-foreground">
             {report.cached ? "From the cached verdict" : "Freshly probed"} · TTL {report.ttl} · as of{" "}
             {dateTime(report.as_of)}
           </p>
@@ -1394,12 +1416,12 @@ function EmbedCard({ probe, attempt }: { probe: EmbedProbe; attempt: number }) {
       <div className="exp-embed-head">
         <span className="exp-embed-title">{label}</span>
         <div className="exp-embed-actions">
-          <button className={shown ? "active" : undefined} onClick={() => setShown(true)}>
+          <Button variant="outline" className={shown ? "active" : undefined} onClick={() => setShown(true)}>
             Embed
-          </button>
-          <button className={shown ? undefined : "active"} onClick={() => setShown(false)}>
+          </Button>
+          <Button variant="outline" className={shown ? undefined : "active"} onClick={() => setShown(false)}>
             Hide
-          </button>
+          </Button>
           {/*
             A real anchor rather than window.open: this is the "Open in new tab" of
             D6's link-only card and also the pop-out §5.12 asks every pane to have,
@@ -1437,7 +1459,9 @@ function EmbedCard({ probe, attempt }: { probe: EmbedProbe; attempt: number }) {
         still takes space on the pane whether or not it holds a frame.
       */}
       {!shown && <Muted>Hidden. Press Embed to bring it back.</Muted>}
-      {shown && verdict === "probing" && <Muted>Checking whether {label} can be framed…</Muted>}
+      {shown && verdict === "probing" && (
+        <Busy>Checking whether {label} can be framed…</Busy>
+      )}
       {shown && verdict === "ok" && <iframe className="exp-frame" src={probe.url} title={label} />}
       {shown && verdict === "refused" && (
         <p className="exp-embed-refused">
@@ -1452,7 +1476,7 @@ function EmbedCard({ probe, attempt }: { probe: EmbedProbe; attempt: number }) {
         added rather than substituted, because "unknown" is a statement about ODE's
         vantage point and the reason is a statement about the service.
       */}
-      <p className="muted exp-embed-reason">
+      <p className="muted exp-embed-reason text-muted-foreground">
         {probe.reason}
         {probe.status !== undefined ? ` · HTTP ${probe.status}` : ""}
         {probe.embeddable === "unknown"

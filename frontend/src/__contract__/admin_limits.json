@@ -5,7 +5,7 @@
     "kernel_cpu_max": "set on the KubeSpawner profile at spawn time, not by ODE: the Hub API selects a profile rather than carrying resource overrides",
     "kernel_mem_default": "set on the KubeSpawner profile at spawn time, not by ODE: the Hub API selects a profile rather than carrying resource overrides",
     "kernel_mem_max": "set on the KubeSpawner profile at spawn time, not by ODE: the Hub API selects a profile rather than carrying resource overrides",
-    "max_concurrent_ray_jobs": "M7 (experiments/, SPEC §5.12)"
+    "max_concurrent_ray_jobs": "ODE submits a run without counting the ones a developer already has in flight"
   },
   "defaults": {
     "max_tier": "L2",
@@ -21,7 +21,8 @@
     "allowed_providers",
     "allowed_models",
     "max_tier",
-    "max_concurrent_sessions"
+    "max_concurrent_sessions",
+    "max_workbenches"
   ],
   "limits": [],
   "pricing": []

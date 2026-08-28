@@ -33,7 +33,13 @@ import {
 import { chartFromProfile } from "./exploration";
 import { setParam, useLocation, useParam } from "./router";
 import { profilerSocket, type SocketState } from "./ws";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
+  Busy,
   ConfidenceTag,
   Field,
   KV,
@@ -57,16 +63,16 @@ import {
 } from "./ui";
 
 /**
- * The M1 surface. SPEC §6 puts the exploration pane in M5, so this is not that:
- * no charts, no LLM. It is the developer-facing view of what M1a and M1b
- * compute, enough to check the acceptance criteria of both by hand — candidates
- * ranked with no value read, and a profile whose non-results say why.
+ * The profiler surface. Drawing a series is the exploration pane's work (§5.9),
+ * so this is not that: it is the developer-facing view of what `QuickProfile` and
+ * `SeriesProfile` compute, enough to check both by hand — candidates ranked with
+ * no value read, and a profile whose non-results say why.
  */
 export function ProfilerView({
   onOpenChart,
 }: {
   /**
-   * Charts the profile on screen in the exploration pane (M5). Absent when no
+   * Charts the profile on screen in the exploration pane (§5.9). Absent when no
    * exploration backend is configured. It belongs here because a chart of a
    * profiled series is the one thing this view cannot show: a session boundary or
    * a gap is a claim a developer has to see before confirming it (§5.10).
@@ -209,7 +215,9 @@ function ConnectionState() {
       : state === "reconnecting"
         ? "reconnecting — work in flight was cancelled"
         : "disconnected";
-  return <span className={`socket ${state}`}>{message}</span>;
+  return (
+    <span className={`socket ${state}${state === "connecting" ? " busy animate-pulse" : ""}`}>{message}</span>
+  );
 }
 
 function spanDays(range: { from: string; to: string }): number {
@@ -323,7 +331,7 @@ function CandidatesPane({
       actions={<ConnectionState />}
     >
       <form
-        className="filters"
+        className="filters flex flex-wrap items-center gap-2"
         onSubmit={(e) => {
           e.preventDefault();
           if (halfWindow || invertedWindow) return;
@@ -371,7 +379,7 @@ function CandidatesPane({
           setParam("to", to);
         }}
       >
-        <input
+        <Input
           value={form.search}
           onChange={(e) => setForm({ ...form, search: e.target.value })}
           placeholder="Search devices"
@@ -382,13 +390,13 @@ function CandidatesPane({
           title="Ranks candidates by how much of this range they cover, and becomes the analysis window a profile is computed over"
         >
           <span>Window</span>
-          <input
+          <Input
             type="date"
             value={form.from}
             onChange={(e) => setForm({ ...form, from: e.target.value })}
             aria-label="Window start"
           />
-          <input
+          <Input
             type="date"
             value={form.to}
             onChange={(e) => setForm({ ...form, to: e.target.value })}
@@ -396,30 +404,29 @@ function CandidatesPane({
           />
         </label>
         <label
-          className="filter-check"
+          className="filter-check flex items-center gap-2 text-sm"
           title="Availability is one call per device and cannot be batched, so this is what decides how long a listing takes"
         >
           <span>Devices</span>
-          <input
+          <Input
             value={form.limit}
             onChange={(e) => setForm({ ...form, limit: e.target.value })}
             inputMode="numeric"
             aria-label="Device limit"
           />
         </label>
-        <label className="filter-check">
-          <input
-            type="checkbox"
+        <label className="filter-check flex items-center gap-2 text-sm">
+          <Checkbox
             checked={form.includeUnqueryable}
-            onChange={(e) => setForm({ ...form, includeUnqueryable: e.target.checked })}
+            onCheckedChange={(checked) => setForm({ ...form, includeUnqueryable: checked })}
           />
           <span title="Variables that exist but cannot be read as a scalar series">
             include unreadable
           </span>
         </label>
-        <button type="submit" disabled={halfWindow || invertedWindow}>
+        <Button variant="outline" type="submit" disabled={halfWindow || invertedWindow}>
           Apply
-        </button>
+        </Button>
       </form>
       {halfWindow && <Muted>A window needs both a start and an end, or neither.</Muted>}
       {invertedWindow && <Muted>The window ends before it starts.</Muted>}
@@ -430,7 +437,7 @@ function CandidatesPane({
         </Muted>
       )}
 
-      {loading && <Muted>Reading metadata for {applied.limit} devices…</Muted>}
+      {loading && <Busy>Reading metadata for {applied.limit} devices…</Busy>}
       {error && <Muted>{error}</Muted>}
 
       {data && (
@@ -451,20 +458,20 @@ function CandidatesPane({
           )}
 
           {data.candidates.length > 0 && (
-            <table className="grid candidates">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Device</th>
-                  <th>Variable</th>
-                  <th>Unit</th>
-                  <th title="Days between the first and last available point">Span</th>
-                  <th title="Share of the requested window the data actually spans">Cover</th>
-                  <th title="Newest point within a day, and the device is not offline">Live</th>
-                  <th title="0.3 span + 0.4 coverage + 0.3 liveness">Score</th>
-                </tr>
-              </thead>
-              <tbody>
+            <Table className="grid candidates">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>#</TableHead>
+                  <TableHead>Device</TableHead>
+                  <TableHead>Variable</TableHead>
+                  <TableHead>Unit</TableHead>
+                  <TableHead title="Days between the first and last available point">Span</TableHead>
+                  <TableHead title="Share of the requested window the data actually spans">Cover</TableHead>
+                  <TableHead title="Newest point within a day, and the device is not offline">Live</TableHead>
+                  <TableHead title="0.3 span + 0.4 coverage + 0.3 liveness">Score</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {data.candidates.map((candidate, index) => (
                   <CandidateRow
                     key={seriesKey(candidate)}
@@ -474,17 +481,17 @@ function CandidatesPane({
                     onSelect={() => onSelect(candidate)}
                   />
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           )}
 
           {data.skipped.length > 0 && (
             <Section title={`Skipped devices (${data.skipped.length})`} defaultOpen={false}>
-              <ul className="list">
+              <ul className="list flex flex-col gap-1">
                 {data.skipped.map((skip) => (
                   <li key={skip.device_id}>
                     <strong>{skip.name || shortId(skip.device_id)}</strong>
-                    <span className="muted-inline"> — {skip.reason}</span>
+                    <span className="muted-inline text-xs text-muted-foreground"> — {skip.reason}</span>
                   </li>
                 ))}
               </ul>
@@ -502,13 +509,13 @@ export function seriesKey(candidate: QuickProfile): string {
 }
 
 /**
- * ReadCounter is the M1a acceptance criterion on screen: ranking a candidate
- * list must cost no value read at all. The backend counts them, so this is the
- * answer's own claim rather than a promise about the code — and it turns red if
- * it is ever not zero.
+ * ReadCounter is the tier-L0 claim on screen: ranking a candidate list must cost
+ * no value read at all. The backend counts them, so this is the answer's own
+ * claim rather than a promise about the code — and it turns red if it is ever
+ * not zero.
  *
- * Semantic selection (M2) makes the same claim about a longer chain of calls, so
- * it reuses this and passes its own breakdown as `detail`.
+ * Semantic selection makes the same claim about a longer chain of calls, so it
+ * reuses this and passes its own breakdown as `detail`.
  */
 export function ReadCounter({ reads, detail }: { reads: ReadCounts; detail?: string }) {
   const clean = reads.values === 0;
@@ -548,36 +555,36 @@ export function CandidateRow({
 }) {
   const hints = candidate.rank_hints;
   return (
-    <tr
+    <TableRow
       className={`${selected ? "selected" : ""} ${candidate.queryable ? "" : "unreadable"}`}
       onClick={onSelect}
       title={candidate.queryable ? undefined : candidate.reason}
     >
-      <td className="numeric">{rank}</td>
-      <td title={candidate.series_ref.device_id}>
+      <TableCell className="numeric text-right tabular-nums">{rank}</TableCell>
+      <TableCell title={candidate.series_ref.device_id}>
         <DeviceLabel device={candidate.device} fallbackId={candidate.series_ref.device_id} />
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         <code>{candidate.series_ref.variable_path}</code>
-        {!candidate.queryable && <span className="tag warn">unreadable</span>}
+        {!candidate.queryable && <span className="tag warn inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs text-foreground">unreadable</span>}
         {candidate.ontology_completeness.status === "partial" && (
-          <span className="tag" title={candidate.ontology_completeness.missing.join(", ")}>
+          <span className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs" title={candidate.ontology_completeness.missing.join(", ")}>
             partial
           </span>
         )}
-      </td>
-      <td>{candidate.declared.unit || <span className="muted-inline">unknown</span>}</td>
-      <td className="numeric">{round(hints.span_days, 0)} d</td>
-      <td className="numeric">{percent(hints.coverage_proxy)}</td>
-      <td>
+      </TableCell>
+      <TableCell>{candidate.declared.unit || <span className="muted-inline text-xs text-muted-foreground">unknown</span>}</TableCell>
+      <TableCell className="numeric text-right tabular-nums">{round(hints.span_days, 0)} d</TableCell>
+      <TableCell className="numeric text-right tabular-nums">{percent(hints.coverage_proxy)}</TableCell>
+      <TableCell>
         <span className={`state ${hints.is_live ? "online" : "unknown"}`}>
           {hints.is_live ? "live" : "stale"}
         </span>
-      </td>
-      <td className="numeric">
+      </TableCell>
+      <TableCell className="numeric text-right tabular-nums">
         <ScoreBar score={hints.score} />
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -838,19 +845,20 @@ function ProfilePane({
       actions={
         <>
           {profile && onOpenChart && (
-            <button
+            <Button variant="outline"
+              className={chart.pending ? "busy animate-pulse" : undefined}
               disabled={chart.pending}
               title="Draws this profile in the exploration pane, with its detected sessions, gaps and advised ranges as confirmable annotations"
               onClick={() => void chart.invoke(profile)}
             >
               {chart.pending ? "Charting…" : "Chart it"}
-            </button>
+            </Button>
           )}
-          <div className="tabs">
+          <div className="tabs inline-flex items-center gap-1">
             {TABS.map(([id, label]) => (
-              <button key={id} className={tab === id ? "active" : ""} onClick={() => showTab(id)}>
+              <Button variant="outline" key={id} className={tab === id ? "active" : ""} onClick={() => showTab(id)}>
                 {label}
-              </button>
+              </Button>
             ))}
           </div>
         </>
@@ -876,13 +884,13 @@ function ProfilePane({
               {analysisWindow ? (
                 <>
                   {date(analysisWindow.from)} to {date(analysisWindow.to)}
-                  <span className="muted-inline">
+                  <span className="muted-inline text-xs text-muted-foreground">
                     {" "}
                     · {round(spanDays(analysisWindow), 1)} days, from the filter on the left
                   </span>
                 </>
               ) : (
-                <span className="muted-inline">
+                <span className="muted-inline text-xs text-muted-foreground">
                   everything the platform has — set a window on the left to narrow it
                 </span>
               )}
@@ -892,14 +900,14 @@ function ProfilePane({
               hint="Read unbucketed for the structural detectors, and bounded because it is the expensive one"
             >
               <span className="raw-override">
-                <input
+                <Input
                   value={rawDays}
                   onChange={(e) => setRawDays(e.target.value)}
                   placeholder="14"
                   inputMode="decimal"
                   aria-label="Raw window in days"
                 />
-                <span className="muted-inline">
+                <span className="muted-inline text-xs text-muted-foreground">
                   days back from the window end
                   {rawDays.trim() === "" ? ", default" : ", recorded as a developer override"}
                 </span>
@@ -907,8 +915,8 @@ function ProfilePane({
             </Row>
           </KV>
           <div className="compute-actions">
-            <button
-              className="primary"
+            <Button variant="default"
+              className={compute.pending ? "primary busy animate-pulse" : "primary"}
               disabled={compute.pending || !candidate.queryable}
               onClick={() =>
                 void compute.invoke(
@@ -919,14 +927,14 @@ function ProfilePane({
               }
             >
               {compute.pending ? "Reading…" : "Compute profile"}
-            </button>
+            </Button>
             {compute.pending && (
-              <button
+              <Button variant="outline"
                 onClick={compute.abort}
                 title="Stops the platform reads, not just the waiting"
               >
                 Cancel
-              </button>
+              </Button>
             )}
           </div>
           {!candidate.queryable && <Muted>{candidate.reason}</Muted>}
@@ -1008,38 +1016,38 @@ function ComputedHeader({
           {result.reads.values} value read{result.reads.values === 1 ? "" : "s"} for{" "}
           {result.profiles.length} profile{result.profiles.length === 1 ? "" : "s"}
         </span>
-        <span className="muted-inline">
+        <span className="muted-inline text-xs text-muted-foreground">
           {date(result.analysis_window.from)} to {date(result.analysis_window.to)}
           {result.group_time && ` at ${result.group_time}`} · raw {date(result.raw_window.from)} to{" "}
           {date(result.raw_window.to)}
           {result.raw_window.source === "developer_override" && " (override)"}
           {result.raw_window.truncated && " (truncated by the row limit)"}
           {result.raw_window.row_limit !== undefined && (
-            <span className="muted-inline"> · {result.raw_window.row_limit.toLocaleString("en-GB")} rows
+            <span className="muted-inline text-xs text-muted-foreground"> · {result.raw_window.row_limit.toLocaleString("en-GB")} rows
               {" "}max, the point bound over the variables read</span>
           )}
           {result.raw_window.limit_reduced && (
-            <span className="warn">
+            <span className="warn text-foreground">
               {" "}· halved after the gateway refused the first read
             </span>
           )}
         </span>
         {result.from_cache.length > 0 && (
-          <span className="tag" title={result.from_cache.join(", ")}>
+          <span className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs" title={result.from_cache.join(", ")}>
             {result.from_cache.length} from cache
           </span>
         )}
       </div>
       {result.profiles.length > 1 && (
-        <div className="tabs small">
+        <div className="tabs small inline-flex items-center gap-1 text-xs">
           {result.profiles.map((p) => (
-            <button
+            <Button variant="outline"
               key={p.profile_id}
               className={p.series_ref.variable_path === viewing ? "active" : ""}
               onClick={() => onView(p.series_ref.variable_path)}
             >
               {p.series_ref.variable_path}
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -1061,7 +1069,7 @@ function QuickProfileDetail({ candidate }: { candidate: QuickProfile }) {
               <>
                 {date(a.from)} to {date(a.to)} · {round(a.span_days, 0)} days
                 {!a.raw_available && (
-                  <span className="tag warn" title="Retention has aged the raw data out">
+                  <span className="tag warn inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs text-foreground" title="Retention has aged the raw data out">
                     aggregated only
                   </span>
                 )}
@@ -1074,10 +1082,10 @@ function QuickProfileDetail({ candidate }: { candidate: QuickProfile }) {
             value={candidate.availability}
             render={(a) =>
               a.aggregates.length === 0 ? (
-                <span className="muted-inline">none</span>
+                <span className="muted-inline text-xs text-muted-foreground">none</span>
               ) : (
                 a.aggregates.map((aggregate, index) => (
-                  <span key={`${aggregate.group_time}-${aggregate.group_type}-${index}`} className="tag">
+                  <span key={`${aggregate.group_time}-${aggregate.group_type}-${index}`} className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs">
                     {aggregate.group_time} {aggregate.group_type}
                   </span>
                 ))
@@ -1102,7 +1110,7 @@ function QuickProfileDetail({ candidate }: { candidate: QuickProfile }) {
               <>
                 <Val value={v.estimated_interval_s} render={(s) => seconds(s)} />{" "}
                 <ConfidenceTag confidence={v.confidence} />
-                <span className="muted-inline"> basis: {v.estimate_basis}</span>
+                <span className="muted-inline text-xs text-muted-foreground"> basis: {v.estimate_basis}</span>
               </>
             )}
           />
@@ -1111,15 +1119,15 @@ function QuickProfileDetail({ candidate }: { candidate: QuickProfile }) {
 
       <Section title="Declared" note="from the ontology, no read">
         <KV>
-          <Row label="Unit" hint="Derived from the characteristic and advisory (D29)">
-            {candidate.declared.unit || <span className="muted-inline">unknown</span>}
-            <span className="muted-inline"> ({candidate.declared.unit_source})</span>
+          <Row label="Unit" hint="Derived from the characteristic and advisory">
+            {candidate.declared.unit || <span className="muted-inline text-xs text-muted-foreground">unknown</span>}
+            <span className="muted-inline text-xs text-muted-foreground"> ({candidate.declared.unit_source})</span>
           </Row>
           <Row label="Characteristic" hint="Canonical and authoritative; never fabricated">
             {candidate.declared.characteristic_id ? (
               <code>{shortId(candidate.declared.characteristic_id)}</code>
             ) : (
-              <span className="muted-inline">null — none declared</span>
+              <span className="muted-inline text-xs text-muted-foreground">null — none declared</span>
             )}
           </Row>
           <Field label="Minimum" value={candidate.declared.min_value} render={(v) => num(v)} />
@@ -1148,20 +1156,20 @@ function QuickProfileDetail({ candidate }: { candidate: QuickProfile }) {
 
       <Section
         title="Ontology completeness"
-        note="discovered per variable at runtime, never assumed (D16)"
+        note="discovered per variable at runtime, never assumed"
       >
         <KV>
           <Row label="Status">
-            <span className={candidate.ontology_completeness.status === "complete" ? "ok" : "warn"}>
+            <span className={candidate.ontology_completeness.status === "complete" ? "ok text-foreground" : "warn text-foreground"}>
               {candidate.ontology_completeness.status}
             </span>
           </Row>
           <Row label="Missing">
             {candidate.ontology_completeness.missing.length === 0 ? (
-              <span className="muted-inline">nothing</span>
+              <span className="muted-inline text-xs text-muted-foreground">nothing</span>
             ) : (
               candidate.ontology_completeness.missing.map((field) => (
-                <span key={field} className="tag warn">
+                <span key={field} className="tag warn inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs text-foreground">
                   {field}
                 </span>
               ))
@@ -1214,7 +1222,7 @@ function FullProfile({
               <>
                 {seconds(s.detected_interval_s)} · {s.regularity}{" "}
                 <ConfidenceTag confidence={s.confidence} />
-                <span className="muted-inline"> irregularity {percent(s.irregularity_ratio)}</span>
+                <span className="muted-inline text-xs text-muted-foreground"> irregularity {percent(s.irregularity_ratio)}</span>
               </>
             )}
           />
@@ -1223,7 +1231,7 @@ function FullProfile({
             value={profile.sampling}
             render={(s) =>
               s.gaps.length === 0 ? (
-                <span className="ok">none</span>
+                <span className="ok text-foreground">none</span>
               ) : (
                 <>
                   {s.gaps.length} · longest {seconds(Math.max(...s.gaps.map((g) => g.duration_s)))}
@@ -1248,7 +1256,7 @@ function FullProfile({
                   render={(c) => <ConfidenceTag confidence={c} />}
                 />
                 {overridden.includes("value_semantics.kind") && (
-                  <span className="tag ok-tag">confirmed</span>
+                  <span className="tag ok-tag inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">confirmed</span>
                 )}
               </>
             )}
@@ -1258,41 +1266,41 @@ function FullProfile({
             hint="A verdict without its evidence is a number to over-trust"
             value={profile.value_semantics.kind_evidence}
             render={(e) => (
-              <span className="evidence">
+              <span className="evidence text-xs text-muted-foreground">
                 monotonic {percent(e.monotonic_ratio)} · {e.distinct_values} distinct ·{" "}
                 {e.negative_deltas} negative steps · non-numeric {percent(e.non_numeric_ratio)}
               </span>
             )}
           />
           <Row label="Unit">
-            {profile.value_semantics.unit || <span className="muted-inline">unknown</span>}
-            <span className="muted-inline"> ({profile.value_semantics.unit_source})</span>
+            {profile.value_semantics.unit || <span className="muted-inline text-xs text-muted-foreground">unknown</span>}
+            <span className="muted-inline text-xs text-muted-foreground"> ({profile.value_semantics.unit_source})</span>
             {overridden.includes("value_semantics.unit") && (
-              <span className="tag ok-tag">confirmed</span>
+              <span className="tag ok-tag inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">confirmed</span>
             )}
           </Row>
           <Row label="Characteristic">
             {profile.value_semantics.characteristic_id ? (
               <code>{shortId(profile.value_semantics.characteristic_id)}</code>
             ) : (
-              <span className="muted-inline">null</span>
+              <span className="muted-inline text-xs text-muted-foreground">null</span>
             )}
           </Row>
           <Field
             label="Range violations"
             value={profile.value_semantics.range_violation_ratio}
-            render={(ratio) => <span className={ratio > 0 ? "warn" : "ok"}>{percent(ratio)}</span>}
+            render={(ratio) => <span className={ratio > 0 ? "warn text-foreground" : "ok text-foreground"}>{percent(ratio)}</span>}
           />
           <Field
             label="Counter resets"
             value={profile.value_semantics.counter_resets}
             render={(resets) =>
               resets.length === 0 ? (
-                <span className="ok">none</span>
+                <span className="ok text-foreground">none</span>
               ) : (
                 <>
                   {resets.length} ·{" "}
-                  <span className="muted-inline">
+                  <span className="muted-inline text-xs text-muted-foreground">
                     {resets.slice(0, 3).map(dateTime).join(", ")}
                     {resets.length > 3 && " …"}
                   </span>
@@ -1302,10 +1310,10 @@ function FullProfile({
           />
           <Row label="Conversions" hint="Evaluated server-side; ODE only selects a target">
             {profile.value_semantics.available_conversions.length === 0 ? (
-              <span className="muted-inline">none</span>
+              <span className="muted-inline text-xs text-muted-foreground">none</span>
             ) : (
               profile.value_semantics.available_conversions.map((conversion) => (
-                <span key={conversion.to_characteristic_id} className="tag">
+                <span key={conversion.to_characteristic_id} className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs">
                   {conversion.to_unit || shortId(conversion.to_characteristic_id)} (d
                   {conversion.distance})
                 </span>
@@ -1346,10 +1354,10 @@ function FullProfile({
             value={profile.temporal_structure.dominant_periods_s}
             render={(periods) =>
               periods.length === 0 ? (
-                <span className="muted-inline">none detected</span>
+                <span className="muted-inline text-xs text-muted-foreground">none detected</span>
               ) : (
                 periods.map((p) => (
-                  <span key={p} className="tag">
+                  <span key={p} className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs">
                     {period(p)}
                   </span>
                 ))
@@ -1361,9 +1369,9 @@ function FullProfile({
             value={profile.temporal_structure.period_evidence}
             render={(entries) =>
               entries.length === 0 ? (
-                <span className="muted-inline">none</span>
+                <span className="muted-inline text-xs text-muted-foreground">none</span>
               ) : (
-                <span className="evidence">
+                <span className="evidence text-xs text-muted-foreground">
                   {entries
                     .map((e) => `${e.label || seconds(e.period_s)} ${e.method} ${round(e.strength, 2)}`)
                     .join(" · ")}
@@ -1377,10 +1385,10 @@ function FullProfile({
             render={(trend) => (
               <>
                 {num(trend.slope_per_day)} per day ·{" "}
-                <span className={trend.significant ? "warn" : "muted-inline"}>
+                <span className={trend.significant ? "warn text-foreground" : "muted-inline text-xs text-muted-foreground"}>
                   {trend.significant ? "significant" : "not significant"}
                 </span>
-                <span className="muted-inline">
+                <span className="muted-inline text-xs text-muted-foreground">
                   {" "}
                   t {round(trend.t_stat, 2)} · r² {round(trend.r2, 2)}
                 </span>
@@ -1395,11 +1403,11 @@ function FullProfile({
               <>
                 <strong>{adf.stationary ? "stationary" : "unit root not rejected"}</strong>{" "}
                 <ConfidenceTag confidence={adf.confidence} />
-                <div className="evidence">
+                <div className="evidence text-xs text-muted-foreground">
                   ADF {round(adf.adf_stat, 2)} · lag {adf.lag_order} · n {adf.n_obs} · p between{" "}
                   {adf.p_value_bracket.lower} and {adf.p_value_bracket.upper}
-                  <div className="muted-inline">{adf.p_value_bracket.note}</div>
-                  <div className="muted-inline">
+                  <div className="muted-inline text-xs text-muted-foreground">{adf.p_value_bracket.note}</div>
+                  <div className="muted-inline text-xs text-muted-foreground">
                     critical{" "}
                     {Object.entries(adf.critical_values)
                       .sort(([a], [b]) => a.localeCompare(b))
@@ -1423,7 +1431,7 @@ function FullProfile({
                 <strong>{activity.classification.replace(/_/g, " ")}</strong>{" "}
                 <ConfidenceTag confidence={activity.classification_confidence} />
                 {overridden.includes("activity_pattern.classification") && (
-                  <span className="tag ok-tag">confirmed</span>
+                  <span className="tag ok-tag inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">confirmed</span>
                 )}
               </>
             )}
@@ -1435,7 +1443,7 @@ function FullProfile({
             render={(activity) => (
               <>
                 {num(activity.idle_level)} / {num(activity.active_threshold)}
-                <span className="muted-inline"> by {activity.threshold_method}</span>
+                <span className="muted-inline text-xs text-muted-foreground"> by {activity.threshold_method}</span>
               </>
             )}
           />
@@ -1444,7 +1452,7 @@ function FullProfile({
             hint="Developer-adjustable, so they travel in the profile"
             value={profile.activity_pattern}
             render={(activity) => (
-              <span className="evidence">
+              <span className="evidence text-xs text-muted-foreground">
                 min duration {seconds(activity.threshold_params.min_duration_s)} · merge gap{" "}
                 {seconds(activity.threshold_params.merge_gap_s)} · hysteresis{" "}
                 {percent(activity.threshold_params.hysteresis_frac)}
@@ -1459,7 +1467,7 @@ function FullProfile({
                 value={activity.session_stats}
                 render={(stats) =>
                   stats.count === 0 ? (
-                    <span className="muted-inline">none detected</span>
+                    <span className="muted-inline text-xs text-muted-foreground">none detected</span>
                   ) : (
                     <>
                       {stats.count} · median {seconds(stats.median_duration_s)} · every{" "}
@@ -1481,10 +1489,10 @@ function FullProfile({
         <KV>
           <Row label="Siblings">
             {profile.service_context.sibling_variables.length === 0 ? (
-              <span className="muted-inline">none</span>
+              <span className="muted-inline text-xs text-muted-foreground">none</span>
             ) : (
               profile.service_context.sibling_variables.map((sibling) => (
-                <span key={sibling.path} className="tag">
+                <span key={sibling.path} className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs">
                   {sibling.path}
                   {sibling.kind && ` · ${sibling.kind.replace(/_/g, " ")}`}
                 </span>
@@ -1495,42 +1503,42 @@ function FullProfile({
         {profile.service_context.relationships.length === 0 ? (
           <Muted>No cross-variable relationship was established.</Muted>
         ) : (
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Relationship</th>
-                <th>With</th>
-                <th title="Correlation of the paired increments">r</th>
-                <th title="Residual after the best-fit scale">Residual</th>
-                <th title="The factor mapping the other series onto this one — a unit error shows up here">
+          <Table className="grid">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Relationship</TableHead>
+                <TableHead>With</TableHead>
+                <TableHead title="Correlation of the paired increments">r</TableHead>
+                <TableHead title="Residual after the best-fit scale">Residual</TableHead>
+                <TableHead title="The factor mapping the other series onto this one — a unit error shows up here">
                   Scale
-                </th>
-                <th>Confidence</th>
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+                <TableHead>Confidence</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {profile.service_context.relationships.map((relationship) => (
-                <tr key={`${relationship.type}-${relationship.other_path}`}>
-                  <td>
+                <TableRow key={`${relationship.type}-${relationship.other_path}`}>
+                  <TableCell>
                     <span
-                      className={`tag ${relationship.type === "inconsistent_with" ? "warn" : ""}`}
+                      className={`tag ${relationship.type === "inconsistent_with" ? "warn text-foreground" : ""}`}
                     >
                       {relationship.type.replace(/_/g, " ")}
                     </span>
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     <code>{relationship.other_path}</code>
-                  </td>
-                  <td className="numeric">{round(relationship.evidence.correlation, 2)}</td>
-                  <td className="numeric">{round(relationship.evidence.residual_ratio, 2)}</td>
-                  <td className="numeric">{num(relationship.evidence.implied_scale)}</td>
-                  <td>
+                  </TableCell>
+                  <TableCell className="numeric text-right tabular-nums">{round(relationship.evidence.correlation, 2)}</TableCell>
+                  <TableCell className="numeric text-right tabular-nums">{round(relationship.evidence.residual_ratio, 2)}</TableCell>
+                  <TableCell className="numeric text-right tabular-nums">{num(relationship.evidence.implied_scale)}</TableCell>
+                  <TableCell>
                     <ConfidenceTag confidence={relationship.confidence} />
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
       </Section>
 
@@ -1553,13 +1561,13 @@ function FullProfile({
           />
           <Row label="Exclusions">
             {profile.recommendations.exclusions.length === 0 ? (
-              <span className="muted-inline">none</span>
+              <span className="muted-inline text-xs text-muted-foreground">none</span>
             ) : (
-              <ul className="list tight">
+              <ul className="list tight flex flex-col gap-1 leading-tight">
                 {profile.recommendations.exclusions.slice(0, 8).map((exclusion) => (
                   <li key={`${exclusion.from}-${exclusion.to}`}>
                     {date(exclusion.from)} to {date(exclusion.to)}
-                    <span className="muted-inline"> — {exclusion.reason}</span>
+                    <span className="muted-inline text-xs text-muted-foreground"> — {exclusion.reason}</span>
                   </li>
                 ))}
               </ul>
@@ -1593,30 +1601,30 @@ function GapTable({ gaps }: { gaps: SeriesProfileGap[] }) {
   if (gaps.length === 0) return null;
   const largest = [...gaps].sort((a, b) => b.duration_s - a.duration_s).slice(0, 10);
   return (
-    <table className="grid">
-      <thead>
-        <tr>
-          <th>From</th>
-          <th>To</th>
-          <th>Duration</th>
-          <th title="Unknown is the honest answer, and is not the same as 'fine'">Classification</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table className="grid">
+      <TableHeader>
+        <TableRow>
+          <TableHead>From</TableHead>
+          <TableHead>To</TableHead>
+          <TableHead>Duration</TableHead>
+          <TableHead title="Unknown is the honest answer, and is not the same as 'fine'">Classification</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {largest.map((gap) => (
-          <tr key={`${gap.from}-${gap.to}`}>
-            <td>{dateTime(gap.from)}</td>
-            <td>{dateTime(gap.to)}</td>
-            <td className="numeric">{seconds(gap.duration_s)}</td>
-            <td>
-              <span className={`tag ${gap.classification === "unknown" ? "" : "warn"}`}>
+          <TableRow key={`${gap.from}-${gap.to}`}>
+            <TableCell>{dateTime(gap.from)}</TableCell>
+            <TableCell>{dateTime(gap.to)}</TableCell>
+            <TableCell className="numeric text-right tabular-nums">{seconds(gap.duration_s)}</TableCell>
+            <TableCell>
+              <span className={`tag ${gap.classification === "unknown" ? "" : "warn text-foreground"}`}>
                 {gap.classification.replace(/_/g, " ")}
               </span>
-            </td>
-          </tr>
+            </TableCell>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
@@ -1691,7 +1699,7 @@ interface Confirmable {
    * How a correction is entered, or "none" where the field is a structure that a
    * text box cannot express — a session boundary or an exclusion list. Those can
    * still be confirmed or rejected, which is the decision that matters; editing
-   * them belongs to the exploration pane in M5, where the boundary is visible.
+   * them belongs to the exploration pane, where the boundary is visible.
    */
   correct: "text" | "number" | "none";
 }
@@ -1761,35 +1769,35 @@ function OverridesSection({
           and merged on read, so recomputing with a better detector keeps it.
         </Muted>
       ) : (
-        <table className="grid">
-          <thead>
-            <tr>
-              <th>Field</th>
-              <th>Computed</th>
-              <th>Confirmed</th>
-              <th>Action</th>
-              <th>By</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="grid">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Field</TableHead>
+              <TableHead>Computed</TableHead>
+              <TableHead>Confirmed</TableHead>
+              <TableHead>Action</TableHead>
+              <TableHead>By</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {resolution.map((entry) => (
-              <tr key={entry.override_id}>
-                <td>
+              <TableRow key={entry.override_id}>
+                <TableCell>
                   <code>{entry.field_path}</code>
-                </td>
-                <td>{renderValue(entry.computed_value)}</td>
-                <td>{renderValue(entry.confirmed_value)}</td>
-                <td>
-                  <span className="tag">{entry.action}</span>
+                </TableCell>
+                <TableCell>{renderValue(entry.computed_value)}</TableCell>
+                <TableCell>{renderValue(entry.confirmed_value)}</TableCell>
+                <TableCell>
+                  <span className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs">{entry.action}</span>
                   {entry.supersedes && entry.supersedes.length > 0 && (
-                    <span className="muted-inline"> supersedes {entry.supersedes.length}</span>
+                    <span className="muted-inline text-xs text-muted-foreground"> supersedes {entry.supersedes.length}</span>
                   )}
-                </td>
-                <td className="muted-inline">{entry.created_by}</td>
-              </tr>
+                </TableCell>
+                <TableCell className="muted-inline text-xs text-muted-foreground">{entry.created_by}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
 
       <form
@@ -1814,42 +1822,56 @@ function OverridesSection({
       >
         <label>
           <span>Field</span>
-          <select
+          <Select
             value={fieldPath}
-            onChange={(e) => {
-              setFieldPath(e.target.value);
+            onValueChange={(value) => {
+              if (value === null) return;
+              setFieldPath(value);
               // A structured field cannot be corrected through a text box, so the
               // action falls back rather than submitting a correction with nothing
               // in it.
-              if (confirmableFor(e.target.value).correct === "none" && action === "correct") {
+              if (confirmableFor(value).correct === "none" && action === "correct") {
                 setAction("confirm");
               }
             }}
           >
+            <SelectTrigger size="sm" aria-label="Field" className="w-auto min-w-52">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
             {CONFIRMABLE.map((entry) => (
-              <option key={entry.path} value={entry.path} title={entry.hint}>
+              <SelectItem key={entry.path} value={entry.path} title={entry.hint}>
                 {entry.path}
-              </option>
+              </SelectItem>
             ))}
-          </select>
+            </SelectContent>
+          </Select>
         </label>
         <label>
           <span>Action</span>
-          <select
+          <Select
             value={action}
-            onChange={(e) => setAction(e.target.value as "confirm" | "correct" | "reject")}
+            onValueChange={(value) => {
+              if (value === null) return;
+              setAction(value as "confirm" | "correct" | "reject");
+            }}
           >
-            <option value="confirm">confirm</option>
-            <option value="correct" disabled={confirmable.correct === "none"}>
-              correct
-            </option>
-            <option value="reject">reject</option>
-          </select>
+            <SelectTrigger size="sm" aria-label="Action" className="w-auto min-w-32">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="confirm">confirm</SelectItem>
+              <SelectItem value="correct" disabled={confirmable.correct === "none"}>
+                correct
+              </SelectItem>
+              <SelectItem value="reject">reject</SelectItem>
+            </SelectContent>
+          </Select>
         </label>
         {correcting && (
           <label>
             <span>Correct to</span>
-            <input
+            <Input
               value={confirmedValue}
               onChange={(e) => setConfirmedValue(e.target.value)}
               placeholder={confirmable.correct === "number" ? "3.5" : confirmable.hint}
@@ -1860,11 +1882,11 @@ function OverridesSection({
         )}
         <label className="grow">
           <span>Note</span>
-          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Why" />
+          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Why" />
         </label>
-        <button type="submit" disabled={submit.pending}>
+        <Button variant="outline" className={submit.pending ? "busy animate-pulse" : undefined} type="submit" disabled={submit.pending}>
           {submit.pending ? "Recording…" : "Record"}
-        </button>
+        </Button>
       </form>
       {submit.error && <Muted>{submit.error}</Muted>}
     </Section>
@@ -1921,7 +1943,7 @@ function computedFor(profile: SeriesProfile, fieldPath: string): unknown {
 }
 
 function renderValue(value: unknown): React.ReactNode {
-  if (value === null || value === undefined) return <span className="muted-inline">—</span>;
+  if (value === null || value === undefined) return <span className="muted-inline text-xs text-muted-foreground">—</span>;
   if (typeof value === "object") return <code>{JSON.stringify(value)}</code>;
   return <code>{String(value)}</code>;
 }
@@ -1936,38 +1958,38 @@ function ProvenanceSection({ provenance }: { provenance: Provenance }) {
       note="which pass produced each field — dropped from the LLM view"
       defaultOpen={false}
     >
-      <table className="grid">
-        <thead>
-          <tr>
-            <th>Field</th>
-            <th title="Aggregated reads hide gaps and irregularity, so this matters per field">
+      <Table className="grid">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Field</TableHead>
+            <TableHead title="Aggregated reads hide gaps and irregularity, so this matters per field">
               Read
-            </th>
-            <th>Source</th>
-            <th>Detail</th>
-          </tr>
-        </thead>
-        <tbody>
+            </TableHead>
+            <TableHead>Source</TableHead>
+            <TableHead>Detail</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {entries.map(([path, entry]) => (
-            <tr key={path}>
-              <td>
+            <TableRow key={path}>
+              <TableCell>
                 <code>{path}</code>
-              </td>
-              <td>
+              </TableCell>
+              <TableCell>
                 <span className={`tag read-${entry?.read_mode ?? "none"}`}>
                   {entry?.read_mode ?? "—"}
                 </span>
-              </td>
-              <td>{entry?.source ?? "—"}</td>
-              <td className="muted-inline">
+              </TableCell>
+              <TableCell>{entry?.source ?? "—"}</TableCell>
+              <TableCell className="muted-inline text-xs text-muted-foreground">
                 {[entry?.detector, entry?.ref, entry?.group_time, entry?.note]
                   .filter(Boolean)
                   .join(" · ")}
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </Section>
   );
 }
@@ -1983,23 +2005,22 @@ function ProjectionTab({ profileId }: { profileId: string }) {
   return (
     <>
       <div className="llm-head">
-        <p className="muted">
+        <p className="muted text-muted-foreground">
           Exactly what a model would be given. Unbounded arrays are collapsed, provenance is dropped,
           and every collapse is recorded — so the model knows it is reading a summary. The exposure
-          tier in the header governs which tools may reach this once M3 lands; a developer reading it
-          here is not gated by it.
+          tier governs which tools may reach this; a developer reading it here is not gated by it.
         </p>
         <form
-          className="filters"
+          className="filters flex flex-wrap items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             const parsed = Number.parseInt(budget, 10);
             setApplied(Number.isFinite(parsed) && parsed > 0 ? parsed : undefined);
           }}
         >
-          <label className="filter-check">
+          <label className="filter-check flex items-center gap-2 text-sm">
             <span>Token budget</span>
-            <input
+            <Input
               value={budget}
               onChange={(e) => setBudget(e.target.value)}
               placeholder="unbounded"
@@ -2007,11 +2028,11 @@ function ProjectionTab({ profileId }: { profileId: string }) {
               aria-label="Token budget"
             />
           </label>
-          <button type="submit">Apply</button>
+          <Button variant="outline" type="submit">Apply</Button>
         </form>
       </div>
 
-      {loading && <Muted>Projecting…</Muted>}
+      {loading && <Busy>Projecting…</Busy>}
       {error && <Muted>{error}</Muted>}
       {data && <Projection view={data} />}
     </>
@@ -2035,38 +2056,38 @@ function Projection({ view }: { view: LLMProfileView }) {
           title={`Elided (${view.elided.length})`}
           note="what was summarised, and where the rest is"
         >
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Field</th>
-                <th>Total</th>
-                <th>Shown</th>
-                <th>Fetch</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table className="grid">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Field</TableHead>
+                <TableHead>Total</TableHead>
+                <TableHead>Shown</TableHead>
+                <TableHead>Fetch</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {view.elided.map((elision, index) => (
                 // sampling.gaps can appear twice: once collapsed to the largest
                 // few, once dropped entirely under a tight budget.
-                <tr key={`${elision.field}-${index}`}>
-                  <td>
+                <TableRow key={`${elision.field}-${index}`}>
+                  <TableCell>
                     <code>{elision.field}</code>
-                  </td>
-                  <td className="numeric">{elision.total}</td>
-                  <td className="numeric">{elision.shown}</td>
-                  <td className="muted-inline">
+                  </TableCell>
+                  <TableCell className="numeric text-right tabular-nums">{elision.total}</TableCell>
+                  <TableCell className="numeric text-right tabular-nums">{elision.shown}</TableCell>
+                  <TableCell className="muted-inline text-xs text-muted-foreground">
                     {elision.fetch ? <code>{elision.fetch}</code> : "—"}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </Section>
       )}
 
       {view.overrides.length > 0 && (
         <Section title="Developer decisions the model sees">
-          <ul className="list">
+          <ul className="list flex flex-col gap-1">
             {view.overrides.map((override) => (
               <li key={override.override_id}>
                 <code>{override.field_path}</code> {override.action}{" "}
@@ -2078,7 +2099,7 @@ function Projection({ view }: { view: LLMProfileView }) {
       )}
 
       <Section title="Payload" note="the JSON itself" defaultOpen={false}>
-        <pre className="json">{payload}</pre>
+        <pre className="json max-h-56 overflow-auto rounded-md bg-muted p-2 font-mono text-xs">{payload}</pre>
       </Section>
     </>
   );
@@ -2109,7 +2130,7 @@ function SessionsTab({ profileId }: { profileId: string }) {
         years of cycles is thousands of entries, and the profile carries statistics and a handful of
         exemplars instead.
       </Muted>
-      {loading && <Muted>Loading sessions…</Muted>}
+      {loading && <Busy>Loading sessions…</Busy>}
       {error && <Muted>{error}</Muted>}
       {data && (
         <SessionTable page={data} onNext={next} onBack={history.length > 0 ? back : undefined} />
@@ -2133,36 +2154,36 @@ function SessionTable({
   const nextCursor = page.next_cursor;
   return (
     <>
-      <table className="grid">
-        <thead>
-          <tr>
-            <th>From</th>
-            <th>Duration</th>
-            <th title="The value integrated over time, in the series' own unit multiplied by seconds">
+      <Table className="grid">
+        <TableHeader>
+          <TableRow>
+            <TableHead>From</TableHead>
+            <TableHead>Duration</TableHead>
+            <TableHead title="The value integrated over time, in the series' own unit multiplied by seconds">
               Energy
-            </th>
-            <th>Peak</th>
-            <th>Points</th>
-          </tr>
-        </thead>
-        <tbody>
+            </TableHead>
+            <TableHead>Peak</TableHead>
+            <TableHead>Points</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {page.sessions.map((session, index) => (
-            <tr key={`${session.from}-${index}`}>
-              <td>{dateTime(session.from)}</td>
-              <td className="numeric">{seconds(session.duration_s)}</td>
-              <td className="numeric">{num(session.energy)}</td>
-              <td className="numeric">{num(session.peak)}</td>
-              <td className="numeric">{session.points}</td>
-            </tr>
+            <TableRow key={`${session.from}-${index}`}>
+              <TableCell>{dateTime(session.from)}</TableCell>
+              <TableCell className="numeric text-right tabular-nums">{seconds(session.duration_s)}</TableCell>
+              <TableCell className="numeric text-right tabular-nums">{num(session.energy)}</TableCell>
+              <TableCell className="numeric text-right tabular-nums">{num(session.peak)}</TableCell>
+              <TableCell className="numeric text-right tabular-nums">{session.points}</TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
       <div className="pager">
-        <span className="muted-inline">
+        <span className="muted-inline text-xs text-muted-foreground">
           {page.sessions.length} shown of {page.total}
         </span>
-        {onBack && <button onClick={onBack}>Previous</button>}
-        {nextCursor && <button onClick={() => onNext(nextCursor)}>Next</button>}
+        {onBack && <Button variant="outline" onClick={onBack}>Previous</Button>}
+        {nextCursor && <Button variant="outline" onClick={() => onNext(nextCursor)}>Next</Button>}
       </div>
     </>
   );

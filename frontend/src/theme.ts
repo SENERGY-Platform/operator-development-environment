@@ -123,6 +123,8 @@ export function useTheme(): {
   toggle: () => void;
   /** Hands the decision back to the operating system. */
   clear: () => void;
+  /** Records a choice, or `null` to follow the operating system. */
+  set: (choice: Choice) => void;
 } {
   const [choice, setChoice] = useState<Choice>(stored);
   const [preference, setPreference] = useState<"light" | "dark">(system);
@@ -150,6 +152,10 @@ export function useTheme(): {
     clear: () => {
       apply(null);
       setChoice(null);
+    },
+    set: (next: Choice) => {
+      apply(next);
+      setChoice(next);
     },
   };
 }

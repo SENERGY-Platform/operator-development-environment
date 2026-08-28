@@ -33,9 +33,10 @@ import { useSyncExternalStore } from "react";
  *   - **Query state replaces, view changes push.** Tweaking a filter twenty times
  *     should not cost twenty presses of the back button to escape; moving from the
  *     profiler to the chart should cost exactly one.
- *   - **Some query state is sticky.** The open conversation follows the developer
- *     across every view, so it is carried by `navigate` and written into every
- *     link's href — including the href a middle-click opens in a new tab.
+ *   - **Some query state is sticky.** The open conversation and the workbench it
+ *     is about follow the developer across every view, so they are carried by
+ *     `navigate` and written into every link's href — including the href a
+ *     middle-click opens in a new tab.
  */
 
 /**
@@ -43,11 +44,21 @@ import { useSyncExternalStore } from "react";
  *
  * `session` is the open conversation. Chat sits beside every instrumentation view
  * (§2's pane layout), so moving from the profiler to the exploration pane must not
- * close the conversation that sent you there. Everything else is view-local and is
- * deliberately dropped on navigation: a `file` from the workspace means nothing to
- * the relational profiler.
+ * close the conversation that sent you there.
+ *
+ * `workbench` is the working context those views act in: which checkout a file read
+ * is answered from, which kernel `run_code` runs in, which commit an experiment is
+ * launched from. It travels for the same reason, and it has to: a developer with
+ * two open who arrives at a view without it does not get an error, they get the
+ * first workbench — the SPA picks one so that the backend is never asked to guess
+ * between two working copies. Dropped on the way to the kernel pane, that ran their
+ * code in the other operator's checkout; dropped on the way back to the workspace,
+ * it put the other operator's repository beside the conversation they were reading.
+ *
+ * Everything else is view-local and is deliberately dropped on navigation: a `file`
+ * is a path inside one checkout and means nothing to the relational profiler.
  */
-const STICKY = ["session"] as const;
+const STICKY = ["session", "workbench"] as const;
 
 /**
  * The base the SPA is served under, always with a trailing slash.
@@ -207,6 +218,18 @@ export function navigate(to: string, options: { replace?: boolean } = {}): void 
 export function useParam(name: string): string | null {
   const { params } = useLocation();
   return params.get(name) || null;
+}
+
+/**
+ * getParam reads one query parameter outside a render.
+ *
+ * A component reads the URL with `useParam`, which re-renders it when the URL
+ * moves. This is for the handlers that have to compare against the *live* address
+ * before writing it — the same reason `setParam` below reads
+ * `window.location.search` rather than the snapshot.
+ */
+export function getParam(name: string): string | null {
+  return new URLSearchParams(window.location.search).get(name) || null;
 }
 
 /**

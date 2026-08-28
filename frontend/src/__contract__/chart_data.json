@@ -2,7 +2,7 @@
   "aligned": true,
   "annotations": [
     {
-      "annotation_id": "t4caxv7gfqp6ap2jwmngzyutq4",
+      "annotation_id": "hj25ymamrn3a3kkhyqjyk7rtey",
       "author": "profiler",
       "confirmable": true,
       "field_path": "recommendations.usable_range",
@@ -15,7 +15,7 @@
       "type": "span"
     },
     {
-      "annotation_id": "xujexcqj5yuqd5syqauzkoqnje",
+      "annotation_id": "6vgmwsqolt6vit6olztlhhov5m",
       "author": "profiler",
       "confirmable": true,
       "field_path": "activity_pattern.sessions",
@@ -28,7 +28,7 @@
       "type": "span"
     },
     {
-      "annotation_id": "cppyjyhbfyah6ha2kzsei2lxpu",
+      "annotation_id": "uuvetlgecoe4n2r43aczqa6pue",
       "author": "profiler",
       "confirmable": true,
       "field_path": "activity_pattern.sessions",
@@ -41,7 +41,7 @@
       "type": "span"
     },
     {
-      "annotation_id": "4yzvl6u5zri6kajgfpwo5rkpua",
+      "annotation_id": "prlmrtjxouf4kcyvjjsaa6iv3m",
       "author": "profiler",
       "confirmable": true,
       "field_path": "activity_pattern.sessions",
@@ -56,7 +56,7 @@
   ],
   "annotations_dropped": 0,
   "caption": "the week the inverter was replaced",
-  "chart_id": "3ymhlm6gjhapienixdubejx67q",
+  "chart_id": "4ip6grmouhadygxrtrw7vt6pne",
   "group_time": "6h",
   "markers": [],
   "notes": [],

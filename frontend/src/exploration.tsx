@@ -24,12 +24,16 @@ import {
   type ProfileOverrideRecord,
 } from "./api";
 import { setParam, useParam } from "./router";
-import { Muted, Pane, Section, dateTime, num, useAction, useLoad } from "./ui";
+import { Busy, Muted, Pane, Section, dateTime, num, useAction, useLoad } from "./ui";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**
- * The exploration pane (SPEC §5.9, §5.10, M5).
+ * The exploration pane (§5.9, §5.10).
  *
- * Three things about it are the milestone rather than the decoration.
+ * Three things about it are load-bearing rather than decoration.
  *
  * It renders a *specification*, never an image. The assistant emits the document
  * §5.9 defines — series, transforms, annotations, an axis — and this draws it from
@@ -103,9 +107,13 @@ export function ExplorationView() {
         title="Charts"
         subtitle="declarative specifications, newest first"
         actions={
-          <button onClick={() => setReloadKey((key) => key + 1)} disabled={charts.loading}>
+          <Button variant="outline"
+            className={charts.loading ? "busy animate-pulse" : undefined}
+            onClick={() => setReloadKey((key) => key + 1)}
+            disabled={charts.loading}
+          >
             {charts.loading ? "Loading…" : "Refresh"}
-          </button>
+          </Button>
         }
       >
         {charts.error && <Muted>{charts.error}</Muted>}
@@ -116,10 +124,10 @@ export function ExplorationView() {
             picture: the values are read here, with your token.
           </Muted>
         )}
-        <ul className="list chart-list">
+        <ul className="list chart-list flex flex-col gap-1">
           {specs.map((spec) => (
             <li key={spec.chart_id}>
-              <button
+              <Button variant="ghost" size="sm"
                 className={spec.chart_id === current ? "chart-entry active" : "chart-entry"}
                 onClick={() => setParam("chart", spec.chart_id)}
               >
@@ -128,7 +136,7 @@ export function ExplorationView() {
                   <span className={`tag author-${spec.author}`}>{spec.author}</span>
                   {spec.series.length} series · {dateTime(spec.created_at)}
                 </span>
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
@@ -256,38 +264,43 @@ function ChartPane({
       }
       actions={
         <>
-          <select value={bucket} onChange={(e) => setBucket(e.target.value)} title="aggregation bucket">
-            {BUCKETS.map((option) => (
-              <option key={option || "auto"} value={option}>
-                {option || "bucket: auto"}
-              </option>
-            ))}
-          </select>
-          <div className="tabs small">
+          <Select value={bucket} onValueChange={(value) => setBucket(value ?? "")}>
+            <SelectTrigger size="sm" title="aggregation bucket" aria-label="Aggregation bucket" className="w-auto">
+              <SelectValue>{(value: string | null) => value || "bucket: auto"}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {BUCKETS.map((option) => (
+                <SelectItem key={option || "auto"} value={option}>
+                  {option || "bucket: auto"}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="tabs small inline-flex items-center gap-1 text-xs">
             {RANGES.map(([label, span]) => (
-              <button
+              <Button variant="outline"
                 key={label}
                 className={range === span ? "active" : ""}
                 onClick={() => setRange(range === span ? null : span)}
               >
                 {label}
-              </button>
+              </Button>
             ))}
-            <button className={range === null ? "active" : ""} onClick={() => setRange(null)}>
+            <Button variant="outline" className={range === null ? "active" : ""} onClick={() => setRange(null)}>
               full
-            </button>
+            </Button>
           </div>
-          <button onClick={reload} disabled={loading}>
+          <Button variant="outline" className={loading ? "busy animate-pulse" : undefined} onClick={reload} disabled={loading}>
             {loading ? "Reading…" : "Reload"}
-          </button>
-          <button onClick={() => void discard.invoke()}>Discard</button>
+          </Button>
+          <Button variant="outline" onClick={() => void discard.invoke()}>Discard</Button>
         </>
       }
     >
       {error && <Muted>{error}</Muted>}
       {derive.error && <Muted>{derive.error}</Muted>}
       {discard.error && <Muted>{discard.error}</Muted>}
-      {!data && !error && <Muted>Reading the series…</Muted>}
+      {!data && !error && <Busy>Reading the series…</Busy>}
 
       {data && (
         <>
@@ -295,7 +308,7 @@ function ChartPane({
           {data.caption && <p className="chart-caption">{data.caption}</p>}
           <ChartNotes data={data} />
 
-          <Section title="Series and units" note="the axis is resolved from the ontology (D29)">
+          <Section title="Series and units" note="the axis is resolved from the ontology">
             {data.series.map((series) => (
               <SeriesRow
                 key={series.index}
@@ -556,9 +569,9 @@ function ChartNotes({ data }: { data: ChartData }) {
   if (notes.length === 0) return null;
 
   return (
-    <ul className="list tight chart-notes">
+    <ul className="list tight chart-notes flex flex-col gap-1 leading-tight">
       {notes.map((note, index) => (
-        <li key={index} className="muted-inline">
+        <li key={index} className="muted-inline text-xs text-muted-foreground">
           {note}
         </li>
       ))}
@@ -592,37 +605,37 @@ function SeriesRow({
         <span className={`series-swatch ${slot(series.index)}`} />
         <strong>{series.label}</strong>
         <code>{series.ref.variable_path}</code>
-        <span className="tag">{series.transform}</span>
-        <span className="tag">{series.group_type}</span>
-        <span className="muted-inline">
+        <span className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs">{series.transform}</span>
+        <span className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs">{series.group_type}</span>
+        <span className="muted-inline text-xs text-muted-foreground">
           {series.points.length} points · {series.group_time}
         </span>
       </div>
 
       <div className="series-unit">
-        <span className={unit.confirmed ? "tag ok-tag" : "tag"}>
+        <span className={unit.confirmed ? "tag ok-tag inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs" : "tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs"}>
           {unit.unit || "unit unknown"}
         </span>
-        <span className="muted-inline">
+        <span className="muted-inline text-xs text-muted-foreground">
           from {unit.unit_source}
           {unit.confirmed && unit.computed_unit && unit.computed_unit !== unit.unit
             ? ` · the resolver said ${unit.computed_unit}`
             : ""}
           {unit.confirmed_by ? ` · confirmed by ${unit.confirmed_by}` : ""}
         </span>
-        {unit.note && <span className="muted-inline">{unit.note}</span>}
+        {unit.note && <span className="muted-inline text-xs text-muted-foreground">{unit.note}</span>}
       </div>
 
       {unit.confirmable && (
         <div className="unit-confirm">
-          <span className="muted-inline">
+          <span className="muted-inline text-xs text-muted-foreground">
             {field === "value_semantics.unit"
-              ? "This unit is not settled. Confirming it is yours to do, not the assistant's (§5.8)."
+              ? "This unit is not settled. Confirming it is yours to do, not the assistant's."
               : "No canonical characteristic resolved. Naming one is what makes a server-side conversion possible."}
           </span>
           <div className="unit-actions">
             {field === "value_semantics.unit" && (
-              <button
+              <Button variant="outline"
                 disabled={pending}
                 onClick={() =>
                   onConfirm({
@@ -634,12 +647,12 @@ function SeriesRow({
                 }
               >
                 Confirm {unit.unit || "as unknown"}
-              </button>
+              </Button>
             )}
-            <button disabled={pending} onClick={() => setCorrecting(!correcting)}>
+            <Button variant="outline" disabled={pending} onClick={() => setCorrecting(!correcting)}>
               {correcting ? "Cancel" : "Correct"}
-            </button>
-            <button
+            </Button>
+            <Button variant="outline"
               disabled={pending}
               onClick={() =>
                 onConfirm({
@@ -651,7 +664,7 @@ function SeriesRow({
               }
             >
               Reject
-            </button>
+            </Button>
           </div>
           {correcting && (
             <form
@@ -671,7 +684,7 @@ function SeriesRow({
             >
               <label className="grow">
                 <span>{field === "value_semantics.unit" ? "The unit is" : "The characteristic is"}</span>
-                <input
+                <Input
                   value={value}
                   onChange={(event) => setValue(event.target.value)}
                   placeholder={
@@ -680,9 +693,9 @@ function SeriesRow({
                   required
                 />
               </label>
-              <button type="submit" disabled={pending}>
+              <Button variant="outline" type="submit" disabled={pending}>
                 Record
-              </button>
+              </Button>
             </form>
           )}
         </div>
@@ -690,16 +703,16 @@ function SeriesRow({
 
       {unit.available_conversions.length > 0 && (
         <div className="conversions">
-          <span className="muted-inline">Convert, server-side, along the ontology's graph:</span>
+          <span className="muted-inline text-xs text-muted-foreground">Convert, server-side, along the ontology's graph:</span>
           {unit.available_conversions.map((conversion) => (
-            <button
+            <Button variant="outline"
               key={conversion.to_characteristic_id}
               disabled={pending}
               title={`${conversion.to_characteristic_id} · distance ${conversion.distance}`}
               onClick={() => onConvert(conversion.to_characteristic_id, conversion.to_unit || "converted")}
             >
               → {conversion.to_unit || conversion.to_characteristic_id}
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -744,29 +757,29 @@ function AnnotationSection({
       )}
 
       {annotations.length > 0 && (
-        <table className="grid annotations">
-          <thead>
-            <tr>
-              <th>From</th>
-              <th>To</th>
-              <th>What</th>
-              <th>By</th>
-              <th>Decision</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="grid annotations">
+          <TableHeader>
+            <TableRow>
+              <TableHead>From</TableHead>
+              <TableHead>To</TableHead>
+              <TableHead>What</TableHead>
+              <TableHead>By</TableHead>
+              <TableHead>Decision</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {annotations.map((annotation) => (
-              <tr key={annotation.annotation_id} className={`severity-${annotation.severity}`}>
-                <td>{dateTime(annotation.from)}</td>
-                <td>{dateTime(annotation.to)}</td>
-                <td>
+              <TableRow key={annotation.annotation_id} className={`severity-${annotation.severity}`}>
+                <TableCell>{dateTime(annotation.from)}</TableCell>
+                <TableCell>{dateTime(annotation.to)}</TableCell>
+                <TableCell>
                   {annotation.label}
-                  {annotation.source && <span className="muted-inline"> {annotation.source}</span>}
-                </td>
-                <td>
+                  {annotation.source && <span className="muted-inline text-xs text-muted-foreground"> {annotation.source}</span>}
+                </TableCell>
+                <TableCell>
                   <span className={`tag author-${annotation.author}`}>{annotation.author}</span>
-                </td>
-                <td>
+                </TableCell>
+                <TableCell>
                   {annotation.confirmable && annotation.field_path !== undefined ? (
                     <AnnotationDecision
                       annotation={annotation}
@@ -774,21 +787,21 @@ function AnnotationSection({
                       onConfirm={onConfirm}
                     />
                   ) : (
-                    <span className="muted-inline">—</span>
+                    <span className="muted-inline text-xs text-muted-foreground">—</span>
                   )}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
 
       {markers.length > 0 && (
-        <ul className="list tight">
+        <ul className="list tight flex flex-col gap-1 leading-tight">
           {markers.map((marker) => (
             <li key={marker.marker_id}>
               <code>{dateTime(marker.at)}</code> {marker.label}
-              <span className="muted-inline"> {marker.source ?? marker.author}</span>
+              <span className="muted-inline text-xs text-muted-foreground"> {marker.source ?? marker.author}</span>
             </li>
           ))}
         </ul>
@@ -830,13 +843,13 @@ function AnnotationDecision({
 
   return (
     <span className="decision">
-      <button disabled={pending} onClick={() => decide("confirm")}>
+      <Button variant="outline" disabled={pending} onClick={() => decide("confirm")}>
         Confirm
-      </button>
-      <button disabled={pending} onClick={() => decide("reject")}>
+      </Button>
+      <Button variant="outline" disabled={pending} onClick={() => decide("reject")}>
         Reject
-      </button>
-      <code className="muted-inline">{annotation.field_path}</code>
+      </Button>
+      <code className="muted-inline text-xs text-muted-foreground">{annotation.field_path}</code>
     </span>
   );
 }
@@ -855,36 +868,36 @@ function ConfirmationLog({ series }: { series: ChartSeriesData[] }) {
       note="append-only, merged at read time only"
       defaultOpen={false}
     >
-      <table className="grid">
-        <thead>
-          <tr>
-            <th>Series</th>
-            <th>Field</th>
-            <th>Computed</th>
-            <th>Confirmed</th>
-            <th>Action</th>
-            <th>By</th>
-          </tr>
-        </thead>
-        <tbody>
+      <Table className="grid">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Series</TableHead>
+            <TableHead>Field</TableHead>
+            <TableHead>Computed</TableHead>
+            <TableHead>Confirmed</TableHead>
+            <TableHead>Action</TableHead>
+            <TableHead>By</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {records.map(([index, override]) => (
-            <tr key={override.override_id}>
-              <td>{index}</td>
-              <td>
+            <TableRow key={override.override_id}>
+              <TableCell>{index}</TableCell>
+              <TableCell>
                 <code>{override.field_path}</code>
-              </td>
-              <td>{renderOverrideValue(override.computed_value)}</td>
-              <td>{renderOverrideValue(override.confirmed_value)}</td>
-              <td>
-                <span className="tag">{override.action}</span>
-              </td>
-              <td className="muted-inline">
+              </TableCell>
+              <TableCell>{renderOverrideValue(override.computed_value)}</TableCell>
+              <TableCell>{renderOverrideValue(override.confirmed_value)}</TableCell>
+              <TableCell>
+                <span className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs">{override.action}</span>
+              </TableCell>
+              <TableCell className="muted-inline text-xs text-muted-foreground">
                 {override.created_by} · {dateTime(override.created_at)}
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </Section>
   );
 }

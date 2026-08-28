@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { ChatEvent, KernelEvent } from "./api";
+import { getActiveWorkbench, type ChatEvent, type KernelEvent, type SessionActivity } from "./api";
 import { token } from "./keycloak";
 
 /**
@@ -219,16 +219,52 @@ export class OdeSocket {
   }
 
   /**
+   * decide answers a confirmation a provider's own tool call is holding open.
+   *
+   * Deliberately not a chat stream. The turn holding the call never paused, so its
+   * result arrives on the relay the caller already has open; subscribing again to
+   * say "approved" would replay the whole turn into a view that is watching it.
+   */
+  async decide(sessionId: string, confirmationId: string, approve: boolean): Promise<void> {
+    const id = `d${++this.sequence}`;
+    const socket = await this.ready();
+
+    return new Promise<void>((resolve, reject) => {
+      this.pending.set(id, { resolve: () => resolve(), reject });
+      try {
+        socket.send(
+          JSON.stringify({
+            type: "chat_decide",
+            id,
+            payload: {
+              session_id: sessionId,
+              confirmation_id: confirmationId,
+              approve,
+            },
+          }),
+        );
+      } catch (e: unknown) {
+        this.pending.delete(id);
+        reject(e);
+      }
+    });
+  }
+
+  /**
    * stream subscribes to a chat exchange and resolves when the turn ends.
    *
    * Aborting detaches this view and leaves the exchange running, which is what
    * closing a tab should do. Stopping the work is a separate act — see cancelChat —
    * because the backend's exchange is detached from any connection.
+   *
+   * Generic in its event, because the same frames carry the session watch of
+   * watchSessions below: many events under one id, ended by the server rather than
+   * by an answer.
    */
-  async stream(
-    type: "chat_send" | "chat_confirm" | "chat_attach",
+  async stream<Event = ChatEvent>(
+    type: "chat_send" | "chat_confirm" | "chat_attach" | "chat_watch",
     payload: unknown,
-    handlers: { onEvent: (event: ChatEvent) => void; signal?: AbortSignal },
+    handlers: { onEvent: (event: Event) => void; signal?: AbortSignal },
   ): Promise<StreamOutcome> {
     const id = `s${++this.sequence}`;
     const socket = await this.ready();
@@ -269,6 +305,30 @@ export class OdeSocket {
         finish();
         reject(e);
       }
+    });
+  }
+
+  /**
+   * watchSessions follows what every one of this developer's conversations is
+   * doing, until the caller detaches.
+   *
+   * A separate method rather than a `stream` variant because it is a different
+   * kind of subscription: `stream` is a view onto one turn and ends with it,
+   * whereas this one has no turn and no end — it lives as long as the panel does,
+   * across every session the developer switches between. It is what makes a turn
+   * they walked away from visible when it finishes.
+   *
+   * Resolves when the backend ends the subscription, which it does when a watcher
+   * has fallen behind. The caller re-subscribes; the opening frames are a fresh
+   * snapshot, so nothing has to be replayed.
+   */
+  async watchSessions(handlers: {
+    onActivity: (activity: SessionActivity) => void;
+    signal?: AbortSignal;
+  }): Promise<void> {
+    await this.stream<SessionActivity>("chat_watch", {}, {
+      onEvent: handlers.onActivity,
+      signal: handlers.signal,
     });
   }
 
@@ -319,7 +379,16 @@ export class OdeSocket {
       });
 
       try {
-        socket.send(JSON.stringify({ type: "kernel_execute", id, payload: { code } }));
+        // The workbench the panes are acting in, so a cell runs in that operator's
+        // kernel and its relative paths land beside that operator's code. Absent
+        // means the developer's only one, as everywhere else.
+        socket.send(
+          JSON.stringify({
+            type: "kernel_execute",
+            id,
+            payload: { code, workbench: getActiveWorkbench() || undefined },
+          }),
+        );
       } catch (e: unknown) {
         finish();
         reject(e);
@@ -338,6 +407,27 @@ export class OdeSocket {
       id: `c${++this.sequence}`,
       payload: { session_id: sessionId },
     });
+  }
+
+  /**
+   * ensureConnected brings the connection up without having anything to send.
+   *
+   * Every other method here connects as a side effect of a request, which is right
+   * for the profiler and the kernel: a socket for a pane nobody has opened is a
+   * socket nobody needs. Chat is the exception, because what it wants from the
+   * connection is what arrives on it unasked — a turn still running after a reload,
+   * and what the conversations the developer is not reading are doing. Both of those
+   * subscribe on the first `open` state and neither can produce one, so a reload
+   * left this idle: the exchange ran on detached in the backend, chat_attach was
+   * never sent, and the conversation the developer had just posted to came back
+   * looking finished.
+   *
+   * Idempotent — an open socket and one already connecting are returned as they are
+   * — and it reports nothing. A failed connect schedules its own retry through
+   * onClosed, and the state listeners are how the UI says it is offline.
+   */
+  ensureConnected(): void {
+    void this.connect().catch(() => undefined);
   }
 
   /** close stops reconnecting and drops the connection, cancelling server work. */

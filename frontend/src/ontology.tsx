@@ -17,7 +17,10 @@
 import { useCallback, useState } from "react";
 import { api, deviceLabel, type AspectTreeNode, type Device, type OntologyFunction } from "./api";
 import { setParam, useParam } from "./router";
-import { Muted, Pane, useLoad } from "./ui";
+import { Busy, Muted, Pane, useLoad } from "./ui";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 /**
  * The ontology view: the semantic model the rest of ODE selects against (§5.1).
@@ -46,7 +49,7 @@ function AspectTreePane() {
 
   return (
     <Pane title="Aspects" subtitle="Hierarchical subsystems from the platform ontology">
-      {loading && <Muted>Loading…</Muted>}
+      {loading && <Busy>Loading…</Busy>}
       {error && <Muted>{error}</Muted>}
       {data && data.length === 0 && <Muted>The ontology contains no aspects.</Muted>}
       {data && data.length > 0 && (
@@ -69,11 +72,11 @@ function TreeNode({ node }: { node: AspectTreeNode }) {
     <li>
       <div className="tree-row">
         {hasChildren ? (
-          <button className="twisty" onClick={() => setOpen(!open)} aria-expanded={open}>
+          <Button variant="outline" className="twisty inline-block w-3 shrink-0 text-center text-xs text-muted-foreground" onClick={() => setOpen(!open)} aria-expanded={open}>
             {open ? "▾" : "▸"}
-          </button>
+          </Button>
         ) : (
-          <span className="twisty leaf">·</span>
+          <span className="twisty leaf inline-block w-3 shrink-0 text-center text-xs text-muted-foreground">·</span>
         )}
         <span>{node.name || node.id}</span>
       </div>
@@ -97,7 +100,7 @@ function FunctionsPane() {
     <Pane title="Functions" subtitle="What the platform can measure and control">
       <div className="toggle">
         {(["measuring", "controlling"] as const).map((t) => (
-          <button
+          <Button variant="outline"
             key={t}
             className={t === rdfType ? "active" : ""}
             aria-pressed={t === rdfType}
@@ -107,13 +110,13 @@ function FunctionsPane() {
             onClick={() => setParam("functions", t === "measuring" ? null : t)}
           >
             {t}
-          </button>
+          </Button>
         ))}
       </div>
-      {loading && <Muted>Loading…</Muted>}
+      {loading && <Busy>Loading…</Busy>}
       {error && <Muted>{error}</Muted>}
       {data && (
-        <ul className="list">
+        <ul className="list flex flex-col gap-1">
           {data.map((fn: OntologyFunction) => (
             <li key={fn.id}>{fn.display_name || fn.name || fn.id}</li>
           ))}
@@ -143,46 +146,46 @@ function DevicesPane() {
           setParam("devices", search || null);
         }}
       >
-        <input
+        <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search devices"
           aria-label="Search devices"
         />
-        <button type="submit">Search</button>
+        <Button variant="outline" type="submit">Search</Button>
       </form>
-      {loading && <Muted>Loading…</Muted>}
+      {loading && <Busy>Loading…</Busy>}
       {error && <Muted>{error}</Muted>}
       {data && data.devices.length === 0 && <Muted>No devices match.</Muted>}
       {data && data.devices.length > 0 && (
         <>
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>State</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table className="grid">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>State</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {data.devices.map((device: Device) => (
-                <tr key={device.id}>
-                  <td title={device.id}>
+                <TableRow key={device.id}>
+                  <TableCell title={device.id}>
                     {deviceLabel(device)}
                     {device.device_type_name && (
                       <span className="device-type" title={device.device_type_id}>
                         {device.device_type_name}
                       </span>
                     )}
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell>
                     <span className={`state ${device.connection_state || "unknown"}`}>
                       {device.connection_state || "unknown"}
                     </span>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
           <Muted>
             {data.devices.length} shown{data.total > 0 && ` of ${data.total}`}
           </Muted>

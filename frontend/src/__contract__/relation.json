@@ -3,7 +3,7 @@
   "cache_key": "87272b400eca1e8e16e7ca55dd15abd097bfeb1fea023df8a490bdc1f086909c",
   "candidate_rules": [
     {
-      "advisory": "candidate only: not a configured rule, not an anomaly definition, and never read by an operator or a training job until a developer confirms it (§5.5, D28)",
+      "advisory": "candidate only: not a configured rule, not an anomaly definition, and never read by an operator or a training job until a developer confirms it",
       "anomaly": "the kitchen lights active while the oven idle",
       "antecedent": {
         "label": "the kitchen lights",
@@ -26,7 +26,7 @@
       "violations": 0
     },
     {
-      "advisory": "candidate only: not a configured rule, not an anomaly definition, and never read by an operator or a training job until a developer confirms it (§5.5, D28)",
+      "advisory": "candidate only: not a configured rule, not an anomaly definition, and never read by an operator or a training job until a developer confirms it",
       "anomaly": "the oven active while the kitchen lights idle",
       "antecedent": {
         "label": "the oven",

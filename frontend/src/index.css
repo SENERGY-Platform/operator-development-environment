@@ -15,180 +15,233 @@
  */
 
 /*
- * --- the tokens ---
+ * The theme layer.
  *
- * Light is the base and dark is the override, rather than the other way round.
- * That ordering is not a preference: a stylesheet whose base case is the dark one
- * has to restate every colour to become light, and the two then drift. Here the
- * bare `:root` below is the whole light theme, and the two dark blocks after it
- * restate only what changes.
+ * The palette, the radius scale and the type are shadcn's `vega`/`mist` preset
+ * (`b7BYR8oLo`), taken as generated.
  *
- * Three scopes, because the theme has three states:
+ * What is *not* generated is the shape of the two dark scopes below, and it is
+ * the thing to read before running `shadcn apply` again. That command writes the
+ * light palette into `:root` and appends its dark half as a `.dark` block — a
+ * selector that matches nothing here, because this application themes on
+ * `data-theme`. Left alone, the result is a light theme on the new preset and a
+ * dark theme silently still on the old one. So after every apply: lift the values
+ * out of the appended `.dark`, restate both scopes below from them, and delete it.
  *
- *   - bare `:root` — light, and the value a viewer gets with no preference at all;
- *   - `@media (prefers-color-scheme: dark)` guarded by `:not([data-theme="light"])`
+ * shadcn ships a two-state theme: a `.dark` class is on the document or it is
+ * not. This application has three states, and the third one is the default:
+ *
+ *   - bare `:root` — light, and what a viewer gets having chosen nothing;
+ *   - `@media (prefers-color-scheme: dark)`, guarded by `:not([data-theme="light"])`
  *     — the operating system's setting, which must lose to an explicit choice;
  *   - `:root[data-theme="dark"]` — the toggle, which must win from either side.
  *
  * The guard is what makes "I chose light on a dark desktop" hold. Without it the
- * media query would beat the light stamp and the toggle would only work one way.
+ * media query beats the light stamp and the toggle only works one way. `theme.ts`
+ * relies on exactly this: it *removes* the attribute to mean "follow the system"
+ * rather than writing `data-theme="light"`, and `theme.test.ts` asserts the
+ * distinction. Collapsing these two blocks into shadcn's single `.dark` would
+ * silently drop the follow-the-system state.
  *
- * `@media` is the only at-rule used here on purpose: `stylesheet.test.ts` parses
- * this file and asserts the set of at-rules in it, and `@supports` is not one the
- * parser has been taught.
+ * `@custom-variant dark` below is the same three states expressed for Tailwind,
+ * so that a `dark:` utility written in a component agrees with the tokens here.
  */
 
-:root {
-  /*
-   * The root is 16px so that the space scale lands on whole pixels, and body text
-   * is set back to 14px below — the density this tool was actually built at. Only
-   * two rules in this file size type in `rem`; every other size is `em`, relative
-   * to the 14px body, and so is unmoved by this. What does move is every `rem`
-   * length: padding, gaps and caps all gain an eighth, which is the cheapest
-   * honest way to give a dense instrument room to breathe.
-   */
-  font-size: 100%;
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/source-sans-3";
 
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
-
-  /* Type. `--fs-body` is the one the body sets; the rest step off it. */
-  --fs-micro: 0.6875rem;
-  --fs-small: 0.75rem;
-  --fs-body: 0.875rem;
-  --fs-title: 1rem;
-  --fs-head: 1.125rem;
-  --fs-display: 1.375rem;
-
-  /* Space, on a 4px rhythm. */
-  --sp-1: 0.25rem;
-  --sp-2: 0.5rem;
-  --sp-3: 0.75rem;
-  --sp-4: 1rem;
-  --sp-5: 1.5rem;
-  --sp-6: 2rem;
-
-  /* Radius. Tighter than the old 6/10px pair: this is an instrument, and a
-     precise corner reads as measured rather than soft. */
-  --r-1: 3px;
-  --r-2: 5px;
-  --r-3: 8px;
-  --r-pill: 999px;
-
-  /*
-   * The inline highlights — the tag, the confidence, the not-computed marker and
-   * the rest — share one pair of paddings, and it is a token rather than a habit
-   * because every one of them had drifted to `padding: 0 <x>`. A one-pixel border
-   * around a 0.8em word with no vertical padding leaves the descender of a "y" or
-   * a "g" sitting on the border: "likely" and "downstream" both did. The vertical
-   * value is deliberately not from the space scale — 4px would make a tag taller
-   * than the table row it labels — and the pills carry their own `line-height` so
-   * their height does not change with the box they are dropped into.
-   */
-  --pill-y: 0.1875rem;
-  --pill-x: 0.4375rem;
-  --pill-lh: 1.35;
-
-  /*
-   * Surfaces, from the page up. The elevation direction inverts between the
-   * themes — lighter is higher in the dark, and in the light it is the page that
-   * is tinted and the panes that are white — but the *roles* survive it, which is
-   * why `input { background: var(--bg) }` reads as recessed in both.
-   */
-  --bg: #f2f4f7;
-  --surface: #ffffff;
-  --raised: #eef1f5;
-
-  /*
-   * Two border tokens, because one was doing two jobs with two different
-   * obligations. `--border` separates things and may be quiet; `--edge` is the
-   * outline of something you operate — an input, a button — and has to clear
-   * WCAG's 3:1 for non-text contrast against every surface it sits on. Drawing a
-   * text field with the divider colour is how a form ends up invisible.
-   */
-  --border: #e1e6ee;
-  --edge: #7d879a;
-
-  --text: #10141c;
-  --muted: #5d6675;
-
-  /*
-   * The status colours are read as *text* far more often than as a border — over
-   * a hundred `color:` declarations in this file — so each is chosen to clear
-   * 4.5:1 against --bg, --surface and --raised alike, not merely to look like the
-   * hue it names. That is the whole reason the light theme could not be a flip of
-   * the dark one: #e5c07b amber is 1.68:1 on white, which is a decoration, not a
-   * word.
-   */
-  --accent: #1a5fd0;
-  --online: #0f7a52;
-  --offline: #c0342c;
-  --warn: #8a5a00;
-
-  /* The focus ring is its own token rather than the accent: it has to stay legible
-     against --surface, --raised and --bg alike, and the accent is also the colour
-     of a link, which would make a focused link and an unfocused one hard to tell
-     apart. */
-  --focus: #0a58ca;
-
-  /*
-   * Shadow as a token, because it is the one thing that cannot survive a theme
-   * flip. Black at 45% is depth on a dark page and a smudge on a white one.
-   */
-  --shadow-1: 0 1px 2px rgb(16 20 28 / 6%);
-  --shadow-2: 0 8px 24px -6px rgb(16 20 28 / 18%), 0 2px 6px rgb(16 20 28 / 8%);
-
-  /*
-   * The chart series slots (SPEC §5.9).
-   *
-   * Eight fixed slots, assigned in order. Held here rather than in `exploration.tsx`
-   * so that the palette changes with the theme without a line of JavaScript: the
-   * pane sets `stroke: var(--series-n)` and the cascade does the rest.
-   *
-   * Both columns are selected against this file's own pane surface — white here,
-   * #161a22 in the dark — and both pass the lightness, chroma, CVD-separation and
-   * normal-vision gates. The set they replace did not: its olive and its orange
-   * were ΔE 3.9 apart for a deuteranope and ΔE 12.4 apart for everyone else, so
-   * two adjacent series in the same chart were the same colour in practice.
-   *
-   * Three light slots sit below 3:1 against white, which is permitted only because
-   * the pane labels every series directly — the swatch beside its name in
-   * `.series-row`, and the annotations table underneath — so identity never rests
-   * on the colour alone.
-   */
-  --series-1: #2a78d6;
-  --series-2: #eb6834;
-  --series-3: #1baf7a;
-  --series-4: #eda100;
-  --series-5: #e87ba4;
-  --series-6: #008300;
-  --series-7: #4a3aa7;
-  --series-8: #e34948;
-
-  color-scheme: light;
+@custom-variant dark {
+    /* The explicit choice, from either side. */
+    &:where([data-theme="dark"], [data-theme="dark"] *) {
+        @slot;
+    }
+    /* The operating system's, only where no explicit light has been stamped. */
+    @media (prefers-color-scheme: dark) {
+        &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+            @slot;
+        }
+    }
 }
 
-/*
- * The operating system's preference, which an explicit choice overrides. The
- * `:not([data-theme="light"])` guard is the whole mechanism: it lets the toggle
- * win in both directions rather than only from light to dark.
- */
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Source Sans 3 Variable', sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.148 0.004 228.8);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.148 0.004 228.8);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.148 0.004 228.8);
+    --primary: oklch(0.218 0.008 223.9);
+    --primary-foreground: oklch(0.987 0.002 197.1);
+    --secondary: oklch(0.963 0.002 197.1);
+    --secondary-foreground: oklch(0.218 0.008 223.9);
+    --muted: oklch(0.963 0.002 197.1);
+    --muted-foreground: oklch(0.56 0.021 213.5);
+    --accent: oklch(0.963 0.002 197.1);
+    --accent-foreground: oklch(0.218 0.008 223.9);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.925 0.005 214.3);
+    --input: oklch(0.925 0.005 214.3);
+    --ring: oklch(0.723 0.014 214.4);
+    --chart-1: oklch(0.872 0.007 219.6);
+    --chart-2: oklch(0.56 0.021 213.5);
+    --chart-3: oklch(0.45 0.017 213.2);
+    --chart-4: oklch(0.378 0.015 216);
+    --chart-5: oklch(0.275 0.011 216.9);
+    --radius: 0.45rem;
+    --sidebar: oklch(0.987 0.002 197.1);
+    --sidebar-foreground: oklch(0.148 0.004 228.8);
+    --sidebar-primary: oklch(0.218 0.008 223.9);
+    --sidebar-primary-foreground: oklch(0.987 0.002 197.1);
+    --sidebar-accent: oklch(0.963 0.002 197.1);
+    --sidebar-accent-foreground: oklch(0.218 0.008 223.9);
+    --sidebar-border: oklch(0.925 0.005 214.3);
+    --sidebar-ring: oklch(0.723 0.014 214.4);
+
+    /*
+     * The chart palette, carried over unchanged from the stylesheet this file
+     * replaces.
+     *
+     * Not part of the shadcn preset and deliberately not derived from
+     * `--chart-1`..`--chart-5`: `exploration.tsx` draws up to eight series at
+     * once and asks for `s1`..`s8`, and the five neutral greys the preset ships
+     * cannot tell eight lines apart. These eight were picked to stay
+     * distinguishable from one another — including for the commonest colour
+     * vision deficiencies — which is a property of the data, not of the theme.
+     * `theme.test.ts` asserts all eight exist in all three scopes.
+     */
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
+    --series-7: #4a3aa7;
+    --series-8: #e34948;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0f1218;
-    --surface: #161a22;
-    --raised: #1e232e;
-    --border: #262c39;
-    --edge: #68738a;
-    --text: #e6eaf2;
-    --muted: #949daf;
-    --accent: #6ea8fe;
-    --online: #4ec9a5;
-    --offline: #f0868f;
-    --warn: #e5c07b;
-    --focus: #9dc1ff;
-    --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
-    --shadow-2: 0 12px 28px -8px rgb(0 0 0 / 60%), 0 2px 8px rgb(0 0 0 / 40%);
+    :root:not([data-theme="light"]) {
+        --background: oklch(0.148 0.004 228.8);
+        --foreground: oklch(0.987 0.002 197.1);
+        --card: oklch(0.218 0.008 223.9);
+        --card-foreground: oklch(0.987 0.002 197.1);
+        --popover: oklch(0.218 0.008 223.9);
+        --popover-foreground: oklch(0.987 0.002 197.1);
+        --primary: oklch(0.925 0.005 214.3);
+        --primary-foreground: oklch(0.218 0.008 223.9);
+        --secondary: oklch(0.275 0.011 216.9);
+        --secondary-foreground: oklch(0.987 0.002 197.1);
+        --muted: oklch(0.275 0.011 216.9);
+        --muted-foreground: oklch(0.723 0.014 214.4);
+        --accent: oklch(0.275 0.011 216.9);
+        --accent-foreground: oklch(0.987 0.002 197.1);
+        --destructive: oklch(0.704 0.191 22.216);
+        --border: oklch(1 0 0 / 10%);
+        --input: oklch(1 0 0 / 15%);
+        --ring: oklch(0.56 0.021 213.5);
+        --chart-1: oklch(0.872 0.007 219.6);
+        --chart-2: oklch(0.56 0.021 213.5);
+        --chart-3: oklch(0.45 0.017 213.2);
+        --chart-4: oklch(0.378 0.015 216);
+        --chart-5: oklch(0.275 0.011 216.9);
+        --sidebar: oklch(0.218 0.008 223.9);
+        --sidebar-foreground: oklch(0.987 0.002 197.1);
+        --sidebar-primary: oklch(0.488 0.243 264.376);
+        --sidebar-primary-foreground: oklch(0.987 0.002 197.1);
+        --sidebar-accent: oklch(0.275 0.011 216.9);
+        --sidebar-accent-foreground: oklch(0.987 0.002 197.1);
+        --sidebar-border: oklch(1 0 0 / 10%);
+        --sidebar-ring: oklch(0.56 0.021 213.5);
+        /* Lifted a step, so a thin stroke holds its hue against a dark plane. */
+        --series-1: #3987e5;
+        --series-2: #d95926;
+        --series-3: #199e70;
+        --series-4: #c98500;
+        --series-5: #d55181;
+        --series-6: #008300;
+        --series-7: #9085e9;
+        --series-8: #e66767;
+    }
+}
+
+:root[data-theme="dark"] {
+    --background: oklch(0.148 0.004 228.8);
+    --foreground: oklch(0.987 0.002 197.1);
+    --card: oklch(0.218 0.008 223.9);
+    --card-foreground: oklch(0.987 0.002 197.1);
+    --popover: oklch(0.218 0.008 223.9);
+    --popover-foreground: oklch(0.987 0.002 197.1);
+    --primary: oklch(0.925 0.005 214.3);
+    --primary-foreground: oklch(0.218 0.008 223.9);
+    --secondary: oklch(0.275 0.011 216.9);
+    --secondary-foreground: oklch(0.987 0.002 197.1);
+    --muted: oklch(0.275 0.011 216.9);
+    --muted-foreground: oklch(0.723 0.014 214.4);
+    --accent: oklch(0.275 0.011 216.9);
+    --accent-foreground: oklch(0.987 0.002 197.1);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.56 0.021 213.5);
+    --chart-1: oklch(0.872 0.007 219.6);
+    --chart-2: oklch(0.56 0.021 213.5);
+    --chart-3: oklch(0.45 0.017 213.2);
+    --chart-4: oklch(0.378 0.015 216);
+    --chart-5: oklch(0.275 0.011 216.9);
+    --sidebar: oklch(0.218 0.008 223.9);
+    --sidebar-foreground: oklch(0.987 0.002 197.1);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.987 0.002 197.1);
+    --sidebar-accent: oklch(0.275 0.011 216.9);
+    --sidebar-accent-foreground: oklch(0.987 0.002 197.1);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.56 0.021 213.5);
+    /* Lifted a step, so a thin stroke holds its hue against a dark plane. */
     --series-1: #3987e5;
     --series-2: #d95926;
     --series-3: #199e70;
@@ -197,643 +250,361 @@
     --series-6: #008300;
     --series-7: #9085e9;
     --series-8: #e66767;
-    color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    }
+}
+/*
+ * The eight series slots, as classes rather than inline styles.
+ *
+ * `exploration.tsx` writes `class="series-line s3"`; the cascade picks the light
+ * or the dark step. Keeping the colour out of the element's `style` is what lets
+ * the theme toggle repaint a chart that is already on screen.
+ */
+@layer components {
+  .s1 {
+    stroke: var(--series-1);
+    fill: var(--series-1);
+    color: var(--series-1);
+  }
+  .s2 {
+    stroke: var(--series-2);
+    fill: var(--series-2);
+    color: var(--series-2);
+  }
+  .s3 {
+    stroke: var(--series-3);
+    fill: var(--series-3);
+    color: var(--series-3);
+  }
+  .s4 {
+    stroke: var(--series-4);
+    fill: var(--series-4);
+    color: var(--series-4);
+  }
+  .s5 {
+    stroke: var(--series-5);
+    fill: var(--series-5);
+    color: var(--series-5);
+  }
+  .s6 {
+    stroke: var(--series-6);
+    fill: var(--series-6);
+    color: var(--series-6);
+  }
+  .s7 {
+    stroke: var(--series-7);
+    fill: var(--series-7);
+    color: var(--series-7);
+  }
+  .s8 {
+    stroke: var(--series-8);
+    fill: var(--series-8);
+    color: var(--series-8);
   }
 }
 
-/* The toggle. Last of the three, so it wins from either side. */
-:root[data-theme="dark"] {
-  --bg: #0f1218;
-  --surface: #161a22;
-  --raised: #1e232e;
-  --border: #262c39;
-  --edge: #68738a;
-  --text: #e6eaf2;
-  --muted: #949daf;
-  --accent: #6ea8fe;
-  --online: #4ec9a5;
-  --offline: #f0868f;
-  --warn: #e5c07b;
-  --focus: #9dc1ff;
-  --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
-  --shadow-2: 0 12px 28px -8px rgb(0 0 0 / 60%), 0 2px 8px rgb(0 0 0 / 40%);
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --series-3: #199e70;
-  --series-4: #c98500;
-  --series-5: #d55181;
-  --series-6: #008300;
-  --series-7: #9085e9;
-  --series-8: #e66767;
-  color-scheme: dark;
-}
-
-* {
-  box-sizing: border-box;
-}
-
 /*
- * One focus ring, everywhere, and it is not optional.
+ * --- the layout ---
  *
- * The UA default is a thin outline the same colour family as the border, which on
- * either palette is close to invisible — a keyboard user could not tell which of
- * eight tabs they were on. :focus-visible rather than :focus so a mouse click does
- * not leave a ring behind on every button it touches.
+ * The one part of the old stylesheet that survives it, and the reason it does:
+ * shadcn ships components, not page geometry. Everything below is the shape of the
+ * application — a header over one growing row, a resizable split, a grid of panes
+ * per view, the code pane's tree beside its editor. None of it is a component and
+ * none of it has a Tailwind utility that says it in fewer characters than the CSS
+ * does; a `grid-template-columns` written as an arbitrary-value class is the same
+ * declaration with worse syntax.
  *
- * The offset is negative, which is the whole point of this rule and the part that
- * is easy to undo by accident. A ring drawn *outside* the border box needs four
- * pixels of clearance on every side — two of offset and two of ring — and a
- * control that fills the width it was given has none: the composer textarea, a
- * full-width text field, a row in a list. Every one of those sits flush against
- * the padding edge of a scrolling box (`.pane-body` and the eight others in this
- * file), and an outline is not part of a scroll container's scrollable overflow,
- * so the browser does not scroll to reveal it — it simply cuts it off. The result
- * is a ring that is round at the top and bottom and sheared flat down both sides,
- * which reads as "the highlight is wider than the space" rather than as focus.
- *
- * Drawing it inside costs nothing on anything with a box of its own: two pixels of
- * a control's own padding are given over to the ring and the content does not
- * move. It costs everything on a control that has no box — a bare text button, a
- * disclosure arrow, a checkbox the platform paints itself — where an inward ring
- * lands on the glyph instead of around it. Those four are listed below and keep
- * the ring outside; none of them is ever full width, so none of them can clip.
+ * Everything that *was* styling — colour, border, radius, type, the state of a
+ * control — is gone from here and comes from the components instead. What is left
+ * is measurements, and the tokens they are written in are shadcn's.
  */
-:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: -2px;
-  border-radius: var(--r-1);
-}
 
-/* The controls with no box of their own. See the paragraph above. */
-input[type="checkbox"]:focus-visible,
-input[type="radio"]:focus-visible,
-button.link:focus-visible,
-.twisty:focus-visible {
-  outline-offset: 2px;
-}
-
-/* Nothing here animates for its own sake, but hover and focus transitions are
-   still motion to someone who asked for none. */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
+@layer components {
+  /*
+   * The app is a header over one growing row.
+   *
+   * It is also a query container, so that a view can size itself against the space
+   * it was actually given rather than against the window. That matters because the
+   * same view renders full width at /chat and in half a split at /tools/…, and a
+   * viewport media query cannot tell those two apart. The nearer container wins, so
+   * a view inside the split queries the split side and one outside it queries this.
+   */
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    container-type: inline-size;
   }
-}
 
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-size: var(--fs-body);
-  line-height: 1.5;
-  /* The dense tables in here are full of digits that want to line up down a
-     column, and proportional figures in a score column read as noise. */
-  font-variant-numeric: tabular-nums;
-  -webkit-font-smoothing: antialiased;
-}
+  .centered {
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+    padding: 1rem;
+  }
 
-/*
- * --- controls ---
- *
- * A button is quiet by default and loud only where a `primary` says so. That was
- * already the intent; what is new is that the quiet state now has a surface of its
- * own instead of being a border around the page. A row of transparent outlines
- * reads as a row of holes, and on the light theme it read as nothing at all.
- */
-button {
-  font: inherit;
-  font-size: var(--fs-body);
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--edge);
-  border-radius: var(--r-2);
-  padding: var(--sp-1) var(--sp-3);
-  cursor: pointer;
-  /* Aligns a button beside an input and a pill on the same row, which a baseline
-     of mixed inline-block boxes does not do on its own. */
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  white-space: nowrap;
-  box-shadow: var(--shadow-1);
-  transition:
-    background-color 0.12s ease,
-    border-color 0.12s ease,
-    color 0.12s ease;
-}
+  .fatal {
+    max-width: 34rem;
+    text-align: center;
+  }
 
-button:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--raised);
-}
+  /* --- the split --- */
 
-button:active {
-  /* A pressed control should look pressed rather than merely re-coloured; the
-     shadow going away is what sells it without moving the layout. */
-  box-shadow: none;
-}
+  .split {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: var(--split-left, 42%) auto minmax(0, 1fr);
+  }
 
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-  box-shadow: none;
-}
+  .split-side {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    container-type: inline-size;
+  }
 
-button:disabled:hover {
-  border-color: var(--edge);
-  color: var(--text);
-  background: var(--surface);
-}
+  .split-left {
+    grid-area: 1 / 1;
+  }
 
-/*
- * The buttons that are not buttons.
- *
- * A good third of the `<button>` elements in this application are not controls
- * with an edge — they are a row in a list, a disclosure arrow, a file name in a
- * tree, a text link. Each of them already says `border: none`, which was enough
- * while the base rule above had a transparent background; now that a button
- * carries a surface and a shadow, "no border" is no longer the same as "no box",
- * and every one of them would otherwise render as a white card inside the row it
- * is supposed to be part of.
- *
- * Listed in one place rather than patched into a dozen rules, so that the next
- * bare button has somewhere obvious to join.
- */
-button.link,
-.exp-open,
-.session-open,
-.session-delete,
-.twisty,
-.tool-head,
-.chart-entry,
-.split-toggle,
-.nc-tag,
-button.tree-dir,
-button.tree-file,
-button.tree-delete {
-  background: transparent;
-  box-shadow: none;
-}
+  .split-right {
+    grid-area: 1 / 3;
+  }
 
-/* Their hover is a tint on the row, not a change of edge; the base rule's
-   accent border would draw a box that is not otherwise there. */
-button.link:hover,
-.exp-open:hover,
-.session-open:hover,
-.session-delete:hover,
-.twisty:hover,
-.tool-head:hover,
-.chart-entry:hover,
-.split-toggle:hover,
-.nc-tag:hover,
-button.tree-dir:hover,
-button.tree-file:hover,
-button.tree-delete:hover {
-  border-color: transparent;
-}
+  /*
+   * The gutter draws nothing of its own.
+   *
+   * It used to carry a background and a border down each side, which put two
+   * hairlines immediately either side of the separator's own — three lines to say
+   * one thing, with the panes' card borders making it five across a four-pixel
+   * span. The separator is the divider and the handle at once; the gutter is only
+   * the column it and the toggles sit in.
+   */
+  .split-gutter {
+    grid-area: 1 / 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.4rem;
+    width: 1.75rem;
+    padding: 0.4rem 0;
+  }
 
-input,
-select,
-textarea {
-  font: inherit;
-  font-size: var(--fs-body);
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--edge);
-  border-radius: var(--r-2);
-  padding: var(--sp-1) var(--sp-2);
-}
+  .split[data-mode="left"] {
+    grid-template-columns: minmax(0, 1fr) auto 0;
+  }
 
-input::placeholder,
-textarea::placeholder {
-  color: var(--muted);
-}
-
-/*
- * The checkbox and the radio take the accent, so a checked box is the same colour
- * as everything else that means "on". Left to the UA they come out in the
- * platform's own blue, which on the dark theme is the one control on screen that
- * does not belong to this palette.
- */
-input[type="checkbox"],
-input[type="radio"] {
-  accent-color: var(--accent);
-}
-
-code {
-  font-family: var(--mono);
-  font-size: 0.92em;
-}
-
-.wrap {
-  overflow-wrap: anywhere;
-}
-
-/* --- the shell: header, navigation, and the split --- */
-
-/*
- * The app is a header over one growing row.
- *
- * It is also a query container, so that a view can size itself against the space
- * it was actually given rather than against the window. That matters because the
- * same view renders full width at /chat and in half a split at /tools/…, and a
- * viewport media query cannot tell those two apart. The nearer container wins, so
- * a view inside the split queries the split side and one outside it queries this.
- */
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  container-type: inline-size;
-}
-
-/*
- * The header sits on its own surface and casts a shadow rather than relying on a
- * hairline. On the light theme a 1px border between two near-white planes is not
- * a separation anybody sees; the shadow is what makes the chrome read as chrome.
- */
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2) var(--sp-4);
-  flex-wrap: wrap;
-  padding: var(--sp-2) var(--sp-4);
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-  box-shadow: var(--shadow-1);
-  /* Above the panes' own stacking, so a scrolled pane does not paint over it. */
-  position: relative;
-  z-index: 10;
-}
-
-/*
- * The wordmark carries the accent, which is the one place in the chrome that is
- * allowed to. Everything else coloured with the accent means "current" or
- * "link", and a brand that shares that colour competes with the navigation
- * beside it — so it takes the weight and the tracking instead.
- */
-.brand {
-  font-weight: 700;
-  font-size: var(--fs-title);
-  letter-spacing: 0.1em;
-  margin-right: var(--sp-2);
-  color: var(--text);
-}
-
-.subtitle,
-.pane-subtitle {
-  color: var(--muted);
-}
-
-.header-left,
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 0.8rem;
-  flex-wrap: wrap;
-}
-
-.nav {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-/*
- * A navigation entry is an anchor, not a button, so it looks like a tab and
- * behaves like a link. The current one is marked with aria-current and coloured
- * from it rather than from a class, which keeps the two from disagreeing.
- */
-.nav-entry {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  padding: var(--sp-1) var(--sp-3);
-  border: 1px solid transparent;
-  border-radius: var(--r-2);
-  color: var(--muted);
-  text-decoration: none;
-  font: inherit;
-  font-weight: 500;
-  background: transparent;
-  cursor: pointer;
-  white-space: nowrap;
-  box-shadow: none;
-  transition:
-    background-color 0.12s ease,
-    color 0.12s ease;
-}
-
-.nav-entry:hover {
-  color: var(--text);
-  background: var(--raised);
-  border-color: transparent;
-}
-
-/*
- * The current entry is filled with the accent rather than tinted and underlined.
- * The underline was a 2px inset shadow, which the light theme all but swallowed —
- * and "which tab am I on" is not a question a developer should have to lean in
- * for. The filled state also survives the `.active` spelling the menu trigger
- * uses, which the underline did not: only `[aria-current]` carried it.
- */
-.nav-entry[aria-current="page"],
-.nav-entry.active {
-  color: var(--surface);
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.nav-entry[aria-current="page"]:hover,
-.nav-entry.active:hover {
-  color: var(--surface);
-  background: var(--accent);
-}
-
-/*
- * --- the theme control ---
- *
- * Sits with "Sign out" at the far end of the header, because both are about this
- * browser rather than about the data on screen.
- */
-.theme-toggle {
-  position: relative;
-  gap: var(--sp-2);
-  color: var(--muted);
-}
-
-.theme-toggle:hover {
-  color: var(--accent);
-}
-
-.theme-toggle-icon {
-  /* The half-filled circle carries the state; it is scaled up because at body
-     size the two halves are a smudge rather than a distinction. */
-  font-size: 1.15em;
-  line-height: 1;
-}
-
-/*
- * The mark that says the theme was *chosen* rather than inherited from the
- * desktop. Without it the button reads the same in both cases, and shift-click
- * — the way back to following the system — has nothing to hint at.
- */
-.theme-toggle-pinned {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 5px;
-  height: 5px;
-  border-radius: var(--r-pill);
-  background: var(--accent);
-}
-
-/*
- * A viewport query, not a container query, and deliberately so: the folds at the
- * end of this file are located by the *first* `@container` in it, so an earlier
- * one silently moves the boundary the whole fold contract is measured against.
- * The header is also the one thing here that is always the full width of the
- * window — it is never inside a split — so the viewport is the right question.
- */
-@media (max-width: 60rem) {
-  /* The word goes before the header wraps onto a second row; the icon still says
-     which theme is on. */
-  .theme-toggle-label {
+  .split[data-mode="left"] .split-right {
     display: none;
   }
-}
 
-/* --- the "Under the hood" menu --- */
+  .split[data-mode="right"] {
+    grid-template-columns: 0 auto minmax(0, 1fr);
+  }
 
-.menu-host {
-  position: relative;
-  display: inline-flex;
-}
+  .split[data-mode="right"] .split-left {
+    display: none;
+  }
 
-.menu-caret {
-  color: var(--muted);
-  font-size: 0.8em;
-}
+  /*
+   * The divider is a thin hit target with a hairline drawn down the middle of it:
+   * two pixels are what the eye wants and ten are what the pointer needs.
+   */
+  .split-separator {
+    flex: 1;
+    width: 100%;
+    min-height: 2rem;
+    cursor: col-resize;
+    background: linear-gradient(var(--border), var(--border)) center / 2px 100% no-repeat;
+    touch-action: none;
+  }
 
-.menu {
-  position: absolute;
-  top: calc(100% + var(--sp-1));
-  left: 0;
-  z-index: 20;
-  min-width: 22rem;
-  max-width: min(28rem, 90vw);
-  padding: var(--sp-1);
-  /* --surface, not --raised: a popover floats above the page and reads as the
-     topmost plane, which on the light theme means white against the tinted
-     body rather than a grey card on a white one. */
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-3);
-  box-shadow: var(--shadow-2);
-}
+  .split-separator:hover,
+  .split-separator:focus-visible {
+    background-image: linear-gradient(var(--primary), var(--primary));
+    outline: none;
+  }
 
-.menu-item {
-  display: grid;
-  gap: 0.1rem;
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--r-2);
-  color: var(--text);
-  text-decoration: none;
-}
+  .split-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
 
-.menu-item:hover {
-  background: var(--surface);
-}
+  /* The words are for the stacked bar below the breakpoint; the vertical strip has
+     room only for the arrow. */
+  .split-toggle-label {
+    display: none;
+  }
 
-.menu-item[aria-current="page"] {
-  background: var(--surface);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
+  /* --- the panes --- */
 
-.menu-item-label {
-  font-weight: 600;
-}
+  .panes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1rem;
+    padding: 1rem;
+    overflow: auto;
+    flex: 1;
+  }
 
-.menu-item-note {
-  color: var(--muted);
-  font-size: 0.85em;
-  overflow-wrap: anywhere;
-}
+  /*
+   * The per-view column ratios.
+   *
+   * Each of these was measured against the view it names — the profiler's candidate
+   * table is eight columns wide and its profile is a long stack of sections, so
+   * neither survives an equal split; the chat list wants a little under a third,
+   * with a floor that keeps a session title readable. They are ratios rather than
+   * fixed measures so that the same view works at /chat and in half a split.
+   */
+  .panes.single {
+    grid-template-columns: minmax(0, min(58rem, 100%));
+    justify-content: center;
+    align-content: start;
+  }
 
-/* A view whose backend this deployment does not serve. Still reachable — the card
-   behind it names the missing configuration, which is more use than a dead entry. */
-.menu-item.unserved .menu-item-label,
-.tool-index-list .unserved .tool-index-label {
-  color: var(--muted);
-}
+  .panes.profiler,
+  .panes.selection {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    align-items: stretch;
+    height: 100%;
+  }
 
-.menu-rule {
-  height: 0;
-  margin: 0.3rem 0.4rem;
-  border: none;
-  border-top: 1px solid var(--border);
-}
+  .panes.relations {
+    grid-template-columns: minmax(0, 4fr) minmax(0, 6fr);
+    align-items: stretch;
+    height: 100%;
+  }
 
-/*
- * A route that is one card rather than a grid of panes: the tools index, the
- * "not configured" explanation, the unknown path. Constrained, because a
- * paragraph set across two thousand pixels is a paragraph nobody finishes.
- */
-.panes.single {
-  grid-template-columns: minmax(0, min(58rem, 100%));
-  justify-content: center;
-  align-content: start;
-}
+  .panes.exploration {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 7fr);
+    align-items: stretch;
+    height: 100%;
+  }
 
-/* --- the /tools index --- */
+  .panes.chat-layout {
+    grid-template-columns: minmax(13rem, 0.4fr) minmax(0, 1fr);
+    align-items: stretch;
+    height: 100%;
+  }
 
-.tool-index-list li {
-  border-bottom: 1px solid var(--border);
-}
+  .panes.experiments {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    align-items: stretch;
+  }
 
-.tool-index-list li:last-child {
-  border-bottom: none;
-}
+  .panes.admin-layout {
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  }
 
-.tool-index-entry {
-  display: grid;
-  gap: 0.2rem;
-  padding: 0.6rem 0.4rem;
-  color: var(--text);
-  text-decoration: none;
-  border-radius: 6px;
-}
+  .panes.kernel-layout {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
 
-.tool-index-entry:hover {
-  background: var(--raised);
-}
+  .panes.profiler > .pane,
+  .panes.selection > .pane,
+  .panes.relations > .pane,
+  .panes.exploration > .pane {
+    max-height: 100%;
+  }
 
-.tool-index-label {
-  font-weight: 600;
-}
+  /*
+   * The code view is a flex column at every width rather than a grid: the repository
+   * bar and the account card are strips above the editor, not columns beside it.
+   */
+  main.panes.code {
+    display: flex;
+    flex-direction: column;
+  }
 
-.tool-index-summary {
-  color: var(--muted);
-}
+  main.panes.code > .pane {
+    flex: 1 1 auto;
+  }
 
-.tool-index-tools {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-}
+  main.panes.code > .repo-bar,
+  main.panes.code > .pane.account {
+    flex: 0 0 auto;
+  }
 
-.tool-index-tools code {
-  color: var(--muted);
-  background: var(--raised);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0 0.3rem;
-}
+  /* --- the code pane: tree beside editor --- */
 
-/* --- the split --- */
+  .pane-body:has(> .code-layout) {
+    display: flex;
+    flex-direction: column;
+  }
 
-.split {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  grid-template-columns: var(--split-left, 42%) auto minmax(0, 1fr);
-}
+  /*
+   * The chat pane, where the body must not be a scroller.
+   *
+   * `MessageScroller` is one — anchoring to the tail is the whole reason it is
+   * there — and the pane body's own `overflow: auto` put a second scrollbar
+   * around it. Two nested scrollers is not just an extra bar: the outer one grows
+   * with the transcript, so the composer scrolls off the bottom of the pane and
+   * the scroller's own viewport never reaches the end it is trying to anchor to.
+   *
+   * So the body becomes a flex column that clips, the conversation takes the
+   * space that is left, and the composer keeps its height.
+   */
+  .pane-body:has(> .conversation) {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
 
-.split-side {
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  container-type: inline-size;
-}
+  .code-layout {
+    display: grid;
+    grid-template-columns: minmax(11rem, 17rem) minmax(0, 1fr);
+    /*
+     * One row, and it takes the height. `minmax(0, 1fr)` and not `1fr`: `1fr` is
+     * `minmax(auto, 1fr)`, so the row could never be shorter than the taller of the
+     * two columns' content — which is a file tree of unknown depth. The zero is what
+     * lets the row be exactly the pane and the columns scroll inside it.
+     */
+    grid-template-rows: minmax(0, 1fr);
+    gap: 1rem;
+    flex: 1;
+    min-height: 0;
+  }
 
-.split-left {
-  grid-area: 1 / 1;
-}
+  .file-tree {
+    min-height: 0;
+    overflow: auto;
+    border-right: 1px solid var(--border);
+    padding-right: 0.5rem;
+  }
 
-.split-gutter {
-  grid-area: 1 / 2;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.4rem;
-  width: 1.75rem;
-  padding: 0.4rem 0;
-  background: var(--surface);
-}
+  .file-tree ul {
+    /*
+     * The indent, and a guide down it. Indenting with space alone leaves the reader
+     * counting columns to work out which directory a file is in; a hairline rising
+     * from the parent's twisty answers it without being read. The margin is what
+     * puts the line under the parent's arrow rather than under its name, which is
+     * the only position that reads as "these belong to that".
+     */
+    margin-left: 0.6rem;
+    padding-left: 0.85rem;
+    border-left: 1px solid var(--border);
+  }
 
-.split-right {
-  grid-area: 1 / 3;
-}
-
-.split[data-mode="left"] {
-  grid-template-columns: minmax(0, 1fr) auto 0;
-}
-
-.split[data-mode="left"] .split-right {
-  display: none;
-}
-
-.split[data-mode="right"] {
-  grid-template-columns: 0 auto minmax(0, 1fr);
-}
-
-.split[data-mode="right"] .split-left {
-  display: none;
-}
-
-/*
- * The divider is a thin hit target with a hairline drawn down the middle of it:
- * two pixels are what the eye wants and ten are what the pointer needs.
- */
-.split-separator {
-  flex: 1;
-  width: 100%;
-  min-height: 2rem;
-  cursor: col-resize;
-  background: linear-gradient(var(--border), var(--border)) center / 2px 100% no-repeat;
-  touch-action: none;
-}
-
-.split-separator:hover,
-.split-separator:focus-visible {
-  background-image: linear-gradient(var(--accent), var(--accent));
-}
-
-.split-buttons {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.split-toggle {
-  padding: 0.15rem 0.25rem;
-  line-height: 1;
-  color: var(--muted);
-  border-color: transparent;
-}
-
-.split-toggle.on {
-  color: var(--text);
-}
-
-.split-toggle:hover {
-  border-color: var(--accent);
-}
-
-/* The words are for the stacked bar below the breakpoint; the vertical strip has
-   room only for the arrow. */
-.split-toggle-label {
-  display: none;
+  .file-tree > ul {
+    margin-left: 0;
+    padding-left: 0;
+    border-left: none;
+  }
 }
 
 /*
@@ -855,10 +626,11 @@ code {
     justify-content: center;
     width: auto;
     padding: 0.35rem;
+    /* Below the breakpoint the separator is not rendered at all, so this is the
+       only thing dividing the toggle bar from the pane under it. */
     border-bottom: 1px solid var(--border);
   }
 
-  .split-left,
   .split-right {
     grid-area: 2 / 1;
   }
@@ -867,2811 +639,24 @@ code {
     flex-direction: row;
   }
 
-  .split-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.3rem 0.7rem;
-    border-color: var(--border);
-  }
-
   .split-toggle-label {
     display: inline;
   }
 }
 
-.tier {
-  display: inline-block;
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  border-radius: var(--r-pill);
-  padding: var(--pill-y) calc(var(--pill-x) * 2);
-  line-height: var(--pill-lh);
-  font-variant-numeric: tabular-nums;
-}
-
-.badge {
-  display: inline-block;
-  margin-left: 0.4rem;
-  background: var(--raised);
-  border: 1px solid var(--border);
-  border-radius: var(--r-1);
-  padding: var(--pill-y) var(--pill-x);
-  font-size: 0.8em;
-  line-height: var(--pill-lh);
-  color: var(--muted);
-}
-
-.panes {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 1rem;
-  padding: 1rem;
-  overflow: auto;
-  flex: 1;
-}
-
-.pane {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-3);
-  padding: var(--sp-4);
-  box-shadow: var(--shadow-1);
-}
-
-/*
- * The profiler is two panes rather than the auto-fit grid: the candidate table
- * is eight columns wide and a profile is a long column of sections, so neither
- * survives being squeezed into a third of the width.
- */
-.panes.profiler {
-  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-  align-items: stretch;
-  height: 100%;
-}
-
-.panes.profiler .pane {
-  max-height: 100%;
-}
-
-/*
- * The head is ruled off from the body. Without it a pane title and the first row
- * of a table read as one block, and on a pane whose body scrolls the title
- * appeared to be part of the scrolling content.
- */
-.pane-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  padding-bottom: var(--sp-3);
-  margin-bottom: var(--sp-3);
-  border-bottom: 1px solid var(--border);
-}
-
-.pane-actions {
-  flex-shrink: 0;
-}
-
-.pane h2 {
-  margin: 0;
-  font-size: var(--fs-title);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  overflow-wrap: anywhere;
-}
-
-.pane-subtitle {
-  /* The bottom margin lived here before the head was ruled off; keeping it would
-     double the gap the rule already provides. */
-  margin: 0.15rem 0 0;
-  font-size: 0.85em;
-}
-
-.pane-body {
-  overflow: auto;
-  flex: 1;
-}
-
-/*
- * A reading measure for a pane's own prose.
- *
- * Letting a pane fill the width it is given is right for a table and wrong for a
- * paragraph: the GitHub connect card is three sentences, and across 1400px they
- * are three sentences nobody finishes — the same argument `.panes.single` makes
- * for the tools index a few hundred lines above. Only direct children, so a
- * paragraph inside a card, a notice or a conversation turn keeps whatever width
- * its own container gives it.
- */
-.pane-body > p {
-  max-width: 76ch;
-  /* `.muted` deliberately carries no bottom margin — it is often the last thing in
-     a pane — which left a button following one sitting against the text. This wins
-     on specificity and gives the prose somewhere to end. */
-  margin-bottom: var(--sp-3);
-}
-
-.tree,
-.tree ul,
-.list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.tree ul {
-  padding-left: 1.1rem;
-  border-left: 1px solid var(--border);
-  margin-left: 0.45rem;
-}
-
-.tree-row {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.12rem 0;
-}
-
-.twisty {
-  border: none;
-  padding: 0;
-  width: 1.1rem;
-  color: var(--muted);
-}
-
-.twisty.leaf {
-  text-align: center;
-  cursor: default;
-}
-
-.list li {
-  padding: 0.2rem 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.toggle {
-  display: flex;
-  gap: 0.4rem;
-  margin-bottom: 0.7rem;
-}
-
-.toggle .active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.search {
-  display: flex;
-  gap: 0.4rem;
-  margin-bottom: 0.7rem;
-}
-
-.search input {
-  flex: 1;
-  min-width: 0;
-}
-
-.grid {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.grid th,
-.grid td {
-  text-align: left;
-  /* Vertical room without spending horizontal room: these tables have eight
-     columns and `.wrap` breaks mid-word, so a cell that is 4px narrower is a
-     device name split across two lines. */
-  padding: 0.375rem var(--sp-2);
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-}
-
-/*
- * The header row sticks, because these tables are read inside a pane that
- * scrolls and a candidate list is long enough to lose its column names. It also
- * needs its own background: a transparent sticky header lets the rows scroll
- * through it.
- */
-.grid th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--surface);
-  color: var(--muted);
-  font-weight: 600;
-  font-size: var(--fs-micro);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  text-align: left;
-  padding: var(--sp-1) var(--sp-2);
-  border-bottom: 1px solid var(--edge);
-  white-space: nowrap;
-}
-
-.grid td.numeric,
-.grid th.numeric {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.state.online {
-  color: var(--online);
-}
-
-.state.offline {
-  color: var(--offline);
-}
-
-.state.unknown {
-  color: var(--muted);
-}
-
-.muted {
-  color: var(--muted);
-  margin: 0.5rem 0 0;
-}
-
-.centered {
-  display: grid;
-  place-items: center;
-  height: 100vh;
-  padding: 1rem;
-}
-
-.fatal {
-  max-width: 34rem;
-  text-align: center;
-}
-
-.fatal h1 {
-  font-size: 1.2rem;
-}
-
-/* --- M1: profiler --- */
-
-.tabs {
-  display: flex;
-  gap: 0.3rem;
-  flex-wrap: wrap;
-}
-
-.tabs button {
-  padding: 0.25rem 0.55rem;
-}
-
-.tabs .active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.tabs.small button {
-  padding: 0.15rem 0.45rem;
-  font-size: 0.9em;
-}
-
-.filters {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.7rem;
-}
-
-.filters > input {
-  flex: 1;
-  min-width: 8rem;
-}
-
-.filter-window,
-.filter-check {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.filter-window input {
-  width: 8.5rem;
-}
-
-.filter-check input {
-  width: 4.5rem;
-}
-
-.filter-check input[type="checkbox"] {
-  width: auto;
-}
-
-/*
- * The read counter is the M1a acceptance criterion on screen. Green while the
- * value count is zero, red the moment it is not — a candidate list that cost a
- * value read is a broken tier, not a slow query.
- */
-.reads {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-  border: 1px solid var(--border);
-  border-left-width: 3px;
-  border-radius: 6px;
-  padding: 0.45rem 0.7rem;
-  margin-bottom: 0.6rem;
-  background: var(--raised);
-}
-
-.reads.clean {
-  border-left-color: var(--online);
-}
-
-.reads.dirty {
-  border-left-color: var(--offline);
-}
-
-.reads-headline {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.reads.clean .reads-headline {
-  color: var(--online);
-}
-
-.reads.dirty .reads-headline {
-  color: var(--offline);
-}
-
-.reads-detail,
-.reads-note {
-  color: var(--muted);
-  font-size: 0.9em;
-}
-
-.candidates tbody tr {
-  cursor: pointer;
-}
-
-/* Hover on every grid, not only the candidate table: a wide row in a dense table
-   is hard to track across without one, whether or not it is clickable. */
-.grid tbody tr:hover {
-  background: var(--raised);
-}
-
-.grid tbody tr.selected {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-
-.grid tbody tr.unreadable {
-  color: var(--muted);
-}
-
-.score {
-  position: relative;
-  display: inline-block;
-  min-width: 3.4rem;
-  border-radius: var(--r-1);
-  background: var(--raised);
-  border: 1px solid var(--border);
-  overflow: hidden;
-  text-align: right;
-}
-
-.score-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.score-text {
-  position: relative;
-  display: inline-block;
-  padding: var(--pill-y) var(--pill-x);
-  line-height: var(--pill-lh);
-  font-variant-numeric: tabular-nums;
-}
-
-.tag {
-  display: inline-block;
-  border: 1px solid var(--border);
-  border-radius: var(--r-1);
-  padding: var(--pill-y) var(--pill-x);
-  margin: 0 0.2rem 0.2rem 0;
-  color: var(--muted);
-  font-size: 0.85em;
-  line-height: var(--pill-lh);
-  white-space: nowrap;
-}
-
-.tag.warn {
-  border-color: var(--warn);
-  color: var(--warn);
-}
-
-.tag.ok-tag {
-  border-color: var(--online);
-  color: var(--online);
-}
-
-.tag.read-raw {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.tag.read-none {
-  opacity: 0.7;
-}
-
-.ok {
-  color: var(--online);
-}
-
-.warn {
-  color: var(--warn);
-}
-
-.muted-inline {
-  color: var(--muted);
-}
-
-.section {
-  border-top: 1px solid var(--border);
-}
-
-.section:first-child {
-  border-top: none;
-}
-
-.section-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
-  width: 100%;
-  border: none;
-  border-radius: 0;
-  padding: var(--sp-2) 0;
-  text-align: left;
-  background: transparent;
-  box-shadow: none;
-}
-
-.section-head:hover {
-  border-color: transparent;
-  color: var(--accent);
-}
-
-.section-title {
-  font-weight: 600;
-}
-
-.section-note {
-  color: var(--muted);
-  font-size: 0.85em;
-}
-
-.section-body {
-  padding: 0 0 0.7rem 1.5rem;
-}
-
-.kv {
-  display: grid;
-  grid-template-columns: minmax(7rem, max-content) minmax(0, 1fr);
-  gap: 0.3rem 0.8rem;
-  margin: 0;
-}
-
-.kv dt {
-  color: var(--muted);
-}
-
-.kv dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.kv dd .kv {
-  margin-top: 0.2rem;
-}
-
-/*
- * A non-result is shown, not blanked. SPEC D24 makes absence distinguishable
- * from negation in the data, and an empty cell would throw that away at the last
- * step — the reader would conclude "no periodicity" where the profile says
- * "could not determine".
- */
-.nc {
-  display: inline-flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.nc-tag {
-  border: 1px dashed var(--edge);
-  border-radius: var(--r-1);
-  padding: var(--pill-y) var(--pill-x);
-  color: var(--muted);
-  font-size: 0.9em;
-  line-height: var(--pill-lh);
-  align-self: flex-start;
-}
-
-.nc-detail {
-  color: var(--muted);
-  font-size: 0.85em;
-}
-
-.confidence {
-  display: inline-block;
-  border-radius: var(--r-pill);
-  padding: var(--pill-y) calc(var(--pill-x) + 0.125rem);
-  font-size: 0.8em;
-  line-height: var(--pill-lh);
-  border: 1px solid var(--border);
-  color: var(--muted);
-}
-
-.confidence.certain {
-  border-color: var(--online);
-  color: var(--online);
-}
-
-.confidence.likely {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.evidence {
-  color: var(--muted);
-  font-size: 0.9em;
-}
-
-.stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-
-.stat {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  background: var(--raised);
-  border: 1px solid var(--border);
-  border-radius: var(--r-2);
-  padding: var(--sp-2) var(--sp-3);
-  min-width: 4.2rem;
-}
-
-.stat-label {
-  color: var(--muted);
-  font-size: var(--fs-micro);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.stat-value {
-  font-size: var(--fs-title);
-  font-variant-numeric: tabular-nums;
-}
-
-.flags {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  margin-bottom: 0.6rem;
-}
-
-.flag {
-  border: 1px solid var(--warn);
-  border-radius: 6px;
-  padding: 0.3rem 0.6rem;
-  background: color-mix(in srgb, var(--warn) 8%, transparent);
-}
-
-.flag summary {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
-}
-
-.flag-name {
-  color: var(--warn);
-}
-
-.flag pre,
-.json {
-  margin: 0.4rem 0 0;
-  padding: 0.5rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--r-2);
-  overflow: auto;
-  max-height: max(26rem, 46vh);
-  font-size: 0.85em;
-}
-
-.compute {
-  max-width: 34rem;
-}
-
-button.primary {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-button.primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.computed-head {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0.6rem;
-  margin-bottom: 0.3rem;
-}
-
-.computed-reads {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  font-size: 0.9em;
-}
-
-.llm-head {
-  margin-bottom: 0.5rem;
-}
-
-.llm-head .muted {
-  margin-top: 0;
-}
-
-.override-form {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  margin-top: 0.7rem;
-  padding-top: 0.7rem;
-  border-top: 1px dashed var(--border);
-}
-
-.override-form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
-
-.override-form label.grow {
-  flex: 1;
-  min-width: 8rem;
-}
-
-.override-form span {
-  color: var(--muted);
-  font-size: 0.85em;
-}
-
-.list.tight li {
-  border-bottom: none;
-  padding: 0.05rem 0;
-}
-
-.pager {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.6rem;
-}
-
-/*
- * The diagnosis wraps onto its own line: it is a sentence explaining why a
- * profile is empty, not a metric, and truncating it would defeat the point.
- */
-.reads-diagnosis {
-  flex-basis: 100%;
-  color: var(--text);
-}
-
-.reads.dirty .reads-diagnosis {
-  color: var(--warn);
-}
-
-/*
- * The socket indicator only appears when the connection is not simply working:
- * a stalled screen should say why, and a healthy one should not carry a badge
- * nobody needs to read.
- */
-.socket {
-  border: 1px solid var(--warn);
-  border-radius: 999px;
-  padding: 0.15rem 0.6rem;
-  color: var(--warn);
-  font-size: 0.85em;
-  white-space: nowrap;
-}
-
-.socket.closed {
-  border-color: var(--offline);
-  color: var(--offline);
-}
-
-.compute-actions {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-}
-
-/*
- * Semantic selection (SPEC §5.2). Two panes rather than the auto-fit grid, for
- * the same reason the profiler is: the left column is a form and a chain of
- * evidence, the right one is an eight-column candidate table.
- */
-.panes.selection {
-  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-  align-items: stretch;
-  height: 100%;
-}
-
-.panes.selection .pane {
-  max-height: 100%;
-}
-
-.filter-check select {
-  width: auto;
-}
-
-/*
- * The terms are the intent as the matcher read it. Green where a match used the
- * word, amber where nothing did — the matcher has no thesaurus, so a word it
- * could not place is a fact about the ontology the developer has to see.
- */
-.terms {
-  margin-bottom: 0.5rem;
-}
-
-.notes li {
-  color: var(--muted);
-  font-size: 0.9em;
-  padding: 0.15rem 0;
-}
-
-/* A match is a name, its score and the evidence that produced it. */
-.match {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 4.5rem;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.25rem 0;
-}
-
-.match-name {
-  overflow-wrap: anywhere;
-}
-
-.match-basis {
-  grid-column: 1 / -1;
-}
-
-.gap {
-  padding: 0.35rem 0;
-  border-top: 1px solid var(--border);
-}
-
-.gap:first-child {
-  border-top: none;
-}
-
-.gap-head {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-}
-
-.gap-consequence {
-  color: var(--muted);
-  font-size: 0.9em;
-  padding: 0.15rem 0;
-}
-
-.gap-paths code {
-  margin-right: 0.4rem;
-  font-size: 0.85em;
-}
-
-/*
- * The device type beside a device name. Quieter than the name it qualifies —
- * "Kitchen Meter" is what a developer is looking for and "SmartMeter Modbus" is
- * what distinguishes it from the other two.
- */
-.device-type {
-  margin-left: 0.4rem;
-  color: var(--muted);
-  font-size: 0.85em;
-  white-space: nowrap;
-}
-
-.device-type::before {
-  content: "· ";
-}
-
-/* --- M3: chat, the tier control and the admin surface --- */
-
-/*
- * Chat is bounded by the grid, not by the window.
- *
- * `height: 100%` and a stretched row are what make the conversation's `flex: 1`
- * mean anything: a flex child can only take "the space left over" if its
- * container has a size to take it from. Without them the pane grew to fit the
- * whole conversation and `.panes` scrolled instead, which put the composer below
- * the fold — the same failure the fold block at the end of this file describes
- * for the stacked case, arrived at from the other direction.
- *
- * This is also what replaced `max-height: 60vh` on `.conversation`. That worked by
- * measuring the window, which is the wrong thing to ask: the conversation sits in
- * a pane, in one half of a split, under a header, and none of that is the viewport.
- */
-.panes.chat-layout {
-  /*
-   * A share of the width, not a fixed measure of it.
-   *
-   * `minmax(260px, 22rem)` pinned the session list at 352px however much room
-   * there was, which is two different mistakes at two different widths: beside a
-   * conversation in half a split it took nearly half the space, and at /chat on a
-   * wide screen it was a narrow strip against 1200px of conversation. A fraction
-   * is the thing that was meant — the list gets a little under a third — and the
-   * floor keeps a session title readable when there is not much to divide.
-   */
-  grid-template-columns: minmax(13rem, 0.4fr) minmax(0, 1fr);
-  align-items: stretch;
-  height: 100%;
-}
-
-.panes.admin-layout {
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-}
-
-/*
- * There was a `@media (max-width: 1100px)` here that stacked chat and the admin
- * surface. It is gone, and both are handled by the fold at the end of this file
- * instead.
- *
- * It asked the wrong question. A viewport query cannot tell `/chat` at 1050px —
- * a whole window, plenty of room for two columns — from `/tools/profiler` at
- * 1600px, where the conversation has half of it and genuinely needs to stack. It
- * got both backwards: it collapsed the first and left the second in two columns.
- * The fold measures the container, which is the width the panes actually have.
- *
- * It was also incomplete in a way that mattered after chat became bounded by its
- * grid: it set one column without the `grid-template-rows` the folded chat needs,
- * so the session list and the conversation each took a full-height row and the
- * composer went under the fold.
- */
-
-/* The tier indicator, coloured by how much it exposes. Not decoration: §3.2 asks
-   for the current tier to be persistently visible, and a developer scanning a
-   session list should be able to see at a glance which conversations can read
-   values. */
-.tier-L0 {
-  border-color: var(--online);
-  color: var(--online);
-}
-
-.tier-L1 {
-  border-color: var(--warn);
-  color: var(--warn);
-}
-
-.tier-L2 {
-  border-color: var(--offline);
-  color: var(--offline);
-}
-
-.tier-cap {
-  color: var(--muted);
-}
-
-.spend {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* --- sessions --- */
-
-.new-session {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-  margin-bottom: 0.75rem;
-}
-
-.new-session .hint,
-.limit-field .hint {
-  color: var(--muted);
-  font-size: 0.85em;
-  flex-basis: 100%;
-}
-
-.degraded-list {
-  flex-basis: 100%;
-  margin: 0.25rem 0 0;
-  padding-left: 1rem;
-  color: var(--warn);
-  font-size: 0.9em;
-}
-
-.session-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.session-list li {
-  display: flex;
-  align-items: stretch;
-  gap: 0.25rem;
-  border: 1px solid transparent;
-  border-radius: 6px;
-}
-
-.session-list li.active {
-  border-color: var(--accent);
-  background: var(--raised);
-}
-
-.session-open {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  align-items: flex-start;
-  border: none;
-  text-align: left;
-  padding: 0.5rem;
-}
-
-.session-title {
-  font-weight: 500;
-}
-
-.session-meta {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-  color: var(--muted);
-  font-size: 0.85em;
-}
-
-.session-delete {
-  border: none;
-  color: var(--muted);
-  padding: 0 0.5rem;
-}
-
-.session-delete:hover {
-  color: var(--offline);
-}
-
-/* --- the conversation --- */
-
-/*
- * The conversation takes the height it is given rather than 60% of the window.
- *
- * `max-height: 60vh` was measured against the viewport, but the conversation does
- * not live in the viewport — it lives in a pane, in one half of a split, under a
- * header. On a tall screen that left a band of empty pane below the composer and
- * scrolled the conversation anyway; in a short split it overflowed instead. Both
- * are the same mistake: asking the window about space the container owns.
- *
- * `flex: 1` needs the body to be a column, which is what the `:has` below does —
- * only for the pane that holds a conversation, so no other view's body changes
- * its layout. `min-height: 0` is what lets a flex item actually shrink to its
- * container; without it the scroll never engages and the composer is pushed out.
- */
-.pane-body:has(> .conversation) {
-  display: flex;
-  flex-direction: column;
-}
-
-.conversation {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  flex: 1;
-  /*
-   * Zero, not a floor. A floor here is spent at the composer's expense: in a
-   * folded pane — chat capped at 13rem beside a narrow split — an 8rem minimum on
-   * the conversation pushed the text box and the Send button out of the bottom of
-   * the pane. The conversation is the part that can afford to be short, because it
-   * scrolls; the composer is the part that has to be reachable.
-   */
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 0.25rem;
-}
-
-.turn {
-  display: flex;
-}
-
-.turn-body {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  padding: 0.5rem 0.75rem;
-  border-radius: 8px;
-  max-width: 46rem;
-}
-
-.turn.user {
-  justify-content: flex-end;
-}
-
-.turn.user .turn-body {
-  background: var(--raised);
-  border: 1px solid var(--border);
-}
-
-.turn.assistant .turn-body {
-  background: transparent;
-  border: 1px solid transparent;
-  padding-left: 0;
-}
-
-.thinking {
-  color: var(--muted);
-  font-style: italic;
-}
-
-/* A tool call is shown, not implied: the developer should be able to see that the
-   assistant read the ontology rather than guessed. */
-.tool-turn {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-}
-
-.tool-turn.tool-error {
-  border-color: var(--warn);
-}
-
-.tool-head {
-  width: 100%;
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  border: none;
-  text-align: left;
-  padding: 0.4rem 0.6rem;
-}
-
-.tool-name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.tool-outcome {
-  color: var(--muted);
-  font-size: 0.85em;
-}
-
-.tool-outcome.outcome-ok {
-  color: var(--online);
-}
-
-.tool-outcome.outcome-blocked_by_tier,
-.tool-outcome.outcome-awaiting_confirmation {
-  color: var(--warn);
-}
-
-.tool-outcome.outcome-failed,
-.tool-outcome.outcome-invalid_input,
-.tool-outcome.outcome-unknown_tool {
-  color: var(--offline);
-}
-
-/* The refusal, spelled out. A blocked call rendered as nothing would leave the
-   developer wondering why the answer was thin. */
-.tool-refusal {
-  margin-left: auto;
-  color: var(--warn);
-  font-size: 0.85em;
-}
-
-.tool-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  padding: 0 0.6rem 0.6rem;
-}
-
-.tool-label {
-  color: var(--muted);
-  font-size: 0.85em;
-}
-
-.notice {
-  padding: 0.4rem 0.6rem;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-}
-
-.notice-info {
-  border-color: var(--accent);
-}
-
-.notice-warn {
-  border-color: var(--warn);
-  color: var(--warn);
-}
-
-.notice-error {
-  border-color: var(--offline);
-  color: var(--offline);
-}
-
-/*
- * The one notice that sits in the shell rather than inside a pane: what the GitHub
- * callback came back with when it was not a credential. It belongs above the
- * workspace because that is the pane the answer is about, and `flex: none` keeps it
- * out of the split's share of the height — the shell is a flex column and every
- * other child of it is meant to grow.
- */
-.connect-notice {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex: none;
-  margin: 0.75rem 1rem 0;
-}
-
-/* --- the composer --- */
-
-.composer {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  margin-top: 0.75rem;
-}
-
-.composer textarea {
-  font: inherit;
-  color: inherit;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.5rem;
-  resize: vertical;
-}
-
-.composer-actions {
-  display: flex;
-  gap: 0.75rem;
-  align-items: center;
-}
-
-.usage {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* --- the tier control (§3.2) --- */
-
-.tier-control {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  align-items: flex-end;
-  max-width: 26rem;
-}
-
-.tier-buttons {
-  display: flex;
-  gap: 0.25rem;
-}
-
-.tier-button.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--surface);
-  font-weight: 600;
-}
-
-.tier-button.active:hover {
-  background: var(--accent);
-  color: var(--surface);
-}
-
-.tier-button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.tier-exposes,
-.tier-hint {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.85em;
-  text-align: right;
-}
-
-.tier-hint strong {
-  color: var(--text);
-  font-weight: 500;
-}
-
-button.link {
-  border: none;
-  padding: 0;
-  color: var(--accent);
-  font-size: 0.85em;
-}
-
-.tier-audit {
-  margin: 0.25rem 0 0;
-  padding-left: 1.2rem;
-  color: var(--muted);
-  font-size: 0.85em;
-  text-align: left;
-  align-self: stretch;
-}
-
-/* --- confirmation (D11) --- */
-
-.confirmation {
-  margin-top: 0.75rem;
-  border: 1px solid var(--warn);
-  border-radius: 8px;
-  padding: 0.6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.confirmation-head {
-  color: var(--warn);
-}
-
-.confirmation-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-/* --- the tool surface table --- */
-
-.grid.tools tbody tr.unavailable td {
-  color: var(--muted);
-}
-
-.denied-row {
-  display: grid;
-  grid-template-columns: minmax(12rem, auto) 1fr;
-  gap: 0.5rem;
-  padding: 0.2rem 0;
-}
-
-.denied-row dt {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--text);
-}
-
-.denied-row dd {
-  margin: 0;
-  color: var(--muted);
-}
-
-/* --- the admin surface (§3.3) --- */
-
-.limits-form,
-.new-override {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: flex-start;
-}
-
-.limit-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  min-width: 12rem;
-}
-
-.limit-field > span:first-child {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-}
-
-.form-actions {
-  flex-basis: 100%;
-  display: flex;
-  gap: 0.5rem;
-}
-
-/* A progress line on a running tool. Replaced in place rather than stacked: a
-   profile reports a few phases and each supersedes the last. */
-.tool-progress {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 0.85em;
-  font-style: italic;
-}
-
-/* --- M4: the kernel pane (SPEC §5.6) --- */
-
-.panes.kernel-layout {
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-}
-
-.kernel-status {
-  margin-bottom: 12px;
-}
-
-.kernel-status .device-type,
-.kernel-status .tag {
-  margin-left: 8px;
-}
-
-/*
- * The transcript scrolls and the composer does not, so the editor stays put while
- * a long-running cell fills the pane above it.
- */
-.cells {
-  flex: 1;
-  min-height: 200px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding-right: 4px;
-}
-
-.cell {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.cell-error {
-  border-color: var(--offline);
-}
-
-.cell-code {
-  margin: 0;
-  padding: 8px 10px;
-  background: var(--raised);
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.cell-output {
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.cell-output:empty {
-  display: none;
-}
-
-.out {
-  margin: 0;
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.out.stderr,
-.cell-traceback {
-  color: var(--offline);
-}
-
-.out.result pre {
-  margin: 0;
-}
-
-.out.result img {
-  max-width: 100%;
-  margin-top: 6px;
-}
-
-.cell-running {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.cell-status {
-  margin: 0;
-  padding: 6px 10px;
-  font-size: 12px;
-  color: var(--muted);
-  border-top: 1px solid var(--border);
-}
-
-.workspace-path {
-  margin: 0 0 12px;
-  font-size: 12px;
-}
-
-/*
- * The exploration pane (SPEC §5.9, M5).
- *
- * Two panes rather than the auto-fit grid, for the reason the profiler is: the
- * chart needs width to be read at all, and the list beside it needs none.
- */
-.panes.exploration {
-  grid-template-columns: minmax(0, 2fr) minmax(0, 7fr);
-  align-items: stretch;
-  height: 100%;
-}
-
-.panes.exploration .pane {
-  max-height: 100%;
-}
-
-.chart-list li {
-  border-bottom: 1px solid var(--border);
-}
-
-.chart-entry {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  width: 100%;
-  border: none;
-  border-radius: 0;
-  text-align: left;
-  padding: 0.5rem 0.35rem;
-}
-
-.chart-entry:hover {
-  background: var(--raised);
-}
-
-.chart-entry.active {
-  background: var(--raised);
-  border-left: 2px solid var(--accent);
-}
-
-.chart-entry-title {
-  overflow-wrap: anywhere;
-}
-
-.chart-entry-meta {
-  color: var(--muted);
-  font-size: 0.85em;
-}
-
-/*
- * The author of a band is not decoration. A span the profiler detected, one the
- * assistant wrote and one the developer added are three different kinds of claim,
- * and the colour is the fastest way to see which is which.
- */
-.tag.author-profiler {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.tag.author-llm {
-  border-color: var(--warn);
-  color: var(--warn);
-}
-
-.tag.author-developer {
-  border-color: var(--online);
-  color: var(--online);
-}
-
-svg.chart {
-  width: 100%;
-  height: auto;
-  display: block;
-  margin: 0.25rem 0 0.5rem;
-}
-
-svg.chart .series-line {
-  /* 2px rather than 1.6: a hairline is the first thing to disappear when a chart
-     is read on a laptop, and the series colour has to carry identity. */
-  stroke-width: 2;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-}
-
-/*
- * The eight series slots.
- *
- * The colour comes from the stylesheet rather than from an array in
- * `exploration.tsx`, which is what lets it change with the theme: the pane sets
- * `class="series-line s3"` and the cascade picks the light or the dark step for
- * slot 3. Held as a class per slot rather than a custom property per element
- * because a `<polyline>` cannot be given a `stroke` through a presentation
- * attribute and a `var()` in the same breath.
- */
-svg.chart .s1 {
-  stroke: var(--series-1);
-  fill: var(--series-1);
-}
-
-svg.chart .s2 {
-  stroke: var(--series-2);
-  fill: var(--series-2);
-}
-
-svg.chart .s3 {
-  stroke: var(--series-3);
-  fill: var(--series-3);
-}
-
-svg.chart .s4 {
-  stroke: var(--series-4);
-  fill: var(--series-4);
-}
-
-svg.chart .s5 {
-  stroke: var(--series-5);
-  fill: var(--series-5);
-}
-
-svg.chart .s6 {
-  stroke: var(--series-6);
-  fill: var(--series-6);
-}
-
-svg.chart .s7 {
-  stroke: var(--series-7);
-  fill: var(--series-7);
-}
-
-svg.chart .s8 {
-  stroke: var(--series-8);
-  fill: var(--series-8);
-}
-
-/* A line has no fill and a point has no stroke; the pair above sets both so one
-   rule serves either mark, and these two put that right. */
-svg.chart .series-line {
-  fill: none;
-}
-
-svg.chart .series-point {
-  stroke: none;
-}
-
-/* The swatch in the series list takes the same slot colour, so the legend and
-   the line cannot disagree. */
-.series-swatch.s1 {
-  background: var(--series-1);
-}
-
-.series-swatch.s2 {
-  background: var(--series-2);
-}
-
-.series-swatch.s3 {
-  background: var(--series-3);
-}
-
-.series-swatch.s4 {
-  background: var(--series-4);
-}
-
-.series-swatch.s5 {
-  background: var(--series-5);
-}
-
-.series-swatch.s6 {
-  background: var(--series-6);
-}
-
-.series-swatch.s7 {
-  background: var(--series-7);
-}
-
-.series-swatch.s8 {
-  background: var(--series-8);
-}
-
-svg.chart .grid-line {
-  stroke: var(--border);
-  stroke-width: 1;
-}
-
-svg.chart .grid-line.faint {
-  stroke-dasharray: 3 5;
-}
-
-svg.chart .axis {
-  stroke: var(--muted);
-  stroke-width: 1;
-}
-
-svg.chart .axis-label {
-  fill: var(--muted);
-  font-size: 11px;
-}
-
-svg.chart .axis-unit {
-  fill: var(--muted);
-  font-size: 11px;
-}
-
-svg.chart .band {
-  opacity: 0.16;
-}
-
-svg.chart .band-info {
-  fill: var(--accent);
-}
-
-svg.chart .band-warn {
-  fill: var(--warn);
-}
-
-svg.chart .band-error {
-  fill: var(--offline);
-}
-
-svg.chart .marker line {
-  stroke: var(--offline);
-  stroke-width: 1;
-  stroke-dasharray: 4 3;
-}
-
-svg.chart .marker polygon {
-  fill: var(--offline);
-}
-
-.chart-caption {
-  margin: 0 0 0.5rem;
-  color: var(--text);
-}
-
-.chart-notes {
-  margin: 0 0 0.75rem;
-  font-size: 0.9em;
-}
-
-.chart-empty {
-  padding: 1rem 0;
-}
-
-.series-row {
-  border-top: 1px solid var(--border);
-  padding: 0.6rem 0;
-}
-
-.series-row:first-child {
-  border-top: none;
-}
-
-.series-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-}
-
-.series-swatch {
-  width: 0.75rem;
-  height: 0.75rem;
-  border-radius: 2px;
-  display: inline-block;
-}
-
-.series-unit,
-.conversions,
-.unit-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 0.35rem;
-}
-
-.unit-confirm {
-  margin-top: 0.4rem;
-  padding: 0.5rem;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-}
-
-.decision {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  flex-wrap: wrap;
-}
-
-.grid.annotations tr.severity-warn td:first-child {
-  border-left: 2px solid var(--warn);
-}
-
-.grid.annotations tr.severity-error td:first-child {
-  border-left: 2px solid var(--offline);
-}
-
-/* The way from a render_chart result into the pane that can draw it. */
-.tool-chart {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  padding: 0.4rem 0.6rem 0.2rem;
-}
-
-/*
- * M6: multi-device conditional patterns (SPEC §5.5, §5.10).
- *
- * The aspect pane and the relation pane sit side by side because the work moves one
- * way between them — a set proposed on the left is related on the right — and a
- * developer confirming a rule needs the members it rests on still in view.
- */
-.panes.relations {
-  grid-template-columns: minmax(0, 4fr) minmax(0, 6fr);
-  align-items: stretch;
-  height: 100%;
-}
-
-.panes.relations .pane {
-  max-height: 100%;
-}
-
-/* A proposed set: what it is, why these devices, and the series it offers. */
-.set-card {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.6rem 0.7rem;
-  margin-top: 0.6rem;
-}
-
-.set-card.active {
-  border-color: var(--accent);
-}
-
-.set-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.set-head h3 {
-  margin: 0;
-  font-size: 1em;
-  font-weight: 600;
-}
-
-.set-rationale {
-  margin: 0.2rem 0 0;
-  color: var(--muted);
-  font-size: 0.9em;
-}
-
-.set-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-/*
- * The origin is a claim about how much the grouping is worth trusting, so the
- * platform's own grouping is the one that gets the accent (§5.5).
- */
-.origin {
-  display: inline-block;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  padding: var(--pill-y) calc(var(--pill-x) + 0.125rem);
-  font-size: 0.8em;
-  line-height: var(--pill-lh);
-  color: var(--muted);
-}
-
-.origin-device_group {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.set-members {
-  list-style: none;
-  margin: 0.5rem 0 0;
-  padding: 0;
-}
-
-.set-members li {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.15rem 0;
-  flex-wrap: wrap;
-}
-
-.set-members label {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.member-label {
-  font-weight: 500;
-}
-
-/* The series taken into the pass, so the right-hand pane says what it will read. */
-.chosen {
-  list-style: none;
-  display: flex;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-  margin: 0 0 0.6rem;
-  padding: 0;
-}
-
-.chosen li {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0.1rem 0.5rem;
-  background: var(--raised);
-}
-
-.chosen-label {
-  font-size: 0.9em;
-}
-
-/* The pass reports phases because it is the longest read ODE makes. */
-.phase {
-  margin: 0.5rem 0 0;
-  font-size: 0.9em;
-}
-
-.members {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.members th,
-.members td {
-  text-align: left;
-  vertical-align: top;
-  padding: 0.35rem 0.4rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.members thead th {
-  color: var(--muted);
-  font-weight: 600;
-  font-size: var(--fs-micro);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  text-align: left;
-  border-bottom: 1px solid var(--edge);
-}
-
-/*
- * A member that yielded no state series stays on screen rather than being dropped:
- * it is the first thing to check when an expected rule is missing, and hiding it
- * would turn an explained absence into an unexplained one (D24).
- */
-.members tr.unusable .member-label {
-  color: var(--muted);
-}
-
-.source.confirmed {
-  color: var(--online);
-}
-
-/* A candidate rule, and the three things a developer can do about it (§5.10). */
-.rule-card {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.6rem 0.7rem;
-  margin-top: 0.6rem;
-}
-
-.rule-card.decided-confirm {
-  border-left: 3px solid var(--online);
-}
-
-.rule-card.decided-reject {
-  border-left: 3px solid var(--offline);
-}
-
-.rule-card.decided-correct {
-  border-left: 3px solid var(--warn);
-}
-
-.rule-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-
-.rule-statement {
-  margin: 0;
-  font-weight: 600;
-}
-
-.rule-anomaly {
-  margin: 0.2rem 0 0;
-  color: var(--muted);
-  font-size: 0.9em;
-}
-
-.rule-stats {
-  display: flex;
-  gap: 1rem;
-  flex-wrap: wrap;
-  margin: 0.5rem 0 0;
-}
-
-.rule-stats dt {
-  color: var(--muted);
-  font-size: 0.8em;
-}
-
-.rule-stats dd {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-/* The "except at certain times of day" of the motivating case (§5.5). */
-.exceptions {
-  margin-top: 0.5rem;
-  border-left: 2px solid var(--warn);
-  padding-left: 0.6rem;
-}
-
-.exceptions-title {
-  color: var(--warn);
-  font-size: 0.85em;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.exceptions ul {
-  margin: 0.2rem 0 0;
-  padding-left: 1.1rem;
-  font-size: 0.9em;
-}
-
-.decision-record {
-  margin: 0.5rem 0 0;
-  font-size: 0.9em;
-}
-
-/*
- * The advisory travels in the document itself, and it is rendered rather than
- * trusted to be remembered: a rule is a candidate until the developer says
- * otherwise, and this is the surface where that gets decided (D28).
- */
-.advisory {
-  margin: 0.5rem 0 0;
-  color: var(--muted);
-  font-size: 0.8em;
-  font-style: italic;
-}
-
-.rule-edit {
-  width: 100%;
-  margin-top: 0.5rem;
-}
-
-.rule-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-  margin-top: 0.5rem;
-}
-
-.rule-actions > input {
-  flex: 1;
-  min-width: 8rem;
-}
-
-/* The counts every ratio above rests on, collapsed by default. */
-.pair h4 {
-  margin: 0.6rem 0 0.3rem;
-  font-size: 0.95em;
-}
-
-.contingency,
-.conditions {
-  border-collapse: collapse;
-  font-variant-numeric: tabular-nums;
-}
-
-.contingency th,
-.contingency td,
-.conditions th,
-.conditions td {
-  border: 1px solid var(--border);
-  padding: 0.2rem 0.45rem;
-  text-align: right;
-}
-
-.contingency th,
-.conditions th {
-  color: var(--muted);
-  font-weight: 600;
-  font-size: var(--fs-micro);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  text-align: left;
-}
-
-.conditions {
-  margin-top: 0.4rem;
-  width: 100%;
-}
-
-/*
- * M6, graph-derived sets. A graph says more than a device group does — direction and
- * share, not just membership — so the origin chip and the per-member role are what
- * make a sub-metering pair distinguishable from a shared label at a glance.
- */
-.origin-graph_siblings,
-.origin-graph_flow {
-  border-color: var(--online);
-  color: var(--online);
-}
-
-.set-graph {
-  margin: 0.3rem 0 0;
-  color: var(--muted);
-  font-size: 0.85em;
-}
-
-.role {
-  display: inline-block;
-  border: 1px solid var(--border);
-  border-radius: var(--r-1);
-  padding: var(--pill-y) var(--pill-x);
-  margin-left: 0.4rem;
-  color: var(--muted);
-  font-size: 0.8em;
-  line-height: var(--pill-lh);
-}
-
-/* The measured end of a sub-metering pair: the one a containment is read against. */
-.role-downstream {
-  border-color: var(--warn);
-  color: var(--warn);
-}
-
-/*
- * A member the graph reached from outside the requested aspect. Not a warning: a
- * meter one level up is not in the room, and it is the whole point of consulting the
- * topology.
- */
-.outside {
-  border: 1px dashed var(--border);
-  border-radius: 4px;
-  padding: 0 0.3rem;
-  margin-left: 0.4rem;
-  color: var(--muted);
-  font-size: 0.8em;
-}
-
-/*
- * When no member yielded a state series the reasons are the whole answer, and six
- * collapsed tags in a table are the wrong place for them.
- */
-.no-members {
-  border-left: 2px solid var(--warn);
-  padding: 0.1rem 0 0.1rem 0.7rem;
-  margin: 0.6rem 0;
-}
-
-.no-members p {
-  margin: 0.2rem 0;
-}
-
-.no-members ul {
-  margin: 0.3rem 0 0;
-  padding-left: 1.1rem;
-  font-size: 0.9em;
-}
-
-.no-members li {
-  padding: 0.15rem 0;
-}
-
-/* --- M7: the Code pane (SPEC §5.11) --- */
-
-/*
- * Two utility classes the earlier views spelled out per pane and this one needs
- * everywhere: a refusal to read, and a result to notice. Added here rather than
- * refactoring the older panes onto them, which would be a change to code this
- * milestone does not touch.
- */
-.error {
-  color: var(--offline);
-}
-
-.note {
-  color: var(--online);
-  white-space: pre-wrap;
-}
-
-button.danger {
-  border-color: var(--offline);
-  color: var(--offline);
-}
-
-/* The Code view is two panes side by side rather than the auto-fit grid: the
-   editor needs a column that does not reflow while a developer types in it. */
-/*
- * The code view is one grid with a different number of panes in it per state.
- *
- * Connected and working, it renders exactly one pane — the working copy. Needing a
- * repository, it renders two: the picker and the account. Needing a connection, or
- * having failed, one again. A fixed two-column template served the two-pane state
- * and left the far commoner one-pane state sitting in the first third of the view
- * with two thirds of the width blank — the editor included.
- *
- * The track minimums came off with it. A minimum applies to the *track*, not to the
- * item, so `minmax(22rem, …) minmax(30rem, …)` sets a 52rem floor under the whole
- * grid that a pane spanning both columns cannot get out from under: it would push
- * the view into a horizontal scroll rather than let the pane shrink. The container
- * query at the end of this file is what handles a genuinely narrow code view, and
- * it does it by folding to one column, which is the right answer.
- */
-main.panes.code {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-  align-items: stretch;
-}
-
-/*
- * One pane, one column.
- *
- * `:only-child` rather than a modifier class the view has to remember to pass:
- * the condition being matched is exactly "this pane is the only one here", which
- * the DOM already knows and which no amount of prop threading would state more
- * reliably.
- */
-main.panes.code > .pane:only-child {
-  grid-column: 1 / -1;
-}
-
-/*
- * The other state the code view has: picking a repository, which renders the
- * picker and the connected account.
- *
- * Side by side they were wrong in both directions. The picker is a long scrolling
- * list and had a third of the width; the account is three facts and a Disconnect
- * button and had two thirds of it, mostly empty. So they stack, and the account
- * goes last and takes only the height it needs.
- *
- * The picker keeps the remaining height and scrolls inside itself, rather than the
- * account being pushed off the bottom: "am I looking at the right GitHub account"
- * is a question asked *while* reading the list, not after scrolling past twenty
- * repositories.
- *
- * Keyed on `.pane.account` rather than on `:nth-child(2):last-child`. The position
- * is a consequence of which panes the view rendered; the *identity* of the pane is
- * the thing being selected, and naming it means this rule keeps working if a third
- * pane ever joins the state.
- *
- * Only `grid-template-rows` is set. Setting `grid-template-columns` would collide
- * with the fold at the end of this file, which sets exactly that on this selector
- * — and `:has()` carries the specificity of its argument, so this rule would
- * quietly outrank it.
- */
-main.panes.code:has(> .pane.account) {
-  grid-template-rows: minmax(0, 1fr) auto;
-}
-
-main.panes.code:has(> .pane.account) > .pane {
-  grid-column: 1 / -1;
-}
-
-/*
- * The account pane is a strip, not a panel.
- *
- * Laid out as the default column it came to 269px of a 588px stack — 46% of the
- * view for three facts and a button, with the repository list cropped mid-row to
- * pay for it.
- *
- * A grid rather than a wrapping flex row, and that is the second attempt. As a
- * flex row the three parts competed for one line: the note took whatever was left
- * over, which at some widths was a 30-character column that wrapped to five lines
- * and put back more height than the strip had saved. Placing them says what is
- * meant instead — the facts and the button share the first line, the notes get
- * their own — and it holds at every width rather than at the ones that happened to
- * be measured.
- */
-.pane.account .pane-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: baseline;
-  gap: var(--sp-2) var(--sp-4);
-}
-
-.pane.account .kv {
-  grid-column: 1;
-  grid-row: 1;
-  /* Along the row, not down a column: three short pairs read as a status line. */
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--sp-1) var(--sp-4);
-}
-
-.pane.account .kv dt::after {
-  /* The label needs its colon once the pair is no longer in two columns. */
-  content: ":";
-}
-
-/* Disconnect keeps the first line, at the far end, where a destructive action is
-   least likely to be hit while reading the facts next to it. */
-.pane.account .pane-body > button {
-  grid-column: 2;
-  grid-row: 1;
-  justify-self: end;
-}
-
-/* The notes — the missing-scope warning and the note about disconnecting — take a
-   line each, at full width, so neither is squeezed into a column. */
-.pane.account .pane-body > p {
-  grid-column: 1 / -1;
-  max-width: none;
-  margin-bottom: 0;
-  font-size: 0.9em;
-}
-
-.repo-create {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-  margin-bottom: 0.5rem;
-}
-
-.repo-create input[type="text"],
-.repo-create input:not([type]) {
-  flex: 1 1 12rem;
-}
-
-.checkbox {
-  display: inline-flex;
-  gap: 0.35rem;
-  align-items: center;
-  color: var(--muted);
-}
-
-.repo-filter {
-  margin: 0.75rem 0 0.35rem;
-}
-
-.repo-filter input {
-  width: 100%;
-}
-
-.repo-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  /* Relative, so a tall window shows more of the list rather than the same 22rem
-     with space underneath it. The floor keeps it useful on a laptop. */
-  max-height: max(22rem, 34vh);
-  overflow: auto;
-}
-
-.repo-list li {
-  display: flex;
-  gap: 0.75rem;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.5rem 0;
-  border-top: 1px solid var(--border);
-}
-
-.repo-list li:first-child {
-  border-top: none;
-}
-
-.repo-name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.badge.warn {
-  color: var(--warn);
-}
-
-.changes {
-  list-style: none;
-  margin: 0.35rem 0;
-  padding: 0;
-  max-height: max(14rem, 26vh);
-  overflow: auto;
-}
-
-.changes li {
-  display: flex;
-  gap: 0.5rem;
-  align-items: baseline;
-  padding: 0.15rem 0;
-}
-
-/* The kind of change carries the colour, because "deleted" and "added" are the
-   two a developer scans for before committing. */
-.change {
-  min-width: 5.5rem;
-  color: var(--muted);
-  font-size: 0.85em;
-  text-transform: lowercase;
-}
-
-.change.added,
-.change.untracked {
-  color: var(--online);
-}
-
-.change.deleted {
-  color: var(--offline);
-}
-
-.change.renamed,
-.change.copied,
-.change.typechange {
-  color: var(--warn);
-}
-
-.change.unmerged {
-  color: var(--offline);
-  font-weight: 600;
-}
-
-.commit-box {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-  margin: 0.5rem 0;
-}
-
-.commit-box > input {
-  flex: 1 1 16rem;
-}
-
-.push-row {
-  display: flex;
-  gap: 0.6rem;
-  align-items: center;
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border);
-}
-
-/* The tree and the editor. The tree scrolls on its own so a repository with a
-   deep package does not push the editor off screen. */
-.code-layout {
-  display: grid;
-  grid-template-columns: minmax(12rem, 18rem) 1fr;
-  gap: 0.75rem;
-  align-items: start;
-}
-
-/* Full height of the layout beside the editor, rather than 32rem of it. The fold
-   at 44rem restates a cap for the stacked case, where the tree sits above the
-   editor and must not push it off screen. */
-.file-tree {
-  max-height: 100%;
-  overflow: auto;
-  border-right: 1px solid var(--border);
-  padding-right: 0.5rem;
-}
-
-.file-tree ul {
-  list-style: none;
-  margin: 0;
-  padding-left: 0.75rem;
-}
-
-.file-tree > ul {
-  padding-left: 0;
-}
-
-.file-tree li {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-button.tree-dir,
-button.tree-file {
-  border: none;
-  background: none;
-  padding: 0.1rem 0.2rem;
-  color: var(--text);
-  text-align: left;
-  flex: 1;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.85em;
-}
-
-button.tree-file.active {
-  color: var(--accent);
-}
-
-button.tree-delete {
-  border: none;
-  background: none;
-  color: var(--muted);
-  padding: 0 0.2rem;
-  visibility: hidden;
-}
-
-.file-tree li:hover button.tree-delete {
-  visibility: visible;
-}
-
-.file-head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-  padding-bottom: 0.5rem;
-}
-
-.file-head code {
-  font-size: 0.9em;
-}
-
-/* A fixed height rather than a flexed one: Monaco measures its container, and a
-   container that sizes to its content would collapse to nothing. */
-.monaco {
-  height: 32rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-
-/* --- M8 and M9: the Experiments pane (SPEC §5.12, §5.13) --- */
-
-/*
- * Three regions rather than the auto-fit grid: the run list carries six columns,
- * the run document is a long column of sections, and a framed Ray dashboard is
- * unreadable in either of their widths. So the first two share a row and the
- * dashboards take one of their own across the full width.
- *
- * This block belongs above the folds — see the note at the end of the file. The
- * fold list below carries `.panes.experiments`, so a rule here written after it
- * would win the tie and the pane would stay two-column at half a window.
- */
-.panes.experiments {
-  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
-  align-items: stretch;
-}
-
-.exp-dashboards {
-  grid-column: 1 / -1;
-  min-width: 0;
-}
-
-.exp-launch {
-  margin-bottom: 0.75rem;
-}
-
-/* The token warning of §3.1 item 6, before a long run rather than after it. */
-.exp-credential-warning,
-.exp-refusal,
-.exp-launched {
-  margin-top: 0.6rem;
-}
-
-.exp-refusal-title {
-  margin: 0 0 0.3rem;
-  font-weight: 600;
-}
-
-.exp-uncommitted code {
-  overflow-wrap: anywhere;
-}
-
-/* Ray's own vocabulary, coloured but not translated (§5.12). */
-.exp-status {
-  font-variant-numeric: tabular-nums;
-  font-size: 0.85em;
-  letter-spacing: 0.03em;
-}
-
-.exp-status.running {
-  color: var(--accent);
-}
-
-.exp-status.good {
-  color: var(--online);
-}
-
-.exp-status.bad {
-  color: var(--offline);
-}
-
-.exp-status.neutral {
-  color: var(--muted);
-}
-
-.exp-open {
-  border: none;
-  padding: 0;
-  text-align: left;
-}
-
-.exp-open:hover {
-  border-color: transparent;
-}
-
-.exp-row.selected {
-  background: var(--raised);
-}
-
-/*
- * A first run is a sentence rather than an empty table. An empty
- * `comparison_to_previous` means "nothing to compare against", never "no change",
- * and the two are indistinguishable once the table is drawn empty.
- */
-.exp-first-run {
-  margin: 0;
-  color: var(--muted);
-}
-
-.exp-direction.better {
-  color: var(--online);
-}
-
-.exp-direction.worse {
-  color: var(--offline);
-}
-
-.exp-direction.unchanged {
-  color: var(--muted);
-}
-
-/*
- * The three states of a criterion, drawn three ways (D24).
- *
- * `met` and `missed` carry the developer's own threshold answered; the third is
- * nobody having answered it, and it gets the dashed `not computed` tag and a muted
- * edge rather than the red one — a run whose metric was never logged did not miss
- * its target.
- */
-.exp-criterion {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.5rem 0.7rem;
-  margin-top: 0.5rem;
-}
-
-.exp-criterion.met {
-  border-left: 3px solid var(--online);
-}
-
-.exp-criterion.missed {
-  border-left: 3px solid var(--offline);
-}
-
-.exp-criterion.unknown {
-  border-left: 3px dashed var(--muted);
-}
-
-.exp-criterion-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.4rem;
-}
-
-.exp-verdict {
-  display: inline-block;
-  border-radius: var(--r-pill);
-  padding: var(--pill-y) calc(var(--pill-x) + 0.125rem);
-  font-size: 0.85em;
-  line-height: var(--pill-lh);
-}
-
-.exp-verdict.met {
-  border: 1px solid var(--online);
-  color: var(--online);
-}
-
-.exp-verdict.missed {
-  border: 1px solid var(--offline);
-  color: var(--offline);
-}
-
-.exp-pairs-title {
-  margin: 0.6rem 0 0.2rem;
-  color: var(--muted);
-  font-size: 0.85em;
-}
-
-/* The developer's own view, and no assistant's (§5.13). */
-.exp-logs {
-  margin: 0.5rem 0 0;
-  padding: 0.5rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--r-2);
-  max-height: max(22rem, 42vh);
-  overflow: auto;
-  white-space: pre-wrap;
-  font-size: 0.9em;
-}
-
-.exp-ray-message {
-  margin: 0 0 0.5rem;
-}
-
-.exp-interpretation {
-  white-space: pre-wrap;
-  margin: 0.5rem 0 0;
-}
-
-.exp-proposal {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.6rem 0.7rem;
-  margin-top: 0.6rem;
-}
-
-.exp-proposal-text {
-  margin: 0;
-  font-weight: 600;
-}
-
-.exp-edit {
-  width: 100%;
-  margin-top: 0.5rem;
-  font: inherit;
-  color: inherit;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.35rem 0.6rem;
-}
-
-.exp-decision.accepted {
-  color: var(--online);
-}
-
-.exp-decision.edited {
-  color: var(--warn);
-}
-
-.exp-decision.rejected {
-  color: var(--offline);
-}
-
-/* --- the embed probe (D6) --- */
-
-.exp-embeds {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
-  gap: 0.75rem;
-}
-
-.exp-embed {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.5rem 0.6rem;
-  min-width: 0;
-}
-
-.exp-embed-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.4rem;
-}
-
-.exp-embed-title {
-  font-weight: 600;
-}
-
-.exp-embed-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.exp-embed-actions .active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.exp-popout {
-  color: var(--accent);
-}
-
-.exp-frame {
-  width: 100%;
-  height: 30rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-}
-
-/*
- * The probe frame of §5.12: loaded, never looked at. Not `display: none` — a frame
- * that is not laid out is a frame some browsers never fetch, and this one exists to
- * be fetched. Taken out of the flow and out of the accessibility tree instead.
- */
-.exp-frame-probe {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-  border: 0;
-}
-
-.exp-embed-refused {
-  margin: 0;
-  color: var(--warn);
-}
-
-.exp-embed-reason {
-  font-size: 0.85em;
-}
-
 /*
  * --- the folds, last on purpose ---
  *
- * The views inside a split side.
+ * The views inside a split side. Every one of them was laid out for a whole window
+ * — five columns of candidates beside a profile, a chart beside its list. In half a
+ * window they have to fold to one column, and it is the *container* that decides,
+ * not the viewport: the same view is full width at /tools/… and half width beside a
+ * conversation, and a media query cannot tell those two apart.
  *
- * Every one of them was laid out for a whole window — five columns of candidates
- * beside a profile, a chart beside its list. In half a window they have to fold to
- * one column, and it is the *container* that decides, not the viewport: the same
- * markup is full width at /chat and half width at /tools/exploration.
- *
- * These blocks sit at the end of the file because that is the only thing making
- * them apply. `@container` contributes nothing to specificity — it is a condition
- * on a rule, not part of its selector — so `.panes.profiler` in here and
- * `.panes.profiler` up there are a tie, and a tie is settled by source order. When
- * these blocks were written above the per-view rules, every one of them lost: the
- * profiler stayed two-column at half a window, and chat folded *halfway*, capping
- * its session list at 13rem while leaving it in a column beside the conversation —
- * the exact state the note below says the cap exists to avoid.
- *
- * So: a new per-view `grid-template-columns` belongs above this section, never
- * below it. Adding one below reintroduces the bug silently, because nothing about
- * a stylesheet that renders two columns where it meant one looks like a fault.
- *
- * `@layer` would enforce that rather than asking for it, and is the better answer
- * for a stylesheet built in pieces. It is not taken here because it is not a local
- * change: unlayered rules beat layered ones outright, so making the folds win by
- * layer means wrapping the other two and a half thousand lines of this file in a
- * base layer, which changes the cascade for every rule in it at once and cannot be
- * verified by looking at the fold. Moving two blocks can be, and was — the computed
- * `grid-template-columns` of all eight views was read out of a headless browser at
- * a container width below the threshold, before and after.
+ * These blocks are last because `@container` contributes nothing to specificity —
+ * it is a condition on a rule, not part of its selector — so `.panes.profiler` here
+ * and `.panes.profiler` above are a tie, and a tie is settled by source order.
+ * Anything written below them that names one of these selectors silently wins.
  */
 @container (max-width: 62rem) {
   .panes.profiler,
@@ -3681,90 +666,50 @@ button.tree-delete {
   .panes.experiments,
   .panes.kernel-layout,
   .panes.admin-layout,
-  main.panes.code {
+  .panes.chat-layout {
     grid-template-columns: minmax(0, 1fr);
     align-items: start;
     height: auto;
   }
 
   /*
-   * The four views whose panes are capped at the grid's height when they sit side
-   * by side. Stacked, that cap would make each pane scroll inside a column that is
+   * Stacked, the height cap would make each pane scroll inside a column that is
    * already as tall as it likes, so it is released here.
-   *
-   * Selection belongs in this list for the same reason the other three do — it
-   * carries the identical `.panes.selection .pane { max-height: 100% }` — and was
-   * missing from it, which showed as a resolution scrolling inside its own box on
-   * a narrow split while the pane beside it grew.
    */
-  .panes.profiler .pane,
-  .panes.exploration .pane,
-  .panes.relations .pane,
-  .panes.selection .pane {
+  .panes.profiler > .pane,
+  .panes.selection > .pane,
+  .panes.relations > .pane,
+  .panes.exploration > .pane {
     max-height: none;
   }
 
   /*
-   * Chat folds differently from the rest. Stacking its session list above the
-   * conversation the way the other views stack would put the composer below a
-   * scroll, so the list gives way to the conversation rather than the reverse.
-   *
-   * The list row is `auto` and the conversation carries a floor. So the list is
-   * drawn at whatever height its content needs, and the only thing that ever
-   * compresses it is the conversation reaching that floor. Nothing is scrolled
-   * while the other pane still has room, which is the property that was missing.
-   *
-   * The floor is conditional, and that is the point. It exists to keep the composer
-   * reachable, so it applies only to a pane that has one. In the state this pane
-   * spends most of its life in before a session is picked — the "Pick a session, or
-   * start one" placeholder — there is no composer and nothing to protect, and an
-   * unconditional floor there reserved 288px for a single paragraph while the
-   * session list above it scrolled. That is the reported bug wearing a different
-   * hat: space held back from the pane that needed it, for a pane that did not.
-   *
-   * 18rem is measured, not chosen: the parts of an active conversation that cannot
-   * scroll — padding, head, tier control, composer — come to 258px, and the floor
-   * is that plus a line of message. 14rem was tried first and left the composer
-   * hanging 25px below the bottom of its pane.
-   *
-   * `min-content` looks like the principled way to say "as tall as the parts that
-   * cannot scroll" and is not: the pane's min-content contribution is the whole
-   * transcript, not the chrome, so the row claimed 1094px and squeezed the session
-   * list to 34px. The floor has to be a figure; it just has to be a measured one,
-   * and applied only where it is load-bearing.
-   *
-   * This replaced a flat `max-height: 13rem` on the first pane, and then a
-   * `fit-content(45%)` share. Both were measured against a guess at the content
-   * rather than against the space, and both got the common case wrong: an *empty*
-   * session list is about 212px tall once the heading, the provider select and the
-   * two explanatory lines are counted, so it cleared 13rem by four pixels and
-   * scrolled — a scrollbar on a pane saying "No sessions yet" while the
-   * conversation below it had three hundred idle pixels. A share moved the
-   * threshold without removing it: three sessions still scrolled against an empty
-   * conversation. A floor on the *other* pane is the thing that actually states
-   * the trade, because the trade was never about the list's size.
+   * The conversation is the exception: stacked, it still has to be tall enough to
+   * be a conversation rather than a three-line window above the composer.
    */
   .panes.chat-layout {
-    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
     align-items: stretch;
     height: 100%;
   }
 
-  /* A floor only where there is a composer to keep on screen. */
-  .panes.chat-layout > .pane:last-child:has(.composer) {
-    min-height: 18rem;
-  }
-
-  /* And enough of the placeholder to read, whatever the list is doing. */
   .panes.chat-layout > .pane:last-child {
-    min-height: 6rem;
+    min-height: 18rem;
   }
 }
 
 @container (max-width: 44rem) {
+  /*
+   * Stacked: the tree above the editor. The row template has to be restated as well
+   * as the columns — the single `minmax(0, 1fr)` row above is right for two columns
+   * and wrong here, where it would hand the whole pane to the tree and leave the
+   * editor in an implicit auto row below the fold of the pane. So the tree takes
+   * what it needs up to its cap, and the editor takes the rest.
+   */
   .code-layout {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0.75rem;
   }
 
   .file-tree {
@@ -3775,3 +720,668 @@ button.tree-delete {
     padding-bottom: 0.5rem;
   }
 }
+
+/*
+ * --- what the views are made of ---
+ *
+ * The per-view geometry that has no component behind it: a bar of chips, a legend
+ * row, a tree row, a stat pair. shadcn has no opinion about any of these, and the
+ * elements that carry them are already in the markup with names that say what they
+ * are — so the rule goes here rather than as fifteen utilities repeated at every
+ * call site.
+ *
+ * Only measurements and the tokens shadcn defines. Nothing here sets a colour that
+ * is not `--border`, `--muted*` or `--card`, because everything with a state — a
+ * button, a badge, an input — is a component now and brings its own.
+ */
+
+@layer components {
+  /* --- the shell: the /tools index and the workbench bar --- */
+
+  .tool-index-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .tool-index-list > li + li {
+    border-top: 1px solid var(--border);
+  }
+
+  .tool-index-entry {
+    display: grid;
+    gap: 0.15rem;
+    padding: 0.6rem 0.5rem;
+    border-radius: var(--radius-md);
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .tool-index-entry:hover {
+    background: var(--accent);
+  }
+
+  .tool-index-label {
+    font-weight: 500;
+  }
+
+  .tool-index-summary,
+  .tool-index-tools {
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+
+  .tool-index-tools {
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+
+  .workbench-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--card);
+  }
+
+  /* The tab strip carries its own layout; this only stops it from overflowing
+     the bar when there are more workbenches than fit. */
+  .workbench-list {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* --- the code pane --- */
+
+  .repo-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--card);
+  }
+
+  .repo-bar-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .repo-bar-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .repo-pop {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--popover);
+    box-shadow: var(--shadow-md, 0 4px 12px rgb(0 0 0 / 0.08));
+  }
+
+  .repo-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    max-height: 16rem;
+    overflow: auto;
+  }
+
+  .tree-row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    border-radius: var(--radius-md);
+  }
+
+  .tree-row:hover,
+  .tree-row.active {
+    background: var(--accent);
+  }
+
+  /*
+   * The current file is marked by weight, not by a rule down its left edge.
+   *
+   * That edge used to be an `inset 2px 0 0` shadow, which the row's own
+   * `border-radius` clipped into a stub at the top and bottom of the highlight —
+   * it read as a rendering fault rather than as a marker. Weight survives the
+   * radius, survives a monochrome screen, and `aria-current` on the button
+   * already says it to a screen reader.
+   */
+  .tree-row.active .tree-file {
+    font-weight: 500;
+    color: var(--foreground);
+  }
+
+  /*
+   * The row owns the highlight; the controls inside it do not.
+   *
+   * Both the row and the ghost buttons within it were painting `--accent` on
+   * hover, so pointing at a file darkened a rectangle inside an already-darkened
+   * rectangle, with the gap between them visible down the sides.
+   */
+  .tree-row > .tree-dir:hover,
+  .tree-row > .tree-file:hover,
+  .tree-row > .tree-delete:hover {
+    background: transparent;
+  }
+
+  .tree-dir,
+  .tree-file {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    flex: 1;
+    padding: 0.15rem 0.3rem;
+    text-align: left;
+  }
+
+  .tree-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Revealed on hover, but never taken out of the tab order — a keyboard user has
+     no hover to trigger it with. */
+  .tree-delete {
+    visibility: hidden;
+  }
+
+  .tree-row:hover .tree-delete,
+  .tree-row:focus-within .tree-delete {
+    visibility: visible;
+  }
+
+  .file-editor {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    gap: 0.5rem;
+  }
+
+  .file-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .file-path {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .monaco {
+    flex: 1;
+    min-height: 14rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .commit-box {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .changes {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    max-height: 12rem;
+    overflow: auto;
+  }
+
+  /* --- the kernel --- */
+
+  .cells {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    border: 1px solid var(--border);
+    border-left-width: 2px;
+    border-radius: var(--radius-md);
+    padding: 0.5rem;
+  }
+
+  .cell.cell-error {
+    border-left-color: var(--destructive);
+  }
+
+  .cell-code,
+  .cell-output,
+  .cell-traceback {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+
+  .cell-output.result {
+    border-top: 1px solid var(--border);
+    padding-top: 0.35rem;
+  }
+
+  /* --- experiments --- */
+
+  .exp-list,
+  .exp-embeds,
+  .exp-dashboards {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .exp-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: var(--radius-md);
+  }
+
+  .exp-row:hover,
+  .exp-row.selected {
+    background: var(--accent);
+  }
+
+  .exp-open {
+    display: grid;
+    flex: 1;
+    gap: 0.1rem;
+    padding: 0.35rem 0.5rem;
+    text-align: left;
+    min-width: 0;
+  }
+
+  .exp-criterion,
+  .exp-embed,
+  .exp-proposal,
+  .exp-decision {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.6rem;
+  }
+
+  .exp-criterion-head,
+  .exp-embed-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .exp-frame {
+    width: 100%;
+    min-height: 22rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  /* --- exploration: the chart and its legend --- */
+
+  .chart-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .chart-entry {
+    display: grid;
+    gap: 0.1rem;
+    padding: 0.35rem 0.5rem;
+    border-radius: var(--radius-md);
+    text-align: left;
+    min-width: 0;
+  }
+
+  .chart-entry:hover,
+  .chart-entry.active {
+    background: var(--accent);
+  }
+
+  svg.chart {
+    width: 100%;
+    height: auto;
+  }
+
+  svg.chart .series-line {
+    fill: none;
+    stroke-width: 1.5;
+  }
+
+  svg.chart .band {
+    opacity: 0.15;
+  }
+
+  svg.chart .axis,
+  svg.chart .axis-label,
+  svg.chart .axis-unit {
+    fill: var(--muted-foreground);
+    font-size: 0.6875rem;
+  }
+
+  svg.chart .axis line,
+  svg.chart .faint {
+    stroke: var(--border);
+  }
+
+  .series-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .series-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .series-swatch {
+    width: 0.75rem;
+    height: 0.75rem;
+    flex: none;
+    border-radius: 2px;
+    background: currentColor;
+  }
+
+  /* --- the profiler --- */
+
+  .score {
+    display: inline-block;
+    position: relative;
+    width: 4rem;
+    height: 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    vertical-align: middle;
+  }
+
+  .score-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--primary);
+    opacity: 0.35;
+  }
+
+  .score-text {
+    position: relative;
+    display: block;
+    text-align: center;
+    font-size: 0.6875rem;
+    line-height: 0.9rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  .stat {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+  }
+
+  .stat-label {
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+
+  .stat-value {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .flags {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .flag {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.35rem 0.5rem;
+  }
+
+  .flag-name {
+    font-weight: 500;
+  }
+
+  .reads {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding-top: 0.5rem;
+  }
+
+  /* --- selection --- */
+
+  .terms {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+
+  .match {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .match-name {
+    font-weight: 500;
+  }
+
+  /* --- relations --- */
+
+  .rule-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .rule-head {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .rule-statement {
+    font-weight: 500;
+  }
+
+  .rule-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 0.5rem;
+  }
+
+  .rule-stats dt {
+    font-size: 0.75rem;
+    color: var(--muted-foreground);
+  }
+
+  .rule-stats dd {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rule-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .exceptions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .exceptions-title {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--muted-foreground);
+  }
+
+  /* --- the admin surface --- */
+
+  .limits-form,
+  .override-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .limit-field {
+    display: grid;
+    grid-template-columns: minmax(9rem, auto) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .limit-field > .hint {
+    grid-column: 2;
+  }
+
+  .form-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  /* --- rendered markdown --- */
+
+  .md > * + * {
+    margin-top: 0.6em;
+  }
+
+  .md ul,
+  .md ol {
+    padding-left: 1.25rem;
+    list-style: revert;
+  }
+
+  .md h1,
+  .md h2,
+  .md h3 {
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  .md h1 {
+    font-size: 1.125rem;
+  }
+
+  .md h2 {
+    font-size: 1rem;
+  }
+
+  .md h3 {
+    font-size: 0.9375rem;
+  }
+
+  .md a {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .md code {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.875em;
+    background: var(--muted);
+    border-radius: var(--radius-sm);
+    padding: 0.1em 0.3em;
+  }
+
+  .md blockquote {
+    border-left: 2px solid var(--border);
+    padding-left: 0.75rem;
+    color: var(--muted-foreground);
+  }
+
+  .md-table {
+    overflow-x: auto;
+  }
+
+  .md-code {
+    position: relative;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--muted);
+  }
+
+  .md-code pre {
+    margin: 0;
+    padding: 0.6rem;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.75rem;
+  }
+
+  .md-code code {
+    background: none;
+    padding: 0;
+  }
+
+  .md-code-language {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.4rem;
+    font-size: 0.6875rem;
+    color: var(--muted-foreground);
+  }
+}
+
+/*
+ ---break---
+ */
+

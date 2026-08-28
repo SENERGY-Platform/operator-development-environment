@@ -32,8 +32,31 @@ import {
   type RuleException,
   type SeriesRef,
 } from "./api";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Questionnaire,
+  QuestionnaireActions,
+  QuestionnaireChoice,
+  QuestionnaireChoiceDescription,
+  QuestionnaireChoices,
+  QuestionnaireDescription,
+  QuestionnaireItem,
+  QuestionnaireNext,
+  QuestionnairePrevious,
+  QuestionnaireProgress,
+  QuestionnaireSkip,
+  QuestionnaireSubmit,
+  QuestionnaireTitle,
+} from "@/components/ui/questionnaire";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 import { setParam, useLocation, useParam } from "./router";
 import { profilerSocket, type OperationPhase } from "./ws";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   ConfidenceTag,
   KV,
@@ -54,7 +77,7 @@ import {
 } from "./ui";
 
 /**
- * The M6 surface: multi-device conditional patterns (SPEC §5.5, §5.10).
+ * The relational surface: multi-device conditional patterns (§5.5, §5.10).
  *
  * The pane follows the order the design argues for. A developer picks an aspect —
  * a room, a subsystem — rather than devices, because the aspect hierarchy is what
@@ -213,25 +236,33 @@ export function RelationsView() {
         title="Aspect"
         subtitle="Device sets proposed from the hierarchy — ontology only, no values read, tier L0"
       >
-        <form className="filters" onSubmit={submitAspect}>
-          <select value={aspect} onChange={(e) => setAspect(e.target.value)} aria-label="Aspect">
-            <option value="">Choose an aspect…</option>
-            {tree.data?.flatMap((node) => aspectOptions(node, 0))}
-          </select>
+        <form className="filters flex flex-wrap items-center gap-2" onSubmit={submitAspect}>
+          <Select value={aspect} onValueChange={(value) => setAspect(value ?? "")}>
+            <SelectTrigger size="sm" aria-label="Aspect" className="w-auto min-w-52">
+              <SelectValue placeholder="Choose an aspect…" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">Choose an aspect…</SelectItem>
+              {tree.data?.flatMap((node) => aspectOptions(node, 0))}
+            </SelectContent>
+          </Select>
           <label
-            className="filter-check"
+            className="filter-check flex items-center gap-2 text-sm"
             title="Keeps series declared against nodes below the one chosen — an oven on “Kitchen” and lights on “Kitchen Ceiling” are still proposed together"
           >
-            <input
-              type="checkbox"
+            <Checkbox
               checked={includeDescendants}
-              onChange={(e) => setIncludeDescendants(e.target.checked)}
+              onCheckedChange={(checked) => setIncludeDescendants(checked)}
             />
             <span>include descendants</span>
           </label>
-          <button type="submit" disabled={propose.pending || aspect === ""}>
+          <Button variant="outline"
+            className={propose.pending ? "busy animate-pulse" : undefined}
+            type="submit"
+            disabled={propose.pending || aspect === ""}
+          >
             {propose.pending ? "Proposing…" : "Propose sets"}
-          </button>
+          </Button>
         </form>
 
         {tree.error && <Muted>{tree.error}</Muted>}
@@ -271,11 +302,11 @@ export function RelationsView() {
         subtitle="Idle/active from each profile, aligned on one grid by one batched read — tier L1"
         actions={
           relate.pending ? (
-            <button onClick={relate.abort}>Cancel</button>
+            <Button variant="outline" onClick={relate.abort}>Cancel</Button>
           ) : (
-            <button onClick={run} disabled={chosen.length < 2}>
+            <Button variant="outline" onClick={run} disabled={chosen.length < 2}>
               Relate {chosen.length > 0 ? `${chosen.length} series` : ""}
-            </button>
+            </Button>
           )
         }
       >
@@ -284,9 +315,9 @@ export function RelationsView() {
             {chosen.map((member) => (
               <li key={refKey(member.ref)}>
                 <span className="chosen-label">{member.label}</span>
-                <button className="link" onClick={() => toggle(member.ref)} aria-label="Remove">
+                <Button variant="link" className="link" onClick={() => toggle(member.ref)} aria-label="Remove">
                   ×
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
@@ -303,9 +334,11 @@ export function RelationsView() {
 
         {relate.pending && (
           <p className="phase">
-            {phase ? `${phase.stage}: ${phase.detail}` : "starting…"}
+            <span className="busy animate-pulse">
+              {phase ? `${phase.stage}: ${phase.detail}` : "starting…"}
+            </span>
             <br />
-            <span className="muted">
+            <span className="muted text-muted-foreground">
               Every participating service is profiled first, so a wide window takes minutes.
               Cancelling stops the platform reads, not just the waiting.
             </span>
@@ -338,13 +371,13 @@ function ProposalSummary({ proposal }: { proposal: RelationProposal }) {
         </Row>
         <Row
           label="Values read"
-          hint="Structurally zero: proposing a set is ontology, a device list and a device-group list (§5.8, tier L0)"
+          hint="Structurally zero: proposing a set is ontology, a device list and a device-group list (tier L0)"
         >
           {proposal.reads.values}
         </Row>
       </KV>
       {proposal.ontology_gaps.length > 0 && (
-        <ul className="notes">
+        <ul className="notes list-disc pl-4 text-xs text-muted-foreground">
           {proposal.ontology_gaps.map((gap, index) => (
             <li key={index}>
               <strong>{gap.device_type_name || gap.device_type_id}</strong>: {gap.consequence}
@@ -353,7 +386,7 @@ function ProposalSummary({ proposal }: { proposal: RelationProposal }) {
         </ul>
       )}
       {proposal.notes.length > 0 && (
-        <ul className="notes">
+        <ul className="notes list-disc pl-4 text-xs text-muted-foreground">
           {proposal.notes.map((note, index) => (
             <li key={index}>{note}</li>
           ))}
@@ -396,36 +429,41 @@ function CandidateSetCard({
   onToggle: (ref: SeriesRef) => void;
 }) {
   return (
-    <div className={active ? "set-card active" : "set-card"}>
-      <div className="set-head">
-        <div>
-          <h3>{set.name}</h3>
-          <p className="set-rationale">{set.rationale}</p>
+    <Card className={cn("set-card mb-3 gap-3 py-4", active && "active border-primary/50")}>
+      <CardHeader className="grid-cols-[1fr_auto] gap-3 px-4">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold">{set.name}</h3>
+          <p className="set-rationale mt-0.5 text-xs text-muted-foreground">{set.rationale}</p>
         </div>
-        <div className="set-meta">
-          <span className={`origin origin-${set.origin}`}>{ORIGIN_LABEL[set.origin] ?? set.origin}</span>
-          <span className="muted">{set.devices} devices</span>
-          <button onClick={() => onTake(set)}>Take set</button>
+        <div className="set-meta flex items-center gap-2">
+          <Badge variant="outline" className={`origin origin-${set.origin} font-normal`}>
+            {ORIGIN_LABEL[set.origin] ?? set.origin}
+          </Badge>
+          <span className="muted text-xs text-muted-foreground">{set.devices} devices</span>
+          <Button size="sm" onClick={() => onTake(set)}>
+            Take set
+          </Button>
         </div>
-      </div>
+      </CardHeader>
+      <CardContent className="px-4">
       {set.graph_name && (
-        <p className="set-graph">
-          from the graph <strong>{set.graph_name}</strong>
+        <p className="set-graph text-xs text-muted-foreground">
+          from the graph <strong className="font-medium text-foreground">{set.graph_name}</strong>
         </p>
       )}
-      <ul className="set-members">
+      <ul className="set-members mt-2 flex flex-col gap-1.5">
         {set.members.map((member) => (
-          <li key={refKey(member.ref)}>
-            <label>
-              <input
-                type="checkbox"
+          <li key={refKey(member.ref)} className="text-sm">
+            <label className="flex flex-wrap items-center gap-2">
+              <Checkbox
                 checked={Boolean(selected[refKey(member.ref)])}
-                onChange={() => onToggle(member.ref)}
+                onCheckedChange={() => onToggle(member.ref)}
               />
               <span className="member-label">{member.label}</span>
               {member.graph && (
-                <span
-                  className={`role role-${member.graph.role}`}
+                <Badge
+                  variant="secondary"
+                  className={`role role-${member.graph.role} font-normal`}
                   title={roleHint(member.graph)}
                 >
                   {ROLE_LABEL[member.graph.role] ?? member.graph.role}
@@ -439,7 +477,7 @@ function CandidateSetCard({
                     member.graph.weight > 0 &&
                     member.graph.weight < 100 &&
                     ` · ${member.graph.weight}%`}
-                </span>
+                </Badge>
               )}
               {/*
                 A member the graph reached from outside the requested aspect. Marked
@@ -448,15 +486,16 @@ function CandidateSetCard({
                 would otherwise wonder where it came from.
               */}
               {!member.from_aspect && (
-                <span
-                  className="outside"
+                <Badge
+                  variant="outline"
+                  className="outside font-normal"
                   title="Reached through the graph rather than the aspect you asked about — normal for a meter one level up"
                 >
                   outside aspect
-                </span>
+                </Badge>
               )}
             </label>
-            <span className="muted">
+            <span className="muted ml-6 block text-xs text-muted-foreground">
               {member.device_name}
               {member.unit ? ` · ${member.unit}` : ""}
               {member.aspect_name ? ` · ${member.aspect_name}` : ""}
@@ -465,13 +504,14 @@ function CandidateSetCard({
         ))}
       </ul>
       {set.notes.length > 0 && (
-        <ul className="notes">
+        <ul className="notes mt-2 list-disc pl-4 text-xs text-muted-foreground">
           {set.notes.map((note, index) => (
             <li key={index}>{note}</li>
           ))}
         </ul>
       )}
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -502,7 +542,7 @@ function RelationDocument({ relation }: { relation: RelationProfile }) {
           </Row>
           <Row
             label="Reads"
-            hint="One batched query aligns every member, however many there are (§5.5). The profile passes are counted separately because only the first figure is this package's own"
+            hint="One batched query aligns every member, however many there are. The profile passes are counted separately because only the first figure is this package's own"
           >
             {relation.reads.aligned} aligned + {relation.reads.profiles} profile ={" "}
             {relation.reads.values}
@@ -517,7 +557,7 @@ function RelationDocument({ relation }: { relation: RelationProfile }) {
           </Row>
         </KV>
         {relation.notes.length > 0 && (
-          <ul className="notes">
+          <ul className="notes list-disc pl-4 text-xs text-muted-foreground">
             {relation.notes.map((note, index) => (
               <li key={index}>{note}</li>
             ))}
@@ -536,7 +576,7 @@ function RelationDocument({ relation }: { relation: RelationProfile }) {
             {relation.members.map((member) => (
               <li key={refKey(member.ref)}>
                 <span className="member-label">{member.label}</span>{" "}
-                <span className="muted">
+                <span className="muted text-muted-foreground">
                   {/*
                     The observed count is the first thing to read: it separates a read that
                     came back empty from one that came back full and could not be split.
@@ -545,7 +585,7 @@ function RelationDocument({ relation }: { relation: RelationProfile }) {
                   {member.state.reason?.reason ? ` · ${member.state.reason.reason}` : ""}
                 </span>
                 {member.state.reason?.detail && (
-                  <div className="muted">{member.state.reason.detail}</div>
+                  <div className="muted text-muted-foreground">{member.state.reason.detail}</div>
                 )}
               </li>
             ))}
@@ -554,26 +594,26 @@ function RelationDocument({ relation }: { relation: RelationProfile }) {
       )}
 
       <Section title="Members" note="how idle and active were decided">
-        <table className="members">
-          <thead>
-            <tr>
-              <th>Series</th>
-              <th>Split</th>
-              <th>Duty cycle</th>
-              <th>Buckets</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="members">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Series</TableHead>
+              <TableHead>Split</TableHead>
+              <TableHead>Duty cycle</TableHead>
+              <TableHead>Buckets</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {relation.members.map((member) => (
               <MemberRow key={refKey(member.ref)} member={member} />
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </Section>
 
       <Section
         title="Candidate rules"
-        note="candidates only — nothing downstream reads one until you confirm it (§5.5, D28)"
+        note="candidates only — nothing downstream reads one until you confirm it"
       >
         {relation.candidate_rules.length === 0 && (
           <Muted>
@@ -582,6 +622,31 @@ function RelationDocument({ relation }: { relation: RelationProfile }) {
             contribute to any rule.
           </Muted>
         )}
+        {/*
+          Two ways through the same decision, and which one is offered depends on how
+          many decisions there are.
+
+          The cards below are the reference: every rule, its evidence, its exceptions
+          and its three buttons, all on screen at once. That is the right shape for
+          checking one rule against another, and the wrong shape for working through
+          eleven of them — a stack of eleven identical three-button cards gives no
+          sense of how many are left, no way back to the one just answered, and no
+          record of which have been dealt with.
+
+          So where more than one rule is still undecided, the review comes first: one
+          rule at a time, with progress, a note per decision and a skip for the ones
+          the developer wants to leave. It is an alternative route through the cards,
+          not a replacement — D28 says the developer decides, and part of deciding is
+          being able to see the evidence, which is what the cards are for.
+        */}
+        <RuleReview
+          relationId={relation.relation_id}
+          rules={relation.candidate_rules}
+          decided={decided}
+          onDecided={(ruleId, action) =>
+            setDecided((current) => ({ ...current, [ruleId]: action }))
+          }
+        />
         {relation.candidate_rules.map((rule) => (
           <RuleCard
             key={rule.rule_id}
@@ -606,22 +671,22 @@ function RelationDocument({ relation }: { relation: RelationProfile }) {
 
 function MemberRow({ member }: { member: RelationMember }) {
   return (
-    <tr className={member.state.usable ? "" : "unusable"}>
-      <td>
+    <TableRow className={member.state.usable ? "" : "unusable"}>
+      <TableCell>
         <div className="member-label">{member.label}</div>
-        <div className="muted">
+        <div className="muted text-muted-foreground">
           {member.kind || "kind unknown"}
           {member.unit ? ` · ${member.unit}` : ""}
         </div>
-      </td>
-      <td>
+      </TableCell>
+      <TableCell>
         {member.state.usable ? (
           <>
             <div>
               ≥ {round(member.state.threshold, 4)}
               {member.unit ? ` ${member.unit}` : ""}
             </div>
-            <div className="muted">
+            <div className="muted text-muted-foreground">
               {member.state.method} ·{" "}
               <span
                 className={
@@ -629,7 +694,7 @@ function MemberRow({ member }: { member: RelationMember }) {
                 }
                 title={
                   member.state.threshold_source === "confirmed"
-                    ? "You corrected this threshold in the profiler or on a chart, and the rules below were computed against your value rather than the detector's (§5.10)"
+                    ? "You corrected this threshold in the profiler or on a chart, and the rules below were computed against your value rather than the detector's"
                     : "The detector's own idle/active split"
                 }
               >
@@ -643,16 +708,232 @@ function MemberRow({ member }: { member: RelationMember }) {
           // an expected rule is missing.
           member.state.reason && <NotComputedTag status={member.state.reason} />
         )}
-      </td>
-      <td>{member.state.usable ? percent(member.state.duty_cycle) : "—"}</td>
-      <td className="muted">
+      </TableCell>
+      <TableCell>{member.state.usable ? percent(member.state.duty_cycle) : "—"}</TableCell>
+      <TableCell className="muted text-muted-foreground">
         {member.state.active_buckets} active · {member.state.idle_buckets} idle ·{" "}
         {member.state.unknown_buckets} unknown
         <div title="Aligned buckets that carried a value, whether or not a split was found">
           {member.state.observed_buckets} read
         </div>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+/**
+ * The three things a developer can say about a candidate rule, in the order the
+ * decision is usually reached: it holds, it nearly holds, it does not.
+ */
+const RULE_CHOICES = [
+  {
+    value: "confirm",
+    label: "Confirm",
+    description: "The rule holds as stated. Downstream may read it.",
+  },
+  {
+    value: "correct",
+    label: "Correct",
+    description: "The pattern is real but the statement is wrong. Say how below.",
+  },
+  {
+    value: "reject",
+    label: "Reject",
+    description: "Not a rule. The candidate is recorded as refused, with your reason.",
+  },
+] as const satisfies readonly {
+  value: RuleDecisionRequest["action"];
+  label: string;
+  description: string;
+}[];
+
+/**
+ * RuleReview walks the undecided candidate rules, one at a time.
+ *
+ * Why a questionnaire and not a longer list of cards: this is a sequence of
+ * independent single-choice decisions with an optional note each, which is exactly
+ * the shape the control is for. What it adds over the cards is the three things a
+ * stack of cards cannot give — how many are left, a way back to the one just
+ * answered, and a skip that is recorded as "not yet decided" rather than as silence.
+ *
+ * Nothing is written until Submit. That is deliberate and it is the one place this
+ * differs from the cards, which write on every click: a developer working through
+ * eleven rules should be able to change their mind about the third without the log
+ * carrying both answers. The log is append-only (D28), so a decision written early
+ * cannot be taken back — only added to.
+ *
+ * Absent where it would add nothing: with one rule left there is no sequence to walk,
+ * and the card below already asks the question with the evidence beside it.
+ */
+function RuleReview({
+  relationId,
+  rules,
+  decided,
+  onDecided,
+}: {
+  relationId: string;
+  rules: CandidateRule[];
+  decided: Record<string, RuleDecisionRequest["action"]>;
+  onDecided: (ruleId: string, action: RuleDecisionRequest["action"]) => void;
+}) {
+  const outstanding = useMemo(
+    () => rules.filter((rule) => decided[rule.rule_id] === undefined && !rule.decision),
+    [decided, rules],
+  );
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Kept out of the questionnaire's own state because the corrected statement is a
+  // second field on one branch of one answer, not an answer in its own right.
+  const [corrections, setCorrections] = useState<Record<string, string>>({});
+
+  const items = useMemo(
+    () =>
+      outstanding.map((rule) => ({
+        name: rule.rule_id,
+        // Every rule is skippable: leaving one undecided is a legitimate outcome, and
+        // forcing an answer is how a developer ends up confirming something to get
+        // past it.
+        required: false,
+        choices: RULE_CHOICES.map((choice) => ({ value: choice.value })),
+      })),
+    [outstanding],
+  );
+
+  if (outstanding.length < 2) return null;
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setSaving(true);
+    setError(null);
+    try {
+      for (const rule of outstanding) {
+        const action = form.get(rule.rule_id);
+        // A skipped rule has no answer, and skipping is a decision to decide later.
+        if (typeof action !== "string" || action === "") continue;
+        const body: RuleDecisionRequest = {
+          rule_id: rule.rule_id,
+          action: action as RuleDecisionRequest["action"],
+          note: String(form.get(`${rule.rule_id}-note`) ?? "").trim(),
+        };
+        if (body.action === "correct") {
+          const statement = (corrections[rule.rule_id] ?? rule.statement).trim();
+          // A correction with nothing corrected is the developer having picked the
+          // branch and not filled it in. Confirming their words as the rule's own
+          // would put a statement in the log they never wrote.
+          if (statement === "") {
+            setError(`“${rule.statement}” is marked as needing correction but has no new wording.`);
+            setSaving(false);
+            return;
+          }
+          body.confirmed = {
+            statement,
+            anomaly: rule.anomaly,
+            support: rule.support,
+            confidence: rule.confidence,
+            lift: rule.lift,
+            exceptions: rule.exceptions,
+          };
+        }
+        await api.decideRule(relationId, body);
+        onDecided(rule.rule_id, body.action);
+      }
+      setOpen(false);
+    } catch (e: unknown) {
+      setError(describe(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <div className="rule-review-open mb-3 flex flex-wrap items-center gap-2">
+        <Button size="sm" onClick={() => setOpen(true)}>
+          Review {outstanding.length} rules
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          one at a time, with a note each — or decide them on the cards below
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <Card className="rule-review mb-4">
+      <CardHeader className="grid-cols-[1fr_auto] gap-2">
+        <QuestionnaireProgress className="self-center" />
+        <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+          Close
+        </Button>
+      </CardHeader>
+      <CardContent>
+        <Questionnaire items={items} shortcuts="numbers" onSubmit={(event) => void submit(event)}>
+          {outstanding.map((rule) => (
+            <QuestionnaireItem key={rule.rule_id} name={rule.rule_id}>
+              <QuestionnaireTitle>{rule.statement}</QuestionnaireTitle>
+              <QuestionnaireDescription>
+                Confidence {percent(rule.confidence)} · lift ×{round(rule.lift, 2)} · support{" "}
+                {percent(rule.support)} · {num(rule.samples)} samples,{" "}
+                {num(rule.violations)} violations.
+                {rule.exceptions.length > 0
+                  ? ` Does not hold in ${num(rule.exceptions.length)} examined condition(s).`
+                  : " Held in every condition examined."}
+              </QuestionnaireDescription>
+              <QuestionnaireChoices>
+                {RULE_CHOICES.map((choice) => (
+                  <QuestionnaireChoice key={choice.value} value={choice.value}>
+                    {choice.label}
+                    <QuestionnaireChoiceDescription>
+                      {choice.description}
+                    </QuestionnaireChoiceDescription>
+                  </QuestionnaireChoice>
+                ))}
+              </QuestionnaireChoices>
+              {/*
+                Always rendered rather than revealed by the "Correct" choice: a field
+                that appears under the cursor moves the buttons the developer was
+                about to press. It is only read when that branch is the answer.
+              */}
+              <Input
+                name={`${rule.rule_id}-statement`}
+                value={corrections[rule.rule_id] ?? rule.statement}
+                onChange={(event) =>
+                  setCorrections((current) => ({
+                    ...current,
+                    [rule.rule_id]: event.target.value,
+                  }))
+                }
+                aria-label="The rule as you would state it"
+                placeholder="the rule as you would state it"
+              />
+              {/*
+                A plain input, not `QuestionnaireInput`: that one *is* the item's
+                freeform answer and carries the item's own name, which is already
+                taken by the three choices. The note is a second field about the
+                answer rather than a second answer, so it rides along on the form.
+              */}
+              <Input
+                name={`${rule.rule_id}-note`}
+                placeholder="why (recorded with your decision)"
+                aria-label="Note"
+              />
+            </QuestionnaireItem>
+          ))}
+          <QuestionnaireActions>
+            <QuestionnairePrevious />
+            <QuestionnaireSkip>Decide later</QuestionnaireSkip>
+            <QuestionnaireNext />
+            <QuestionnaireSubmit disabled={saving}>
+              {saving ? "Recording…" : "Record decisions"}
+            </QuestionnaireSubmit>
+          </QuestionnaireActions>
+        </Questionnaire>
+        {error && <Muted>{error}</Muted>}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -745,7 +1026,7 @@ function RuleCard({
           </ul>
         </div>
       ) : (
-        <p className="muted">
+        <p className="muted text-muted-foreground">
           Held in every condition examined — hour of day and weekday/weekend. That is a finding
           rather than a missing field.
         </p>
@@ -758,18 +1039,18 @@ function RuleCard({
           {rule.decision.confirmed && (
             <>
               <br />
-              <span className="muted">their form: {rule.decision.confirmed.statement}</span>
+              <span className="muted text-muted-foreground">their form: {rule.decision.confirmed.statement}</span>
             </>
           )}
         </p>
       )}
 
-      <p className="advisory" title="SPEC §5.5 and D28">
+      <p className="advisory text-xs text-muted-foreground" title="Advisory: a candidate rule binds nothing until you confirm it">
         {rule.advisory}
       </p>
 
       {editing && (
-        <input
+        <Input
           className="rule-edit"
           value={statement}
           onChange={(e) => setStatement(e.target.value)}
@@ -778,36 +1059,36 @@ function RuleCard({
         />
       )}
       <div className="rule-actions">
-        <input
+        <Input
           value={note}
           onChange={(e) => setNote(e.target.value)}
           placeholder="why (recorded with your decision)"
           aria-label="Note"
         />
-        <button onClick={() => void submit("confirm")} disabled={decide.pending}>
+        <Button variant="outline" onClick={() => void submit("confirm")} disabled={decide.pending}>
           Confirm
-        </button>
+        </Button>
         {editing ? (
-          <button
+          <Button variant="outline"
             onClick={() => void submit("correct")}
             disabled={decide.pending || statement.trim() === ""}
           >
             Save correction
-          </button>
+          </Button>
         ) : (
-          <button onClick={() => setEditing(true)} disabled={decide.pending}>
+          <Button variant="outline" onClick={() => setEditing(true)} disabled={decide.pending}>
             Correct…
-          </button>
+          </Button>
         )}
-        <button onClick={() => void submit("reject")} disabled={decide.pending}>
+        <Button variant="outline" onClick={() => void submit("reject")} disabled={decide.pending}>
           Reject
-        </button>
+        </Button>
       </div>
       {decide.error && <Muted>{decide.error}</Muted>}
       {decided && (
-        <p className="muted">
+        <p className="muted text-muted-foreground">
           Recorded as {decided}. The log is append-only, so changing your mind adds a record rather
-          than replacing this one (D21).
+          than replacing this one.
         </p>
       )}
     </div>
@@ -837,30 +1118,30 @@ function PairTable({ pair, members }: { pair: PairRelation; members: RelationMem
       </h4>
       <ContingencyTable a={a} b={b} table={pair.overall} />
       {pair.conditions.length > 0 && (
-        <table className="conditions">
-          <thead>
-            <tr>
-              <th>Condition</th>
-              <th>both active</th>
-              <th>a only</th>
-              <th>b only</th>
-              <th>neither</th>
-              <th>observed</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="conditions">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Condition</TableHead>
+              <TableHead>both active</TableHead>
+              <TableHead>a only</TableHead>
+              <TableHead>b only</TableHead>
+              <TableHead>neither</TableHead>
+              <TableHead>observed</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {pair.conditions.map((condition, index) => (
-              <tr key={index}>
-                <td>{condition.bucket}</td>
-                <td>{condition.contingency.active_active}</td>
-                <td>{condition.contingency.active_idle}</td>
-                <td>{condition.contingency.idle_active}</td>
-                <td>{condition.contingency.idle_idle}</td>
-                <td className="muted">{condition.contingency.observed}</td>
-              </tr>
+              <TableRow key={index}>
+                <TableCell>{condition.bucket}</TableCell>
+                <TableCell>{condition.contingency.active_active}</TableCell>
+                <TableCell>{condition.contingency.active_idle}</TableCell>
+                <TableCell>{condition.contingency.idle_active}</TableCell>
+                <TableCell>{condition.contingency.idle_idle}</TableCell>
+                <TableCell className="muted text-muted-foreground">{condition.contingency.observed}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
     </div>
   );
@@ -868,27 +1149,27 @@ function PairTable({ pair, members }: { pair: PairRelation; members: RelationMem
 
 function ContingencyTable({ a, b, table }: { a: string; b: string; table: Contingency }) {
   return (
-    <table className="contingency">
-      <thead>
-        <tr>
-          <th />
-          <th>{b} active</th>
-          <th>{b} idle</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <th>{a} active</th>
-          <td>{num(table.active_active)}</td>
-          <td>{num(table.active_idle)}</td>
-        </tr>
-        <tr>
-          <th>{a} idle</th>
-          <td>{num(table.idle_active)}</td>
-          <td>{num(table.idle_idle)}</td>
-        </tr>
-      </tbody>
-    </table>
+    <Table className="contingency">
+      <TableHeader>
+        <TableRow>
+          <TableHead />
+          <TableHead>{b} active</TableHead>
+          <TableHead>{b} idle</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        <TableRow>
+          <TableHead>{a} active</TableHead>
+          <TableCell>{num(table.active_active)}</TableCell>
+          <TableCell>{num(table.active_idle)}</TableCell>
+        </TableRow>
+        <TableRow>
+          <TableHead>{a} idle</TableHead>
+          <TableCell>{num(table.idle_active)}</TableCell>
+          <TableCell>{num(table.idle_idle)}</TableCell>
+        </TableRow>
+      </TableBody>
+    </Table>
   );
 }
 

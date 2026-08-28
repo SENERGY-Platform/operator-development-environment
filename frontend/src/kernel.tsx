@@ -16,16 +16,19 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type KernelEvent, type KernelFile, type KernelStatus } from "./api";
-import { Muted, Pane, bytes, dateTime, describe, shortId } from "./ui";
+import { Busy, Muted, Pane, bytes, dateTime, describe, shortId } from "./ui";
 import { odeSocket } from "./ws";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 /**
- * The Kernel view (SPEC §5.6, M4).
+ * The Kernel view (§5.6).
  *
- * A console rather than a notebook. The Code pane of §5.11 — a full file tree
- * with Monaco and write access on every file — is M7; what this needs to show is
- * narrower and specific: that a developer runs their own Python in their own pod,
- * and that a file written in one session is there in the next.
+ * A console rather than a notebook. The Code pane of §5.11 — a full file tree with
+ * Monaco and write access on every file — is the workspace's half; what this needs
+ * to show is narrower and specific: that a developer runs their own Python in their
+ * own pod, and that a file written in one session is there in the next.
  *
  * Two things on screen are load-bearing rather than decorative. The workspace
  * path is shown beside the file list because only that directory is on the
@@ -174,12 +177,12 @@ function KernelPane({
       subtitle="Python in this developer's own pod, with this developer's own platform access"
       actions={
         <>
-          <button onClick={() => void act(api.kernelRestart)} disabled={running}>
+          <Button variant="outline" onClick={() => void act(api.kernelRestart)} disabled={running}>
             Restart
-          </button>
-          <button onClick={() => void act(api.kernelShutdown)} disabled={running}>
+          </Button>
+          <Button variant="outline" onClick={() => void act(api.kernelShutdown)} disabled={running}>
             Shut down
-          </button>
+          </Button>
         </>
       }
     >
@@ -199,7 +202,7 @@ function KernelPane({
       </div>
 
       <div className="composer">
-        <textarea
+        <Textarea
           value={code}
           spellCheck={false}
           rows={6}
@@ -216,15 +219,15 @@ function KernelPane({
           aria-label="Python to run in the kernel"
         />
         <div className="composer-actions">
-          <span className="muted-inline">
+          <span className="muted-inline text-xs text-muted-foreground">
             Ctrl+Enter to run. Output is capped; write large results to a file in the workspace.
           </span>
           {running ? (
-            <button onClick={() => controller.current?.abort()}>Interrupt</button>
+            <Button variant="outline" onClick={() => controller.current?.abort()}>Interrupt</Button>
           ) : (
-            <button onClick={() => void run()} disabled={!code.trim() || starting}>
+            <Button variant="outline" onClick={() => void run()} disabled={!code.trim() || starting}>
               Run
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -236,7 +239,8 @@ function KernelStatusLine({ status, starting }: { status: KernelStatus | null; s
   if (starting && !status) {
     return (
       <p className="notice notice-info">
-        Starting the pod. A cold start takes up to a minute; nothing is lost while it does.
+        <span className="busy animate-pulse">Starting the pod.</span> A cold start takes up to a minute;
+        nothing is lost while it does.
       </p>
     );
   }
@@ -260,11 +264,11 @@ function KernelStatusLine({ status, starting }: { status: KernelStatus | null; s
         {status.kernel_id ? (
           <>
             <code>{shortId(status.kernel_id)}</code>
-            {status.kernel_name && <span className="muted-inline"> {status.kernel_name}</span>}
-            {status.busy && <span className="tag warn">busy</span>}
+            {status.kernel_name && <span className="muted-inline text-xs text-muted-foreground"> {status.kernel_name}</span>}
+            {status.busy && <span className="tag warn inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs text-foreground">busy</span>}
           </>
         ) : (
-          <span className="muted-inline">none</span>
+          <span className="muted-inline text-xs text-muted-foreground">none</span>
         )}
       </dd>
       {status.last_activity && (
@@ -281,13 +285,13 @@ function CellView({ cell }: { cell: Cell }) {
   const truncated = cell.events.some((event) => event.truncated);
 
   return (
-    <article className={`cell ${cell.status === "error" ? "cell-error" : ""}`}>
+    <article className={`cell ${cell.status === "error text-destructive" ? "cell-error" : ""}`}>
       <pre className="cell-code">{cell.code}</pre>
       <div className="cell-output">
         {cell.events.map((event, index) => (
           <EventView key={index} event={event} />
         ))}
-        {!cell.finished && <span className="cell-running">running…</span>}
+        {!cell.finished && <span className="cell-running busy animate-pulse">running…</span>}
       </div>
       {truncated && (
         <p className="notice notice-warn">
@@ -379,51 +383,51 @@ function WorkspacePane({
       title="Workspace"
       subtitle="Persistent storage. A file written here is present in the next session"
       actions={
-        <button
+        <Button variant="outline"
           onClick={() => {
             void load();
             void onRefreshStatus();
           }}
         >
           Refresh
-        </button>
+        </Button>
       }
     >
       {status && (
         <p className="workspace-path">
           <code>{status.workspace}</code>
-          <span className="muted-inline">
+          <span className="muted-inline text-xs text-muted-foreground">
             {" "}
             — the kernel's working directory, on the per-user volume. Anything written outside it
             is lost when the pod is culled.
           </span>
         </p>
       )}
-      {loading && <Muted>Loading…</Muted>}
+      {loading && <Busy>Loading…</Busy>}
       {error && <Muted>{error}</Muted>}
       {entries && entries.length === 0 && <Muted>The workspace is empty.</Muted>}
       {entries && entries.length > 0 && (
-        <table className="grid">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th className="numeric">Size</th>
-              <th>Modified</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="grid">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead className="numeric text-right tabular-nums">Size</TableHead>
+              <TableHead>Modified</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {entries.map((entry) => (
-              <tr key={entry.path}>
-                <td>
+              <TableRow key={entry.path}>
+                <TableCell>
                   {entry.type === "directory" ? "▸ " : ""}
                   {entry.name}
-                </td>
-                <td className="numeric">{entry.type === "directory" ? "" : bytes(entry.size)}</td>
-                <td>{entry.last_modified ? dateTime(entry.last_modified) : ""}</td>
-              </tr>
+                </TableCell>
+                <TableCell className="numeric text-right tabular-nums">{entry.type === "directory" ? "" : bytes(entry.size)}</TableCell>
+                <TableCell>{entry.last_modified ? dateTime(entry.last_modified) : ""}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
     </Pane>
   );

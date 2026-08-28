@@ -14,7 +14,14 @@
  * limitations under the License.
  */
 
+import { ChevronRightIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardAction, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import { ApiError, isNotComputed, type Confidence, type NotComputed, type Value } from "./api";
 import { Cancelled, WsError } from "./ws";
 
@@ -143,6 +150,15 @@ export function describe(e: unknown): string {
 
 // --- layout ---
 
+/**
+ * Pane is the panel every view is built out of: one shadcn `Card` with a titled
+ * head, an optional action strip and a scrolling body.
+ *
+ * The `pane` class stays on the element. It carries no colour or border any more
+ * — the Card does that — but the grid rules that place panes beside one another
+ * still select on it, and so do the render tests. Treat it as a layout hook, not
+ * as styling.
+ */
 export function Pane({
   title,
   subtitle,
@@ -154,7 +170,7 @@ export function Pane({
   subtitle: string;
   actions?: React.ReactNode;
   /**
-   * An extra class on the section, for a pane whose *contents* need laying out
+   * An extra class on the card, for a pane whose *contents* need laying out
    * differently from the default column — the GitHub account card, which is a
    * strip rather than a panel. Layout of the panes themselves stays in the grid
    * rules; this is for what is inside one.
@@ -163,25 +179,65 @@ export function Pane({
   children: React.ReactNode;
 }) {
   return (
-    <section className={className === undefined ? "pane" : `pane ${className}`}>
-      <div className="pane-head">
-        <div>
-          <h2>{title}</h2>
-          <p className="pane-subtitle">{subtitle}</p>
+    <Card
+      // `Card` renders a div, and this is a landmark: the panes are the page's
+      // top-level regions and a screen reader should be able to jump between
+      // them. `role="region"` with a name is what `<section aria-label>` means,
+      // and it avoids wrapping the card in a second box just to get the tag.
+      role="region"
+      aria-label={title}
+      className={cn("pane min-h-0 gap-0 overflow-hidden py-0", className)}
+    >
+      <CardHeader className="grid-cols-[1fr_auto] gap-2 border-b px-4 py-3">
+        <div className="min-w-0">
+          <h2 className="truncate text-sm leading-none font-semibold">{title}</h2>
+          <CardDescription className="pane-subtitle mt-1 text-xs">{subtitle}</CardDescription>
         </div>
-        {actions && <div className="pane-actions">{actions}</div>}
-      </div>
-      <div className="pane-body">{children}</div>
-    </section>
+        {actions && <CardAction className="pane-actions flex items-center gap-2">{actions}</CardAction>}
+      </CardHeader>
+      <CardContent className="pane-body min-h-0 flex-1 overflow-auto px-4 py-3">{children}</CardContent>
+    </Card>
   );
 }
 
 export function Muted({ children }: { children: React.ReactNode }) {
-  return <p className="muted">{children}</p>;
+  return <p className="muted text-sm text-muted-foreground">{children}</p>;
+}
+
+/**
+ * Busy is Muted for the line that is only on screen because something is running.
+ *
+ * Two things separate it from a muted line that happens to end in an ellipsis. It
+ * carries a spinner — a clone or a kernel spawn takes tens of seconds, and a
+ * caption that has not moved in that time is indistinguishable from one left
+ * behind by a request that died. And it is a live region, because the same wait is
+ * invisible to a screen reader otherwise: the text appears with nothing to
+ * announce it and disappears the same way.
+ *
+ * `polite`, never `assertive`. "Cloning…" is not worth cutting into what the
+ * developer is already being read.
+ *
+ * The spinner is `aria-hidden` even though shadcn gives it `role="status"`: this
+ * paragraph is already the live region, and two announcements for one wait is one
+ * too many.
+ */
+export function Busy({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="muted busy flex items-center gap-2 text-sm text-muted-foreground animate-pulse" aria-live="polite">
+      <Spinner aria-hidden className="size-3.5" aria-label={undefined} role={undefined} />
+      {children}
+    </p>
+  );
 }
 
 export function Centered({ children }: { children: React.ReactNode }) {
-  return <div className="centered">{children}</div>;
+  // `min-h-svh` and not `min-h-full`: every use of this is a whole-page state —
+  // the session loading, a fatal error, the editor chunk arriving — and those
+  // render into a parent with no height of its own, where `min-height: 100%`
+  // resolves to nothing and the content sits at the top of the window.
+  return (
+    <div className="centered flex min-h-svh items-center justify-center p-6">{children}</div>
+  );
 }
 
 /** Section is a collapsible block, so a long profile can be read in parts. */
@@ -198,27 +254,52 @@ export function Section({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="section">
-      <button className="section-head" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <span className="twisty">{open ? "▾" : "▸"}</span>
+    <Collapsible
+      render={<section className="section border-b last:border-b-0" />}
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <CollapsibleTrigger
+        className={cn(
+          "section-head flex w-full items-center gap-2 py-2 text-left text-sm font-medium",
+          "hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
+        )}
+      >
+        <ChevronRightIcon
+          aria-hidden
+          className="twisty size-3.5 shrink-0 text-muted-foreground transition-transform data-[open]:rotate-90 inline-block w-3 text-center text-xs"
+          data-open={open ? "" : undefined}
+        />
         <span className="section-title">{title}</span>
-        {note && <span className="section-note">{note}</span>}
-      </button>
-      {open && <div className="section-body">{children}</div>}
-    </section>
+        {note && <span className="section-note ml-auto text-xs font-normal text-muted-foreground">{note}</span>}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="section-body pb-3">{children}</CollapsibleContent>
+    </Collapsible>
   );
 }
 
-/** KV lays out label/value rows. */
+/**
+ * KV lays out label/value rows.
+ *
+ * A two-column grid rather than a table, because a `dd` here is often a whole
+ * block — a tag with a disclosure, a nested list — and a table cell would make
+ * every row in the list as tall as the tallest one.
+ */
 export function KV({ children }: { children: React.ReactNode }) {
-  return <dl className="kv">{children}</dl>;
+  return (
+    <dl className="kv grid grid-cols-[minmax(8rem,auto)_1fr] items-baseline gap-x-4 gap-y-1.5 text-sm">
+      {children}
+    </dl>
+  );
 }
 
 export function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <>
-      <dt title={hint}>{label}</dt>
-      <dd>{children}</dd>
+      <dt className="text-muted-foreground" title={hint}>
+        {label}
+      </dt>
+      <dd className="min-w-0">{children}</dd>
     </>
   );
 }
@@ -247,21 +328,33 @@ export interface NotComputedLike {
 /**
  * NotComputedTag is why this file exists.
  *
- * SPEC D24 makes absence and negation distinguishable in the data; rendering a
+ * D24 makes absence and negation distinguishable in the data; rendering a
  * non-result as an empty cell would throw that away again at the last step, and
  * the reader would draw exactly the conclusion the decision exists to prevent —
  * that a missing periodicity means there is none. So a non-result is shown
  * explicitly, with its reason, and the detail is one click away.
+ *
+ * The detail is a `Popover` rather than the `title` attribute it used to be. A
+ * `title` is unreachable by keyboard and invisible on a touch device, and the
+ * detail is the half that says what to do about the non-result — which makes it
+ * the half worth reaching.
  */
 export function NotComputedTag({ status }: { status: NotComputedLike }) {
-  const [open, setOpen] = useState(false);
   return (
-    <span className="nc">
-      <button className="nc-tag" onClick={() => setOpen(!open)} title={status.detail}>
+    <Popover>
+      <PopoverTrigger
+        render={
+          <Badge
+            render={<button type="button" />}
+            variant="outline"
+            className="nc nc-tag cursor-default font-normal text-muted-foreground hover:bg-muted"
+          />
+        }
+      >
         not computed · {status.reason.replace(/_/g, " ")}
-      </button>
-      {open && <span className="nc-detail">{status.detail}</span>}
-    </span>
+      </PopoverTrigger>
+      <PopoverContent className="nc-detail w-80 text-sm">{status.detail}</PopoverContent>
+    </Popover>
   );
 }
 
@@ -309,8 +402,26 @@ export function Val<T>({ value, render }: { value: Value<T>; render: (value: T) 
   return isNotComputed(value) ? <NotComputedTag status={value} /> : <>{render(value)}</>;
 }
 
+/**
+ * The three confidence levels, as a badge each.
+ *
+ * Colour is not the only carrier — the word is written out — but the ordering is
+ * worth reading straight off, so `high` gets the solid badge, `medium` the muted
+ * one and `low` the outline. That is a ramp in weight rather than in hue, which
+ * survives both themes and a monochrome screen.
+ */
+const CONFIDENCE_VARIANT = {
+  certain: "default",
+  likely: "secondary",
+  uncertain: "outline",
+} as const satisfies Record<Confidence, "default" | "secondary" | "outline">;
+
 export function ConfidenceTag({ confidence }: { confidence: Confidence }) {
-  return <span className={`confidence ${confidence}`}>{confidence}</span>;
+  return (
+    <Badge variant={CONFIDENCE_VARIANT[confidence]} className={`confidence ${confidence} font-normal`}>
+      {confidence}
+    </Badge>
+  );
 }
 
 // --- formatting ---
@@ -344,13 +455,44 @@ export function round(value: number, digits = 2): number {
   return Math.round(value * factor) / factor;
 }
 
-/** Significant figures, for numbers whose magnitude is not known in advance. */
+/** Thousands separators, so that a long figure stays countable at a glance. */
+const grouped = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 4 });
+
+/** Three significant figures, for a value that has already been scaled. */
+function threeFigures(value: number): number {
+  const abs = Math.abs(value);
+  return round(value, abs < 10 ? 2 : abs < 100 ? 1 : 0);
+}
+
+/**
+ * Significant figures, for numbers whose magnitude is not known in advance.
+ * Never exponential: "6.95e+3" is a form the reader has to decode first. A
+ * large number is grouped and, past a million, carries an SI suffix; a small
+ * one is written out with its leading zeros.
+ */
 export function num(value: number): string {
   if (!Number.isFinite(value)) return "—";
   if (value === 0) return "0";
   const abs = Math.abs(value);
-  if (abs >= 1000 || abs < 0.01) return value.toExponential(2);
-  return String(round(value, abs < 1 ? 4 : 2));
+  if (abs >= 1e6) {
+    const units = ["M", "G", "T", "P", "E"];
+    let scaled = value / 1e6;
+    let unit = 0;
+    while (Math.abs(scaled) >= 1000 && unit < units.length - 1) {
+      scaled /= 1000;
+      unit += 1;
+    }
+    return `${grouped.format(threeFigures(scaled))}${units[unit]}`;
+  }
+  if (abs >= 0.01) return grouped.format(round(value, abs < 1 ? 4 : 2));
+  // Three significant figures written out, however far below a hundredth the
+  // value sits. Twelve decimals is where a reading stops being one, and what
+  // rounds away there was never a measurement.
+  const written = value
+    .toFixed(Math.min(12, 2 - Math.floor(Math.log10(abs))))
+    .replace(/0+$/, "")
+    .replace(/\.$/, "");
+  return written === "0" || written === "-0" ? "0" : written;
 }
 
 export function percent(ratio: number): string {

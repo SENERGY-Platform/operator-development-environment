@@ -1,0 +1,24 @@
+{
+  "max": 3,
+  "workbenches": [
+    {
+      "created_at": "2026-08-27T09:20:47.668189415+02:00",
+      "id": "achcgkkcfjkupdebdhb4t3worm",
+      "last_used_at": "2026-08-27T09:20:48.034237471+02:00",
+      "link": {
+        "clone_url": "file:///tmp/TestWriteRepoContractFixtures688784727/002/operator.git",
+        "default_branch": "main",
+        "full_name": "jonah/pv-forecast",
+        "html_url": "https://github.test/jonah/pv-forecast",
+        "name": "pv-forecast",
+        "operator_lib_ref": "v1.3.1",
+        "owner": "jonah",
+        "path": "jonah/pv-forecast",
+        "private": false,
+        "scaffolded_at": "2026-08-27T07:20:48.034235304Z",
+        "selected_at": "2026-08-27T07:20:47.668198624Z",
+        "workbench_id": "achcgkkcfjkupdebdhb4t3worm"
+      }
+    }
+  ]
+}

@@ -55,8 +55,6 @@ export interface ToolRoute {
   feature: Feature | null;
   /** What is absent from the deployment when `feature` is false. */
   missing: string;
-  /** True while the backend for this view is still being built. */
-  unbuilt?: boolean;
 }
 
 /**
@@ -81,7 +79,7 @@ export const TOOL_ROUTES: ToolRoute[] = [
     slug: "selection",
     label: "Selection",
     summary:
-      "An intent in words resolved to concrete series through the ontology, with the evidence behind every match (D13).",
+      "An intent in words resolved to concrete series through the ontology, with the evidence behind every match.",
     tools: ["resolve_semantic_selection", "propose_data_selection"],
     feature: "selection",
     missing: "The semantic resolver is not served by this deployment.",
@@ -90,8 +88,15 @@ export const TOOL_ROUTES: ToolRoute[] = [
     slug: "profiler",
     label: "Profiler",
     summary:
-      "Candidates ranked without reading a value, then the full per-series profile with every non-result shown as one (D24).",
-    tools: ["quick_profile", "profile_series", "get_sessions", "probe_availability", "estimate_read_cost"],
+      "Candidates ranked without reading a value, then the full per-series profile with every non-result shown as one.",
+    tools: [
+      "quick_profile",
+      "profile_series",
+      "get_sessions",
+      "probe_availability",
+      "probe_export_data",
+      "estimate_read_cost",
+    ],
     feature: "profiler",
     missing: TIMESERIES,
   },
@@ -99,7 +104,7 @@ export const TOOL_ROUTES: ToolRoute[] = [
     slug: "exploration",
     label: "Exploration",
     summary:
-      "Chart specifications drawn with your token — the assistant writes the spec, never the picture (§5.9).",
+      "Chart specifications drawn with your token — the assistant writes the spec, never the picture.",
     tools: ["render_chart", "preview_series"],
     feature: "charts",
     missing: TIMESERIES,
@@ -108,7 +113,7 @@ export const TOOL_ROUTES: ToolRoute[] = [
     slug: "relations",
     label: "Relations",
     summary:
-      "Conditional patterns across devices, scoped by the aspect hierarchy, with each candidate rule left for you to confirm (D3, D28).",
+      "Conditional patterns across devices, scoped by the aspect hierarchy, with each candidate rule left for you to confirm.",
     tools: ["propose_related_sets", "relate_series"],
     feature: "relations",
     missing: TIMESERIES,
@@ -120,17 +125,17 @@ export const TOOL_ROUTES: ToolRoute[] = [
     tools: ["run_code"],
     feature: "kernel",
     missing:
-      "`jupyterhub_url` is not configured, so a developer cannot run code and `run_code` is declared but not callable (§5.6).",
+      "`jupyterhub_url` is not configured, so a developer cannot run code and `run_code` is declared but not callable.",
   },
   {
     slug: "experiments",
     label: "Experiments",
-    summary: "Ray jobs and their MLflow runs, each tagged with the commit it was built from (§5.12).",
+    summary: "Ray jobs and their MLflow runs, each tagged with the commit it was built from.",
     tools: ["launch_experiment", "get_experiment_results"],
     feature: "experiments",
     missing:
       "Neither `ray_url` nor `mlflow_url` is configured, so the experiment routes are not served " +
-      "and both M8 tools stay declared but not callable (§5.12). The surface needs both.",
+      "and both experiment tools stay declared but not callable. The surface needs both.",
   },
 ];
 
@@ -160,10 +165,6 @@ export interface ViewContext {
  * renders cannot disagree about which view is which.
  */
 export function renderTool(route: ToolRoute, context: ViewContext): React.ReactNode {
-  // Read from the flag rather than from a per-slug branch, so that a route listed
-  // before its pane exists renders the placeholder without anyone having to
-  // remember to add — and later remove — a case for it. No route carries it today.
-  if (route.unbuilt) return <Unbuilt route={route} />;
   switch (route.slug) {
     case "ontology":
       return <OntologyView />;
@@ -210,25 +211,6 @@ export function NotConfigured({ title, missing }: { title: string; missing: stri
   );
 }
 
-/** The placeholder for a pane whose backend and UI are still being written. */
-function Unbuilt({ route }: { route: ToolRoute }) {
-  return (
-    <main className="panes single">
-      <Pane title={route.label} subtitle="Reserved — this pane is not built yet">
-        <p>{route.summary}</p>
-        <Muted>
-          The backend is served and the tools are callable; what is missing is this pane. The
-          route is here so the navigation does not move when it lands, and says so rather than
-          rendering an empty frame that would read as a fault.
-        </Muted>
-        <p>
-          <Link to="/tools">Back to the tools index</Link>
-        </p>
-      </Pane>
-    </main>
-  );
-}
-
 /** The unknown-path card. A wrong URL is answered, not redirected away from. */
 export function NoSuchView() {
   return (
@@ -261,9 +243,9 @@ export function ToolsIndex({ session }: { session: Session }) {
         title="Under the hood"
         subtitle="What the assistant drives, and where to watch it or take over"
       >
-        <ul className="list tool-index-list">
+        <ul className="list tool-index-list flex flex-col gap-1">
           {TOOL_ROUTES.map((route) => {
-            const served = available(route, session) && !route.unbuilt;
+            const served = available(route, session);
             return (
               <li key={route.slug} className={served ? undefined : "unserved"}>
                 <Link className="tool-index-entry" to={`/tools/${route.slug}`}>
@@ -274,8 +256,7 @@ export function ToolsIndex({ session }: { session: Session }) {
                       <code key={tool}>{tool}</code>
                     ))}
                   </span>
-                  {route.unbuilt && <span className="badge warn">not built yet</span>}
-                  {!route.unbuilt && !served && <span className="badge">not configured</span>}
+                  {!served && <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">not configured</span>}
                 </Link>
               </li>
             );
@@ -284,7 +265,7 @@ export function ToolsIndex({ session }: { session: Session }) {
         {session.is_admin && session.features.chat && (
           <p>
             <Link to="/settings">Settings</Link> — per-user and global LLM limits, the price table,
-            accounting and the tool audit (§3.3).
+            accounting and the tool audit.
           </p>
         )}
       </Pane>

@@ -1,14 +1,14 @@
 {
   "sessions": [
     {
-      "created_at": "2026-08-26T10:53:29.584649962Z",
+      "created_at": "2026-08-27T07:20:45.973826086Z",
       "exposure_tier": "L1",
       "id": "id-1",
       "message_count": 2,
       "model": "stub-model",
       "provider": "stub",
       "title": "which devices are there?",
-      "updated_at": "2026-08-26T10:53:29.584800629Z",
+      "updated_at": "2026-08-27T07:20:45.974053979Z",
       "user_sub": "user-123"
     }
   ]

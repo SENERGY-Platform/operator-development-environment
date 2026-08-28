@@ -14,7 +14,7 @@ much its grouping is worth.
 relate — that is the profiler, see [profiler-reads.md](profiler-reads.md).
 
 `geltung`: `allgemein` for the origin ranking and the confirmation model, which
-follow from SPEC §5.5 and D11; the detector thresholds are `einzelfall`.
+follow from §5.5 and D11; the detector thresholds are `einzelfall`.
 
 ## Why a graph outranks a device group
 
@@ -139,6 +139,28 @@ different window and asserts the verdict comes back.
 Correcting rather than confirming records **both** forms, which is the point: "the
 detector said 0.86 and the developer narrowed it to evenings" is a finding, and a
 mutable document would destroy it (§5.4.3).
+
+### Two routes to the same decision
+
+The pane offers the choice twice, and the difference is worth knowing before
+changing either.
+
+The **rule cards** are the reference: every candidate on screen at once, with its
+evidence, its exceptions and its three buttons. That is the right shape for
+checking one rule against another, and it writes on every click.
+
+The **review** — shadcn's
+[`Questionnaire`](https://ui.shadcn.com/docs/components/base/questionnaire), shown
+only when two or more rules are still undecided — walks them one at a time, with
+progress, a note per decision and an explicit skip. A stack of eleven identical
+three-button cards gives no sense of how many are left, no way back to the one just
+answered, and no way to record "not yet" as distinct from silence.
+
+The review defers every write to its Submit, which is the one place the two routes
+differ in behaviour, and it is deliberate. A developer working through eleven rules
+should be able to change their mind about the third before anything is recorded —
+and because the log is append-only, a decision written early cannot be withdrawn,
+only added to. Skipping writes nothing at all.
 
 **No LLM tool writes one of these.** `decide_relation_rule` is in the denied set
 beside `write_profile_override`, so `NewRegistry` refuses to register it and the

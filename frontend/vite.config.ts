@@ -1,9 +1,17 @@
 /// <reference types="vitest/config" />
+import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    // `@/` is what the shadcn generator writes into every component it emits.
+    // Adding the alias here rather than rewriting the imports keeps a regenerated
+    // component a drop-in replacement for the one it supersedes.
+    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+  },
   server: {
     port: 5173,
     // The backend enforces every rule; the proxy only saves configuring CORS

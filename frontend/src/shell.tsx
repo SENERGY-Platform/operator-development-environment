@@ -16,10 +16,21 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "./api";
+import { useAttention } from "./attention";
 import { logout } from "./keycloak";
 import { Link, useLocation } from "./router";
 import { TOOL_ROUTES, available } from "./routes";
 import { useTheme } from "./theme";
+import { BellIcon, BellOffIcon, CheckIcon, ChevronDownIcon, MonitorIcon, MoonIcon, SunIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 /**
  * The shell: the header, the "Under the hood" menu, and the split.
@@ -40,22 +51,22 @@ export function Header({ session }: { session: Session }) {
   const underTheHood = pathname === "/tools" || pathname.startsWith("/tools/") || pathname === "/settings";
 
   return (
-    <header className="header">
-      <div className="header-left">
-        <span className="brand">ODE</span>
-        <nav className="nav" aria-label="Primary">
+    <header className="header flex h-12 shrink-0 items-center justify-between gap-4 border-b bg-background px-3">
+      <div className="header-left flex min-w-0 items-center gap-4">
+        <span className="brand text-sm font-semibold tracking-tight">ODE</span>
+        <nav className="nav flex items-center gap-0.5" aria-label="Primary">
           {/*
             "Workspace" rather than "Code": the code pane has no route of its own —
             it is the right half of the workspace, beside the conversation that
             writes into it. A nav entry named after the pane would name a
             destination that does not exist.
           */}
-          <Link className="nav-entry" to="/" aria-current={pathname === "/" ? "page" : undefined}>
+          <Link className={navEntry(pathname === "/")} to="/" aria-current={pathname === "/" ? "page" : undefined}>
             Workspace
           </Link>
           {session.features.chat && (
             <Link
-              className="nav-entry"
+              className={navEntry(pathname === "/chat")}
               to="/chat"
               aria-current={pathname === "/chat" ? "page" : undefined}
             >
@@ -65,77 +76,142 @@ export function Header({ session }: { session: Session }) {
           <UnderTheHood session={session} current={underTheHood} />
         </nav>
       </div>
-      <div className="header-right">
-        {/*
-          SPEC §3.2: the exposure tier is surfaced persistently. What appears here is
-          the default a *new* chat session starts at, plus the ceiling this developer
-          may raise one to — a live tier is session-scoped and belongs beside the
-          conversation it governs, which is where the chat view puts it.
-        */}
-        <span
-          className="tier"
-          title={
-            "Data exposure tier for the LLM (SPEC §3.2). It gates LLM tools, not this UI. " +
-            "New sessions start here; the live tier is shown in the chat pane."
-          }
-        >
-          New sessions: {session.exposure_tier}
-          {session.max_exposure_tier && session.max_exposure_tier !== "L2" && (
-            <span className="tier-cap"> (max {session.max_exposure_tier})</span>
+      <div className="header-right flex shrink-0 items-center gap-2">
+        <span className="user flex items-center gap-1.5 text-xs text-muted-foreground">
+          {session.username}
+          {session.is_admin && (
+            <Badge variant="secondary" className="badge font-normal inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">
+              admin
+            </Badge>
           )}
         </span>
-        {session.spend && (
-          <span className="spend" title="Estimated LLM spend this period (SPEC §3.3)">
-            {session.spend.tokens.toLocaleString("en-GB")} tokens
-          </span>
-        )}
-        <span className="user">
-          {session.username}
-          {session.is_admin && <span className="badge">admin</span>}
-        </span>
+        {session.features.chat && <AlertToggle />}
         <ThemeToggle />
-        <button onClick={logout}>Sign out</button>
+        <Button variant="outline" size="sm" onClick={logout}>
+          Sign out
+        </Button>
       </div>
     </header>
   );
 }
 
 /**
+ * A primary-navigation entry, current or not.
+ *
+ * Written as a function rather than as a `Link` variant because `Link` is the
+ * router's, not a styled component, and three call sites do not justify wrapping
+ * it. The current entry is marked by a filled ground rather than by weight alone:
+ * `aria-current` already says it to a screen reader, and the ground is what says
+ * it at a glance.
+ */
+function navEntry(current: boolean): string {
+  return cn(
+    "nav-entry rounded-md px-2.5 py-1.5 text-sm text-muted-foreground transition-colors",
+    "hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
+    current && "bg-accent font-medium text-foreground",
+  );
+}
+
+/**
  * The light/dark control.
  *
- * One button that switches, plus a way back to "follow the system" — which is the
- * state a developer starts in and cannot otherwise return to once they have
- * pressed anything. The second affordance is the title and a shift-click rather
- * than a third button: reverting to the system setting is a thing people do once,
- * and a three-state segmented control in the header would cost more room than the
- * case deserves.
+ * Three states, offered as three items, because the third one is the default and
+ * used to be unreachable. What was here was a single button that flipped between
+ * light and dark, with a dot in the corner meaning "this was chosen rather than
+ * inherited" and a shift-click to give the choice back to the operating system.
+ * Both halves of that failed: the dot marked a distinction nobody could infer from
+ * a dot, and a modifier-click is not an affordance — it is a thing you have to be
+ * told. Naming the three states spends a menu and settles both.
+ *
+ * "System" is first and shows what it currently resolves to, so choosing it is not
+ * a step into the dark.
  */
 function ThemeToggle() {
-  const { choice, active, toggle, clear } = useTheme();
-  const next = active === "dark" ? "light" : "dark";
+  const { choice, active, set } = useTheme();
+
+  const options = [
+    { value: null, label: `System (${active})`, icon: MonitorIcon },
+    { value: "light" as const, label: "Light", icon: SunIcon },
+    { value: "dark" as const, label: "Dark", icon: MoonIcon },
+  ];
+  const Current = active === "dark" ? MoonIcon : SunIcon;
 
   return (
-    <button
-      className="theme-toggle"
-      onClick={(event) => {
-        if (event.shiftKey && choice !== null) clear();
-        else toggle();
-      }}
-      aria-label={`Switch to the ${next} theme`}
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={<Button variant="outline" size="sm" className="theme-toggle" />}
+        aria-label={`Theme: ${choice ?? "following your system setting"}. Change it.`}
+      >
+        <Current className="theme-toggle-icon" aria-hidden="true" />
+        <span className="theme-toggle-label">{active === "dark" ? "Dark" : "Light"}</span>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {options.map((option) => (
+          <DropdownMenuItem
+            key={option.label}
+            onClick={() => set(option.value)}
+            // The tick is what the dot was trying to say, in the one place where
+            // there is room to say it against a name.
+            data-checked={choice === option.value ? "" : undefined}
+          >
+            <option.icon aria-hidden="true" />
+            {option.label}
+            {choice === option.value && <CheckIcon className="ml-auto" aria-hidden="true" />}
+            {choice === option.value && <span className="sr-only">(current)</span>}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * The "tell me when the answer is here" control.
+ *
+ * It sits in the header rather than in the chat pane because it is a property of
+ * this browser, like the theme and unlike anything in the conversation — and
+ * because the developer who needs it is by definition not looking at the chat
+ * pane when it fires.
+ *
+ * The click is what makes it a button rather than something switched on for
+ * everyone: `Notification.requestPermission()` needs a user gesture, and an
+ * unannounced permission prompt on first load is exactly the kind of interruption
+ * this feature is meant to replace.
+ */
+function AlertToggle() {
+  const { enabled, permission, toggle } = useAttention();
+  const blocked = enabled && permission !== "granted";
+
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="alert-toggle relative"
+      onClick={toggle}
+      aria-pressed={enabled}
+      aria-label="Alert me when a reply is ready"
       title={
-        choice === null
-          ? `Following your system setting (${active}). Click for ${next}.`
-          : `Theme set to ${choice}. Click for ${next}; shift-click to follow your system setting.`
+        !enabled
+          ? "Off. Click to be alerted when a reply is ready and this window is in the background."
+          : blocked
+            ? "On, but this browser blocks desktop notifications, so the taskbar will not flash. The title blinks and a tone plays."
+            : "On: a desktop notification, a tone, and a blinking title when a reply is ready and this window is in the background."
       }
     >
-      <span className="theme-toggle-icon" aria-hidden="true">
-        {active === "dark" ? "\u25D1" : "\u25D0"}
+      <span className="alert-toggle-icon" aria-hidden="true">
+        {enabled ? <BellIcon /> : <BellOffIcon />}
       </span>
-      <span className="theme-toggle-label">{active === "dark" ? "Dark" : "Light"}</span>
-      {/* A dot marks "this was chosen", so the button can be told apart from one
-          that is merely reflecting the desktop. */}
-      {choice !== null && <span className="theme-toggle-pinned" aria-hidden="true" />}
-    </button>
+      <span className="alert-toggle-label">Alert</span>
+      {/* The permission is the one thing the button cannot deliver by itself, so
+          a refused one is marked rather than left to look identical to a granted
+          one. */}
+      {blocked && (
+        <span
+          className="alert-toggle-blocked absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-destructive"
+          aria-hidden="true"
+        />
+      )}
+    </Button>
   );
 }
 
@@ -205,7 +281,7 @@ function UnderTheHood({ session, current }: { session: Session; current: boolean
 
   return (
     <div
-      className="menu-host"
+      className="menu-host relative"
       ref={container}
       onKeyDown={(event) => {
         if (event.key === "Escape" && open) {
@@ -214,9 +290,15 @@ function UnderTheHood({ session, current }: { session: Session; current: boolean
         }
       }}
     >
+      {/*
+        A plain button carrying the nav-entry styling rather than a shadcn `Button`:
+        it sits in the primary navigation beside two links, and a bordered button
+        between two ghost links reads as a different kind of thing than it is.
+      */}
       <button
+        type="button"
         ref={trigger}
-        className={current ? "nav-entry menu-trigger active" : "nav-entry menu-trigger"}
+        className={cn(navEntry(current), "menu-trigger inline-flex items-center gap-1")}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls="under-the-hood-menu"
@@ -232,68 +314,85 @@ function UnderTheHood({ session, current }: { session: Session; current: boolean
         }}
       >
         Under the hood
-        <span className="menu-caret" aria-hidden="true">
-          ▾
-        </span>
+        <ChevronDownIcon
+          className={cn("menu-caret size-3.5 transition-transform", open && "rotate-180")}
+          aria-hidden="true"
+        />
       </button>
 
       {open && (
-        <div className="menu" id="under-the-hood-menu" role="menu" aria-label="Under the hood">
+        <div
+          className="menu absolute top-full left-0 z-50 mt-1 flex w-80 flex-col gap-0.5 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md"
+          id="under-the-hood-menu"
+          role="menu"
+          aria-label="Under the hood"
+        >
           <Link
-            className="menu-item"
+            className={menuItem(true)}
             role="menuitem"
             to="/tools"
             aria-current={pathname === "/tools" ? "page" : undefined}
             onKeyDown={(event) => onMenuKey(event, move)}
             onNavigate={() => close(false)}
           >
-            <span className="menu-item-label">All views</span>
-            <span className="menu-item-note">the index, with what each one is for</span>
+            <span className="menu-item-label text-sm">All views</span>
+            <span className="menu-item-note text-xs text-muted-foreground">the index, with what each one is for</span>
           </Link>
-          <hr className="menu-rule" />
+          <hr className="menu-rule -mx-1 my-1 border-t" />
           {entries.map((route) => {
-            const served = available(route, session) && !route.unbuilt;
+            const served = available(route, session);
             const path = `/tools/${route.slug}`;
             return (
               <Link
                 key={route.slug}
-                className={served ? "menu-item" : "menu-item unserved"}
+                className={menuItem(served)}
                 role="menuitem"
                 to={path}
                 aria-current={pathname === path ? "page" : undefined}
                 onKeyDown={(event) => onMenuKey(event, move)}
                 onNavigate={() => close(false)}
               >
-                <span className="menu-item-label">{route.label}</span>
-                <span className="menu-item-note">
-                  {route.unbuilt
-                    ? "reserved — not built yet"
-                    : served
-                      ? route.tools.join(", ")
-                      : "not configured in this deployment"}
+                <span className="menu-item-label text-sm">{route.label}</span>
+                <span className="menu-item-note text-xs text-muted-foreground">
+                  {served ? route.tools.join(", ") : "not configured in this deployment"}
                 </span>
               </Link>
             );
           })}
           {settings && (
             <>
-              <hr className="menu-rule" />
+              <hr className="menu-rule -mx-1 my-1 border-t" />
               <Link
-                className="menu-item"
+                className={menuItem(true)}
                 role="menuitem"
                 to="/settings"
                 aria-current={pathname === "/settings" ? "page" : undefined}
                 onKeyDown={(event) => onMenuKey(event, move)}
                 onNavigate={() => close(false)}
               >
-                <span className="menu-item-label">Settings</span>
-                <span className="menu-item-note">LLM limits, pricing, accounting, tool audit</span>
+                <span className="menu-item-label text-sm">Settings</span>
+                <span className="menu-item-note text-xs text-muted-foreground">LLM limits, pricing, accounting, tool audit</span>
               </Link>
             </>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * A menu row, served by this deployment or not.
+ *
+ * An unserved view is dimmed rather than removed: the entry is still a real route
+ * and the page behind it says which piece of configuration is missing, which is
+ * more use to a developer than the view simply not being in the list.
+ */
+function menuItem(served: boolean): string {
+  return cn(
+    "menu-item flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-left",
+    "hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
+    !served && "unserved opacity-60",
   );
 }
 
@@ -556,7 +655,7 @@ export function Split({
           where the strip becomes a bar and there is room for words.
         */}
         <div className="split-buttons">
-          <button
+          <Button variant="ghost" size="icon-sm"
             className={mode === "right" ? "split-toggle" : "split-toggle on"}
             aria-pressed={mode !== "right"}
             aria-label={`${mode === "right" ? "Show" : "Hide"} ${leftLabel}`}
@@ -567,8 +666,8 @@ export function Split({
               {mode === "right" ? "▶" : "◀"}
             </span>
             <span className="split-toggle-label">{leftLabel}</span>
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost" size="icon-sm"
             className={mode === "left" ? "split-toggle" : "split-toggle on"}
             aria-pressed={mode !== "left"}
             aria-label={`${mode === "left" ? "Show" : "Hide"} ${rightLabel}`}
@@ -579,7 +678,7 @@ export function Split({
               {mode === "left" ? "◀" : "▶"}
             </span>
             <span className="split-toggle-label">{rightLabel}</span>
-          </button>
+          </Button>
         </div>
       </div>
 

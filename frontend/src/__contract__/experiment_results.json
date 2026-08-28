@@ -1,5 +1,5 @@
 {
-  "commit_sha": "62c1325827f736cd404d5a202bc060600e496ee8",
+  "commit_sha": "47406ae9bc71ab34c450b3fc8d84e9c5574a25a7",
   "comparison_to_previous": [
     {
       "current": 0.78,
@@ -18,7 +18,7 @@
       "previous": 0.42
     }
   ],
-  "ended_at": "2026-08-26T10:55:00.721Z",
+  "ended_at": "2026-08-27T07:22:17.057Z",
   "entrypoint": "python training.py",
   "evaluation_criteria": {
     "goal": "minimise",
@@ -26,11 +26,11 @@
     "lower_is_better": true,
     "met": true,
     "metric": "rmse",
-    "source": "evaluation.yaml at 62c1325, which is the developer's own (SPEC §5.8: no tool may modify it)",
+    "source": "evaluation.yaml at 47406ae, which is the developer's own (no tool may modify it)",
     "threshold": 0.35,
     "value": 0.31
   },
-  "experiment_id": "ful5oilsvhpds3jej2uquqije4",
+  "experiment_id": "bvprgu7dyt756ttfe227mpf4ii",
   "finished": true,
   "metrics": {
     "r2": 0.78,
@@ -57,21 +57,21 @@
         "status": "not_computed"
       },
       "metric": "mape",
-      "source": "evaluation.yaml at 62c1325, which is the developer's own (SPEC §5.8: no tool may modify it)",
+      "source": "evaluation.yaml at 47406ae, which is the developer's own (no tool may modify it)",
       "threshold": 5
     }
   ],
-  "started_at": "2026-08-26T10:53:30.721Z",
+  "started_at": "2026-08-27T07:20:47.057Z",
   "status": "SUCCEEDED",
-  "submission_id": "faehnhfp4pgnzdmcshbz3hpk54",
+  "submission_id": "l425g6hr4sk25yaolpuuvgr2pm",
   "tags": {
     "branch": "main",
-    "commit_sha": "62c1325827f736cd404d5a202bc060600e496ee8",
+    "commit_sha": "47406ae9bc71ab34c450b3fc8d84e9c5574a25a7",
     "entrypoint": "python training.py",
-    "ode_experiment_id": "ful5oilsvhpds3jej2uquqije4",
+    "ode_experiment_id": "bvprgu7dyt756ttfe227mpf4ii",
     "ode_source": "ode",
-    "ray_submission_id": "faehnhfp4pgnzdmcshbz3hpk54",
+    "ray_submission_id": "l425g6hr4sk25yaolpuuvgr2pm",
     "repository": "jonah/pv-forecast",
-    "session_id": "27hhve7luinpi6wjslnvbfzncm"
+    "session_id": "o6iuj3bfcfr4xcfn3fhacaw6py"
   }
 }

@@ -62,14 +62,16 @@ const CHOSEN_DARK = ':root[data-theme="dark"] {';
 describe("the stylesheet's three theme scopes", () => {
   it("declares light on the bare :root, so the base case needs no override", () => {
     const light = tokensOf(LIGHT);
-    expect(light.get("--bg")).toBeDefined();
-    expect(light.get("--surface")).toBeDefined();
+    expect(light.get("--background")).toBeDefined();
+    expect(light.get("--card")).toBeDefined();
     expect(light.get("color-scheme" as string)).toBeUndefined();
-    // A light theme whose page is darker than its panes is a dark theme with the
-    // labels swapped, and every `background: var(--bg)` in the file would read
-    // as the wrong plane.
-    expect(luminance(light.get("--surface")!)).toBeGreaterThan(luminance(light.get("--bg")!));
-    expect(luminance(light.get("--text")!)).toBeLessThan(luminance(light.get("--bg")!));
+    // A light theme whose text is lighter than its page is a dark theme with the
+    // labels swapped, and every `bg-background text-foreground` would read as the
+    // wrong plane. `--card` is only asserted to be no darker than the page,
+    // because the preset gives both the same white and a raised card would fail a
+    // strict comparison for the right reason.
+    expect(luminance(light.get("--card")!)).toBeGreaterThanOrEqual(luminance(light.get("--background")!));
+    expect(luminance(light.get("--foreground")!)).toBeLessThan(luminance(light.get("--background")!));
   });
 
   it("guards the operating system's preference so an explicit light choice still wins", () => {
@@ -95,7 +97,7 @@ describe("the stylesheet's three theme scopes", () => {
    * wrong in the other.
    */
   it("restates every colour token in both dark scopes", () => {
-    const light = [...tokensOf(LIGHT)].filter(([, value]) => value.startsWith("#")).map(([name]) => name);
+    const light = [...tokensOf(LIGHT)].filter(([, value]) => isColour(value)).map(([name]) => name);
     expect(light.length, "no colour tokens were parsed out of :root").toBeGreaterThan(10);
 
     for (const [name, scope] of [
@@ -136,9 +138,29 @@ describe("the stylesheet's three theme scopes", () => {
   });
 });
 
-/** Relative luminance, enough to tell a light plane from a dark one. */
-function luminance(hex: string): number {
-  const channels = [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16) / 255);
+/**
+ * Whether a declaration's value is a colour.
+ *
+ * Two notations, because the file has two sources: the shadcn preset writes
+ * `oklch(...)`, and the eight series slots carried over from the stylesheet this
+ * file replaces are hex. `--radius: 0.625rem` is neither, and must not be counted
+ * — the restated-in-both-dark-scopes rule is about colour, and a radius that the
+ * dark scopes do not restate is correct rather than a drift.
+ */
+function isColour(value: string): boolean {
+  return value.startsWith("#") || value.startsWith("oklch(");
+}
+
+/**
+ * Relative luminance, enough to tell a light plane from a dark one.
+ *
+ * oklch's first component *is* perceptual lightness, so for those values there is
+ * nothing to compute. Hex still goes the long way round, for the series slots.
+ */
+function luminance(colour: string): number {
+  const oklch = /^oklch\(\s*([\d.]+)/.exec(colour);
+  if (oklch !== null) return Number(oklch[1]);
+  const channels = [1, 3, 5].map((at) => parseInt(colour.slice(at, at + 2), 16) / 255);
   const [r, g, b] = channels.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }

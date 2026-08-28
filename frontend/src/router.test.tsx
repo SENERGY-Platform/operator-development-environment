@@ -121,6 +121,24 @@ it("view-local query state is dropped when a link points at another view", async
   expect(router.href("/tools/relations")).toBe("/tools/relations?session=S1");
 });
 
+/*
+ * The workbench is sticky for a sharper reason than the conversation: every view
+ * that reads a file, runs code or launches an experiment acts in one, and a
+ * developer with two open who arrives without it is given the first — silently, so
+ * that the backend is never asked to guess between two working copies.
+ */
+it("an href inherits the workbench from the address it is written on", async () => {
+  const router = await load("/", "/?session=S1&workbench=wb-2");
+
+  expect(router.href("/tools/kernel")).toBe("/tools/kernel?session=S1&workbench=wb-2");
+});
+
+it("a workbench named by the target wins over the one it would inherit", async () => {
+  const router = await load("/", "/?workbench=wb-1");
+
+  expect(router.href("/?workbench=wb-2")).toBe("/?workbench=wb-2");
+});
+
 it("a link written on an address with nothing sticky carries no query at all", async () => {
   const router = await load("/", "/tools");
 

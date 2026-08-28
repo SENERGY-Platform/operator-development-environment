@@ -2,7 +2,7 @@
   "repositories": [
     {
       "can_push": true,
-      "clone_url": "file:///tmp/TestWriteRepoContractFixtures3488946866/002/operator.git",
+      "clone_url": "file:///tmp/TestWriteRepoContractFixtures688784727/002/operator.git",
       "default_branch": "main",
       "empty": true,
       "full_name": "jonah/existing-operator",

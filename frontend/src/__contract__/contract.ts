@@ -38,6 +38,7 @@ import type {
   RelationProposal,
   RepoCommit,
   RepoConnection,
+  Workbench,
   RepoFile,
   RepoPush,
   RepoScaffoldResult,
@@ -90,6 +91,7 @@ import relationDecisions from "./relation_decisions.json";
 import relationSets from "./relation_sets.json";
 import repoCommit from "./repo_commit.json";
 import repoConnection from "./repo_connection.json";
+import workbenches from "./workbenches.json";
 import repoFile from "./repo_file.json";
 import repoPush from "./repo_push.json";
 import repoRepositories from "./repo_repositories.json";
@@ -160,6 +162,7 @@ export const checked = {
   // above: the status, the tree, the file and the commit come from a real git
   // working copy in a temporary directory, so the fields in them are git's own
   // answers. Only the GitHub identity and the repository list are invented.
+  workbenches: workbenches.workbenches satisfies Loose<Workbench[]>,
   repoConnection: repoConnection satisfies Loose<RepoConnection>,
   repoRepositories: repoRepositories.repositories satisfies Loose<GitHubRepository[]>,
   repoStatus: repoStatus satisfies Loose<RepoStatus>,

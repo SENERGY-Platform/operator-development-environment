@@ -27,24 +27,29 @@ import {
 } from "./api";
 import { monaco, monacoLanguage } from "./monaco";
 import { setParam, useParam } from "./router";
-import { Muted, Pane, bytes, dateTime, describe, shortId } from "./ui";
+import { Busy, Muted, Pane, bytes, dateTime, describe, shortId } from "./ui";
+import { WorkbenchBar } from "./workbench";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 
 /**
- * The Code view (SPEC §5.11, M7).
+ * The Code view (§5.11).
  *
  * Four states, in the order a developer meets them: connect GitHub, pick or create
- * a repository, then the working copy — a full file tree with Monaco beside it —
- * and the git actions.
+ * a repository, then the working copy — a full file tree with Monaco beside it,
+ * over a bar carrying the repository's state and the git actions.
  *
  * Three things on screen are load-bearing rather than decorative.
  *
- *   - **Where the checkout is.** The path on the per-user PVC is shown, because
+ *   - **Where the checkout is.** The path on the per-user PVC is reachable, because
  *     "somewhere in your pod" is not something a developer can act on, and because
  *     it is the same directory their kernel runs in.
  *
  *   - **What is uncommitted, always.** §5.11 item 6: work found on reopen is
  *     surfaced with the three answers beside it — commit, stash, discard — and
- *     never silently reset. Discard asks again before it runs.
+ *     never silently reset. The bar carries the count at all times and opens the
+ *     three answers itself on reopen. Discard asks again before it runs.
  *
  *   - **That saving is not committing.** The editor's save writes the working
  *     copy. Commit and push are separate buttons, because they are separate
@@ -89,6 +94,11 @@ export function CodeView({ session }: { session: Session }) {
     }
   }, []);
 
+  // Which workbench the panes are acting in. Read here so the pane reloads when it
+  // changes — the bar below switches it, and so does opening a chat session that
+  // belongs to another operator.
+  const workbench = useParam("workbench");
+
   useEffect(() => {
     // A fetch on open, which is where §5.11 item 5's "report divergence" belongs:
     // the developer is looking at the pane for the first time this session.
@@ -100,16 +110,23 @@ export function CodeView({ session }: { session: Session }) {
     // load, for a divergence the developer has already been shown. Once per browser
     // session, and the Fetch button is there for the rest.
     void reload(!fetchedThisSession());
-  }, [reload]);
+  }, [reload, workbench]);
 
-  if (busy && !connection) return <Pane title="Code" subtitle="Loading…"><Muted>Loading…</Muted></Pane>;
+  if (busy && !connection) return <Pane title="Code" subtitle="Loading…"><Busy>Loading…</Busy></Pane>;
 
   return (
     <main className="panes code">
+      {/*
+        Which operator this pane is showing, and the others that are open. Above
+        everything else here, including the connect card: switching workbenches is
+        what the rest of the pane is about, and burying it under a repository
+        picker would make a second operator look like a second repository.
+      */}
+      <WorkbenchBar onSwitched={() => void reload()} />
       {error && (
-        <Pane title="Code" subtitle="SPEC §5.11 — the operator repository">
-          <p className="error">{error}</p>
-          <button onClick={() => void reload()}>Try again</button>
+        <Pane title="Code" subtitle="The operator repository">
+          <p className="error text-destructive">{error}</p>
+          <Button variant="outline" onClick={() => void reload()}>Try again</Button>
         </Pane>
       )}
       {!error && needs === "github_connection" && (
@@ -162,12 +179,12 @@ function ConnectPane({
   };
 
   return (
-    <Pane title="GitHub" subtitle="The operator lives in a repository of yours (SPEC §5.11, D9)">
+    <Pane title="GitHub" subtitle="The operator lives in a repository of yours">
       <p>
         ODE clones the repository into your own workspace, writes files there when you
         or the assistant ask it to, and commits and pushes only when you say so.
       </p>
-      <p className="muted">
+      <p className="muted text-muted-foreground">
         The token is stored encrypted and separately from your platform session. It asks
         for{" "}
         {scopes.map((scope, index) => (
@@ -179,10 +196,14 @@ function ConnectPane({
         : the first to read and write the repository, the second because the build
         workflow is a file in it and GitHub refuses a push that touches one without it.
       </p>
-      {error && <p className="error">{error}</p>}
-      <button className="primary" onClick={() => void connect()} disabled={pending}>
+      {error && <p className="error text-destructive">{error}</p>}
+      <Button variant="default"
+        className={pending ? "primary busy animate-pulse" : "primary"}
+        onClick={() => void connect()}
+        disabled={pending}
+      >
         {pending ? "Opening GitHub…" : "Connect GitHub"}
-      </button>
+      </Button>
     </Pane>
   );
 }
@@ -224,18 +245,18 @@ function ConnectedPane({
         <dd>{(identity.scopes ?? []).join(", ") || "—"}</dd>
       </dl>
       {identity.missing_scopes && identity.missing_scopes.length > 0 && (
-        <p className="warn">
+        <p className="warn text-foreground">
           The grant is missing {identity.missing_scopes.join(", ")}. A push that touches{" "}
           <code>.github/workflows/</code> will be rejected until you reconnect and allow it.
         </p>
       )}
-      <p className="muted">
+      <p className="muted text-muted-foreground">
         Disconnecting forgets the token. Your working copy stays where it is — it is on
         your own storage, and ODE does not delete your work.
       </p>
-      <button onClick={() => void disconnect()} disabled={pending}>
+      <Button variant="outline" onClick={() => void disconnect()} disabled={pending}>
         Disconnect
-      </button>
+      </Button>
     </Pane>
   );
 }
@@ -305,60 +326,61 @@ function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
           if (name.trim()) void create();
         }}
       >
-        <input
+        <Input
           placeholder="new-operator-name"
           value={name}
           onChange={(event) => setName(event.target.value)}
         />
-        <input
+        <Input
           placeholder="What it does (optional)"
           value={description}
           onChange={(event) => setDescription(event.target.value)}
         />
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={isPrivate}
-            onChange={(event) => setPrivate(event.target.checked)}
-          />
+        <label className="checkbox flex items-center gap-2 text-sm">
+          <Checkbox checked={isPrivate} onCheckedChange={(checked) => setPrivate(checked)} />
           Private
         </label>
-        <button className="primary" type="submit" disabled={!name.trim() || pending === "create"}>
+        <Button variant="default"
+          className={pending === "create" ? "primary busy animate-pulse" : "primary"}
+          type="submit"
+          disabled={!name.trim() || pending === "create"}
+        >
           {pending === "create" ? "Creating…" : "Create and scaffold"}
-        </button>
+        </Button>
       </form>
-      <p className="muted">
+      <p className="muted text-muted-foreground">
         A created repository starts empty and the template is written into your working
         copy — the first commit is yours to make and review.
       </p>
 
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error text-destructive">{error}</p>}
 
       <div className="repo-filter">
-        <input
+        <Input
           placeholder="Filter your repositories"
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
         />
       </div>
-      {!repositories && <Muted>Reading your repositories…</Muted>}
+      {!repositories && <Busy>Reading your repositories…</Busy>}
       {repositories && shown.length === 0 && <Muted>No repository matches.</Muted>}
       <ul className="repo-list">
         {shown.map((repository) => (
           <li key={repository.full_name}>
             <div>
               <span className="repo-name">{repository.full_name}</span>
-              {repository.private && <span className="badge">private</span>}
-              {repository.empty && <span className="badge">empty</span>}
-              {!repository.can_push && <span className="badge warn">read-only</span>}
-              {repository.description && <p className="muted">{repository.description}</p>}
+              {repository.private && <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">private</span>}
+              {repository.empty && <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">empty</span>}
+              {!repository.can_push && <span className="badge warn inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs text-foreground">read-only</span>}
+              {repository.description && <p className="muted text-muted-foreground">{repository.description}</p>}
             </div>
-            <button
+            <Button variant="outline"
+              className={pending === repository.full_name ? "busy animate-pulse" : undefined}
               onClick={() => void select(repository.full_name)}
               disabled={pending === repository.full_name}
             >
               {pending === repository.full_name ? "Cloning…" : "Work on this"}
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
@@ -366,7 +388,7 @@ function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
   );
 }
 
-/** The working copy: git state, the actions, the tree and the editor. */
+/** The working copy: the tree and the editor, with the repository's state under them. */
 function WorkingCopy({
   status,
   connection,
@@ -378,11 +400,78 @@ function WorkingCopy({
   onStatus: (status: RepoStatus) => void;
   onReload: (fetchRemote?: boolean) => Promise<void>;
 }) {
+  // The tree is re-read whenever something moved the working copy under it — a
+  // stash, a discard, the scaffold writing files. The counter lives here rather
+  // than in the bar because the two are siblings: the part that changes the files
+  // is not the part that lists them.
+  const [treeVersion, setTreeVersion] = useState(0);
+
+  return (
+    <>
+      <FilesPane status={status} version={treeVersion} onChanged={() => void onReload()} />
+      <RepoBar
+        status={status}
+        connection={connection}
+        onStatus={onStatus}
+        onReload={onReload}
+        onChanged={() => setTreeVersion((version) => version + 1)}
+      />
+    </>
+  );
+}
+
+/** Which of the bar's panels is open. One at a time — see the note on the bar. */
+type Panel = "repository" | "changes" | "warnings";
+
+/**
+ * The repository's state as a bar under the workspace, with the detail in panels
+ * over it.
+ *
+ * This was a pane beside the file tree, and in the split it was wrong in the one
+ * dimension that mattered. The code view is two columns of the right-hand half, so
+ * the state got about a third of it — enough for the actions row to squeeze the
+ * repository's name into eleven characters and wrap it letter by letter — while the
+ * editor, the thing the developer is actually reading, paid for the rest.
+ *
+ * What a bar can carry and what it cannot is the whole of the design. The branch,
+ * how far the checkout is from the remote, how many files are uncommitted and how
+ * many warnings there are: facts of a few characters each, and they belong on
+ * screen at all times. The four warning paragraphs, the change list and the commit
+ * message field are not that. They are read while something is being decided, and a
+ * bar that tried to hold them would be the pane again.
+ *
+ * So the counts stay in the bar and open a panel above it. One panel at a time —
+ * two panels over the editor would be two answers to one question — and a panel
+ * closes on Escape and on a click outside it, which is the pattern the "Under the
+ * hood" menu already uses in the shell.
+ *
+ * §5.11 item 6 is why the changes panel opens itself. Work found on reopen has to
+ * be surfaced with the three answers beside it — commit, stash, discard — and a
+ * count in a bar is a surfacing but not that. Once per browser session, the same
+ * reading of "reopen" the fetch on mount takes; after that the panel is the
+ * developer's, because one that reopened on every status change would sit over the
+ * editor for a whole working afternoon.
+ */
+function RepoBar({
+  status,
+  connection,
+  onStatus,
+  onReload,
+  onChanged,
+}: {
+  status: RepoStatus;
+  connection: RepoConnection | null;
+  onStatus: (status: RepoStatus) => void;
+  onReload: (fetchRemote?: boolean) => Promise<void>;
+  onChanged: () => void;
+}) {
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [treeVersion, setTreeVersion] = useState(0);
+  const [panel, setPanel] = useState<Panel | null>(null);
+  const bar = useRef<HTMLDivElement | null>(null);
+  const triggers = useRef<Partial<Record<Panel, HTMLButtonElement | null>>>({});
 
   const act = async (label: string, run: () => Promise<RepoStatus | void>) => {
     setPending(label);
@@ -392,7 +481,7 @@ function WorkingCopy({
       const next = await run();
       if (next) onStatus(next);
       else await onReload();
-      setTreeVersion((version) => version + 1);
+      onChanged();
     } catch (e: unknown) {
       setError(describe(e));
     } finally {
@@ -422,11 +511,11 @@ function WorkingCopy({
    * linked repository — 409, `needs: "remote_match"`.
    *
    * Disabled rather than left to fail on the click. The refusal is decided by a
-   * fact ODE is already holding and already rendering two paragraphs up, so
-   * letting the button stay live makes the developer write a commit message and
-   * press it in order to be told something the screen knew before they started.
-   * Worse for push, where the thing being confirmed is whether their work is about
-   * to land in a repository they did not choose.
+   * fact ODE is already holding and already showing in the bar, so letting the
+   * button stay live makes the developer write a commit message and press it in
+   * order to be told something the screen knew before they started. Worse for push,
+   * where the thing being confirmed is whether their work is about to land in a
+   * repository they did not choose.
    *
    * Stash and discard stay live, and so does writing the scaffold: none of them
    * leave the working copy, and a checkout pointing at the wrong repository is
@@ -436,7 +525,7 @@ function WorkingCopy({
 
   const discard = () =>
     act("discard", async () => {
-      // The one destructive action in the pane, and the second of the two
+      // The one destructive action in the bar, and the second of the two
       // confirmations it needs — the backend requires the flag as well.
       if (
         !window.confirm(
@@ -448,193 +537,364 @@ function WorkingCopy({
       return api.repoDiscard();
     });
 
+  /*
+   * Everything ODE will refuse, or has already refused, and why.
+   *
+   * Collected into one list rather than rendered where each is computed, because
+   * the bar shows the *count* and the panel shows the paragraphs: both need the
+   * same set, and deriving it twice is how the two come to disagree.
+   */
+  const missingScopes = connection?.identity?.missing_scopes ?? [];
+  const warnings: React.ReactNode[] = [];
+  if (remoteMismatch) {
+    warnings.push(
+      <p className="warn text-foreground" key="remote">
+        This checkout&apos;s origin is <code>{status.remote}</code>, which is not the repository
+        ODE has linked. Commit and push are disabled: git would do both quite happily, and the
+        work would end up in a repository you did not choose. Nothing has been changed — select
+        the repository this checkout actually points at, or move the directory aside and let ODE
+        clone the linked one. Stash and discard still work, because they stay in the working
+        copy.
+      </p>,
+    );
+  }
+  if (!status.scaffold.complete) {
+    warnings.push(
+      <p className="warn text-foreground" key="scaffold">
+        Missing from the operator template: {status.scaffold.missing.join(", ")}.{" "}
+        <Button variant="link"
+          className="link"
+          onClick={() =>
+            void act("scaffold", async () => {
+              const result = await api.repoScaffold();
+              setNote(
+                result.written.length > 0
+                  ? `Wrote ${result.written.join(", ")}. ${result.hint}`
+                  : "Everything was already there.",
+              );
+              onStatus(await api.repoStatus());
+            })
+          }
+          disabled={pending !== null}
+        >
+          Write the missing files
+        </Button>
+      </p>,
+    );
+  }
+  if (status.diverged) {
+    warnings.push(
+      <p className="warn text-foreground" key="diverged">
+        The branch has moved on both sides. ODE does not merge for you: pull in a terminal in
+        your own pod, or push a branch of your own.
+      </p>,
+    );
+  }
+  if (missingScopes.length > 0) {
+    warnings.push(
+      <p className="warn text-foreground" key="scopes">
+        The GitHub grant is missing {missingScopes.join(", ")}, so a push that touches the build
+        workflow will be rejected.
+      </p>,
+    );
+  }
+
+  const closePanel = (restoreFocus: boolean) => {
+    if (restoreFocus && panel) triggers.current[panel]?.focus();
+    setPanel(null);
+  };
+
+  // A panel that survives the click that landed outside it would sit over the file
+  // the developer just picked in the tree.
+  useEffect(() => {
+    if (!panel) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (bar.current && !bar.current.contains(event.target as Node)) setPanel(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [panel]);
+
+  // Writing the scaffold empties the list the panel is showing. Closing it is the
+  // honest end of that: an open panel with nothing in it reads as a fault.
+  useEffect(() => {
+    if (panel === "warnings" && warnings.length === 0) setPanel(null);
+  }, [panel, warnings.length]);
+
+  // Mount only, and once per browser session: see the note above on §5.11 item 6.
+  useEffect(() => {
+    if (status.dirty && !dirtyShownThisSession()) setPanel("changes");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** A segment that opens a panel. The caret says which way the panel goes. */
+  const trigger = (
+    which: Panel,
+    label: React.ReactNode,
+    modifier: string | undefined,
+    title: string,
+  ) => (
+    <Button variant="outline"
+      className={modifier ? `repo-bar-item ${modifier}` : "repo-bar-item"}
+      ref={(element) => {
+        triggers.current[which] = element;
+      }}
+      aria-expanded={panel === which}
+      aria-controls={`repo-panel-${which}`}
+      title={title}
+      onClick={() => setPanel(panel === which ? null : which)}
+    >
+      {label}
+      <span className="repo-bar-caret" aria-hidden="true">
+        ▴
+      </span>
+    </Button>
+  );
+
   return (
-    <>
-      <Pane
-        title={status.link.full_name}
-        subtitle={`${status.workspace}/${status.link.path} on your own storage`}
-        actions={
-          <>
+    <div
+      className="repo-bar"
+      ref={bar}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && panel) {
+          event.preventDefault();
+          closePanel(true);
+        }
+      }}
+    >
+      {/*
+        An action's answer — a commit's sha, a push's output, a refusal — stays in
+        the bar rather than in a panel. It is caused from a panel, and a panel is
+        closed by the next click; the answer to "did that push" must not be closed
+        with it. Dismissible rather than timed: the developer decides when they have
+        read it.
+      */}
+      {(error ?? note) !== null && (
+        <p className={error ? "repo-bar-notice error text-destructive" : "repo-bar-notice note"}>
+          <span>{error ?? note}</span>
+          <Button variant="outline"
+            onClick={() => {
+              setError(null);
+              setNote(null);
+            }}
+          >
+            Dismiss
+          </Button>
+        </p>
+      )}
+
+      <div className="repo-bar-row">
+        <div className="repo-bar-group">
+          {trigger(
+            "repository",
+            <span className="repo-bar-name">{status.link.full_name}</span>,
+            undefined,
+            `${status.workspace}/${status.link.path} on your own storage`,
+          )}
+
+          <span className="repo-bar-fact" title="The branch the working copy is on">
+            {status.branch ?? "—"}
+            {status.unborn && <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">no commits yet</span>}
+            {status.detached && <span className="badge warn inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs text-foreground">detached</span>}
+          </span>
+
+          {/*
+            "in sync" rather than "0 ahead, 0 behind": the pair of zeroes is four
+            words to say nothing happened, and the bar's room is worth more than
+            that. `unfetched` stays in front of it either way, because a stale zero
+            is not agreement — the same reason the status route makes `fetched`
+            explicit.
+          */}
+          <span
+            className="repo-bar-fact"
+            title={
+              status.fetched
+                ? "Against the remote, as of this fetch"
+                : "Against the remote as ODE last saw it. Press Fetch to make it current."
+            }
+          >
+            {!status.fetched && "unfetched · "}
+            {status.ahead === 0 && status.behind === 0
+              ? "in sync"
+              : `${status.ahead} ahead, ${status.behind} behind`}
+            {status.diverged && <span className="badge warn inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs text-foreground">diverged</span>}
+          </span>
+        </div>
+
+        <div className="repo-bar-group">
+          {warnings.length > 0 &&
+            trigger(
+              "warnings",
+              <>
+                <span aria-hidden="true">⚠ </span>
+                {warnings.length === 1 ? "1 warning" : `${warnings.length} warnings`}
+              </>,
+              "warn",
+              "What ODE will refuse, or has already refused, and why",
+            )}
+
+          {trigger(
+            "changes",
+            status.dirty ? `${status.changes.length} uncommitted` : "no changes",
+            status.dirty ? "dirty" : undefined,
+            status.dirty
+              ? "Uncommitted work in the working copy: commit, stash or discard it"
+              : "The working copy matches the last commit",
+          )}
+
+          <Button variant="outline" onClick={() => void onReload(true)} disabled={pending !== null}>
+            Fetch
+          </Button>
+          <Button variant="outline"
+            className={pending === "push" ? "busy animate-pulse" : undefined}
+            onClick={() => void push()}
+            disabled={pending !== null || status.unborn || remoteMismatch}
+            title={
+              remoteMismatch
+                ? "Push is refused while this checkout points at another repository — see the warning."
+                : status.unborn
+                  ? "There is nothing to push until the first commit."
+                  : "Pushing is what triggers the build workflow, which pushes the image to ghcr.io."
+            }
+          >
+            {pending === "push" ? "Pushing…" : `Push${status.ahead ? ` (${status.ahead})` : ""}`}
+          </Button>
+        </div>
+      </div>
+
+      {panel === "repository" && (
+        <div
+          className="repo-pop start"
+          id="repo-panel-repository"
+          role="group"
+          aria-label="Repository"
+        >
+          <dl className="kv">
+            <dt>Working copy</dt>
+            <dd>
+              <code>
+                {status.workspace}/{status.link.path}
+              </code>
+            </dd>
+            <dt>Head</dt>
+            <dd>
+              {status.head ? (
+                <>
+                  <code>{shortId(status.head)}</code> {status.head_subject}
+                  {status.head_date && (
+                    <span className="muted text-muted-foreground"> · {dateTime(status.head_date)}</span>
+                  )}
+                </>
+              ) : (
+                "—"
+              )}
+            </dd>
+            <dt>Remote</dt>
+            <dd>{status.remote ?? "—"}</dd>
+            {status.link.operator_lib_ref && (
+              <>
+                <dt>Operator Lib</dt>
+                <dd>
+                  pinned at <code>{status.link.operator_lib_ref}</code>
+                </dd>
+              </>
+            )}
+          </dl>
+          <div className="repo-pop-actions">
             <a href={status.link.html_url} target="_blank" rel="noreferrer">
               Open on GitHub
             </a>
-            <button onClick={() => void onReload(true)} disabled={pending !== null}>
-              Fetch
-            </button>
-            <button
+            <Button variant="outline"
               onClick={() =>
                 void act("unlink", async () => {
                   await api.repoUnlink();
                 })
               }
+              className={pending === "unlink" ? "busy animate-pulse" : undefined}
               disabled={pending !== null}
             >
-              Switch repository
-            </button>
-          </>
-        }
-      >
-        <dl className="kv">
-          <dt>Branch</dt>
-          <dd>
-            {status.branch ?? "—"}
-            {status.unborn && <span className="badge">no commits yet</span>}
-            {status.detached && <span className="badge warn">detached</span>}
-          </dd>
-          <dt>Remote</dt>
-          <dd>
-            {status.fetched ? "" : "(not fetched) "}
-            {status.ahead} ahead, {status.behind} behind
-            {status.diverged && <span className="badge warn">diverged</span>}
-          </dd>
-          <dt>Head</dt>
-          <dd>
-            {status.head ? (
-              <>
-                <code>{shortId(status.head)}</code> {status.head_subject}
-                {status.head_date && <span className="muted"> · {dateTime(status.head_date)}</span>}
-              </>
-            ) : (
-              "—"
-            )}
-          </dd>
-          {status.link.operator_lib_ref && (
-            <>
-              <dt>Operator Lib</dt>
-              <dd>
-                pinned at <code>{status.link.operator_lib_ref}</code> (D15)
-              </dd>
-            </>
-          )}
-        </dl>
-
-        {status.remote_mismatch && (
-          <p className="warn">
-            This checkout&apos;s origin is <code>{status.remote}</code>, which is not the
-            repository ODE has linked. Commit and push are disabled: git would do both quite
-            happily, and the work would end up in a repository you did not choose. Nothing has
-            been changed — select the repository this checkout actually points at, or move the
-            directory aside and let ODE clone the linked one. Stash and discard still work,
-            because they stay in the working copy.
-          </p>
-        )}
-        {!status.scaffold.complete && (
-          <p className="warn">
-            Missing from the operator template: {status.scaffold.missing.join(", ")}.{" "}
-            <button
-              className="link"
-              onClick={() =>
-                void act("scaffold", async () => {
-                  const result = await api.repoScaffold();
-                  setNote(
-                    result.written.length > 0
-                      ? `Wrote ${result.written.join(", ")}. ${result.hint}`
-                      : "Everything was already there.",
-                  );
-                  onStatus(await api.repoStatus());
-                })
-              }
-              disabled={pending !== null}
-            >
-              Write the missing files
-            </button>
-          </p>
-        )}
-        {status.diverged && (
-          <p className="warn">
-            The branch has moved on both sides. ODE does not merge for you: pull in a
-            terminal in your own pod, or push a branch of your own.
-          </p>
-        )}
-        {connection?.identity?.missing_scopes?.length ? (
-          <p className="warn">
-            The GitHub grant is missing {connection.identity.missing_scopes.join(", ")}, so a
-            push that touches the build workflow will be rejected.
-          </p>
-        ) : null}
-
-        {error && <p className="error">{error}</p>}
-        {note && <p className="note">{note}</p>}
-
-        <h3>
-          Uncommitted changes{" "}
-          <span className="muted">{status.dirty ? `(${status.changes.length})` : "(none)"}</span>
-        </h3>
-        {status.dirty ? (
-          <>
-            <ul className="changes">
-              {status.changes.map((change) => (
-                <li key={change.path}>
-                  <span className={`change ${change.kind}`}>{change.kind}</span>
-                  <code>{change.path}</code>
-                  {change.renamed_from && <span className="muted"> from {change.renamed_from}</span>}
-                  {change.staged && <span className="badge">staged</span>}
-                </li>
-              ))}
-            </ul>
-            <div className="commit-box">
-              <input
-                placeholder="What this change does"
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-              />
-              <button
-                className="primary"
-                onClick={() => void commit()}
-                disabled={!message.trim() || pending !== null || remoteMismatch}
-                title={
-                  remoteMismatch
-                    ? "The checkout points at a different repository than the linked one."
-                    : undefined
-                }
-              >
-                {pending === "commit" ? "Committing…" : "Commit"}
-              </button>
-              <button
-                onClick={() =>
-                  void act("stash", async () => {
-                    const next = await api.repoStash();
-                    setNote("Stashed. Recover it with `git stash pop` in your pod.");
-                    return next;
-                  })
-                }
-                disabled={pending !== null}
-              >
-                Stash
-              </button>
-              <button className="danger" onClick={() => void discard()} disabled={pending !== null}>
-                Discard
-              </button>
-            </div>
-          </>
-        ) : (
-          <Muted>The working copy matches the last commit.</Muted>
-        )}
-
-        <div className="push-row">
-          <button
-            onClick={() => void push()}
-            disabled={pending !== null || status.unborn || remoteMismatch}
-            title={
-              remoteMismatch
-                ? "The checkout points at a different repository than the linked one."
-                : undefined
-            }
-          >
-            {pending === "push" ? "Pushing…" : `Push${status.ahead ? ` (${status.ahead})` : ""}`}
-          </button>
-          <span className="muted">
-            {remoteMismatch
-              ? "Push is refused while this checkout points at another repository — see above."
-              : status.unborn
-                ? "There is nothing to push until the first commit."
-                : "Pushing is what triggers the build workflow, which pushes the image to ghcr.io."}
-          </span>
+              {pending === "unlink" ? "Switching…" : "Switch repository"}
+            </Button>
+          </div>
         </div>
-      </Pane>
+      )}
 
-      <FilesPane status={status} version={treeVersion} onChanged={() => void onReload()} />
-    </>
+      {panel === "warnings" && warnings.length > 0 && (
+        <div className="repo-pop end" id="repo-panel-warnings" role="group" aria-label="Warnings">
+          {warnings}
+        </div>
+      )}
+
+      {panel === "changes" && (
+        <div
+          className="repo-pop end"
+          id="repo-panel-changes"
+          role="group"
+          aria-label="Uncommitted changes"
+        >
+          {status.dirty ? (
+            <>
+              <ul className="changes">
+                {status.changes.map((change) => (
+                  <li key={change.path}>
+                    <span className={`change ${change.kind}`}>{change.kind}</span>
+                    <code>{change.path}</code>
+                    {change.renamed_from && (
+                      <span className="muted text-muted-foreground"> from {change.renamed_from}</span>
+                    )}
+                    {change.staged && <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">staged</span>}
+                  </li>
+                ))}
+              </ul>
+              <div className="commit-box">
+                <Input
+                  placeholder="What this change does"
+                  value={message}
+                  onChange={(event) => setMessage(event.target.value)}
+                />
+                <Button variant="default"
+                  className={pending === "commit" ? "primary busy animate-pulse" : "primary"}
+                  onClick={() => void commit()}
+                  disabled={!message.trim() || pending !== null || remoteMismatch}
+                  title={
+                    remoteMismatch
+                      ? "The checkout points at a different repository than the linked one."
+                      : undefined
+                  }
+                >
+                  {pending === "commit" ? "Committing…" : "Commit"}
+                </Button>
+                <Button variant="outline"
+                  onClick={() =>
+                    void act("stash", async () => {
+                      const next = await api.repoStash();
+                      setNote("Stashed. Recover it with `git stash pop` in your pod.");
+                      return next;
+                    })
+                  }
+                  disabled={pending !== null}
+                >
+                  Stash
+                </Button>
+                <Button variant="outline"
+                  className="danger"
+                  onClick={() => void discard()}
+                  disabled={pending !== null}
+                >
+                  Discard
+                </Button>
+              </div>
+              <p className="muted text-muted-foreground">
+                Saving a file writes the working copy; committing is a separate decision, and so
+                is pushing — which is what triggers the build workflow.
+              </p>
+            </>
+          ) : (
+            <Muted>The working copy matches the last commit.</Muted>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -655,6 +915,11 @@ function FilesPane({
   // workspace they came for — and restoring it is cheap: one read of the working
   // copy on their own pod, no platform call at all.
   const selected = useParam("file");
+  // Which checkout this is a tree of. The pane does not switch workbenches, but it
+  // has to re-read when the bar above it does: two workbenches are two repositories,
+  // so a tree left standing across a switch lists files that are not in the working
+  // copy on screen, and clicking one asks for a path that does not exist.
+  const workbench = useParam("workbench");
   const [file, setFile] = useState<RepoFile | null>(null);
   const [draft, setDraft] = useState("");
   const [fileError, setFileError] = useState<string | null>(null);
@@ -671,9 +936,21 @@ function FilesPane({
     }
   }, []);
 
+  // Which workbench the tree on screen was read from, so a switch can be told from
+  // a re-read of the same one.
+  const listed = useRef(workbench);
+
   useEffect(() => {
+    if (listed.current !== workbench) {
+      listed.current = workbench;
+      // Emptied rather than left standing until the new one answers: those rows are
+      // clickable, and clicking one would open a path from the other checkout. A
+      // `version` bump is not a switch — a stash or a discard changes this same tree,
+      // and blanking it there would make the pane flicker on every git action.
+      setTree(null);
+    }
     void loadTree();
-  }, [loadTree, version]);
+  }, [loadTree, version, workbench]);
 
   // Opening a file is now only a URL write; the read below follows from it. That
   // way clicking the tree, restoring a reload and following a link all take the
@@ -706,7 +983,10 @@ function FilesPane({
     return () => {
       cancelled = true;
     };
-  }, [selected]);
+    // The workbench is a dependency and not only a hint: a switch normally drops the
+    // open file, but the back button can land on an address that names the same path
+    // in the other checkout, and that is a different file.
+  }, [selected, workbench]);
 
   const save = useCallback(async () => {
     if (!file || file.binary) return;
@@ -753,18 +1033,18 @@ function FilesPane({
   return (
     <Pane
       title="Files"
-      subtitle="Every file of the repository, editable — nothing hidden, nothing reserved (D14)"
+      subtitle="Every file of the repository, editable — nothing hidden, nothing reserved"
       actions={
         <>
-          <button onClick={() => void create()}>New file</button>
-          <button onClick={() => void loadTree()}>Refresh</button>
+          <Button variant="outline" onClick={() => void create()}>New file</Button>
+          <Button variant="outline" onClick={() => void loadTree()}>Refresh</Button>
         </>
       }
     >
       <div className="code-layout">
         <div className="file-tree">
-          {treeError && <p className="error">{treeError}</p>}
-          {!tree && !treeError && <Muted>Reading the working copy…</Muted>}
+          {treeError && <p className="error text-destructive">{treeError}</p>}
+          {!tree && !treeError && <Busy>Reading the working copy…</Busy>}
           {tree && (
             <ul className="tree">
               {(tree.children ?? []).map((node) => (
@@ -783,32 +1063,43 @@ function FilesPane({
 
         <div className="file-editor">
           {!file && !fileError && <Muted>Pick a file to edit it.</Muted>}
-          {fileError && <p className="error">{fileError}</p>}
+          {fileError && <p className="error text-destructive">{fileError}</p>}
           {file && (
             <>
+              {/*
+                The head is a toolbar: what the file is on the left, what can be
+                done to it on the right. In one wrapping row the Save button sat
+                between the file's size and a sentence about committing, which
+                read as prose with a button in the middle of it — and the sentence,
+                being the longest item, decided where the button landed. So the
+                sentence is its own line below, where it explains the button
+                without moving it.
+              */}
               <div className="file-head">
-                <code>{file.path}</code>
-                <span className="muted">
+                <code className="file-path">{file.path}</code>
+                <span className="muted file-meta text-muted-foreground">
                   {bytes(file.size)}
                   {file.modified ? ` · ${dateTime(file.modified)}` : ""}
                 </span>
-                {dirty && <span className="badge warn">unsaved</span>}
-                <button
-                  className="primary"
+                {dirty && <span className="badge warn inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs text-foreground">unsaved</span>}
+                <Button variant="default"
+                  className={saving ? "primary file-save busy animate-pulse" : "primary file-save"}
                   onClick={() => void save()}
                   disabled={!dirty || saving || file.binary}
                 >
                   {saving ? "Saving…" : "Save"}
-                </button>
-                <span className="muted">Saving writes the working copy. It does not commit.</span>
+                </Button>
               </div>
+              <p className="muted file-hint text-muted-foreground">
+                Saving writes the working copy. It does not commit.
+              </p>
               {file.binary && (
                 <Muted>
                   This file is not text, so it is not shown. Editing it here would corrupt it.
                 </Muted>
               )}
               {file.truncated && (
-                <p className="warn">
+                <p className="warn text-foreground">
                   The file is longer than the editor limit and is shown truncated. Saving it
                   would write only what is shown, so it is read-only here.
                 </p>
@@ -855,13 +1146,33 @@ function TreeNode({
   if (node.type === "directory") {
     return (
       <li>
-        <button className="tree-dir" onClick={() => setOpen(!open)}>
-          <span className="twisty">{open ? "▾" : "▸"}</span>
-          {node.name}
-        </button>
-        <button className="tree-delete" title="Delete" onClick={() => onDelete(relative, true)}>
-          ×
-        </button>
+        {/*
+          The row is a box of its own rather than the `li` being the flex
+          container, because the `li` also holds the children: made a row itself,
+          it laid the nested list out beside the directory name instead of under
+          it, and a highlight drawn on it covered the whole subtree.
+        */}
+        <div className="tree-row">
+          <Button variant="ghost" size="sm"
+            className="tree-dir h-auto flex-1 justify-start py-1 font-normal"
+            title={node.name}
+            onClick={() => setOpen(!open)}
+            aria-expanded={open}
+          >
+            <span className="twisty inline-block w-3 shrink-0 text-center text-xs text-muted-foreground" aria-hidden="true">
+              {open ? "▾" : "▸"}
+            </span>
+            <span className="tree-name">{node.name}</span>
+          </Button>
+          <Button variant="ghost" size="icon-xs"
+            className="tree-delete"
+            title={`Delete ${node.name}`}
+            aria-label={`Delete ${node.name}`}
+            onClick={() => onDelete(relative, true)}
+          >
+            ×
+          </Button>
+        </div>
         {open && (
           <ul>
             {(node.children ?? []).map((child) => (
@@ -874,7 +1185,7 @@ function TreeNode({
                 onDelete={onDelete}
               />
             ))}
-            {node.elided ? <li className="muted">…{node.elided} more</li> : null}
+            {node.elided ? <li className="muted text-muted-foreground">…{node.elided} more</li> : null}
           </ul>
         )}
       </li>
@@ -883,15 +1194,32 @@ function TreeNode({
 
   return (
     <li>
-      <button
-        className={selected === relative ? "tree-file active" : "tree-file"}
-        onClick={() => onOpen(relative)}
-      >
-        {node.name}
-      </button>
-      <button className="tree-delete" title="Delete" onClick={() => onDelete(relative, false)}>
-        ×
-      </button>
+      <div className={selected === relative ? "tree-row active" : "tree-row"}>
+        <Button variant="ghost" size="sm"
+          className="tree-file h-auto flex-1 justify-start py-1 font-normal"
+          title={node.name}
+          aria-current={selected === relative ? "true" : undefined}
+          onClick={() => onOpen(relative)}
+        >
+          {/*
+            An empty slot exactly as wide as a twisty. Without it a file name
+            started where a directory's arrow starts and a directory name a
+            twisty further in, so nothing in the tree lined up vertically and the
+            indentation said nothing about the depth. Marked hidden from the
+            reading order: it is alignment, not content.
+          */}
+          <span className="twisty leaf inline-block w-3 shrink-0 text-center text-xs text-muted-foreground" aria-hidden="true" />
+          <span className="tree-name">{node.name}</span>
+        </Button>
+        <Button variant="ghost" size="icon-xs"
+          className="tree-delete"
+          title={`Delete ${node.name}`}
+          aria-label={`Delete ${node.name}`}
+          onClick={() => onDelete(relative, false)}
+        >
+          ×
+        </Button>
+      </div>
     </li>
   );
 }
@@ -962,6 +1290,26 @@ function Editor({
   }, [path, language, dark]);
 
   return <div className="monaco" ref={host} />;
+}
+
+/**
+ * dirtyShownThisSession answers whether the changes panel has already opened
+ * itself in this browser session, and records that it has.
+ *
+ * Same reading of "reopen" as `fetchedThisSession` below, and wrapped for the same
+ * reason. Where the accessor throws — a browser configured to block site data — the
+ * honest fallback is the opposite one: showing the work twice costs a keystroke,
+ * not showing it is the thing §5.11 item 6 forbids.
+ */
+function dirtyShownThisSession(): boolean {
+  const key = "ode.repo.dirty_shown";
+  try {
+    if (window.sessionStorage.getItem(key)) return true;
+    window.sessionStorage.setItem(key, "1");
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 /**

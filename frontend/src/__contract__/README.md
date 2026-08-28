@@ -187,4 +187,4 @@ Then `npm run build`. Two things to keep in mind when a capture changes the shap
 
 Values. This asks whether the frontend and the backend agree on the shape of the
 payload, not whether a detector is right — that is what the Go fixture tests are
-for (`pkg/profiler`, SPEC §5.4.14).
+for (`pkg/profiler`, §5.4.14).

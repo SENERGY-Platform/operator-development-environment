@@ -17,7 +17,7 @@
 import Keycloak from "keycloak-js";
 
 // The SPA is a public client: it obtains a token and presents it. Every
-// authorisation decision is the backend's (SPEC §3.1), so nothing here is a
+// authorisation decision is the backend's (§3.1), so nothing here is a
 // security control — hiding a button does not protect a route.
 //
 // There is no default URL, deliberately: a deployment's Keycloak address is
