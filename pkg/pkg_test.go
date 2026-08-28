@@ -105,7 +105,7 @@ func TestANilAuthClosureSendsNoTokenUpstream(t *testing.T) {
 	}
 }
 
-// --- M8 wiring (SPEC §5.12) ---
+// --- M8 wiring (§5.12) ---
 
 // startM8 degrades in the shape the rest of ODE degrades and refuses in the shape
 // the rest of ODE refuses. Both halves are asserted because both are decisions: a

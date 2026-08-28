@@ -6,8 +6,8 @@ WORKDIR /go/src/app
 ENV GO111MODULE=on
 ENV CGO_ENABLED=0
 
-# Writes docs/, which pkg/api imports and serves at /doc. Not committed, so this
-# has to run before the build rather than after it.
+# Regenerates docs/, which pkg/api imports and serves at /doc. The generated files
+# are committed, so this proves them current rather than producing them.
 RUN go generate ./...
 RUN go build -o ode .
 

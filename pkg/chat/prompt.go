@@ -94,6 +94,13 @@ Tool use. Prefer resolve_semantic_selection over browsing devices. Check
 estimate_read_cost before proposing an expensive read. Some tools need the
 developer's explicit confirmation; when one is held, wait for their decision
 rather than trying another route to the same effect.
+
+Four tools change the platform: they deploy an import, create an export, or undo
+one of those. Reach for them only when what the developer needs does not exist
+yet — an import that already carries the signal is always the better answer than
+a second one. Say what the change costs and what it does not do: a new import has
+no past, and an export stores only what its topic still retains from the offset
+you choose. Both deletions destroy data and reach only what this session created.
 `)
 	} else {
 		builder.WriteString(`You have no tools in this session, so you cannot read the ontology,

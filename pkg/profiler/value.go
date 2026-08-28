@@ -22,7 +22,7 @@ import (
 	"fmt"
 )
 
-// Confidence is ordinal and never numeric (SPEC D23). A threshold heuristic
+// Confidence is ordinal and never numeric (D23). A threshold heuristic
 // that reports 0.87 invites an LLM to treat it as a probability it is not;
 // three levels plus the raw evidence say the same thing without the false
 // precision. `certain` is reserved for ontology-derived and developer-confirmed
@@ -36,7 +36,7 @@ const (
 )
 
 // NotComputedReason is the closed set of reasons a field has no value
-// (SPEC §5.4.6).
+// (§5.4.6).
 type NotComputedReason string
 
 const (
@@ -57,7 +57,7 @@ type NotComputed struct {
 	Detail string            `json:"detail"`
 }
 
-// Value holds either a computed value or an explicit NotComputed (SPEC D24).
+// Value holds either a computed value or an explicit NotComputed (D24).
 //
 // The type exists to make the rule structural rather than a convention every
 // detector has to remember. Absence and negation must be distinguishable: an

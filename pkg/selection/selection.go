@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// Package selection implements semantic data selection (SPEC §5.2): the
+// Package selection implements semantic data selection (§5.2): the
 // operation the spec calls resolve_semantic_selection.
 //
 // A text intent is resolved through the ontology to concrete addressable series,
@@ -221,6 +221,13 @@ type Result struct {
 	ImportSelectables []ImportSelectable `json:"import_selectables"`
 	ImportCandidates  []ImportCandidate  `json:"import_candidates"`
 
+	// DeployableImportTypes are the import types that match and have no instance
+	// in this answer. It is the difference between "this platform carries nothing
+	// of that kind" and "nobody has deployed one yet", which an empty
+	// ImportCandidates alone cannot express — and the second is a state a
+	// developer can act on, through create_import_instance.
+	DeployableImportTypes []DeployableImportType `json:"deployable_import_types"`
+
 	// Candidates are the concrete series, ranked. Empty when ranking was skipped
 	// or is unavailable, which Notes then says.
 	Candidates []profiler.QuickProfile  `json:"candidates"`
@@ -358,6 +365,12 @@ type Reads struct {
 	// in it.
 	ImportInstances int `json:"import_instances"`
 	ImportExports   int `json:"import_exports"`
+	// ImportTypes is one import-repository request per criteria combination that
+	// could be applied to imports. It is not folded into ImportSelectables: that
+	// count is device-selection's, this one is a second service's, and a
+	// deployment without an import-repository URL reads 0 here while the other
+	// stays as it was.
+	ImportTypes int `json:"import_types"`
 }
 
 // Resolve runs one semantic selection.
@@ -385,9 +398,11 @@ func (r *Resolver) Resolve(ctx context.Context, token string, req Request) (Resu
 		OntologyGaps:         []OntologyGap{},
 		ImportSelectables:    []ImportSelectable{},
 		ImportCandidates:     []ImportCandidate{},
-		Candidates:           []profiler.QuickProfile{},
-		Skipped:              []profiler.SkippedDevice{},
-		Notes:                []string{},
+
+		DeployableImportTypes: []DeployableImportType{},
+		Candidates:            []profiler.QuickProfile{},
+		Skipped:               []profiler.SkippedDevice{},
+		Notes:                 []string{},
 	}
 
 	match := ontology.MatchIntent(snap, ontology.Intent{

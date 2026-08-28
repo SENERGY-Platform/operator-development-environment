@@ -18,11 +18,14 @@ package selection
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
+	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
 	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 
@@ -56,6 +59,11 @@ import (
 type Imports interface {
 	QueryImports(ctx context.Context, token string, criteria []drmodel.FilterCriteria) ([]imports.Selectable, error)
 	List(ctx context.Context, token string, opts imports.InstanceListOptions) (imports.ListResult, error)
+	// ListTypes is the catalogue half, and it answers a question QueryImports
+	// structurally cannot: discovery joins every matching type to its instances, so
+	// a type with no instance is absent from a selectables answer — which is the
+	// state of every type somebody is about to deploy the first instance of.
+	ListTypes(ctx context.Context, token string, opts imports.TypeListOptions) (imports.TypeListResult, error)
 	// Histories rather than History: analytics-serving cannot filter by import, so
 	// one answer per candidate would re-read the same export listing once per
 	// candidate. A resolution asks once for the whole shortlist.
@@ -123,6 +131,65 @@ type ImportCandidate struct {
 
 	// Series is how many resolved variables this instance contributes.
 	Series int `json:"series"`
+}
+
+// DeployableImportType is an import type that matches the criteria and has no
+// instance in this answer.
+//
+// It exists because an empty import half has two causes that look identical, and
+// only one of them is a dead end: the platform describes nothing of this kind at
+// all, or it describes it and nobody has deployed an import for it yet. The
+// second is actionable — create_import_instance turns this row into an import —
+// and reporting it is the difference between "this platform does not have that"
+// and "this platform does not have that *running*".
+//
+// Nothing here is a property of an instance, because there is none: no Kafka
+// topic, no container status, no history. What a developer gets instead is what
+// deploying one would cost them, which is the configuration.
+type DeployableImportType struct {
+	ImportTypeID string `json:"import_type_id"`
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+
+	// MatchingVariables are the payload leaves that carry the wanted function and
+	// aspect. Empty is a real answer rather than a defect, and Note says so: the
+	// criteria index upstream is flattened per import type, so a type matches when
+	// its variables carry the criteria *between* them, and no single variable need
+	// carry both.
+	MatchingVariables []ImportTypeVariable `json:"matching_variables"`
+
+	// RequiredConfigs are declared with no usable default, so deploying means
+	// deciding them.
+	RequiredConfigs []string `json:"required_configs"`
+	// BlockingCredentials are the configs that make this type undeployable from a
+	// chat at all — credential-shaped, with no default. The import is created in
+	// the platform's own dialog instead.
+	BlockingCredentials []string `json:"blocking_credentials,omitempty"`
+	// Deployable is false exactly when BlockingCredentials is not empty. Stated
+	// rather than left to be inferred from an empty list, because the inference
+	// runs the wrong way for a reader who does not know the credential rule.
+	Deployable bool   `json:"deployable"`
+	Note       string `json:"note,omitempty"`
+}
+
+// ImportTypeVariable is one variable an import type would publish, described the
+// way a resolved one is.
+//
+// The unit and the completeness come from the same two profiler functions the
+// device and import selectables use, so "unit_source: characteristic" means one
+// thing across all three lists rather than three.
+type ImportTypeVariable struct {
+	Path             string              `json:"path"`
+	CharacteristicID *string             `json:"characteristic_id"`
+	Unit             string              `json:"unit"`
+	UnitSource       profiler.UnitSource `json:"unit_source"`
+	Type             models.Type         `json:"type,omitempty"`
+
+	FunctionID string `json:"function_id,omitempty"`
+	AspectID   string `json:"aspect_id,omitempty"`
+	AspectName string `json:"aspect_name,omitempty"`
+
+	OntologyCompleteness profiler.Completeness `json:"ontology_completeness"`
 }
 
 // resolveImports runs the import half against the criteria the device half
@@ -339,12 +406,229 @@ func (r *Resolver) importCandidates(ctx context.Context, token string, selectabl
 	return out
 }
 
+// typeListLimit is what one catalogue query reads. device-selection sends 1000
+// for the same query against the same endpoint; matching it means ODE does not
+// quietly see fewer import types than the platform's own selectables answer was
+// built from.
+const typeListLimit = 1000
+
+// catalogue is what the type half of this answer managed to establish, so the
+// notes can tell "there is no such import type" apart from "there is none
+// running" and from "this was not looked up".
+type catalogue struct {
+	// read is true only when every criterion was answered. A partial catalogue is
+	// treated as unread: reporting the types one criterion found while another
+	// failed would understate the platform in a way nothing on the document says.
+	read bool
+	// matched counts the types matching the criteria, deployed or not.
+	matched int
+	// deployable counts those with no instance in this answer.
+	deployable int
+	// failure is why the catalogue was not read, empty when it was.
+	failure string
+}
+
+// deployableImportTypes asks import-repository which import types match, which
+// is the one question device-selection cannot be asked.
+//
+// One request per criterion and a union of the answers, for the reason
+// resolveImports sends one at a time: upstream ANDs a criteria list, so a
+// multi-criterion request asks for a type carrying all of it. The aspect subtree
+// is expanded here rather than upstream, because import-repository matches
+// aspect ids literally — the asymmetry device-selection absorbs for the
+// selectables half and nobody absorbs for this one.
+//
+// deployed is the set of import type ids this resolution already reported as
+// running instances. Those are dropped from the answer and kept in the count:
+// they are already in import_candidates, where they carry a topic and a status
+// that this list has nothing to say about.
+func (r *Resolver) deployableImportTypes(
+	ctx context.Context,
+	token string,
+	criteria []Criterion,
+	snap *ontology.Snapshot,
+	deployed map[string]bool,
+	index *profiler.OntologyIndex,
+) ([]DeployableImportType, catalogue, int) {
+	filters := []imports.TypeCriterion{}
+	for _, criterion := range criteria {
+		if criterion.DeviceClassID != "" {
+			// Same reason resolveImports skips it: an import type carries no device
+			// class, and sending the criterion with the field dropped would widen the
+			// query rather than express it.
+			continue
+		}
+		filter := imports.TypeCriterion{FunctionID: criterion.FunctionID}
+		if criterion.AspectID != "" {
+			filter.AspectIDs = ontology.AspectSubtreeIDs(snap.AspectNodes, criterion.AspectID)
+			if len(filter.AspectIDs) == 0 {
+				// An aspect the snapshot does not carry. Sending the bare id asks a
+				// narrower question than the caller meant, which is still the question
+				// they asked; dropping it would ask a wider one they did not.
+				filter.AspectIDs = []string{criterion.AspectID}
+			}
+		}
+		if filter.FunctionID == "" && len(filter.AspectIDs) == 0 {
+			// Nothing to narrow on. Upstream reads an empty criterion as "any type with
+			// any criteria at all", which is every import type on the platform.
+			continue
+		}
+		filters = append(filters, filter)
+	}
+	if len(filters) == 0 {
+		return []DeployableImportType{}, catalogue{read: true}, 0
+	}
+
+	type outcome struct {
+		found []dsmodel.ImportType
+		err   error
+	}
+	gate := make(chan struct{}, r.opts.Concurrency)
+	results := make(chan outcome, len(filters))
+	wg := sync.WaitGroup{}
+	for _, filter := range filters {
+		wg.Add(1)
+		go func(filter imports.TypeCriterion) {
+			defer wg.Done()
+			gate <- struct{}{}
+			defer func() { <-gate }()
+
+			listed, err := r.imports.ListTypes(ctx, token, imports.TypeListOptions{
+				Criteria: []imports.TypeCriterion{filter},
+				Limit:    typeListLimit,
+			})
+			results <- outcome{found: listed.Types, err: err}
+		}(filter)
+	}
+	wg.Wait()
+	close(results)
+
+	seen := map[string]bool{}
+	matched := []dsmodel.ImportType{}
+	var firstErr error
+	for out := range results {
+		if out.err != nil {
+			if firstErr == nil {
+				firstErr = out.err
+			}
+			continue
+		}
+		for _, importType := range out.found {
+			if seen[importType.Id] {
+				continue
+			}
+			seen[importType.Id] = true
+			matched = append(matched, importType)
+		}
+	}
+	if firstErr != nil {
+		// Degraded rather than fatal, unlike resolveImports. That one is the answer
+		// itself — a resolution missing every import of a matching type has no field
+		// that could honestly say so — while this one says what could additionally be
+		// deployed, and an answer without it is complete about what exists.
+		//
+		// An invalid request here means one thing: no import-repository is
+		// configured, so there is no catalogue to read at all. That is permanent for
+		// this deployment rather than a service that did not answer, and the two get
+		// different notes — quoting a configuration error as an outage would send
+		// somebody to check a service that was never called.
+		if errors.Is(firstErr, imports.ErrInvalidRequest) {
+			return []DeployableImportType{}, catalogue{}, len(filters)
+		}
+		return []DeployableImportType{}, catalogue{failure: firstErr.Error()}, len(filters)
+	}
+
+	out := make([]DeployableImportType, 0, len(matched))
+	names := aspectNames(snap)
+	for _, importType := range matched {
+		if deployed[importType.Id] {
+			continue
+		}
+		out = append(out, deployableImportType(importType, filters, index, names))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ImportTypeID < out[j].ImportTypeID
+	})
+	return out, catalogue{read: true, matched: len(matched), deployable: len(out)}, len(filters)
+}
+
+func deployableImportType(
+	importType dsmodel.ImportType,
+	filters []imports.TypeCriterion,
+	index *profiler.OntologyIndex,
+	aspects map[string]string,
+) DeployableImportType {
+	blocking := imports.BlockingCredentials(importType)
+	out := DeployableImportType{
+		ImportTypeID:        importType.Id,
+		Name:                importType.Name,
+		Description:         importType.Description,
+		MatchingVariables:   importTypeVariables(imports.MatchingVariables(importType, filters), index, aspects),
+		RequiredConfigs:     imports.RequiredConfigs(importType),
+		BlockingCredentials: blocking,
+		Deployable:          len(blocking) == 0,
+	}
+	switch {
+	case len(blocking) > 0:
+		out.Note = "this import type cannot be deployed from a chat: " +
+			strings.Join(blocking, ", ") + " reads as a credential and the type declares no default, " +
+			"so the developer creates this import in the platform's own import dialog"
+	case len(out.MatchingVariables) == 0:
+		// The type matched and none of its variables did. Upstream's criteria index
+		// is flattened per import type, so the function and the aspect can be carried
+		// by two different variables and the type still matches — see asymmetry 3 in
+		// imports-as-operator-inputs.md.
+		out.Note = "this import type matches, but no single variable of it carries both the " +
+			"function and the aspect: read it with get_import_type_metadata before deploying it"
+	case len(out.RequiredConfigs) > 0:
+		out.Note = "deploying this needs " + strings.Join(out.RequiredConfigs, ", ") +
+			"; the import type declares no usable default for them"
+	}
+	return out
+}
+
+func importTypeVariables(found []imports.TypeVariable, index *profiler.OntologyIndex, aspects map[string]string) []ImportTypeVariable {
+	out := make([]ImportTypeVariable, 0, len(found))
+	for _, variable := range found {
+		resolved := profiler.Variable{
+			Path: variable.Path,
+			Name: lastSegment(variable.Path),
+			Type: models.Type(variable.Type),
+			// EVENT for the reason importSelectables sets it: an import publishes to a
+			// topic, and an empty interaction would mark every variable unreadable.
+			Interaction: models.EVENT,
+			FunctionID:  variable.FunctionID,
+			AspectID:    variable.AspectID,
+			Queryable:   true,
+		}
+		if variable.CharacteristicID != nil {
+			resolved.CharacteristicID = *variable.CharacteristicID
+		}
+		semantics := profiler.ResolveUnits(resolved, index, profiler.Provenance{})
+		out = append(out, ImportTypeVariable{
+			Path:                 variable.Path,
+			CharacteristicID:     semantics.CharacteristicID,
+			Unit:                 semantics.Unit,
+			UnitSource:           semantics.UnitSource,
+			Type:                 resolved.Type,
+			FunctionID:           variable.FunctionID,
+			AspectID:             variable.AspectID,
+			AspectName:           aspects[variable.AspectID],
+			OntologyCompleteness: profiler.VariableCompleteness(resolved, index),
+		})
+	}
+	return out
+}
+
 // importNotes says what the import half of this answer does and does not cover.
 //
 // Every branch here exists because silence would read as completeness. A
 // resolution that searched no imports and one that searched and found none look
 // identical in an empty list, and only the second means "the platform has none".
-func importNotes(notes []string, configured bool, criteria []Criterion, selectables []ImportSelectable, interaction models.Interaction) []string {
+func importNotes(notes []string, configured bool, criteria []Criterion, selectables []ImportSelectable, interaction models.Interaction, cat catalogue) []string {
 	if !configured {
 		return append(notes,
 			"imports were not searched because no device-selection URL is configured: "+
@@ -375,10 +659,36 @@ func importNotes(notes []string, configured bool, criteria []Criterion, selectab
 				"publishes to a topic, so every import variable is an event")
 	}
 
-	if len(selectables) == 0 {
+	switch {
+	case cat.failure != "":
 		notes = append(notes,
-			"no import type on this platform declares these functions and aspects, "+
-				"or none has a running instance this account may read")
+			"the import type catalogue could not be read ("+cat.failure+"), so whether an import "+
+				"type exists that could be deployed for this is unknown; only imports that are "+
+				"already deployed are in this answer")
+	case !cat.read:
+		// No import-repository is configured, so the type catalogue was never
+		// readable. The two causes of an empty import half stay indistinguishable,
+		// and saying so is the honest answer.
+		if len(selectables) == 0 {
+			notes = append(notes,
+				"no import type on this platform declares these functions and aspects, "+
+					"or none has a running instance this account may read; without an "+
+					"import_repo_url ODE cannot tell the two apart, and cannot name an "+
+					"import type to deploy")
+		}
+	case len(selectables) == 0 && cat.matched == 0:
+		notes = append(notes,
+			"no import type on this platform declares these functions and aspects: there is "+
+				"nothing deployed for this and nothing to deploy")
+	case len(selectables) == 0:
+		notes = append(notes, fmt.Sprintf(
+			"no import instance this account may read carries this, but %d import type(s) do "+
+				"and have none deployed: see deployable_import_types, which create_import_instance "+
+				"takes an id from", cat.deployable))
+	case cat.deployable > 0:
+		notes = append(notes, fmt.Sprintf(
+			"%d further import type(s) match and have no instance this account may read; "+
+				"see deployable_import_types", cat.deployable))
 	}
 	return notes
 }
@@ -406,7 +716,7 @@ func (r *Resolver) addImports(
 		return nil
 	}
 	if r.imports == nil {
-		result.Notes = importNotes(result.Notes, false, criteria, nil, req.Interaction)
+		result.Notes = importNotes(result.Notes, false, criteria, nil, req.Interaction, catalogue{})
 		return nil
 	}
 
@@ -429,7 +739,19 @@ func (r *Resolver) addImports(
 		result.Reads.ImportInstances = 1
 		result.Reads.ImportExports = 1
 	}
-	result.Notes = importNotes(result.Notes, true, criteria, result.ImportSelectables, req.Interaction)
+
+	// The catalogue half. Deliberately after the instance half, and given what it
+	// found: a type that is already deployed belongs in import_candidates, where it
+	// carries a topic and a status, not in a list of things to create.
+	deployed := make(map[string]bool, len(result.ImportCandidates))
+	for _, candidate := range result.ImportCandidates {
+		deployed[candidate.ImportTypeID] = true
+	}
+	types, cat, reads := r.deployableImportTypes(ctx, token, criteria, snap, deployed, index)
+	result.DeployableImportTypes = types
+	result.Reads.ImportTypes = reads
+
+	result.Notes = importNotes(result.Notes, true, criteria, result.ImportSelectables, req.Interaction, cat)
 	return nil
 }
 

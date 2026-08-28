@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// Package devices reads devices on behalf of the calling user (SPEC D5, §3.1
+// Package devices reads devices on behalf of the calling user (D5, §3.1
 // step 3). Nothing here is cached: device visibility is per-user, so a cache
 // shared across users would be an authorisation bug rather than an
 // optimisation.

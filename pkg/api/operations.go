@@ -175,10 +175,15 @@ func runSelection(
 	})
 }
 
-// ProfileInput is one service-scoped profile computation.
+// ProfileInput is one source-scoped profile computation: a device's service, or
+// an export.
 type ProfileInput struct {
-	DeviceID       string
-	ServiceID      string
+	DeviceID  string
+	ServiceID string
+	// ExportID profiles an export's own table instead. Exclusive with the two
+	// above — a series lives in one table or the other — and the variable paths of
+	// the resulting profiles are the export's column names.
+	ExportID       string
 	AnalysisWindow profiler.Window
 	RawWindow      profiler.Window
 	GroupTime      string
@@ -192,8 +197,29 @@ func runProfile(
 	prof *profiler.Profiler,
 	input ProfileInput,
 ) (profiler.ProfileResult, error) {
+	if input.ExportID != "" {
+		if input.DeviceID != "" || input.ServiceID != "" {
+			return profiler.ProfileResult{}, fmt.Errorf(
+				"%w: export_id addresses an export's own table and device_id with service_id "+
+					"addresses a device's; give one or the other",
+				profiler.ErrInvalidRequest)
+		}
+		// No device permission check, because there is no device: an export is not in
+		// the device repository at all. timescale-wrapper verifies the caller's
+		// access to the export on the caller's own token and refuses the read
+		// otherwise, which is the same on-behalf-of chain the device path relies on
+		// beyond the Execute check (§5.1).
+		return prof.ProfileExport(ctx, token, profiler.ExportProfileRequest{
+			ExportID:       input.ExportID,
+			AnalysisWindow: input.AnalysisWindow,
+			RawWindow:      input.RawWindow,
+			GroupTime:      input.GroupTime,
+			SessionParams:  input.SessionParams,
+		})
+	}
 	if input.DeviceID == "" || input.ServiceID == "" {
-		return profiler.ProfileResult{}, fmt.Errorf("%w: device_id and service_id are required",
+		return profiler.ProfileResult{}, fmt.Errorf(
+			"%w: device_id and service_id are required, or export_id for an export",
 			profiler.ErrInvalidRequest)
 	}
 

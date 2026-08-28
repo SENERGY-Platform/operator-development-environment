@@ -111,6 +111,46 @@ func handleUsage(reader TimeseriesReader) gin.HandlerFunc {
 	}
 }
 
+// @Summary		Whether an export holds any rows
+// @Description	The export-side counterpart of /timeseries/availability, and a
+// @Description	different kind of answer because the platform has no availability
+// @Description	endpoint for an export: the rows are counted per column, so the reply
+// @Description	says whether anything is stored and which columns are null throughout.
+// @Description	No value is read.
+// @Tags			timeseries
+// @Produce		json
+// @Security		Bearer
+// @Param			export_id	query		string	true	"export id"
+// @Param			from		query		string	false	"window start, RFC3339; empty means a multi-year lookback"
+// @Param			to			query		string	false	"window end, RFC3339"
+// @Success		200			{object}	profiler.ExportFill
+// @Failure		400			{object}	map[string]string	"export_id is missing, or an unparseable window"
+// @Failure		401			{object}	map[string]string
+// @Failure		404			{object}	map[string]string	"no such export is visible to this account"
+// @Failure		502			{object}	map[string]string	"the platform could not be read"
+// @Router			/timeseries/export-data [get]
+func handleExportData(prof *profiler.Profiler) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		exportID := strings.TrimSpace(c.Query("export_id"))
+		if exportID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "export_id is required"})
+			return
+		}
+		window, err := parseWindowQuery(c)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		fill, err := prof.ExportFill(c.Request.Context(), auth.Bearer(c),
+			profiler.ExportFillRequest{ExportID: exportID, Window: window})
+		if err != nil {
+			respondProfilerError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, fill)
+	}
+}
+
 // handleQuickProfiles is the M1a surface: candidate series ranked from metadata
 // alone (§5.2, §5.4.2). The response carries the read counts, so "no value was
 // read" is verifiable from the answer rather than a claim about the code.
@@ -179,8 +219,11 @@ func parseLimit(raw string) (int64, error) {
 }
 
 type profileRequestBody struct {
-	DeviceID       string       `json:"device_id"`
-	ServiceID      string       `json:"service_id"`
+	DeviceID  string `json:"device_id"`
+	ServiceID string `json:"service_id"`
+	// ExportID profiles an export instead of a device's service. Exclusive with
+	// the two above.
+	ExportID       string       `json:"export_id"`
 	AnalysisWindow windowBody   `json:"analysis_window"`
 	RawWindow      windowBody   `json:"raw_window"`
 	GroupTime      string       `json:"group_time"`
@@ -199,6 +242,7 @@ func (b profileRequestBody) toInput() (ProfileInput, error) {
 	input := ProfileInput{
 		DeviceID:       strings.TrimSpace(b.DeviceID),
 		ServiceID:      strings.TrimSpace(b.ServiceID),
+		ExportID:       strings.TrimSpace(b.ExportID),
 		AnalysisWindow: analysis,
 		RawWindow:      raw,
 		GroupTime:      strings.TrimSpace(b.GroupTime),
@@ -249,11 +293,19 @@ type sessionBody struct {
 // handleCreateProfiles computes the full profile of every variable of one
 // service — the batched unit of work of D19, not one variable at a time.
 //
-// @Summary		Profile every variable of one service
+// An export is profiled through the same route, by export_id instead of the
+// device pair. The unit of work is then the export and the variable paths are its
+// column names; everything else about the answer is the same shape.
+//
+// @Summary		Profile every variable of one service, or every column of one export
 // @Description	The batched unit of work of D19: one request profiles all variables of
 // @Description	a service rather than one variable at a time. The raw pass reads the
 // @Description	smaller of the configured window bounds, anchored at the most recent
 // @Description	data (D25).
+// @Description
+// @Description	Give export_id instead of device_id and service_id to profile an
+// @Description	export. Its window comes from counting rows rather than from
+// @Description	/data-availability, which the platform offers for devices only.
 // @Tags			profiler
 // @Accept			json
 // @Produce		json
@@ -310,7 +362,7 @@ func handleGetProfile(prof *profiler.Profiler) gin.HandlerFunc {
 
 // handleProjection serves the one model-facing view of a profile (D26). It is
 // exposed over HTTP because the SPA needs to show the developer exactly what the
-// LLM will be given, before M3 wires a model up to it.
+// LLM is given, whether or not a model is reading it.
 //
 // @Summary		The model-facing view of a profile
 // @Description	The one projection an LLM is ever given (D26), exposed over HTTP so the
@@ -415,9 +467,8 @@ type overrideBody struct {
 // handleCreateOverride appends a developer confirmation to the overlay (D21).
 //
 // This route exists for the developer only. §5.8 lists writing a ProfileOverride
-// among the operations with no tool at all, so when the LLM surface lands in M3
-// it must not gain one: a model that can confirm its own inferred unit has
-// confirmed nothing.
+// among the operations with no tool at all, and the LLM surface has none: a model
+// that can confirm its own inferred unit has confirmed nothing.
 //
 // @Summary		Confirm or correct a derived field
 // @Description	Appends a developer confirmation to the override overlay (D21), which

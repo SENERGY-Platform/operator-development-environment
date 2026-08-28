@@ -71,6 +71,18 @@ const (
 	msgChatConfirm = "chat_confirm"
 	msgChatAttach  = "chat_attach"
 	msgChatCancel  = "chat_cancel"
+	// msgChatDecide answers a confirmation a provider's own tool call is holding
+	// open. Separate from msgChatConfirm, and not a duplicate of it: that one
+	// resumes a turn that paused and therefore streams, whereas this resolves a
+	// call inside a turn that never stopped and answers once. Routing both through
+	// startExchange would have the client subscribe a second time to the exchange
+	// it is already watching, which replays the turn into a view that has it.
+	msgChatDecide = "chat_decide"
+	// msgChatWatch subscribes to what *all* of this developer's conversations are
+	// doing. Not a variant of chat_attach: that one is a view onto one turn and
+	// carries its events, whereas this carries one line per state change and no
+	// content at all, because it feeds a list rather than a conversation.
+	msgChatWatch = "chat_watch"
 
 	// The kernel (§5.6). Bound to the connection rather than detached: cancelling
 	// one interrupts the cell, because a developer who closed the tab is not
@@ -166,7 +178,7 @@ func handleWebSocket(cfg Config, deps Deps) gin.HandlerFunc {
 			return
 		}
 		// The role check is ODE's own authorisation decision and applies here
-		// exactly as it does to every HTTP route (SPEC D5, §3.1).
+		// exactly as it does to every HTTP route (D5, §3.1).
 		if cfg.RequiredRealmRole != "" && !parsed.HasRole(cfg.RequiredRealmRole) {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error":         "missing required realm role",
@@ -203,7 +215,7 @@ func handleWebSocket(cfg Config, deps Deps) gin.HandlerFunc {
 		// reading. Registering the *source* — not a copy of the token — is what lets a
 		// run that finished at three in the morning be interpreted the moment its
 		// developer opens the tab, without ODE ever holding a credential of its own
-		// (SPEC §3.1 item 3).
+		// (§3.1 item 3).
 		//
 		// Withdrawn when the connection ends, so a run whose developer has gone waits
 		// rather than being interpreted with a token nobody is behind any more.
@@ -404,8 +416,12 @@ func (s *wsSession) readLoop(ctx context.Context) {
 			s.startExecution(ctx, message)
 		case msgChatSend, msgChatConfirm, msgChatAttach:
 			s.startExchange(ctx, message)
+		case msgChatDecide:
+			s.decideConfirmation(ctx, message)
 		case msgChatCancel:
 			s.cancelExchange(ctx, message)
+		case msgChatWatch:
+			s.watchActivity(ctx, message)
 		default:
 			s.send(wsOutbound{
 				Type: msgError, ID: message.ID,

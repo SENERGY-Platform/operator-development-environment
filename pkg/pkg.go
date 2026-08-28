@@ -69,7 +69,7 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 
 	// Devices: one shared client is enough, because ListExtendedDevices and
 	// ReadExtendedDevice set the Authorization header from their token
-	// argument themselves (SPEC §5.1).
+	// argument themselves (§5.1).
 	deviceClient := devicerepo.NewClient(config.DeviceRepoUrl, nil)
 
 	// Ontology: the ontology methods take no token and set no header, relying
@@ -117,6 +117,20 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		Devices:  deviceService,
 	}
 
+	// Imports as the second kind of operator input (PLAN). Optional the way the
+	// timescale-wrapper is: without a device_selection_url a resolution finds
+	// devices exactly as before and says in its notes that the import half was not
+	// searched, rather than pretending the platform has no imports.
+	//
+	// Built before the profiler because the profiler reads through it: an export is
+	// addressed by id and queried by column name, and the column names live in
+	// analytics-serving.
+	importService, err := startImports(config)
+	if err != nil {
+		return nil, err
+	}
+	deps.Imports = importService
+
 	// Held separately from deps.Timeseries, which is the narrow reader interface the
 	// HTTP routes need. The tool surface additionally needs Query, for the tier-L2
 	// preview, so it gets the concrete client.
@@ -155,6 +169,10 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 				Concurrency:        int(config.ProfilerConcurrency),
 				LocalTimezone:      config.ProfilerLocalTimezone,
 				ReadTimeout:        readTimeout,
+				// The export half (§5.3). Nil unless analytics-serving is configured, and
+				// the export-addressed calls then refuse with ErrNoExportSource rather than
+				// querying a table whose column names ODE would have had to invent.
+				Exports: exportSourceOrNil(config, importService),
 			},
 		)
 		if err != nil {
@@ -188,16 +206,6 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 		}
 		deps.Charts = chartService
 	}
-
-	// Imports as the second kind of operator input (PLAN). Optional the way the
-	// timescale-wrapper is: without a device_selection_url a resolution finds
-	// devices exactly as before and says in its notes that the import half was not
-	// searched, rather than pretending the platform has no imports.
-	importService, err := startImports(config)
-	if err != nil {
-		return nil, err
-	}
-	deps.Imports = importService
 
 	// Semantic selection (§5.2). The ranker is the profiler, which may be absent;
 	// selection then resolves an intent to series without the availability-based
@@ -409,12 +417,12 @@ func startM3(
 	chatStore := chatStore(db)
 	ids := identifiers.New()
 
-	// The engine is needed by the tool surface (as the selection sink) and the tool
-	// surface is needed by the engine, so the registry is built against a holder
-	// the engine is written into once it exists. A tool executor only runs during a
-	// dispatch, which is always after Start has returned, so the indirection is
-	// never observed as a nil.
-	sink := &selectionSink{}
+	// The engine is needed by the tool surface — as the selection sink, and as the
+	// log of what a session created — and the tool surface is needed by the engine,
+	// so the registry is built against a holder the engine is written into once it
+	// exists. A tool executor only runs during a dispatch, which is always after
+	// Start has returned, so the indirection is never observed as a nil.
+	sink := &sessionSink{}
 
 	registry, err := tools.NewSurface(tools.Deps{
 		Ontology:            ontologyRepo,
@@ -424,6 +432,7 @@ func startM3(
 		Profiler:            profilerOrNil(deps.Profiler),
 		Selection:           selectionOrNil(deps.Selection),
 		SelectionSink:       sink,
+		Creations:           sink,
 		Kernel:              kernelOrNil(kernelService),
 		Charts:              chartsOrNil(deps.Charts),
 		Relations:           relationsOrNil(deps.Relations),
@@ -443,6 +452,13 @@ func startM3(
 		return err
 	}
 
+	// The per-user ceiling on open workbenches (§3.3). Installed here rather than
+	// when the repo surface was built, because that happens first — write_file has
+	// to be registrable by the time this function runs.
+	if repoService != nil {
+		repoService.UseLimits(adminService)
+	}
+
 	dispatcher, err := tools.NewDispatcher(registry, adminService, ids)
 	if err != nil {
 		return err
@@ -453,6 +469,21 @@ func startM3(
 		return fmt.Errorf("config: chat_exchange_timeout: %w", err)
 	}
 
+	confirmationTimeout, err := time.ParseDuration(config.ChatConfirmationTimeout)
+	if err != nil {
+		return fmt.Errorf("config: chat_confirmation_timeout: %w", err)
+	}
+	// A hold has to fit inside the turn that is waiting on it. The CLI provider is
+	// the one that holds calls, and its turn ends on llm.DefaultCLITimeout — so a
+	// confirmation window at or beyond that would time the turn out from under the
+	// card the developer is reading, and their approval would run a tool whose
+	// caller had gone.
+	if config.ClaudeCliEnabled && confirmationTimeout+confirmationHeadroom >= llm.DefaultCLITimeout {
+		slog.Warn("chat_confirmation_timeout leaves no room inside a CLI turn: a developer who "+
+			"takes that long to decide will find the turn already over",
+			"chat_confirmation_timeout", confirmationTimeout, "cli_turn_timeout", llm.DefaultCLITimeout)
+	}
+
 	// ctx, not a background context: an exchange is detached from the request that
 	// started it but not from the process, so shutdown still stops one in flight.
 	engine, err := chat.New(ctx, providers, dispatcher, chatStore, adminService, ids, chat.Options{
@@ -461,6 +492,8 @@ func startM3(
 		Effort:          config.LlmEffort,
 		MCPEndpoint:     mcpEndpoint(config),
 		ExchangeTimeout: exchangeTimeout,
+
+		ConfirmationTimeout: confirmationTimeout,
 	})
 	if err != nil {
 		return err
@@ -604,7 +637,7 @@ func startM7(
 ) (*repo.Service, error) {
 	if config.GithubClientId == "" {
 		slog.Warn("no github_client_id configured: the repo routes are not served and " +
-			"write_file is declared but not callable (SPEC §5.11, M7)")
+			"write_file is declared but not callable (§5.11)")
 		return nil, nil
 	}
 	if kernelService == nil {
@@ -663,11 +696,18 @@ func startM7(
 			MaxCommandOutputBytes: int(config.RepoMaxCommandOutputBytes),
 			OperatorLib:           config.OperatorLibRepo,
 			OperatorLibRef:        config.OperatorLibRef,
+			MaxWorkbenches:        int(config.RepoMaxWorkbenches),
 		},
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	// The kernel service can now resolve a workbench to the directory its kernel
+	// runs in. Set here rather than in kernel.Options because this service is built
+	// *on* that one — it takes it as its workspace — so it cannot exist yet when the
+	// kernel service is made.
+	kernelService.UseWorkbenches(service)
 
 	slog.Info("repo surface ready",
 		"github", config.GithubApiUrl,
@@ -700,7 +740,7 @@ func startM8(
 	if config.RayUrl == "" && config.MlflowUrl == "" {
 		slog.Warn("no ray_url or mlflow_url configured: the experiment routes are not " +
 			"served and launch_experiment and get_experiment_results are declared but not " +
-			"callable (SPEC §5.12, M8)")
+			"callable (§5.12)")
 		return nil, nil
 	}
 	// Half a configuration is a deployment fault rather than a lesser capability:
@@ -810,7 +850,7 @@ func startM8(
 		// long run will lose its platform access partway through.
 		slog.Warn("no keycloak token exchange is configured: a Ray job carries the " +
 			"developer's interactive session token, so a run that outlives the session " +
-			"loses its platform access partway through (SPEC §3.1 item 6). Set " +
+			"loses its platform access partway through (§3.1 item 6). Set " +
 			"keycloak_url, keycloak_realm, keycloak_client_id and keycloak_client_secret")
 	}
 
@@ -862,14 +902,14 @@ func startM9(
 	if experimentService == nil {
 		if deps.Chat != nil {
 			slog.Warn("no experiment surface is configured: a finished run cannot be " +
-				"interpreted into a conversation (SPEC §5.13, M9)")
+				"interpreted into a conversation (§5.13)")
 		}
 		return noStop, nil
 	}
 	if deps.Chat == nil {
 		slog.Warn("no llm provider is configured: experiments still launch and their " +
 			"results are still read through /experiments/{id}/results, but nothing " +
-			"interprets a finished run into a conversation (SPEC §5.13, M9)")
+			"interprets a finished run into a conversation (§5.13)")
 		return noStop, nil
 	}
 
@@ -1127,21 +1167,42 @@ func chatStore(db *database.DB) chat.Store {
 	return chat.NewPostgresStore(db)
 }
 
-// selectionSink breaks the cycle between the tool surface and the chat engine.
+// sessionSink breaks the cycle between the tool surface and the chat engine.
 //
-// propose_data_selection writes to the session it was called in, so the tool
-// needs the engine; the engine needs the dispatcher, which needs the tools. The
-// holder is written once during startup and read only inside a dispatch, which
-// cannot happen before Start returns.
-type selectionSink struct{ engine *chat.Engine }
+// Two tool dependencies are session state and therefore the engine's:
+// propose_data_selection writes the proposed selection, and the create tools
+// write what they created so the delete tools can check it. Both need the engine;
+// the engine needs the dispatcher, which needs the tools. The holder is written
+// once during startup and read only inside a dispatch, which cannot happen before
+// Start returns.
+type sessionSink struct{ engine *chat.Engine }
 
-func (s *selectionSink) PutProposedSelection(
+func (s *sessionSink) PutProposedSelection(
 	ctx context.Context, sessionID string, proposal tools.ProposedSelection,
 ) error {
 	if s.engine == nil {
 		return errors.New("chat is not configured")
 	}
 	return s.engine.PutProposedSelection(ctx, sessionID, proposal)
+}
+
+func (s *sessionSink) RecordCreation(
+	ctx context.Context, sessionID string, created tools.Creation,
+) error {
+	if s.engine == nil {
+		return errors.New("chat is not configured")
+	}
+	return s.engine.RecordCreation(ctx, sessionID, created)
+}
+
+func (s *sessionSink) Creations(ctx context.Context, sessionID string) ([]tools.Creation, error) {
+	if s.engine == nil {
+		// Refusing rather than answering with an empty list. An empty list reads as
+		// "this session created nothing", which is the same answer a delete tool gives
+		// for a session that created plenty and could not be read.
+		return nil, errors.New("chat is not configured")
+	}
+	return s.engine.Creations(ctx, sessionID)
 }
 
 // profilerOrNil and selectionOrNil are rankerOrNil's siblings: the same typed-nil
@@ -1229,6 +1290,59 @@ func importsOrNil(svc *imports.Service) selection.Imports {
 	return svc
 }
 
+// exportSource adapts the import service onto the profiler's ExportSource.
+//
+// The mapping is here rather than in either package because pkg/imports has no
+// internal dependencies at all — it is the one package that talks only to the
+// platform — and giving it one for the sake of a field-for-field copy would be
+// the wrong trade. The profiler declares the shape it needs, as it does for the
+// timeseries client and the ontology.
+type exportSource struct{ svc *imports.Service }
+
+func (s exportSource) ExportDefinition(
+	ctx context.Context, token string, exportID string,
+) (profiler.ExportDefinition, error) {
+	definition, err := s.svc.ExportDefinition(ctx, token, exportID)
+	if err != nil {
+		return profiler.ExportDefinition{}, err
+	}
+	out := profiler.ExportDefinition{
+		ExportID: definition.ExportID,
+		Name:     definition.Name,
+		Source:   definition.Source,
+		SourceID: definition.SourceID,
+		Notes:    definition.Notes,
+		Columns:  make([]profiler.ExportColumn, 0, len(definition.Columns)),
+	}
+	for _, column := range definition.Columns {
+		out.Columns = append(out.Columns, profiler.ExportColumn{
+			Column:           column.Column,
+			Type:             column.Type,
+			VariablePath:     column.VariablePath,
+			CharacteristicID: column.CharacteristicID,
+			FunctionID:       column.FunctionID,
+			AspectID:         column.AspectID,
+			Tag:              column.Tag,
+		})
+	}
+	return out, nil
+}
+
+// exportSourceOrNil withholds the source where it could not answer anyway.
+//
+// Two conditions, and the second is the one worth stating: the import service
+// exists without analytics-serving — discovery, status and wiring all work
+// without it — but an export's column names do not, and they are what a query
+// over an export is made of. Handing the profiler a source that refuses every
+// call would make the export tools advertise a capability this deployment does
+// not have.
+func exportSourceOrNil(config configuration.Config, svc *imports.Service) profiler.ExportSource {
+	if svc == nil || config.AnalyticsServingUrl == "" {
+		return nil
+	}
+	return exportSource{svc: svc}
+}
+
 // startImports wires the import surface, or returns nil when the platform
 // services it needs are not configured.
 //
@@ -1257,18 +1371,36 @@ func startImports(config configuration.Config) (*imports.Service, error) {
 	}
 	opts := imports.ClientOptions{Timeout: timeout}
 
+	deployClient := imports.NewDeployClient(config.ImportDeployUrl, opts)
 	deps := imports.Deps{
 		Selectables: imports.NewSelectionClient(config.DeviceSelectionUrl, opts),
-		Instances:   imports.NewDeployClient(config.ImportDeployUrl, opts),
+		Instances:   deployClient,
+		// The write half is the same client. It is a second field rather than one
+		// interface so that the read path a dozen call sites depend on does not carry
+		// a method that deploys a container; see imports.Deployer.
+		Deployer: deployClient,
+		ExportDefaults: imports.ExportDefaults{
+			Offset:          config.ExportOffset,
+			TimePath:        config.ExportTimePath,
+			TimestampFormat: config.ExportTimestampFormat,
+			DatabaseID:      config.ExportDatabaseID,
+		},
 	}
 	if config.ImportRepoUrl != "" {
 		deps.Types = imports.NewRepositoryClient(config.ImportRepoUrl, opts)
 	}
 	if config.AnalyticsServingUrl != "" {
-		deps.Exports = imports.NewServingClient(config.AnalyticsServingUrl, opts)
+		servingClient := imports.NewServingClient(config.AnalyticsServingUrl, opts)
+		deps.Exports = servingClient
+		deps.ExportWriter = servingClient
 	}
 	return imports.New(deps)
 }
+
+// confirmationHeadroom is the slack a held confirmation needs inside a turn: the
+// margin the provider's own tool timeout is given, plus room for the tool to
+// actually run once it is approved.
+const confirmationHeadroom = 2 * time.Minute
 
 // validate fails fast on configuration that would otherwise produce confusing
 // runtime failures, and warns where a weak setting is legal but undesirable.
@@ -1290,8 +1422,10 @@ func validate(config configuration.Config) error {
 		// without this every semantic selection answers with devices only — so a
 		// developer is told a signal does not exist when the platform imports it.
 		slog.Warn("no device_selection_url configured: imports are not searched, so semantic " +
-			"selection reports devices only and list_import_instances, get_import_type_metadata " +
-			"and propose_operator_input are declared but not callable")
+			"selection reports devices only and the seven import tools — list_import_instances, " +
+			"get_import_type_metadata, list_import_types, propose_operator_input, " +
+			"create_import_instance, create_export and their two deletions — are declared but " +
+			"not callable")
 	} else if config.ImportDeployUrl == "" {
 		slog.Warn("device_selection_url is set but import_deploy_url is not: imports are found " +
 			"but ODE cannot say whether one is running, and a stopped import looks exactly " +
@@ -1299,20 +1433,32 @@ func validate(config configuration.Config) error {
 	} else if config.AnalyticsServingUrl == "" {
 		slog.Warn("no analytics_serving_url configured: whether an import has stored history " +
 			"answers 'unknown' rather than 'live only', because timescale-wrapper has no " +
-			"importId and only an export puts an import in timescale")
+			"importId and only an export puts an import in timescale; create_export and " +
+			"delete_export are declared but not callable")
+	}
+	if config.ImportDeployUrl != "" && config.ImportRepoUrl == "" {
+		// Not a degradation of the same kind as the ones above. Creating validates the
+		// configs and the exported columns against the import type, and refuses without
+		// it rather than sending an unchecked request — so the tools are advertised
+		// and answer every call with the same refusal, which is worth saying at startup.
+		slog.Warn("import_deploy_url is set but import_repo_url is not: get_import_type_metadata, " +
+			"list_import_types, create_import_instance and create_export are advertised and will " +
+			"refuse every call, and a resolution reports no deployable_import_types — so an " +
+			"import type that has no instance yet cannot be found at all, which is the only " +
+			"kind create_import_instance is for")
 	}
 	if config.JupyterhubUrl == "" {
 		slog.Warn("no jupyterhub_url configured: a developer cannot run code, and run_code " +
-			"is declared but not callable (SPEC §5.6, M4)")
+			"is declared but not callable (§5.6)")
 	}
 	if config.GithubClientId == "" {
 		slog.Warn("no github_client_id configured: a developer cannot connect a repository, " +
-			"and write_file is declared but not callable (SPEC §5.11, M7)")
+			"and write_file is declared but not callable (§5.11)")
 	}
 	if config.RayUrl == "" || config.MlflowUrl == "" {
 		slog.Warn("no ray_url or mlflow_url configured: a developer cannot launch an " +
 			"experiment, and launch_experiment and get_experiment_results are declared " +
-			"but not callable (SPEC §5.12, M8)")
+			"but not callable (§5.12)")
 	}
 	if config.PostgresUrl == "" {
 		// Not a warning about tidiness. §3.3's per-user spend cap is computed from

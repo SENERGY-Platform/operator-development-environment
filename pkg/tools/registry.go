@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// Package tools is ODE's LLM tool surface (SPEC §5.8) and the enforcement point
+// Package tools is ODE's LLM tool surface (§5.8) and the enforcement point
 // for the data exposure tiers (§3.2, D4).
 //
 // Two properties are what this package exists for, and both are structural
@@ -33,8 +33,11 @@
 //     those by refusing at dispatch time would be weaker: the tool would still
 //     be advertised, and the model would keep asking.
 //
-// The registry declares all eighteen tools of §5.8, and as of M8 every one of them
-// has an executor — where the service behind it is configured. The declaration is
+// The registry declares the eighteen tools of §5.8 plus the nine beyond it — the
+// eight the import surface adds and probe_export_data, which is the export half of
+// probe_availability and has to be its own tool because the platform's
+// availability endpoint is device-scoped. Every one of them has an executor —
+// where the service behind it is configured. The declaration is
 // the tier table — one source of truth for the published table, the settings UI and the
 // tests — while only a tool with an executor is advertised to a provider. A tool
 // whose dependency is absent therefore cannot be called and never appears in
@@ -121,6 +124,11 @@ type Request struct {
 	// SessionID is the chat session, so a tool that writes session state
 	// (propose_data_selection) knows where to write.
 	SessionID string
+	// WorkbenchID is the working context that session acts in: which checkout
+	// write_file writes into, and which kernel run_code runs in. Empty is the
+	// developer's only workbench, which is what a session created before
+	// workbenches existed carries.
+	WorkbenchID string
 	// Tier is the session's tier at dispatch time. Passed for the benefit of a
 	// tool that shapes its own answer by tier rather than being all-or-nothing;
 	// it is *not* where the gate lives, and an executor must not re-check it.
@@ -180,7 +188,7 @@ func NewRegistry(definitions ...Definition) (*Registry, error) {
 		}
 		if reason, forbidden := denied[definition.Name]; forbidden {
 			return nil, fmt.Errorf(
-				"tools: %q is denied by SPEC §5.8 and must not exist as a tool: %s",
+				"tools: %q is denied by §5.8 and must not exist as a tool: %s",
 				definition.Name, reason)
 		}
 		if !definition.MinTier.Valid() {
@@ -269,19 +277,29 @@ func Denied() map[string]string { return deniedSet() }
 
 func deniedSet() map[string]string {
 	return map[string]string{
-		"set_exposure_tier":      "the exposure tier is the developer's control over what the LLM may see; a tool to raise it would defeat §3.2 entirely",
-		"set_admin_limits":       "admin limits bound the LLM's own spend, so the LLM must not be able to move them (§3.3)",
-		"write_profile_override": "a ProfileOverride is a human confirmation of derived semantics and an empirical record; an LLM-written one would be fabricated ground truth (D21, D11)",
-		// Not in §5.8's own list, because the relational rule arrives with M6 and the
+		"set_exposure_tier":      "the exposure tier is the developer's control over what the LLM may see; a tool to raise it would defeat the control entirely",
+		"set_admin_limits":       "admin limits bound the LLM's own spend, so the LLM must not be able to move them",
+		"write_profile_override": "a ProfileOverride is a human confirmation of derived semantics and an empirical record; an LLM-written one would be fabricated ground truth",
+		// Not in §5.8's own list, because the relational rule came after it and the
 		// list predates it. It is here by the same reasoning as write_profile_override
 		// above and belongs beside it: a candidate rule is a finding the model proposed,
 		// so a tool to confirm one would let it grade its own work (§5.5, §5.10).
-		"decide_relation_rule":       "confirming, correcting or rejecting a candidate relational rule is a developer action; a model that could do it would be confirming its own findings (§5.5, D21)",
-		"promote_recommendation":     "recommendations are strictly advisory and become binding only by explicit developer promotion (D28)",
+		"decide_relation_rule":       "confirming, correcting or rejecting a candidate relational rule is a developer action; a model that could do it would be confirming its own findings",
+		"promote_recommendation":     "recommendations are strictly advisory and become binding only by explicit developer promotion",
 		"modify_evaluation_criteria": "the developer defines the evaluation criteria; that is the human-in-the-loop premise of the whole system",
 		"modify_operator_lib":        "the shared Operator Lib is platform code, out of scope for a session",
 		"deploy_to_production":       "promotion to a production pipeline is a developer decision, never an autonomous one",
-		"delete_platform_data":       "no tool deletes platform data",
-		"write_timeseries":           "ODE reads the timeseries store and never writes to it",
+		// Reworded when the write surface arrived, because the flat sentence stopped
+		// being true and a denial that is not quite true is worse than none. What is
+		// permitted is deliberately narrower than the capability this name denies: an
+		// object this same session created, minutes earlier, confirmed again by the
+		// developer. Nothing reaches an id the session did not create — see
+		// tools.Creations.
+		"delete_platform_data": "no tool deletes platform data the developer did not just " +
+			"create through ODE. delete_import_instance and delete_export undo a creation " +
+			"made in the same chat session, with the developer confirming again, and refuse " +
+			"every other id; nothing removes a device, a series, an ontology entry or an " +
+			"import that was already there",
+		"write_timeseries": "ODE reads the timeseries store and never writes to it",
 	}
 }

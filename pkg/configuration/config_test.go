@@ -83,7 +83,7 @@ func TestDefaultsFillTheUnsetOperationalValues(t *testing.T) {
 	if config.TimeseriesRequestTimeout != "60s" {
 		t.Errorf("TimeseriesRequestTimeout = %q, want 60s", config.TimeseriesRequestTimeout)
 	}
-	// SPEC D25: the raw pass reads the smaller of fourteen days or a hundred
+	// D25: the raw pass reads the smaller of fourteen days or a hundred
 	// thousand points.
 	if config.ProfilerRawWindowDays != 14 {
 		t.Errorf("ProfilerRawWindowDays = %d, want 14", config.ProfilerRawWindowDays)
@@ -100,7 +100,7 @@ func TestDefaultsFillTheUnsetOperationalValues(t *testing.T) {
 	if config.ProfilerLocalTimezone != "Europe/Berlin" {
 		t.Errorf("ProfilerLocalTimezone = %q, want Europe/Berlin", config.ProfilerLocalTimezone)
 	}
-	// SPEC §5.6. The username claim and the workspace path are the two that would
+	// §5.6. The username claim and the workspace path are the two that would
 	// be wrong quietly: a spawn addressed to the subject 404s for every developer,
 	// and a workspace outside the mounted PVC loses every file the first time the
 	// pod is culled.

@@ -51,6 +51,15 @@ type Store interface {
 	PutConfirmation(ctx context.Context, confirmation Confirmation) error
 	Confirmation(ctx context.Context, id string) (Confirmation, bool, error)
 	PendingConfirmations(ctx context.Context, sessionID string) ([]Confirmation, error)
+
+	// RecordCreation and Creations are the log of what a session created on the
+	// platform, which is what the delete tools of §5.8 check before removing
+	// anything. Append-only: an entry stays after the object is deleted, because
+	// "this session created and then removed an import" is the record that makes
+	// the deletion accountable, and losing it would leave a deletion with no trace
+	// of what authorised it.
+	RecordCreation(ctx context.Context, sessionID string, created tools.Creation) error
+	Creations(ctx context.Context, sessionID string) ([]tools.Creation, error)
 }
 
 // --- in-memory ---
@@ -64,6 +73,7 @@ type MemoryStore struct {
 	messages      map[string][]StoredMessage
 	tierChanges   map[string][]TierChange
 	confirmations map[string]Confirmation
+	creations     map[string][]tools.Creation
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -72,6 +82,7 @@ func NewMemoryStore() *MemoryStore {
 		messages:      map[string][]StoredMessage{},
 		tierChanges:   map[string][]TierChange{},
 		confirmations: map[string]Confirmation{},
+		creations:     map[string][]tools.Creation{},
 	}
 }
 
@@ -129,6 +140,11 @@ func (s *MemoryStore) DeleteSession(_ context.Context, id string) error {
 	delete(s.sessions, id)
 	delete(s.messages, id)
 	delete(s.tierChanges, id)
+	// The creation log goes with the session deliberately, unlike in Postgres where
+	// it is kept: a deleted session can no longer reach a delete tool, so what the
+	// entry would authorise is unreachable either way, and holding platform ids in
+	// memory for a conversation the developer discarded serves nothing.
+	delete(s.creations, id)
 	for confirmationID, confirmation := range s.confirmations {
 		if confirmation.SessionID == id {
 			delete(s.confirmations, confirmationID)
@@ -200,6 +216,21 @@ func (s *MemoryStore) Confirmation(_ context.Context, id string) (Confirmation, 
 	return confirmation, found, nil
 }
 
+func (s *MemoryStore) RecordCreation(_ context.Context, sessionID string, created tools.Creation) error {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	s.creations[sessionID] = append(s.creations[sessionID], created)
+	return nil
+}
+
+func (s *MemoryStore) Creations(_ context.Context, sessionID string) ([]tools.Creation, error) {
+	s.mux.RLock()
+	defer s.mux.RUnlock()
+	out := make([]tools.Creation, len(s.creations[sessionID]))
+	copy(out, s.creations[sessionID])
+	return out, nil
+}
+
 func (s *MemoryStore) PendingConfirmations(_ context.Context, sessionID string) ([]Confirmation, error) {
 	s.mux.RLock()
 	defer s.mux.RUnlock()
@@ -228,17 +259,17 @@ func (s *PostgresStore) CreateSession(ctx context.Context, session Session) erro
 	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO ode_chat_sessions (id, user_sub, title, provider, model, tier, selection,
-		                               created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())`,
+		                               workbench_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())`,
 		session.ID, session.UserSub, session.Title, session.Provider, session.Model,
-		session.Tier.String(), selection)
+		session.Tier.String(), selection, session.WorkbenchID)
 	return err
 }
 
 func (s *PostgresStore) Session(ctx context.Context, id string) (Session, bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT s.id, s.user_sub, s.title, s.provider, s.model, s.tier, s.selection,
-		       s.created_at, s.updated_at,
+		       s.workbench_id, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM ode_chat_messages m WHERE m.session_id = s.id)
 		FROM ode_chat_sessions s WHERE s.id = $1`, id)
 
@@ -258,7 +289,7 @@ func (s *PostgresStore) Sessions(ctx context.Context, userSub string, limit int)
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT s.id, s.user_sub, s.title, s.provider, s.model, s.tier, s.selection,
-		       s.created_at, s.updated_at,
+		       s.workbench_id, s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM ode_chat_messages m WHERE m.session_id = s.id)
 		FROM ode_chat_sessions s
 		WHERE s.user_sub = $1 AND s.archived_at IS NULL
@@ -287,10 +318,11 @@ func (s *PostgresStore) UpdateSession(ctx context.Context, session Session) erro
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE ode_chat_sessions
-		SET title = $2, provider = $3, model = $4, tier = $5, selection = $6, updated_at = now()
+		SET title = $2, provider = $3, model = $4, tier = $5, selection = $6,
+		    workbench_id = $7, updated_at = now()
 		WHERE id = $1`,
 		session.ID, session.Title, session.Provider, session.Model,
-		session.Tier.String(), selection)
+		session.Tier.String(), selection, session.WorkbenchID)
 	if err != nil {
 		return err
 	}
@@ -481,8 +513,8 @@ func scanSession(row scanner) (Session, error) {
 	var tier string
 	var selection []byte
 	if err := row.Scan(&session.ID, &session.UserSub, &session.Title, &session.Provider,
-		&session.Model, &tier, &selection, &session.CreatedAt, &session.UpdatedAt,
-		&session.MessageCount); err != nil {
+		&session.Model, &tier, &selection, &session.WorkbenchID, &session.CreatedAt,
+		&session.UpdatedAt, &session.MessageCount); err != nil {
 		return Session{}, err
 	}
 	// An unparseable tier falls back to L0 rather than erroring: L0 exposes
@@ -499,6 +531,36 @@ func scanSession(row scanner) (Session, error) {
 		}
 	}
 	return session, nil
+}
+
+func (s *PostgresStore) RecordCreation(ctx context.Context, sessionID string, created tools.Creation) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO ode_platform_creations (session_id, kind, object_id, name, tool, at)
+		VALUES ($1, $2, $3, $4, $5, COALESCE($6, now()))`,
+		sessionID, string(created.Kind), created.ID, created.Name, created.Tool, nullTime(created.At))
+	return err
+}
+
+func (s *PostgresStore) Creations(ctx context.Context, sessionID string) ([]tools.Creation, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT kind, object_id, name, tool, at
+		FROM ode_platform_creations WHERE session_id = $1 ORDER BY at`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []tools.Creation{}
+	for rows.Next() {
+		var creation tools.Creation
+		var kind string
+		if err := rows.Scan(&kind, &creation.ID, &creation.Name, &creation.Tool, &creation.At); err != nil {
+			return nil, err
+		}
+		creation.Kind = tools.CreationKind(kind)
+		out = append(out, creation)
+	}
+	return out, rows.Err()
 }
 
 func scanConfirmation(row scanner) (Confirmation, error) {

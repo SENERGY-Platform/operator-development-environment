@@ -258,3 +258,128 @@ func parseQuery(raw string) (map[string]string, error) {
 	}
 	return values, nil
 }
+
+// The catalogue query, which is the only route to an import type that has no
+// instance. Three things have to be right on the wire, and each fails silently
+// rather than loudly if it is not.
+func TestTheTypeListingSendsCriteriaAsJSONAndReadsTheTotalFromTheHeader(t *testing.T) {
+	var query, auth, method, path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query, auth, method, path = r.URL.RawQuery, r.Header.Get("Authorization"), r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		// The total lives in a header rather than in the body, which is why this
+		// listing cannot go through the shared decode helper.
+		w.Header().Set("X-Total-Count", "7")
+		_, _ = w.Write([]byte(`[{"id":"type-1","name":"Open-Meteo"}]`))
+	}))
+	defer server.Close()
+
+	client := NewRepositoryClient(server.URL, ClientOptions{HTTPClient: server.Client()})
+	found, total, err := client.ListImportTypes(context.Background(), testToken, TypeListOptions{
+		Search:   "weather",
+		Limit:    50,
+		Criteria: []TypeCriterion{{FunctionID: "fn-temperature", AspectIDs: []string{"pv", "inverter"}}},
+	})
+	if err != nil {
+		t.Fatalf("ListImportTypes: %v", err)
+	}
+
+	if method != http.MethodGet || path != "/import-types" {
+		t.Errorf("unexpected request: %s %s", method, path)
+	}
+	if auth != testToken {
+		t.Errorf("Authorization = %q, want the caller's token verbatim", auth)
+	}
+	values, err := parseQuery(query)
+	if err != nil {
+		t.Fatalf("query %q: %v", query, err)
+	}
+	if values["search"] != "weather" || values["limit"] != "50" {
+		t.Errorf("search/limit = %q/%q", values["search"], values["limit"])
+	}
+
+	// A query parameter carrying JSON: the endpoint's shape, not a choice here.
+	var sent []map[string]any
+	if err := json.Unmarshal([]byte(values["criteria"]), &sent); err != nil {
+		t.Fatalf("criteria %q: %v", values["criteria"], err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("sent %d criteria, want one: upstream ANDs them", len(sent))
+	}
+	if sent[0]["function_id"] != "fn-temperature" {
+		t.Errorf("function_id = %v", sent[0]["function_id"])
+	}
+	// The subtree goes on the wire, because import-repository expands nothing. A
+	// criterion carrying only the node is an answer missing every type described
+	// against a child aspect.
+	aspects, _ := sent[0]["aspect_ids"].([]any)
+	if len(aspects) != 2 {
+		t.Errorf("aspect_ids = %v, want the node and its descendant", sent[0]["aspect_ids"])
+	}
+
+	if len(found) != 1 || found[0].Id != "type-1" {
+		t.Fatalf("got %+v, want one type", found)
+	}
+	if total != 7 {
+		t.Errorf("total = %d, want 7 from X-Total-Count", total)
+	}
+}
+
+func TestTheTypeListingReportsAnUnknownTotalRatherThanZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No X-Total-Count, which is what a gateway that strips headers produces.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"type-1"}]`))
+	}))
+	defer server.Close()
+
+	client := NewRepositoryClient(server.URL, ClientOptions{HTTPClient: server.Client()})
+	found, total, err := client.ListImportTypes(context.Background(), testToken, TypeListOptions{})
+	if err != nil {
+		t.Fatalf("ListImportTypes: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("got %d types, want the page to stand", len(found))
+	}
+	// Zero would say the platform has no import types while handing one over. The
+	// page is the answer; the total is context for it, as in ListInstances.
+	if total != -1 {
+		t.Errorf("total = %d, want -1 for unknown", total)
+	}
+}
+
+func TestTheTypeListingPassesIDsThrough(t *testing.T) {
+	var query string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	client := NewRepositoryClient(server.URL, ClientOptions{HTTPClient: server.Client()})
+	if _, _, err := client.ListImportTypes(context.Background(), testToken,
+		TypeListOptions{IDs: []string{"type-1", "type-2"}}); err != nil {
+		t.Fatalf("ListImportTypes: %v", err)
+	}
+	values, err := parseQuery(query)
+	if err != nil {
+		t.Fatalf("query %q: %v", query, err)
+	}
+	if values["ids"] != "type-1,type-2" {
+		t.Errorf("ids = %q, want a comma-joined list", values["ids"])
+	}
+}
+
+func TestTheTypeListingReportsAnUpstreamFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	client := NewRepositoryClient(server.URL, ClientOptions{HTTPClient: server.Client()})
+	_, _, err := client.ListImportTypes(context.Background(), testToken, TypeListOptions{})
+	var upstream *UpstreamError
+	if !errors.As(err, &upstream) || upstream.Code != http.StatusForbidden {
+		t.Fatalf("err = %v, want an UpstreamError carrying 403", err)
+	}
+}

@@ -58,6 +58,16 @@ type Session struct {
 	// Tier is the exposure tier (§3.2). Default L0.
 	Tier tools.Tier `json:"exposure_tier"`
 
+	// WorkbenchID is the working context this conversation acts in: which checkout
+	// write_file writes into, and which kernel run_code runs in. Two sessions may
+	// name the same one — talking about one operator from two angles — or different
+	// ones, which is a developer working on two operators at once.
+	//
+	// Empty is a session written before workbenches existed, or one whose workbench
+	// has since been closed. Both resolve to the developer's only workbench when
+	// they have one, so no conversation loses its code context.
+	WorkbenchID string `json:"workbench_id,omitempty"`
+
 	// Selection is the data selection the developer has confirmed, if any (§5.2's
 	// last step). Stored on the session because §5.10 says confirmations persist as
 	// session overrides.
@@ -134,6 +144,16 @@ type Confirmation struct {
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 	// Decision is empty while pending, then "approved" or "rejected".
 	Decision string `json:"decision,omitempty"`
+	// OutOfBand marks a call a provider's own tool loop is holding open right now,
+	// waiting for this decision (see hold.go). It changes what answering it means:
+	// a held call is answered in place and the running turn carries the result,
+	// whereas an ordinary confirmation resumes a turn that stopped.
+	//
+	// Deliberately not persisted. It is not a property of the confirmation but of
+	// whether something is waiting on it at this moment, and nothing waits across a
+	// restart — a stored flag would outlive the caller and describe a hold that no
+	// longer exists. The engine sets it from its own registry of live holds.
+	OutOfBand bool `json:"out_of_band,omitempty"`
 }
 
 const (
@@ -153,11 +173,15 @@ func (c Confirmation) Describe() map[string]any {
 			input = string(c.Input)
 		}
 	}
-	return map[string]any{
+	described := map[string]any{
 		"id":         c.ID,
 		"tool":       c.Tool,
 		"input":      input,
 		"tier":       c.Tier,
 		"created_at": c.CreatedAt,
 	}
+	if c.OutOfBand {
+		described["out_of_band"] = true
+	}
+	return described
 }

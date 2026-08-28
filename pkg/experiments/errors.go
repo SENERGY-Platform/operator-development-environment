@@ -60,7 +60,7 @@ func (e *DirtyError) Error() string {
 	if e.Unborn {
 		return fmt.Sprintf(
 			"the working copy of %s has no commit yet, and an experiment is submitted "+
-				"from a commit so that its MLflow run is reproducible from one (SPEC §5.11 item 7)",
+				"from a commit so that its MLflow run is reproducible from one",
 			e.Repository)
 	}
 	listed := strings.Join(e.Paths, ", ")
@@ -69,8 +69,7 @@ func (e *DirtyError) Error() string {
 	}
 	return fmt.Sprintf(
 		"the working copy of %s has uncommitted changes (%s); an experiment is submitted "+
-			"from the committed state so that its recorded commit SHA is the code that ran "+
-			"(SPEC §5.11 item 7)",
+			"from the committed state so that its recorded commit SHA is the code that ran",
 		e.Repository, listed)
 }
 

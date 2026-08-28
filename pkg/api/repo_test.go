@@ -438,6 +438,7 @@ func TestWriteRepoContractFixtures(t *testing.T) {
 		path   string
 		body   any
 	}{
+		{"workbenches.json", http.MethodGet, "/workbenches", nil},
 		{"repo_connection.json", http.MethodGet, "/repo/connection", nil},
 		{"repo_repositories.json", http.MethodGet, "/repo/repositories", nil},
 		{"repo_status.json", http.MethodGet, "/repo?fetch=true", nil},

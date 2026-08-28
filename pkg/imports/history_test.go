@@ -31,10 +31,10 @@ func importExport() Export {
 		Name:       "Leipzig weather",
 		Topic:      testTopic,
 		Values: []ExportValue{
-			// Note the Path: relative to the payload, one level below the
-			// message-relative path a Selectable carries.
-			{Name: "temp_c", Path: "temperature_2m", Type: "float"},
-			{Name: "station", Path: "station_id", Type: "string", Tag: true},
+			// Note the Path: message-relative, as a Selectable carries it and as
+			// the export worker resolves it.
+			{Name: "temp_c", Path: "value.temperature_2m", Type: "float"},
+			{Name: "station", Path: "value.station_id", Type: "string", Tag: true},
 		},
 	}
 }

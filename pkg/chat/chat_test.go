@@ -185,6 +185,10 @@ func testTools(tracker *ranTools) (*tools.Registry, error) {
 		declare("l1_tool", tools.L1, false),
 		declare("l2_tool", tools.L2, false),
 		declare("confirmed_tool", tools.L0, true),
+		// Confirmed *and* above the default tier, which is the pair the tier is
+		// re-read for: a call proposed at L2 and approved after the developer has
+		// lowered the session must not run.
+		declare("confirmed_l2_tool", tools.L2, true),
 	)
 }
 
@@ -454,7 +458,7 @@ func TestOnlyPermittedToolsAreOffered(t *testing.T) {
 	}{
 		{tools.L0, []string{"confirmed_tool", "l0_tool"}},
 		{tools.L1, []string{"confirmed_tool", "l0_tool", "l1_tool"}},
-		{tools.L2, []string{"confirmed_tool", "l0_tool", "l1_tool", "l2_tool"}},
+		{tools.L2, []string{"confirmed_l2_tool", "confirmed_tool", "l0_tool", "l1_tool", "l2_tool"}},
 	} {
 		t.Run(tc.tier.String(), func(t *testing.T) {
 			h := newHarness(t, textTurn("hello"))
@@ -1025,6 +1029,49 @@ func TestProposedSelectionLandsOnTheSession(t *testing.T) {
 
 	if !strings.Contains(h.provider.lastRequest(t).System, "value.power") {
 		t.Error("the confirmed selection is not in the system prompt")
+	}
+}
+
+// The record the two delete tools of §5.8 check. Written through the engine
+// rather than the store directly, because that is the path a confirmed create
+// tool takes and the session check lives there.
+func TestWhatASessionCreatedIsRecordedAndReadBack(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session := h.session(t, tools.L0)
+
+	created := tools.Creation{
+		Kind: tools.CreatedImportInstance,
+		ID:   "urn:infai:ses:import:weather-1",
+		Name: "Leipzig weather",
+		Tool: "create_import_instance",
+		At:   time.Now(),
+	}
+	if err := h.engine.RecordCreation(ctx, session.ID, created); err != nil {
+		t.Fatalf("RecordCreation: %v", err)
+	}
+
+	recorded, err := h.engine.Creations(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("Creations: %v", err)
+	}
+	if len(recorded) != 1 || recorded[0].ID != created.ID || recorded[0].Kind != created.Kind {
+		t.Fatalf("recorded = %+v, want the one creation", recorded)
+	}
+
+	// Another session sees none of it. That separation is the whole of what makes a
+	// delete tool narrower than the delete_platform_data §5.8 forbids.
+	other := h.session(t, tools.L0)
+	if recorded, err := h.engine.Creations(ctx, other.ID); err != nil {
+		t.Fatalf("Creations: %v", err)
+	} else if len(recorded) != 0 {
+		t.Errorf("another session sees %+v, want nothing", recorded)
+	}
+
+	// A session that does not exist is refused: recording into one would create
+	// something that could never be deleted from chat again.
+	if err := h.engine.RecordCreation(ctx, "no-such-session", created); err == nil {
+		t.Error("a creation was recorded into a session that does not exist")
 	}
 }
 

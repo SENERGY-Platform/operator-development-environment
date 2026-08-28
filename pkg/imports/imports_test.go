@@ -335,3 +335,69 @@ func TestGetTypeWithoutARepositoryExplainsItself(t *testing.T) {
 		t.Errorf("the error should point at the route that does work: %v", err)
 	}
 }
+
+// --- the type catalogue ---
+
+func typeService(t *testing.T, types *fakeTypes) *Service {
+	t.Helper()
+	service, err := New(Deps{Selectables: &fakeSelectables{}, Instances: &fakeInstances{}, Types: types})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return service
+}
+
+func TestListTypesWithoutARepositoryExplainsItself(t *testing.T) {
+	service := newService(t, &fakeSelectables{}, &fakeInstances{}, nil)
+	_, err := service.ListTypes(context.Background(), testToken, TypeListOptions{})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest", err)
+	}
+	// The refusal has to say why discovery is not a substitute, because it looks
+	// like one right up to the point where the wanted type has no instance.
+	if !strings.Contains(err.Error(), "already has one") {
+		t.Errorf("the error should say what discovery cannot answer: %v", err)
+	}
+}
+
+func TestListTypesDefaultsAndCapsTheLimit(t *testing.T) {
+	types := &fakeTypes{listed: []dsmodel.ImportType{{Id: testTypeID}}, total: 1}
+	service := typeService(t, types)
+
+	result, err := service.ListTypes(context.Background(), testToken, TypeListOptions{})
+	if err != nil {
+		t.Fatalf("ListTypes: %v", err)
+	}
+	if result.Limit != DefaultLimit {
+		t.Errorf("limit = %d, want the default %d", result.Limit, DefaultLimit)
+	}
+
+	if _, err := service.ListTypes(context.Background(), testToken,
+		TypeListOptions{Limit: MaxLimit + 1}); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("err = %v, want a refusal above the cap", err)
+	}
+}
+
+func TestListTypesRefusesAnEmptyIDList(t *testing.T) {
+	// Upstream reads `ids=` as match-nothing, so an accidental empty list would
+	// report an empty catalogue rather than an error.
+	service := typeService(t, &fakeTypes{})
+	_, err := service.ListTypes(context.Background(), testToken, TypeListOptions{IDs: []string{}})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestListTypesNeverAnswersWithANilSlice(t *testing.T) {
+	service := typeService(t, &fakeTypes{listed: nil, total: -1})
+	result, err := service.ListTypes(context.Background(), testToken, TypeListOptions{})
+	if err != nil {
+		t.Fatalf("ListTypes: %v", err)
+	}
+	if result.Types == nil {
+		t.Error("an empty catalogue marshals as [] rather than null")
+	}
+	if result.Total != -1 {
+		t.Errorf("total = %d, want the unknown upstream reported", result.Total)
+	}
+}

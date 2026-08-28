@@ -81,7 +81,7 @@ func (s *Service) Confirm(ctx context.Context, token string, req ConfirmRequest)
 			ErrInvalidSpec, req.SeriesIndex, len(spec.Series))
 	}
 	if _, confirmable := profiler.ConfirmablePaths[req.FieldPath]; !confirmable {
-		return Confirmed{}, fmt.Errorf("%w: %q. Confirmable fields are the derived semantics of §5.10",
+		return Confirmed{}, fmt.Errorf("%w: %q. Confirmable fields are the derived semantics the profiler infers",
 			ErrNotConfirmable, req.FieldPath)
 	}
 

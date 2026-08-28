@@ -294,12 +294,17 @@ func splitScopes(scope string) []string {
 // `repo` implies its narrower children, which is why this compares prefixes
 // rather than strings: a token with `repo` holds `repo:status` too, and reporting
 // that as missing would be wrong.
+//
+// The result is empty rather than nil when nothing is missing. pgx encodes a nil
+// slice as SQL NULL, and missing_scopes is TEXT[] NOT NULL, so a nil here made the
+// insert fail — on exactly the grants that were complete. The JSON tag carries
+// omitempty, so an empty slice is still absent from the wire.
 func missingScopes(wanted, granted []string) []string {
 	held := map[string]bool{}
 	for _, scope := range granted {
 		held[scope] = true
 	}
-	var missing []string
+	missing := []string{}
 	for _, scope := range wanted {
 		if held[scope] {
 			continue

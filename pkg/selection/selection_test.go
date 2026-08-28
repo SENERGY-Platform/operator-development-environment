@@ -302,6 +302,14 @@ func (f *fakeTimeseries) DeviceUsage(_ context.Context, _ string, deviceIDs []st
 	return out, nil
 }
 
+func (f *fakeTimeseries) ExportUsage(_ context.Context, _ string, exportIDs []string) ([]timeseries.Usage, error) {
+	out := []timeseries.Usage{}
+	for _, id := range exportIDs {
+		out = append(out, timeseries.Usage{ExportId: id, Bytes: 1 << 20, BytesPerDay: 8640})
+	}
+	return out, nil
+}
+
 func (f *fakeTimeseries) Query(context.Context, string, []timeseries.QueryElement, timeseries.QueryOptions) ([]timeseries.QueryResult, error) {
 	f.t.Error("a value was read during semantic selection, which breaks exposure tier L0")
 	return nil, errors.New("no value read is permitted here")

@@ -2,7 +2,7 @@
 
 ODE installs the developer's own access token and the platform URLs in the
 kernel's environment when a session opens, and again whenever the token is
-refreshed (SPEC §5.6 item 4). This is a thin reader for those variables, so that
+refreshed (§5.6 item 4). This is a thin reader for those variables, so that
 a cell does not begin by rebuilding an HTTP client.
 
 The authorisation here is the developer's own and nothing more: code written by

@@ -177,7 +177,7 @@ func TestTheWebSocketRefusesAnAnonymousCaller(t *testing.T) {
 }
 
 // The role check is ODE's own authorisation decision and has to apply here too,
-// not only on the HTTP routes (SPEC D5).
+// not only on the HTTP routes (D5).
 func TestTheWebSocketRefusesATokenWithoutTheDeveloperRole(t *testing.T) {
 	harness := newWSHarness(t, false)
 	url := "ws" + strings.TrimPrefix(harness.server.URL, "http") + "/ws"
@@ -617,7 +617,7 @@ func TestARefreshedTokenForAnotherSubjectIsRefusedAndTheOldOneKept(t *testing.T)
 	}
 }
 
-// The realm role is ODE's own authorisation decision (SPEC D5). A role revoked
+// The realm role is ODE's own authorisation decision (D5). A role revoked
 // while the tab was open must end the connection's authority rather than survive
 // in a socket nobody re-authorised.
 func TestARefreshedTokenWithoutTheDeveloperRoleIsRefused(t *testing.T) {

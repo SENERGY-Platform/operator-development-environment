@@ -81,6 +81,16 @@ type Limits struct {
 	// MaxConcurrentSessions caps live chat sessions per user.
 	MaxConcurrentSessions *int `json:"max_concurrent_sessions,omitempty"`
 
+	// MaxWorkbenches caps how many working contexts a developer may hold open.
+	// Absent takes the deployment's own ceiling (repo_max_workbenches).
+	//
+	// Unlike the kernel resource fields below, this one ODE can enforce, because
+	// what it bounds is how many kernels ODE starts in a pod rather than how large
+	// the pod is. The two belong together in an administrator's head: raising this
+	// without raising the profile's memory is how a developer's training run gets
+	// OOM-killed by their own second workbench.
+	MaxWorkbenches *int `json:"max_workbenches,omitempty"`
+
 	// Kernel and Ray caps are §3.3 fields ODE stores and does not enforce, and the
 	// two have different reasons now that M4 exists.
 	//
@@ -108,6 +118,7 @@ func EnforcedFields() []string {
 	return []string{
 		"period", "token_cap", "cost_cap", "soft_warn_fraction", "global_cost_cap",
 		"allowed_providers", "allowed_models", "max_tier", "max_concurrent_sessions",
+		"max_workbenches",
 	}
 }
 
@@ -115,11 +126,12 @@ func DeclaredFields() map[string]string {
 	const kernelResources = "set on the KubeSpawner profile at spawn time, not by " +
 		"ODE: the Hub API selects a profile rather than carrying resource overrides"
 	return map[string]string{
-		"kernel_cpu_default":      kernelResources,
-		"kernel_cpu_max":          kernelResources,
-		"kernel_mem_default":      kernelResources,
-		"kernel_mem_max":          kernelResources,
-		"max_concurrent_ray_jobs": "M7 (experiments/, SPEC §5.12)",
+		"kernel_cpu_default": kernelResources,
+		"kernel_cpu_max":     kernelResources,
+		"kernel_mem_default": kernelResources,
+		"kernel_mem_max":     kernelResources,
+		"max_concurrent_ray_jobs": "ODE submits a run without counting the ones a " +
+			"developer already has in flight",
 	}
 }
 
@@ -218,6 +230,9 @@ func Layer(base, over Limits) Limits {
 	}
 	if user.MaxConcurrentSessions != nil {
 		merged.MaxConcurrentSessions = user.MaxConcurrentSessions
+	}
+	if user.MaxWorkbenches != nil {
+		merged.MaxWorkbenches = user.MaxWorkbenches
 	}
 	if user.KernelCPUDefault != nil {
 		merged.KernelCPUDefault = user.KernelCPUDefault

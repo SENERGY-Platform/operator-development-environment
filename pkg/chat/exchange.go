@@ -39,6 +39,10 @@ import (
 //     so far and then follows along, so attaching late shows the whole turn.
 type Exchange struct {
 	SessionID string
+	// UserSub owns the conversation this turn belongs to. Recorded here because an
+	// exchange outlives the request that started it, and the activity watchers of
+	// activity.go need to know whose panel this turn belongs on.
+	UserSub string
 
 	mux sync.Mutex
 	// history is every event so far, replayed to a late subscriber. Bounded by the

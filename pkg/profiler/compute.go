@@ -61,7 +61,69 @@ const (
 type TimeseriesClient interface {
 	DataAvailability(ctx context.Context, token string, deviceID string) ([]timeseries.Availability, error)
 	DeviceUsage(ctx context.Context, token string, deviceIDs []string) ([]timeseries.Usage, error)
+	// ExportUsage is the export half of the metadata pass. There is no
+	// /data-availability for an export — that endpoint is device-scoped — so this
+	// and the counting probe of ExportFill are between them what stands in for it.
+	ExportUsage(ctx context.Context, token string, exportIDs []string) ([]timeseries.Usage, error)
 	Query(ctx context.Context, token string, elements []timeseries.QueryElement, opts timeseries.QueryOptions) ([]timeseries.QueryResult, error)
+}
+
+// seriesSource is what a read is addressed to. Timescale holds a table per
+// device service and a table per export, and every read in this package goes to
+// one or the other — so the passes take this rather than a device and a service
+// id, which is what let an export be profiled without a second copy of them.
+//
+// Exclusive by construction: element() sets either the device pair or the export
+// id, never both, which is the shape timescale-wrapper's schema validates.
+type seriesSource struct {
+	deviceID  string
+	serviceID string
+	exportID  string
+}
+
+func deviceSource(deviceID, serviceID string) seriesSource {
+	return seriesSource{deviceID: deviceID, serviceID: serviceID}
+}
+
+func exportSource(exportID string) seriesSource {
+	return seriesSource{exportID: exportID}
+}
+
+func (s seriesSource) isExport() bool { return s.exportID != "" }
+
+// element is the request element skeleton for this source: columns, time and
+// bounds are the caller's to add.
+func (s seriesSource) element() timeseries.QueryElement {
+	if s.isExport() {
+		return timeseries.QueryElement{ExportId: stringPtr(s.exportID)}
+	}
+	return timeseries.QueryElement{
+		DeviceId:  stringPtr(s.deviceID),
+		ServiceId: stringPtr(s.serviceID),
+	}
+}
+
+func (s seriesSource) ref(variablePath string) SeriesRef {
+	if s.isExport() {
+		return SeriesRef{ExportID: s.exportID, VariablePath: variablePath}
+	}
+	return SeriesRef{DeviceID: s.deviceID, ServiceID: s.serviceID, VariablePath: variablePath}
+}
+
+// logArgs names the source in a log line or an error under the key it belongs to,
+// so an export is never reported as a device with an empty id.
+func (s seriesSource) logArgs() []any {
+	if s.isExport() {
+		return []any{"export_id", s.exportID}
+	}
+	return []any{"device_id", s.deviceID, "service_id", s.serviceID}
+}
+
+func (s seriesSource) String() string {
+	if s.isExport() {
+		return "export " + s.exportID
+	}
+	return "device " + s.deviceID + " service " + s.serviceID
 }
 
 type Options struct {
@@ -89,12 +151,19 @@ type Options struct {
 	// timeout means either the probe waits far too long to fail or the read is cut
 	// off mid-assembly. Zero keeps the client's default.
 	ReadTimeout time.Duration
+
+	// Exports resolves an export id to its columns, which is the one thing an
+	// export-addressed read needs and the export id does not carry. Absent, the
+	// export half refuses with ErrNoExportSource and the device half is unaffected
+	// — the same degradation a deployment without a timescale-wrapper already gets.
+	Exports ExportSource
 }
 
 type Profiler struct {
 	ts       TimeseriesClient
 	ontology OntologySource
 	store    Store
+	exports  ExportSource
 	opts     Options
 
 	localZone *time.Location
@@ -131,7 +200,7 @@ func New(ts TimeseriesClient, ontologySource OntologySource, store Store, opts O
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Profiler{
-		ts: ts, ontology: ontologySource, store: store, opts: opts,
+		ts: ts, ontology: ontologySource, store: store, exports: opts.Exports, opts: opts,
 		localZone: zone, now: now,
 	}, nil
 }
@@ -179,6 +248,11 @@ const (
 	PhaseAggregated   = "aggregated_read"
 	PhaseDetect       = "detect"
 	PhaseStore        = "store"
+	// The export-only phases. Both are metadata: the definition comes from
+	// analytics-serving and the count from timescale, and neither carries a value.
+	PhaseExportDefinition = "export_definition"
+	PhaseUsage            = "usage"
+	PhaseExportCount      = "export_count"
 )
 
 type ProfileResult struct {
@@ -294,16 +368,75 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 			ErrInvalidRequest, req.ServiceID)
 	}
 
-	analysis := intersect(req.AnalysisWindow, dataWindow)
+	return p.runPass(ctx, token, passInput{
+		source:          deviceSource(device.Id, req.ServiceID),
+		variables:       variables,
+		device:          device,
+		service:         service,
+		index:           index,
+		dataWindow:      dataWindow,
+		rawAvailable:    rawAvailability,
+		availabilityErr: availabilityErr,
+		reads:           result.Reads,
+		analysis:        req.AnalysisWindow,
+		rawOverride:     req.RawWindow,
+		groupTime:       req.GroupTime,
+		sessionParams:   req.SessionParams,
+		progress:        req.Progress,
+	})
+}
+
+// passInput is one profiling pass, addressed at a source that has already been
+// resolved and bounded.
+//
+// It exists because the two entry points differ only in their prologue. A device
+// service is validated against its device type and bounded by /data-availability;
+// an export is validated against its own definition and bounded by the counting
+// probe, because there is no availability endpoint for one. Everything after that
+// — the cache lookup, the two reads, the retry, the detectors, the store — is the
+// same work on the same shape, and a second copy of it would be two profilers
+// that drift.
+type passInput struct {
+	source    seriesSource
+	variables []Variable
+	// device and service are the device form's ontology context, and are zero for
+	// an export. Nothing below requires them: the connection state only classifies
+	// a trailing gap, and an export has no connection to be in.
+	device  models.ExtendedDevice
+	service models.Service
+	index   *OntologyIndex
+	// dataWindow is the range the source is known to hold data over. The requested
+	// analysis window is intersected with it rather than trusted.
+	dataWindow Window
+	// rawAvailable is what the prologue could establish about unbucketed data
+	// existing at all, as a Value because "could not ask" is not "no".
+	rawAvailable    Value[bool]
+	availabilityErr error
+	// reads carries the metadata reads the prologue already made, so the result
+	// counts the whole operation rather than only its second half.
+	reads ReadCounts
+
+	analysis      Window
+	rawOverride   Window
+	groupTime     string
+	sessionParams *SessionParams
+	progress      func(Phase)
+}
+
+func (p *Profiler) runPass(ctx context.Context, token string, in passInput) (ProfileResult, error) {
+	result := ProfileResult{Profiles: []ResolvedProfile{}, FromCache: []string{}, Reads: in.reads}
+	var err error
+
+	analysis := intersect(in.analysis, in.dataWindow)
 	if !analysis.Valid() {
 		return ProfileResult{}, fmt.Errorf("%w: the requested window does not overlap the available data (%s)",
-			ErrInvalidRequest, dataWindow.String())
+			ErrInvalidRequest, in.dataWindow.String())
 	}
-	raw := p.rawWindow(analysis, req.RawWindow)
+	raw := p.rawWindow(analysis, in.rawOverride)
 	result.AnalysisWindow = analysis
 	result.RawWindow = raw
 
-	if err := validateGroupTime(req.GroupTime, analysis); err != nil {
+	if err := validateGroupTime(in.groupTime, analysis); err != nil {
 		return ProfileResult{}, err
 	}
 
@@ -315,8 +448,8 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 
 	// Every variable of the service shares the analysis and raw windows, so the
 	// cache either has all of them or the batch read has to happen anyway.
-	cached, allCached := p.cachedProfiles(variables, device.Id, req.ServiceID, analysis, raw)
-	if allCached && req.GroupTime == "" && req.SessionParams == nil {
+	cached, allCached := p.cachedProfiles(in.variables, in.source, analysis, raw)
+	if allCached && in.groupTime == "" && in.sessionParams == nil {
 		for _, profile := range cached {
 			result.Profiles = append(result.Profiles, p.resolve(profile))
 			result.FromCache = append(result.FromCache, profile.ProfileID)
@@ -325,14 +458,14 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 		return result, nil
 	}
 
-	rowLimit := p.rawRowLimit(len(variables))
-	report(req.Progress, PhaseRawRead, fmt.Sprintf(
-		"reading up to %d raw rows for %d variable(s) over %s", rowLimit, len(variables), raw.Window))
+	rowLimit := p.rawRowLimit(len(in.variables))
+	report(in.progress, PhaseRawRead, fmt.Sprintf(
+		"reading up to %d raw rows for %d variable(s) over %s", rowLimit, len(in.variables), raw.Window))
 
 	var rawSet timeseries.ResultSet
 	var rawTruncated bool
 	for {
-		rawSet, rawTruncated, err = p.readRaw(ctx, token, device.Id, req.ServiceID, variables, raw,
+		rawSet, rawTruncated, err = p.readRaw(ctx, token, in.source, in.variables, raw,
 			rowLimit, &result.Reads)
 		if err == nil {
 			break
@@ -351,28 +484,28 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 			// service is unwell turns a knob that cannot help. The retry happens either way —
 			// it is one read and a transient fault may well have passed — but it is logged as
 			// the hypothesis it is acting on.
-			if unhealthy, why := upstreamLooksUnhealthy(err, availabilityErr); unhealthy {
+			if unhealthy, why := upstreamLooksUnhealthy(err, in.availabilityErr); unhealthy {
 				slog.WarnContext(ctx, "the raw read failed in a way that does not look like a "+
 					"response too large; retrying once with fewer rows anyway",
-					"device_id", device.Id, "service_id", req.ServiceID,
-					"variables", len(variables), "columns", describeColumns(variables),
-					"from_rows", rowLimit, "to_rows", reduced,
-					"hypothesis", why, "error", err)
+					append(in.source.logArgs(),
+						"variables", len(in.variables), "columns", describeColumns(in.variables),
+						"from_rows", rowLimit, "to_rows", reduced,
+						"hypothesis", why, "error", err)...)
 			} else {
 				slog.WarnContext(ctx, "the gateway refused the raw read; retrying with fewer rows",
-					"device_id", device.Id, "service_id", req.ServiceID,
-					"variables", len(variables), "from_rows", rowLimit, "to_rows", reduced, "error", err)
+					append(in.source.logArgs(),
+						"variables", len(in.variables), "from_rows", rowLimit, "to_rows", reduced, "error", err)...)
 			}
 			rowLimit = reduced
 			raw.LimitReduced = true
 			continue
 		}
-		return ProfileResult{}, p.describeReadFailure(err, "raw", len(variables), raw.Window,
+		return ProfileResult{}, p.describeReadFailure(err, "raw", len(in.variables), raw.Window,
 			fmt.Sprintf("row limit %d, so up to %d values in one response; columns %s",
-				rowLimit, rowLimit*len(variables), describeColumns(variables)),
+				rowLimit, rowLimit*len(in.variables), describeColumns(in.variables)),
 			"narrow the raw window with the days field beside it, or lower profiler_raw_window_points — "+
 				"the response carries one row per message and one value per variable, so both bound it",
-			availabilityErr)
+			in.availabilityErr)
 	}
 	raw.RowLimit = rowLimit
 	result.RawWindow = raw
@@ -388,38 +521,39 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 	// The sampling interval of the first numeric variable sizes the aggregation
 	// bucket. Variables of one service share a message and therefore an arrival
 	// schedule, so any of them answers the question.
-	interval := representativeInterval(rawSet, variables)
-	groupTime := req.GroupTime
+	interval := representativeInterval(rawSet, in.variables)
+	groupTime := in.groupTime
 	if groupTime == "" {
 		groupTime = chooseGroupTime(analysis, interval)
 	}
 	result.GroupTime = groupTime
 	bucket := bucketSecondsOf(groupTime)
 
-	report(req.Progress, PhaseAggregated, fmt.Sprintf(
+	report(in.progress, PhaseAggregated, fmt.Sprintf(
 		"reading aggregates at %s over %s", groupTime, analysis))
-	aggregated, err := p.readAggregated(ctx, token, device.Id, req.ServiceID, variables, analysis, groupTime, &result.Reads)
+	aggregated, err := p.readAggregated(ctx, token, in.source, in.variables, analysis, groupTime, &result.Reads)
 	if err != nil {
-		err = p.describeReadFailure(err, "aggregated", numericCount(variables), analysis,
+		err = p.describeReadFailure(err, "aggregated", numericCount(in.variables), analysis,
 			fmt.Sprintf("bucket %s, three elements for mean, minimum and maximum", groupTime),
 			"widen the bucket with group_time, or narrow the analysis window — this pass carries no row "+
 				"limit, and one query per variable is joined per element",
-			availabilityErr)
+			in.availabilityErr)
 	}
 	if err != nil {
 		// The aggregated pass is not fatal: every field it feeds carries
 		// not_computed with read_failed, and the structural detectors still have
 		// the raw pass.
 		slog.WarnContext(ctx, "aggregated pass failed; statistical fields will report read_failed",
-			"device_id", device.Id, "service_id", req.ServiceID, "error", err)
+			append(in.source.logArgs(), "error", err)...)
 		aggregated = map[string]aggregatedSeries{}
 	}
 
-	report(req.Progress, PhaseDetect, fmt.Sprintf("running detectors over %d variable(s)", len(variables)))
+	report(in.progress, PhaseDetect, fmt.Sprintf("running detectors over %d variable(s)", len(in.variables)))
 	computed := p.detect(detectionInput{
-		device:       device,
-		service:      service,
-		variables:    variables,
+		source:       in.source,
+		device:       in.device,
+		service:      in.service,
+		variables:    in.variables,
 		rawSet:       rawSet,
 		aggregate:    aggregated,
 		analysis:     analysis,
@@ -427,9 +561,9 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 		cacheRaw:     requestedRaw,
 		groupTime:    groupTime,
 		bucket:       bucket,
-		index:        index,
-		params:       req.SessionParams,
-		rawAvailable: rawAvailability,
+		index:        in.index,
+		params:       in.sessionParams,
+		rawAvailable: in.rawAvailable,
 	})
 
 	for _, item := range computed {
@@ -443,10 +577,10 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 		result.Profiles = append(result.Profiles, p.resolve(stored))
 	}
 
-	slog.DebugContext(ctx, "service profiled",
-		"device_id", device.Id, "service_id", req.ServiceID,
-		"variables", len(variables), "raw_points", rawSet.Rows(),
-		"group_time", groupTime, "value_reads", result.Reads.Values)
+	slog.DebugContext(ctx, "series profiled",
+		append(in.source.logArgs(),
+			"variables", len(in.variables), "raw_points", rawSet.Rows(),
+			"group_time", groupTime, "value_reads", result.Reads.Values)...)
 
 	return result, nil
 }
@@ -464,11 +598,10 @@ func (p *Profiler) resolve(profile SeriesProfile) ResolvedProfile {
 	return Resolve(profile, p.store.Overrides(profile.SeriesRef))
 }
 
-func (p *Profiler) cachedProfiles(variables []Variable, deviceID, serviceID string, analysis Window, raw RawWindow) ([]SeriesProfile, bool) {
+func (p *Profiler) cachedProfiles(variables []Variable, src seriesSource, analysis Window, raw RawWindow) ([]SeriesProfile, bool) {
 	out := make([]SeriesProfile, 0, len(variables))
 	for _, variable := range variables {
-		ref := SeriesRef{DeviceID: deviceID, ServiceID: serviceID, VariablePath: variable.Path}
-		key := CacheKey(ref, analysis, raw.Window, DetectorVersion)
+		key := CacheKey(src.ref(variable.Path), analysis, raw.Window, DetectorVersion)
 		profile, found := p.store.ByCacheKey(key)
 		if !found {
 			return nil, false
@@ -501,7 +634,7 @@ func (p *Profiler) rawWindow(analysis Window, override Window) RawWindow {
 // truncating from the far end would hand the detectors the wrong fortnight.
 // DecodeResults sorts back into ascending order.
 func (p *Profiler) readRaw(
-	ctx context.Context, token, deviceID, serviceID string,
+	ctx context.Context, token string, src seriesSource,
 	variables []Variable, raw RawWindow, rowLimit int, reads *ReadCounts,
 ) (timeseries.ResultSet, bool, error) {
 	columns := make([]timeseries.QueryColumn, 0, len(variables))
@@ -512,17 +645,14 @@ func (p *Profiler) readRaw(
 	limit := rowLimit
 	descending := timeseries.Direction(timeseries.OrderDescending)
 	orderIndex := 0
-	element := timeseries.QueryElement{
-		DeviceId:         &deviceID,
-		ServiceId:        &serviceID,
-		Columns:          columns,
-		Limit:            &limit,
-		OrderColumnIndex: &orderIndex,
-		OrderDirection:   &descending,
-		Time: &timeseries.QueryTime{
-			Start: stringPtr(raw.From.UTC().Format(time.RFC3339)),
-			End:   stringPtr(raw.To.UTC().Format(time.RFC3339)),
-		},
+	element := src.element()
+	element.Columns = columns
+	element.Limit = &limit
+	element.OrderColumnIndex = &orderIndex
+	element.OrderDirection = &descending
+	element.Time = &timeseries.QueryTime{
+		Start: stringPtr(raw.From.UTC().Format(time.RFC3339)),
+		End:   stringPtr(raw.To.UTC().Format(time.RFC3339)),
 	}
 
 	results, err := p.ts.Query(ctx, token, []timeseries.QueryElement{element},
@@ -543,7 +673,7 @@ func (p *Profiler) readRaw(
 	// element.
 	if len(sets) > 1 {
 		slog.WarnContext(ctx, "the raw pass returned more sets than elements sent; using the first",
-			"sets", len(sets), "device_id", deviceID, "service_id", serviceID)
+			append([]any{"sets", len(sets)}, src.logArgs()...)...)
 	}
 	return sets[0], sets[0].Rows() >= limit, nil
 }
@@ -556,7 +686,7 @@ func (p *Profiler) readRaw(
 // the same name in one element would come back indistinguishable in
 // ColumnNames.
 func (p *Profiler) readAggregated(
-	ctx context.Context, token, deviceID, serviceID string,
+	ctx context.Context, token string, src seriesSource,
 	variables []Variable, analysis Window, groupTime string, reads *ReadCounts,
 ) (map[string]aggregatedSeries, error) {
 	numeric := make([]Variable, 0, len(variables))
@@ -578,16 +708,14 @@ func (p *Profiler) readAggregated(
 			columns = append(columns, timeseries.QueryColumn{Name: variable.Path, GroupType: &aggregate})
 		}
 		bucket := groupTime
-		elements = append(elements, timeseries.QueryElement{
-			DeviceId:  &deviceID,
-			ServiceId: &serviceID,
-			Columns:   columns,
-			GroupTime: &bucket,
-			Time: &timeseries.QueryTime{
-				Start: stringPtr(analysis.From.UTC().Format(time.RFC3339)),
-				End:   stringPtr(analysis.To.UTC().Format(time.RFC3339)),
-			},
-		})
+		element := src.element()
+		element.Columns = columns
+		element.GroupTime = &bucket
+		element.Time = &timeseries.QueryTime{
+			Start: stringPtr(analysis.From.UTC().Format(time.RFC3339)),
+			End:   stringPtr(analysis.To.UTC().Format(time.RFC3339)),
+		}
+		elements = append(elements, element)
 	}
 
 	results, err := p.ts.Query(ctx, token, elements,

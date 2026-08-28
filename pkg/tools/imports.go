@@ -18,25 +18,37 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	flowengine "github.com/SENERGY-Platform/analytics-flow-engine/lib"
 	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
 	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/imports"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 )
 
-// The three import tools that are not discovery.
+// The import tools that are not discovery.
 //
-// Discovery is deliberately absent from this file: an import is found through
-// resolve_semantic_selection, alongside devices, because both are described by
-// the same content variables and a developer asking for a signal should not have
-// to know which kind the platform delivers it from. What is here is what that
-// resolution cannot do — look one up by id, and turn a chosen variable into
-// something deployable.
+// Signal discovery is deliberately absent from this file: an import is found
+// through resolve_semantic_selection, alongside devices, because both are
+// described by the same content variables and a developer asking for a signal
+// should not have to know which kind the platform delivers it from. What is here
+// is what that resolution cannot do — look one up by id, turn a chosen variable
+// into something deployable, and, below, create the import or the export that a
+// resolution found the platform does not have yet.
+//
+// list_import_types is not an exception to that rule. It searches the *catalogue*
+// — what could be deployed — and structurally cannot answer what data the
+// platform carries, because a type has no instance, no topic and no history. The
+// resolution names the matching types itself in deployable_import_types, so a
+// model that only ever calls resolve_semantic_selection still learns they exist;
+// this tool is for naming one directly and for browsing.
 
 // ---- list_import_instances (L0) ----
 
@@ -291,6 +303,164 @@ func walkImportVariable(out *[]map[string]any, variable dsmodel.ImportContentVar
 	}
 }
 
+// ---- list_import_types (L0) ----
+
+type listImportTypesInput struct {
+	Search        string   `json:"search"`
+	FunctionID    string   `json:"function_id"`
+	AspectID      string   `json:"aspect_id"`
+	ImportTypeIDs []string `json:"import_type_ids"`
+	Limit         int64    `json:"limit"`
+}
+
+// listImportTypes reads the import type catalogue.
+//
+// It exists because every other route to an import type id runs through an
+// instance: discovery joins each matching type to its instances and reports one
+// row per instance, and get_import_type_metadata takes an id. So the type nobody
+// has deployed yet — the only kind create_import_instance is for — was
+// unreachable except by pasting an id from the platform UI.
+func (s *surface) listImportTypes(ctx context.Context, req Request) (any, error) {
+	var in listImportTypesInput
+	if err := decode(req.Input, &in); err != nil {
+		return nil, err
+	}
+	limit := in.Limit
+	if limit <= 0 || limit > s.deps.DeviceLimit {
+		limit = s.deps.DeviceLimit
+	}
+
+	notes := []string{}
+	criteria := []imports.TypeCriterion{}
+	if in.FunctionID != "" || in.AspectID != "" {
+		criterion := imports.TypeCriterion{FunctionID: in.FunctionID}
+		if in.AspectID != "" {
+			// Expanded here because import-repository matches aspect ids literally,
+			// unlike the device repository. Without the subtree, an import type
+			// described against a child aspect is missing from the answer and nothing
+			// says so.
+			criterion.AspectIDs = s.aspectSubtree(ctx, req.Token, in.AspectID)
+			if len(criterion.AspectIDs) == 0 {
+				criterion.AspectIDs = []string{in.AspectID}
+				notes = append(notes, "the aspect subtree could not be read, so only the aspect "+
+					"itself was matched; an import type described against a narrower aspect below it "+
+					"is missing from this answer")
+			}
+		}
+		criteria = append(criteria, criterion)
+	}
+
+	result, err := s.deps.Imports.ListTypes(ctx, req.Token, imports.TypeListOptions{
+		Search:   in.Search,
+		IDs:      in.ImportTypeIDs,
+		Criteria: criteria,
+		Limit:    limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	listed := make([]map[string]any, 0, len(result.Types))
+	for _, importType := range result.Types {
+		listed = append(listed, importTypeView(importType, criteria))
+	}
+
+	note := "import types, not imports: nothing here is running and none of it carries data " +
+		"yet. A type is a blueprint — create_import_instance deploys one, and the instance " +
+		"is what has a Kafka topic. Check list_import_instances with import_type_ids before " +
+		"deploying: an instance of this type may already exist."
+	if len(criteria) == 0 {
+		note += " No criteria were given, so the variables of each type are counted rather " +
+			"than listed; read one with get_import_type_metadata."
+	}
+	answer := map[string]any{
+		"import_types": listed,
+		"total":        result.Total,
+		"limit":        limit,
+		"note":         note,
+	}
+	if result.Total < 0 {
+		notes = append(notes, "upstream reported no total, so whether this page is the whole "+
+			"answer is unknown")
+	} else if result.Total > int64(len(listed)) {
+		answer["truncated"] = true
+	}
+	if len(notes) > 0 {
+		answer["notes"] = notes
+	}
+	return answer, nil
+}
+
+// aspectSubtree resolves an aspect id to itself plus its descendants, or nil if
+// the ontology could not be read. Nil is a degraded answer the caller reports
+// rather than an error: a narrower match still answers the question asked, and
+// failing the whole listing over it would be worse.
+func (s *surface) aspectSubtree(ctx context.Context, token, aspectID string) []string {
+	if s.deps.Ontology == nil {
+		return nil
+	}
+	snap, err := s.deps.Ontology.Snapshot(ctx, token)
+	if err != nil || snap == nil {
+		return nil
+	}
+	return ontology.AspectSubtreeIDs(snap.AspectNodes, aspectID)
+}
+
+// importTypeView is one catalogue row.
+//
+// The variables are listed only when criteria narrowed the query, and counted
+// otherwise. A browse over the whole catalogue would otherwise pay for every leaf
+// of every type — and the answer to "which variable do I want" is
+// get_import_type_metadata, one type at a time.
+func importTypeView(importType dsmodel.ImportType, criteria []imports.TypeCriterion) map[string]any {
+	blocking := imports.BlockingCredentials(importType)
+	row := map[string]any{
+		"import_type_id":   importType.Id,
+		"name":             importType.Name,
+		"description":      importType.Description,
+		"required_configs": imports.RequiredConfigs(importType),
+		// Stated rather than left to be inferred from an empty credential list: a
+		// reader who does not know the credential rule would infer it the wrong way.
+		"deployable": len(blocking) == 0,
+	}
+	if len(blocking) > 0 {
+		row["blocking_credentials"] = blocking
+		row["reason"] = "this import type cannot be deployed from a chat: " +
+			strings.Join(blocking, ", ") + " reads as a credential and the type declares no " +
+			"default. The developer creates this import in the platform's own import dialog."
+	}
+
+	if len(criteria) == 0 {
+		row["variables"] = len(imports.TypeVariables(importType))
+		return row
+	}
+
+	matching := imports.MatchingVariables(importType, criteria)
+	rows := make([]map[string]any, 0, len(matching))
+	for _, variable := range matching {
+		entry := map[string]any{"variable_path": variable.Path, "type": variable.Type}
+		if variable.CharacteristicID != nil {
+			entry["characteristic_id"] = *variable.CharacteristicID
+		}
+		if variable.FunctionID != "" {
+			entry["function_id"] = variable.FunctionID
+		}
+		if variable.AspectID != "" {
+			entry["aspect_id"] = variable.AspectID
+		}
+		rows = append(rows, entry)
+	}
+	row["matching_variables"] = rows
+	if len(rows) == 0 {
+		// Upstream's criteria index is flattened per import type, so a type matches
+		// when its variables carry the criteria between them rather than one of them
+		// carrying both.
+		row["reason"] = "this type matches, but no single variable of it carries both the " +
+			"function and the aspect; read it with get_import_type_metadata"
+	}
+	return row
+}
+
 // ---- propose_operator_input (confirmed developer action) ----
 
 type proposeOperatorInputInput struct {
@@ -411,4 +581,331 @@ func importWarnings(instance idmodel.Instance, history imports.History, values [
 		}
 	}
 	return warnings
+}
+
+// ---- create_import_instance, create_export and their two undos ----
+//
+// The four tools that change the platform. Everything above this line reads.
+//
+// Each is Confirm, so Dispatch holds it and the developer sees the arguments
+// before anything runs (D11, §5.10). Two properties beyond that are this file's
+// and cannot be left to the confirmation:
+//
+//   - **A delete reaches only what this session created.** §5.8 denies
+//     delete_platform_data, and both deletions here destroy stored data —
+//     an export's timescale table, an import's Kafka topic. What makes them
+//     permissible is that the id has to be in the session's own creation log, so
+//     the widest thing either can do is undo a deployment made minutes earlier
+//     in the same conversation. An id the model read somewhere is not deletable,
+//     and no argument from the model changes that.
+//
+//   - **A creation is recorded even when the tool answer is not read.** The
+//     record is what makes the undo possible, so it is written before the answer
+//     is assembled, and a failure to write it is reported to the developer rather
+//     than swallowed: the import exists either way, and the difference is whether
+//     chat can remove it again.
+
+type createImportInstanceInput struct {
+	ImportTypeID string `json:"import_type_id"`
+	Name         string `json:"name"`
+	Rationale    string `json:"rationale"`
+	Configs      []struct {
+		Name  string `json:"name"`
+		Value any    `json:"value"`
+	} `json:"configs"`
+	Restart *bool `json:"restart"`
+}
+
+func (s *surface) createImportInstance(ctx context.Context, req Request) (any, error) {
+	var in createImportInstanceInput
+	if err := decode(req.Input, &in); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(in.ImportTypeID) == "" {
+		return nil, fmt.Errorf("%w: import_type_id is required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(in.Rationale) == "" {
+		return nil, fmt.Errorf("%w: a rationale is required: the developer confirms this, "+
+			"and cannot confirm what is not argued", ErrInvalidInput)
+	}
+
+	configs := make([]imports.ConfigValue, 0, len(in.Configs))
+	for _, config := range in.Configs {
+		configs = append(configs, imports.ConfigValue{Name: config.Name, Value: config.Value})
+	}
+
+	req.Progress("deploying", "asking import-deploy to start the container")
+	created, err := s.deps.Imports.CreateInstance(ctx, req.Token, imports.CreateInstanceRequest{
+		ImportTypeID: in.ImportTypeID,
+		Name:         in.Name,
+		Configs:      configs,
+		Restart:      in.Restart,
+	})
+	if err != nil {
+		return nil, invalidIfRequest(err)
+	}
+
+	answer := map[string]any{
+		"instance":  importInstanceView(created.Instance, nil),
+		"rationale": in.Rationale,
+		"warnings": append(created.Notes,
+			"the container has just been asked to start, so its status will read unknown or "+
+				"transitioning for a while; list_import_instances answers whether it came up",
+			"a new import has no stored past at all: it has no export, so nothing of it is in "+
+				"timescale until one is created"),
+		"note": "This import now exists on the platform and is the developer's to keep. It was " +
+			"created with the developer's own permissions, and only this chat session can " +
+			"remove it again from here.",
+	}
+	if len(created.Defaulted) > 0 {
+		answer["defaulted_configs"] = created.Defaulted
+	}
+	if note := s.recordCreation(ctx, req, Creation{
+		Kind: CreatedImportInstance,
+		ID:   created.Instance.Id,
+		Name: created.Instance.Name,
+		Tool: "create_import_instance",
+	}); note != "" {
+		answer["warnings"] = append(answer["warnings"].([]string), note)
+	}
+	return answer, nil
+}
+
+type deleteImportInstanceInput struct {
+	InstanceID string `json:"instance_id"`
+	Rationale  string `json:"rationale"`
+}
+
+func (s *surface) deleteImportInstance(ctx context.Context, req Request) (any, error) {
+	var in deleteImportInstanceInput
+	if err := decode(req.Input, &in); err != nil {
+		return nil, err
+	}
+	created, err := s.creationOf(ctx, req, CreatedImportInstance, in.InstanceID, in.Rationale)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.deps.Imports.DeleteInstance(ctx, req.Token, created.ID); err != nil {
+		return nil, invalidIfRequest(err)
+	}
+	return map[string]any{
+		"deleted":     created,
+		"rationale":   in.Rationale,
+		"note":        "the instance, its container and its kafka topic are gone; anything that was consuming that topic now receives nothing",
+		"undoable":    false,
+		"next_action": "creating it again produces a different instance with a different id and a different topic",
+	}, nil
+}
+
+type createExportInput struct {
+	InstanceID      string `json:"instance_id"`
+	Name            string `json:"name"`
+	Description     string `json:"description"`
+	Rationale       string `json:"rationale"`
+	Offset          string `json:"offset"`
+	TimePath        string `json:"time_path"`
+	TimestampFormat string `json:"timestamp_format"`
+	Values          []struct {
+		VariablePath string `json:"variable_path"`
+		Column       string `json:"column"`
+		Tag          bool   `json:"tag"`
+	} `json:"values"`
+}
+
+func (s *surface) createExport(ctx context.Context, req Request) (any, error) {
+	var in createExportInput
+	if err := decode(req.Input, &in); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(in.InstanceID) == "" {
+		return nil, fmt.Errorf("%w: instance_id is required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(in.Rationale) == "" {
+		return nil, fmt.Errorf("%w: a rationale is required: the developer confirms this, "+
+			"and cannot confirm what is not argued", ErrInvalidInput)
+	}
+
+	values := make([]imports.ExportValueRequest, 0, len(in.Values))
+	for _, value := range in.Values {
+		values = append(values, imports.ExportValueRequest{
+			VariablePath: value.VariablePath,
+			Column:       value.Column,
+			Tag:          value.Tag,
+		})
+	}
+
+	req.Progress("creating", "asking analytics-serving for the export")
+	created, err := s.deps.Imports.CreateExport(ctx, req.Token, imports.CreateExportRequest{
+		InstanceID:      in.InstanceID,
+		Name:            in.Name,
+		Description:     in.Description,
+		Values:          values,
+		Offset:          in.Offset,
+		TimePath:        in.TimePath,
+		TimestampFormat: in.TimestampFormat,
+	})
+	if err != nil {
+		return nil, invalidIfRequest(err)
+	}
+
+	columns := make([]map[string]any, 0, len(created.Export.Values))
+	for _, value := range created.Export.Values {
+		columns = append(columns, map[string]any{
+			// The export stores the path message-relative, which is how everything else
+			// a model has seen about this import is keyed.
+			"variable_path": value.Path,
+			"column":        value.Name,
+			"type":          value.Type,
+			"tag":           value.Tag,
+		})
+	}
+
+	answer := map[string]any{
+		"export_id":   created.Export.ID,
+		"export_name": created.Export.Name,
+		"instance_id": in.InstanceID,
+		"rationale":   in.Rationale,
+		"columns":     columns,
+		"derived":     created.Derived,
+		"warnings": append(created.Notes,
+			"nothing that arrived before this export existed is stored beyond what the kafka "+
+				"topic still retains; an export is not retroactive",
+			"the column names are this export's own, not the variable paths — a timescale query "+
+				"takes export_id and the columns above"),
+		"note": "This export writes to timescale from now on. It will take a moment before the " +
+			"first rows land, so a profile taken immediately reads as empty rather than as broken. " +
+			"Verify it with probe_export_data once rows have had time to arrive: an export is " +
+			"accepted, deploys and stores nothing when a value path names something the message " +
+			"does not carry, and the failure is silent everywhere else — the export listing, this " +
+			"answer and the stored byte count all look healthy. That check reports a column that is " +
+			"null in every row by name.",
+	}
+	if note := s.recordCreation(ctx, req, Creation{
+		Kind: CreatedExport,
+		ID:   created.Export.ID,
+		Name: created.Export.Name,
+		Tool: "create_export",
+	}); note != "" {
+		answer["warnings"] = append(answer["warnings"].([]string), note)
+	}
+	return answer, nil
+}
+
+type deleteExportInput struct {
+	ExportID  string `json:"export_id"`
+	Rationale string `json:"rationale"`
+}
+
+func (s *surface) deleteExport(ctx context.Context, req Request) (any, error) {
+	var in deleteExportInput
+	if err := decode(req.Input, &in); err != nil {
+		return nil, err
+	}
+	created, err := s.creationOf(ctx, req, CreatedExport, in.ExportID, in.Rationale)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.deps.Imports.DeleteExport(ctx, req.Token, created.ID); err != nil {
+		return nil, invalidIfRequest(err)
+	}
+	return map[string]any{
+		"deleted":   created,
+		"rationale": in.Rationale,
+		"note": "the export and its timescale table are gone, so the import has no stored history " +
+			"again; what the table held is not recoverable",
+		"undoable": false,
+	}, nil
+}
+
+// creationOf is the gate both delete tools pass through.
+//
+// It answers with the recorded creation rather than a boolean, so the caller
+// deletes the id ODE recorded rather than the one the model sent — the two are
+// the same string here, and making the answer carry it means a future caller
+// cannot accidentally pass the unchecked one.
+func (s *surface) creationOf(ctx context.Context, req Request, kind CreationKind, id, rationale string) (Creation, error) {
+	if strings.TrimSpace(id) == "" {
+		return Creation{}, fmt.Errorf("%w: an id is required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(rationale) == "" {
+		return Creation{}, fmt.Errorf("%w: a rationale is required: the developer confirms this, "+
+			"and cannot confirm what is not argued", ErrInvalidInput)
+	}
+	if strings.TrimSpace(req.SessionID) == "" {
+		return Creation{}, fmt.Errorf(
+			"%w: this call carries no chat session, so there is no record of what was created here "+
+				"and nothing may be deleted", ErrInvalidInput)
+	}
+
+	recorded, err := s.deps.Creations.Creations(ctx, req.SessionID)
+	if err != nil {
+		// Refusing on a failed read rather than falling back to deleting is the whole
+		// point of the gate: "could not check" must not become "went ahead".
+		return Creation{}, fmt.Errorf("what this session created could not be read, so nothing "+
+			"will be deleted: %w", err)
+	}
+
+	mine := []string{}
+	for _, creation := range recorded {
+		if creation.Kind != kind {
+			continue
+		}
+		if creation.ID == id {
+			return creation, nil
+		}
+		mine = append(mine, fmt.Sprintf("%s (%s)", creation.ID, creation.Name))
+	}
+
+	if len(mine) == 0 {
+		return Creation{}, fmt.Errorf(
+			"%w: this session created no %s, so there is nothing here to delete. ODE removes only "+
+				"what it created in this conversation; anything else is deleted by the developer "+
+				"in the platform's own interface, and telling them so is the answer",
+			ErrInvalidInput, kind)
+	}
+	return Creation{}, fmt.Errorf(
+		"%w: %s was not created in this session, so it will not be deleted from here. What this "+
+			"session created: %v. Anything else is the developer's to remove in the platform's "+
+			"own interface",
+		ErrInvalidInput, id, mine)
+}
+
+// recordCreation writes the creation log entry, and returns the warning to hand
+// the developer when it could not be written.
+//
+// It never fails the tool. The object exists on the platform by the time this
+// runs, and answering with an error would tell the model the creation did not
+// happen — which is the one thing that is certainly untrue.
+func (s *surface) recordCreation(ctx context.Context, req Request, creation Creation) string {
+	if s.deps.Creations == nil {
+		return "this deployment keeps no record of what a session created, so " + creation.Tool +
+			" cannot be undone from chat; removing it again is done in the platform's own interface"
+	}
+	if strings.TrimSpace(req.SessionID) == "" {
+		return "this call carries no chat session, so what was just created was not recorded and " +
+			"cannot be removed from chat"
+	}
+	creation.At = time.Now()
+	if err := s.deps.Creations.RecordCreation(ctx, req.SessionID, creation); err != nil {
+		slog.ErrorContext(ctx, "could not record what a session created",
+			"tool", creation.Tool, "kind", string(creation.Kind), "session", req.SessionID,
+			"error", err)
+		return "this was created on the platform but recording it here failed, so it cannot be " +
+			"removed from chat: " + creation.ID + " is the id to remove it by in the platform's " +
+			"own interface"
+	}
+	return ""
+}
+
+// invalidIfRequest maps the imports package's own request errors onto
+// ErrInvalidInput, so that a model's bad argument is recorded as invalid_input
+// rather than as a platform failure. Anything else is the platform's verdict and
+// is passed through unchanged.
+func invalidIfRequest(err error) error {
+	if errors.Is(err, imports.ErrInvalidRequest) {
+		return fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	return err
 }

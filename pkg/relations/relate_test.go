@@ -26,7 +26,7 @@ import (
 )
 
 // The rule detector is checked against fixtures with known answers rather than
-// against the platform, for the reason SPEC §5.4.14 gives about the profiler's
+// against the platform, for the reason §5.4.14 gives about the profiler's
 // detectors: an association found in synthetic oven-and-lights data is a check, and
 // one found in the platform's kitchen is an anecdote.
 //

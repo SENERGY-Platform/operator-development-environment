@@ -26,7 +26,7 @@ import (
 )
 
 // Text intent to ontology entity — the first step of semantic selection
-// (SPEC §5.2, "resolve function: measuring-function ~ 'power generation'").
+// (§5.2, "resolve function: measuring-function ~ 'power generation'").
 //
 // This is lexical, deterministic and deliberately modest. It is not a semantic
 // model and does not pretend to be one: it scores how much of an ontology term's
@@ -45,8 +45,8 @@ import (
 //     concepts, and matching them turns every intent into a long list.
 //
 // The step that actually does the semantic work is the caller's: explicit ids
-// bypass all of this (see ExplicitFunctions), which is how M3's LLM will use it
-// once it has read the ontology itself.
+// bypass all of this (see ExplicitFunctions), which is how the LLM uses it once it
+// has read the ontology itself.
 
 const (
 	defaultMatchLimit = 5

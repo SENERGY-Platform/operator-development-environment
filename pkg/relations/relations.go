@@ -15,7 +15,7 @@
  */
 
 // Package relations finds conditional patterns across several devices
-// (SPEC §5.5).
+// (§5.5).
 //
 // The motivating case is one sentence: *the oven being on while the kitchen
 // lights are off is an anomaly, except at certain times of day*. Everything here
@@ -432,7 +432,7 @@ type Exception struct {
 // advisoryNote is stamped on every candidate rule. Wording matters here: it is
 // read by a model that would otherwise be inclined to act on a rule it found.
 const advisoryNote = "candidate only: not a configured rule, not an anomaly definition, " +
-	"and never read by an operator or a training job until a developer confirms it (§5.5, D28)"
+	"and never read by an operator or a training job until a developer confirms it"
 
 // notComputedStatus is the status string profiler.NotComputed carries. Restated
 // rather than imported because the profiler keeps it unexported, and a hand-built

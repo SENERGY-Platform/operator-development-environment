@@ -235,7 +235,7 @@ func TestASummaryIsBuiltWithNobodyConnectedAndTheTurnRunsWhenTheyReturn(t *testi
 	if h.provider.turns() != 0 {
 		t.Errorf("the provider was called %d times with nobody connected; an "+
 			"interpretation turn dispatches tools on the developer's behalf and must "+
-			"not run without their token (SPEC §3.1 item 3)", h.provider.turns())
+			"not run without their token (§3.1 item 3)", h.provider.turns())
 	}
 	if len(h.messages()) != 0 {
 		t.Error("something was written into the conversation with nobody connected")

@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/identifiers"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 )
 
@@ -65,6 +66,10 @@ type Options struct {
 	// OperatorLibRef pins it to something fixed. Empty resolves the newest tag at
 	// scaffold time, which is what D15 asks for.
 	OperatorLibRef string
+	// MaxWorkbenches caps how many working contexts one developer may hold open.
+	// The cost being capped is a kernel process each in their pod, not a row here.
+	// Zero takes DefaultMaxWorkbenches.
+	MaxWorkbenches int
 }
 
 // Deps is what the service is built from.
@@ -74,9 +79,33 @@ type Deps struct {
 	Workspace Workspace
 	Store     Store
 	Sealer    *Sealer
+	// IDs mints workbench ids. Nil takes the real source; a test supplies a
+	// deterministic one, as chat and tools do.
+	IDs IDs
+	// Limits is the per-user administration of §3.3, when a deployment has one.
+	// Nil leaves only this deployment's own ceiling, which is the configuration a
+	// database-less ODE runs with.
+	Limits Limits
+	// Now is the clock, replaced by tests. Nil takes time.Now.
+	Now func() time.Time
 	// HTTPClient is replaced by tests.
 	HTTPClient *http.Client
 	Options
+}
+
+// IDs is the identifier source. Declared here rather than taken from
+// pkg/identifiers directly so a test can make the ids in an assertion readable.
+type IDs interface {
+	NewID() string
+}
+
+// Limits is the per-user ceiling on open workbenches. *admin.Service implements
+// it; declared here so the dependency points one way, as pkg/kernel's Workbenches
+// does.
+type Limits interface {
+	// CheckWorkbenchCount refuses when current is already at this user's ceiling.
+	// A nil error means the deployment's own cap is the only one that applies.
+	CheckWorkbenchCount(ctx context.Context, userSub string, current int) error
 }
 
 // Service is ODE's repository surface.
@@ -84,6 +113,9 @@ type Service struct {
 	workspace Workspace
 	store     Store
 	sealer    *Sealer
+	ids       IDs
+	limits    Limits
+	now       func() time.Time
 	http      *http.Client
 	states    *stateStore
 	opts      Options
@@ -107,7 +139,7 @@ const (
 // requests without either would fail on the developer's first click instead.
 func New(deps Deps) (*Service, error) {
 	if deps.Workspace == nil {
-		return nil, errors.New("repo: a workspace is required (SPEC §5.11 item 5)")
+		return nil, errors.New("repo: a workspace is required (§5.11 item 5)")
 	}
 	if deps.Store == nil {
 		return nil, errors.New("repo: a store is required")
@@ -153,21 +185,44 @@ func New(deps Deps) (*Service, error) {
 	if opts.OperatorLib == "" {
 		opts.OperatorLib = defaultOperatorLib
 	}
+	if opts.MaxWorkbenches <= 0 {
+		opts.MaxWorkbenches = DefaultMaxWorkbenches
+	}
 
 	client := deps.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: opts.RequestTimeout + 10*time.Second}
+	}
+	ids := deps.IDs
+	if ids == nil {
+		ids = identifiers.New()
+	}
+	now := deps.Now
+	if now == nil {
+		now = time.Now
 	}
 
 	return &Service{
 		workspace: deps.Workspace,
 		store:     deps.Store,
 		sealer:    deps.Sealer,
+		ids:       ids,
+		limits:    deps.Limits,
+		now:       now,
 		http:      client,
 		states:    newStateStore(opts.StateTTL),
 		opts:      opts,
 	}, nil
 }
+
+// UseLimits installs the per-user administration of §3.3.
+//
+// Set after construction rather than in Deps for the reason
+// kernel.UseWorkbenches gives: the admin service is built inside the LLM surface's
+// wiring, which runs after this one because write_file has to be registrable by
+// then. Nil-safe both ways — a deployment without an admin surface keeps only its
+// own ceiling.
+func (s *Service) UseLimits(limits Limits) { s.limits = limits }
 
 // Scopes is what this deployment asks GitHub for, reported by /session so the SPA
 // can explain the consent screen before the developer sees it.
@@ -184,6 +239,12 @@ type Request struct {
 	Bearer  string
 	UserSub string
 	Author  Author
+	// WorkbenchID names the working context this acts in: which checkout, and which
+	// kernel runs the git commands. Empty means the developer's only one, which is
+	// what keeps a caller that has never heard of workbenches correct — and is
+	// refused once there are two, because guessing between two working copies is
+	// the failure workbenches exist to prevent.
+	WorkbenchID string
 }
 
 // Repositories lists what the developer could work on.
@@ -273,8 +334,20 @@ func (s *Service) link(
 		// scaffold to a branch the repository's own settings do not point at.
 		branch = "main"
 	}
+	// The workbench this lands in, resolved before anything touches the PVC: a
+	// repository already open in another one is refused here rather than after a
+	// clone has already happened.
+	bench, err := s.forSelection(ctx, req, repository.FullName)
+	if err != nil {
+		return Status{}, err
+	}
+	// Every operation below runs in that workbench, including the ones Scaffold
+	// makes on its own.
+	req.WorkbenchID = bench.ID
+
 	link := Link{
 		UserSub:       req.UserSub,
+		WorkbenchID:   bench.ID,
 		FullName:      repository.FullName,
 		Name:          repository.Name,
 		Owner:         repository.Owner,
@@ -289,8 +362,7 @@ func (s *Service) link(
 	// lose which Operator Lib it was pinned to, nor which directory its working copy
 	// is in: the path a previous session used is where the developer's uncommitted
 	// work is, and deriving a different one here would abandon it.
-	if previous, found, err := s.store.GetLink(ctx, req.UserSub); err == nil && found &&
-		previous.FullName == link.FullName {
+	if previous := bench.Link; previous.FullName == link.FullName {
 		link.OperatorLibRef = previous.OperatorLibRef
 		link.ScaffoldedAt = previous.ScaffoldedAt
 		if previous.Path != "" {
@@ -308,7 +380,7 @@ func (s *Service) link(
 	}
 	link.Path = path
 
-	if err := s.store.PutLink(ctx, link); err != nil {
+	if err := s.putLink(ctx, link); err != nil {
 		return Status{}, err
 	}
 	if err := s.ensureCheckout(ctx, req, link, token); err != nil {
@@ -321,8 +393,8 @@ func (s *Service) link(
 		}
 		// Re-read: Scaffold records the pin, and the status should report the link as
 		// it now is rather than as it was a moment ago.
-		if updated, found, err := s.store.GetLink(ctx, req.UserSub); err == nil && found {
-			link = updated
+		if updated, err := s.Workbench(ctx, req.UserSub, bench.ID); err == nil {
+			link = updated.Link
 		}
 	}
 
@@ -351,13 +423,13 @@ func (s *Service) resolveCheckoutPath(
 	if preferred == legacy {
 		return preferred, nil
 	}
-	if present, err := s.git(req, preferred, token).isRepository(ctx); err != nil {
+	if present, err := s.git(req, link.WorkbenchID, preferred, token).isRepository(ctx); err != nil {
 		return "", err
 	} else if present {
 		return preferred, nil
 	}
 
-	previous := s.git(req, legacy, token)
+	previous := s.git(req, link.WorkbenchID, legacy, token)
 	present, err := previous.isRepository(ctx)
 	if err != nil {
 		return "", err
@@ -385,7 +457,7 @@ func (s *Service) resolveCheckoutPath(
 func (s *Service) ensureCheckout(
 	ctx context.Context, req Request, link Link, token string,
 ) error {
-	checkout := s.git(req, link.Path, token)
+	checkout := s.git(req, link.WorkbenchID, link.Path, token)
 	present, err := checkout.isRepository(ctx)
 	if err != nil {
 		return err
@@ -394,7 +466,7 @@ func (s *Service) ensureCheckout(
 		return checkout.verifyRemote(ctx, link)
 	}
 
-	root := s.git(req, "", token)
+	root := s.git(req, link.WorkbenchID, "", token)
 	if err := root.clone(ctx, link.CloneURL, link.Path); err != nil {
 		return err
 	}
@@ -423,7 +495,7 @@ type StatusRequest struct {
 
 // Status reports the working copy.
 func (s *Service) Status(ctx context.Context, req StatusRequest) (Status, error) {
-	link, err := s.linkFor(ctx, req.UserSub)
+	link, err := s.linkFor(ctx, req.Request)
 	if err != nil {
 		return Status{}, err
 	}
@@ -437,15 +509,21 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (Status, error)
 // Unlink forgets which repository the developer was working on. The checkout stays
 // on the PVC: it is their work, and §5.11 item 6 is explicit that ODE does not
 // discard it on its own initiative.
-func (s *Service) Unlink(ctx context.Context, userSub string) error {
-	return s.store.DeleteLink(ctx, userSub)
+func (s *Service) Unlink(ctx context.Context, req Request) error {
+	bench, err := s.resolve(ctx, req)
+	if err != nil {
+		return err
+	}
+	bench.Link = Link{}
+	bench.LastUsedAt = s.now()
+	return s.store.PutWorkbench(ctx, bench)
 }
 
 func (s *Service) statusOf(
 	ctx context.Context, req Request, link Link, token string, fetch bool,
 ) (Status, error) {
 	status := Status{Link: link, Workspace: s.workspace.Workspace()}
-	checkout := s.git(req, link.Path, token)
+	checkout := s.git(req, link.WorkbenchID, link.Path, token)
 
 	present, err := checkout.isRepository(ctx)
 	if err != nil {
@@ -512,7 +590,7 @@ func (s *Service) rawStatus(ctx context.Context, checkout gitContext) (gitStatus
 func (s *Service) scaffoldState(
 	ctx context.Context, req Request, link Link,
 ) (ScaffoldState, error) {
-	tree, err := s.workspace.Tree(ctx, req.Bearer, kernel.TreeRequest{
+	tree, err := s.workspace.Tree(ctx, s.ref(req, link), kernel.TreeRequest{
 		Path:       link.Path,
 		Recursive:  true,
 		MaxEntries: s.opts.MaxTreeEntries,
@@ -559,7 +637,7 @@ type ScaffoldRequest struct {
 
 // Scaffold writes the missing template files into the working copy.
 func (s *Service) Scaffold(ctx context.Context, req ScaffoldRequest) (ScaffoldResult, error) {
-	link, err := s.linkFor(ctx, req.UserSub)
+	link, err := s.linkFor(ctx, req.Request)
 	if err != nil {
 		return ScaffoldResult{}, err
 	}
@@ -567,7 +645,7 @@ func (s *Service) Scaffold(ctx context.Context, req ScaffoldRequest) (ScaffoldRe
 	if err != nil {
 		return ScaffoldResult{}, err
 	}
-	checkout := s.git(req.Request, link.Path, token)
+	checkout := s.git(req.Request, link.WorkbenchID, link.Path, token)
 	present, err := checkout.isRepository(ctx)
 	if err != nil {
 		return ScaffoldResult{}, err
@@ -620,7 +698,7 @@ func (s *Service) Scaffold(ctx context.Context, req ScaffoldRequest) (ScaffoldRe
 			result.Skipped = append(result.Skipped, file.Path)
 			continue
 		}
-		if _, err := s.workspace.WriteFile(ctx, req.Bearer,
+		if _, err := s.workspace.WriteFile(ctx, s.ref(req.Request, link),
 			path.Join(link.Path, file.Path), []byte(file.Content)); err != nil {
 			return result, err
 		}
@@ -631,7 +709,7 @@ func (s *Service) Scaffold(ctx context.Context, req ScaffoldRequest) (ScaffoldRe
 	link.OperatorLibRef = ref
 	now := time.Now().UTC()
 	link.ScaffoldedAt = &now
-	if err := s.store.PutLink(ctx, link); err != nil {
+	if err := s.putLink(ctx, link); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -653,7 +731,7 @@ func (s *Service) Commit(ctx context.Context, req CommitRequest) (CommitResult, 
 	if message == "" {
 		return CommitResult{}, fmt.Errorf("%w: a commit needs a message", ErrInvalidRequest)
 	}
-	link, err := s.linkFor(ctx, req.UserSub)
+	link, err := s.linkFor(ctx, req.Request)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -661,7 +739,7 @@ func (s *Service) Commit(ctx context.Context, req CommitRequest) (CommitResult, 
 	if err != nil {
 		return CommitResult{}, err
 	}
-	checkout := s.git(req.Request, link.Path, token)
+	checkout := s.git(req.Request, link.WorkbenchID, link.Path, token)
 	if present, err := checkout.isRepository(ctx); err != nil {
 		return CommitResult{}, err
 	} else if !present {
@@ -741,7 +819,7 @@ type PushRequest struct {
 
 // Push sends the current branch to GitHub.
 func (s *Service) Push(ctx context.Context, req PushRequest) (PushResult, error) {
-	link, err := s.linkFor(ctx, req.UserSub)
+	link, err := s.linkFor(ctx, req.Request)
 	if err != nil {
 		return PushResult{}, err
 	}
@@ -749,7 +827,7 @@ func (s *Service) Push(ctx context.Context, req PushRequest) (PushResult, error)
 	if err != nil {
 		return PushResult{}, err
 	}
-	checkout := s.git(req.Request, link.Path, token)
+	checkout := s.git(req.Request, link.WorkbenchID, link.Path, token)
 	if present, err := checkout.isRepository(ctx); err != nil {
 		return PushResult{}, err
 	} else if !present {
@@ -884,11 +962,11 @@ func (s *Service) Discard(ctx context.Context, req DiscardRequest) (Status, erro
 // Files is the Code pane's tree (D14): every file of the working copy, with
 // nothing hidden and nothing reserved.
 func (s *Service) Files(ctx context.Context, req Request) (FileTree, error) {
-	link, err := s.linkFor(ctx, req.UserSub)
+	link, err := s.linkFor(ctx, req)
 	if err != nil {
 		return FileTree{}, err
 	}
-	tree, err := s.workspace.Tree(ctx, req.Bearer, kernel.TreeRequest{
+	tree, err := s.workspace.Tree(ctx, s.ref(req, link), kernel.TreeRequest{
 		Path:       link.Path,
 		Recursive:  true,
 		MaxEntries: s.opts.MaxTreeEntries,
@@ -902,7 +980,7 @@ func (s *Service) Files(ctx context.Context, req Request) (FileTree, error) {
 
 // ReadFile reads one file of the working copy.
 func (s *Service) ReadFile(ctx context.Context, req Request, requested string) (File, error) {
-	link, err := s.linkFor(ctx, req.UserSub)
+	link, err := s.linkFor(ctx, req)
 	if err != nil {
 		return File{}, err
 	}
@@ -910,7 +988,7 @@ func (s *Service) ReadFile(ctx context.Context, req Request, requested string) (
 	if err != nil {
 		return File{}, err
 	}
-	content, err := s.workspace.ReadFile(ctx, req.Bearer,
+	content, err := s.workspace.ReadFile(ctx, s.ref(req, link),
 		path.Join(link.Path, clean), s.opts.MaxFileBytes)
 	if err != nil {
 		return File{}, err
@@ -950,7 +1028,7 @@ type WriteResult struct {
 func (s *Service) WriteFile(
 	ctx context.Context, req Request, requested string, content []byte,
 ) (WriteResult, error) {
-	link, err := s.linkFor(ctx, req.UserSub)
+	link, err := s.linkFor(ctx, req)
 	if err != nil {
 		return WriteResult{}, err
 	}
@@ -962,7 +1040,7 @@ func (s *Service) WriteFile(
 		return WriteResult{}, fmt.Errorf("%w: %s is %d bytes, and the limit is %d",
 			ErrInvalidRequest, clean, len(content), s.opts.MaxFileBytes)
 	}
-	node, err := s.workspace.WriteFile(ctx, req.Bearer, path.Join(link.Path, clean), content)
+	node, err := s.workspace.WriteFile(ctx, s.ref(req, link), path.Join(link.Path, clean), content)
 	if err != nil {
 		return WriteResult{}, err
 	}
@@ -973,7 +1051,7 @@ func (s *Service) WriteFile(
 // one, which is why this exists at all: a developer laying out a package needs the
 // directory before the file.
 func (s *Service) MakeDir(ctx context.Context, req Request, requested string) error {
-	link, err := s.linkFor(ctx, req.UserSub)
+	link, err := s.linkFor(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -981,7 +1059,7 @@ func (s *Service) MakeDir(ctx context.Context, req Request, requested string) er
 	if err != nil {
 		return err
 	}
-	_, err = s.workspace.MakeDir(ctx, req.Bearer, path.Join(link.Path, clean))
+	_, err = s.workspace.MakeDir(ctx, s.ref(req, link), path.Join(link.Path, clean))
 	return err
 }
 
@@ -992,7 +1070,7 @@ func (s *Service) MakeDir(ctx context.Context, req Request, requested string) er
 func (s *Service) Delete(
 	ctx context.Context, req Request, requested string, recursive bool,
 ) error {
-	link, err := s.linkFor(ctx, req.UserSub)
+	link, err := s.linkFor(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -1000,14 +1078,14 @@ func (s *Service) Delete(
 	if err != nil {
 		return err
 	}
-	return s.workspace.Remove(ctx, req.Bearer, path.Join(link.Path, clean), recursive)
+	return s.workspace.Remove(ctx, s.ref(req, link), path.Join(link.Path, clean), recursive)
 }
 
 // checkoutFor is the preamble the mutating operations share.
 func (s *Service) checkoutFor(
 	ctx context.Context, req Request,
 ) (Link, string, gitContext, error) {
-	link, err := s.linkFor(ctx, req.UserSub)
+	link, err := s.linkFor(ctx, req)
 	if err != nil {
 		return Link{}, "", gitContext{}, err
 	}
@@ -1015,7 +1093,7 @@ func (s *Service) checkoutFor(
 	if err != nil {
 		return Link{}, "", gitContext{}, err
 	}
-	checkout := s.git(req, link.Path, token)
+	checkout := s.git(req, link.WorkbenchID, link.Path, token)
 	present, err := checkout.isRepository(ctx)
 	if err != nil {
 		return Link{}, "", gitContext{}, err
@@ -1026,10 +1104,24 @@ func (s *Service) checkoutFor(
 	return link, token, checkout, nil
 }
 
-func (s *Service) git(req Request, dir, token string) gitContext {
+// git builds the context one git command runs in: whose pod, which workbench's
+// kernel, which directory, and the credential.
+//
+// The workbench is passed rather than read from the request because the request
+// may name none — the developer has one and did not have to say so — while the
+// link that was resolved from it always names the concrete one. A command sent to
+// the default kernel while the checkout belongs to a workbench would run in the
+// right directory but the wrong process, and would queue behind whatever that
+// process is doing.
+// ref addresses the kernel a link's operations run in.
+func (s *Service) ref(req Request, link Link) kernel.Ref {
+	return kernel.Ref{Bearer: req.Bearer, Workbench: link.WorkbenchID}
+}
+
+func (s *Service) git(req Request, workbench, dir, token string) gitContext {
 	return gitContext{
 		workspace: s.workspace,
-		bearer:    req.Bearer,
+		ref:       kernel.Ref{Bearer: req.Bearer, Workbench: workbench},
 		dir:       dir,
 		token:     token,
 		webURL:    s.opts.WebURL,
@@ -1040,15 +1132,28 @@ func (s *Service) git(req Request, dir, token string) gitContext {
 	}
 }
 
-func (s *Service) linkFor(ctx context.Context, userSub string) (Link, error) {
-	link, found, err := s.store.GetLink(ctx, userSub)
+// linkFor is the repository a request acts on: the one selected in the workbench
+// it names, or in the developer's only workbench when it names none.
+func (s *Service) linkFor(ctx context.Context, req Request) (Link, error) {
+	bench, err := s.resolve(ctx, req)
 	if err != nil {
 		return Link{}, err
 	}
-	if !found {
+	if !bench.Selected() {
 		return Link{}, ErrNoRepository
 	}
-	return link, nil
+	return bench.Link, nil
+}
+
+// putLink writes a changed link back into the workbench it belongs to.
+func (s *Service) putLink(ctx context.Context, link Link) error {
+	bench, err := s.Workbench(ctx, link.UserSub, link.WorkbenchID)
+	if err != nil {
+		return err
+	}
+	bench.Link = link
+	bench.LastUsedAt = s.now()
+	return s.store.PutWorkbench(ctx, bench)
 }
 
 func (s *Service) tokenFor(ctx context.Context, userSub string) (string, error) {

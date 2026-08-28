@@ -135,6 +135,7 @@ func textColumn(name string, times []time.Time, values []string) timeseries.Colu
 type fakeTimeseries struct {
 	availability map[string][]timeseries.Availability
 	usage        map[string]timeseries.Usage
+	exportUsage  map[string]timeseries.Usage
 	results      [][]timeseries.QueryResult
 	queries      [][]timeseries.QueryElement
 	usageErr     error
@@ -161,6 +162,19 @@ func (f *fakeTimeseries) DeviceUsage(_ context.Context, _ string, deviceIDs []st
 	out := []timeseries.Usage{}
 	for _, id := range deviceIDs {
 		if usage, found := f.usage[id]; found {
+			out = append(out, usage)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeTimeseries) ExportUsage(_ context.Context, _ string, exportIDs []string) ([]timeseries.Usage, error) {
+	if f.usageErr != nil {
+		return nil, f.usageErr
+	}
+	out := []timeseries.Usage{}
+	for _, id := range exportIDs {
+		if usage, found := f.exportUsage[id]; found {
 			out = append(out, usage)
 		}
 	}

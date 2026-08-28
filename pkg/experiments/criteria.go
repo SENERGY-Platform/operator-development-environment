@@ -30,7 +30,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 )
 
-// The developer's evaluation criteria, read and applied (SPEC §5.13, M9).
+// The developer's evaluation criteria, read and applied (§5.13, M9).
 //
 // M8 left this deliberately undone and said why: the criteria are the developer's,
 // §5.8 denies every tool that could modify them, and turning the file into a
@@ -518,7 +518,7 @@ func (s *Service) readCriteria(
 	if strings.TrimSpace(req.Bearer) == "" {
 		problem := notComputed(ReasonNoDeveloperCredential,
 			"this summary was built without a developer credential, so %s was not read; "+
-				"every repository read is on behalf of the developer (SPEC §3.1 item 3) "+
+				"every repository read is on behalf of the developer "+
 				"and it is read when they are next connected",
 			EvaluationCriteriaPath)
 		return CriteriaDocument{}, &problem
@@ -530,9 +530,14 @@ func (s *Service) readCriteria(
 		return CriteriaDocument{}, &problem
 	}
 
+	// The workbench the run itself came from, not whichever one the request names:
+	// an interpretation may arrive from the poller with no workbench at all, and
+	// reading this run's evaluation.yaml out of a different operator's checkout
+	// would be worse than not reading it.
 	status, err := s.repo.Status(ctx, repo.StatusRequest{
 		Request: repo.Request{
 			Bearer: req.Bearer, UserSub: req.UserSub, Author: req.Author,
+			WorkbenchID: record.WorkbenchID,
 		},
 	})
 	if err != nil {
@@ -560,7 +565,9 @@ func (s *Service) readCriteria(
 	// `git show <commit>:<path>`, which reads the committed state directly and needs
 	// no checkout of it — so a developer who has moved to another branch since the
 	// launch still gets the criterion the run was submitted with.
-	result, err := s.workspace.Command(ctx, req.Bearer, kernel.Command{
+	result, err := s.workspace.Command(ctx, kernel.Ref{
+		Bearer: req.Bearer, Workbench: status.Link.WorkbenchID,
+	}, kernel.Command{
 		Argv:           []string{"git", "show", record.CommitSHA + ":" + EvaluationCriteriaPath},
 		Dir:            status.Link.Path,
 		Timeout:        s.opts.CommandTimeout,
@@ -612,7 +619,7 @@ func criteriaGitFailure(commitSHA string, result kernel.CommandResult) NotComput
 		strings.Contains(stderr, "exists on disk, but not in"),
 		strings.Contains(stderr, "path '"+EvaluationCriteriaPath+"' does not exist"):
 		return notComputed(ReasonNoCriteriaFile,
-			"the commit %s has no %s. §5.11 item 3 scaffolds one; until there is one, "+
+			"the commit %s has no %s. The scaffold writes one; until there is one, "+
 				"ODE has no criterion to grade this run against and does not invent one",
 			shortSHA(commitSHA), EvaluationCriteriaPath)
 	case strings.Contains(stderr, "unknown revision"),

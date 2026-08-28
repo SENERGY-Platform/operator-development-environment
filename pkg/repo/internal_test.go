@@ -236,6 +236,19 @@ func TestMissingScopesUnderstandsThatRepoImpliesItsChildren(t *testing.T) {
 	}
 }
 
+// A complete grant has to yield an empty slice, not nil. pgx writes a nil slice as
+// SQL NULL and ode_github_identities.missing_scopes is TEXT[] NOT NULL, so a nil
+// here failed the insert for every developer who granted everything ODE asked for.
+func TestMissingScopesIsEmptyRatherThanNilWhenNothingIsMissing(t *testing.T) {
+	missing := missingScopes([]string{"repo", "workflow"}, []string{"repo", "workflow"})
+	if missing == nil {
+		t.Fatal("missing = nil, want an empty slice: a nil reaches postgres as NULL")
+	}
+	if len(missing) != 0 {
+		t.Errorf("missing = %v, want none", missing)
+	}
+}
+
 func TestSealedTokensRoundTripAndRefuseTampering(t *testing.T) {
 	sealer, err := NewSealer("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	if err != nil {
@@ -343,33 +356,33 @@ type stubWorkspace struct {
 	result kernel.CommandResult
 }
 
-func (s *stubWorkspace) Command(context.Context, string, kernel.Command) (kernel.CommandResult, error) {
+func (s *stubWorkspace) Command(context.Context, kernel.Ref, kernel.Command) (kernel.CommandResult, error) {
 	return s.result, nil
 }
 
 func (s *stubWorkspace) CommandBatch(
-	context.Context, string, []kernel.Command,
+	context.Context, kernel.Ref, []kernel.Command,
 ) ([]kernel.CommandResult, error) {
 	return []kernel.CommandResult{s.result}, nil
 }
 
-func (s *stubWorkspace) Tree(context.Context, string, kernel.TreeRequest) (kernel.Node, error) {
+func (s *stubWorkspace) Tree(context.Context, kernel.Ref, kernel.TreeRequest) (kernel.Node, error) {
 	panic("the credential tests do not read a tree")
 }
 
-func (s *stubWorkspace) ReadFile(context.Context, string, string, int) (kernel.FileContent, error) {
+func (s *stubWorkspace) ReadFile(context.Context, kernel.Ref, string, int) (kernel.FileContent, error) {
 	panic("the credential tests do not read a file")
 }
 
-func (s *stubWorkspace) WriteFile(context.Context, string, string, []byte) (kernel.Node, error) {
+func (s *stubWorkspace) WriteFile(context.Context, kernel.Ref, string, []byte) (kernel.Node, error) {
 	panic("the credential tests do not write a file")
 }
 
-func (s *stubWorkspace) MakeDir(context.Context, string, string) (kernel.Node, error) {
+func (s *stubWorkspace) MakeDir(context.Context, kernel.Ref, string) (kernel.Node, error) {
 	panic("the credential tests do not create a directory")
 }
 
-func (s *stubWorkspace) Remove(context.Context, string, string, bool) error {
+func (s *stubWorkspace) Remove(context.Context, kernel.Ref, string, bool) error {
 	panic("the credential tests do not remove anything")
 }
 

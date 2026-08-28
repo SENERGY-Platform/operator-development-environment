@@ -192,7 +192,7 @@ func convertTarget(unit Unit, target string, index *profiler.OntologyIndex) (sou
 	if unit.CharacteristicID == nil || *unit.CharacteristicID == "" {
 		return "", "", fmt.Errorf(
 			"%w: convert: needs a source characteristic and this variable has none — "+
-				"its unit came from %s. Confirm the characteristic first (§5.10), which is what makes conversion possible",
+				"its unit came from %s. Confirm the characteristic first, which is what makes conversion possible",
 			ErrInvalidSpec, unit.UnitSource)
 	}
 	source = *unit.CharacteristicID

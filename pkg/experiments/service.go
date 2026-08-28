@@ -43,7 +43,7 @@ import (
 // do to a developer's pod, and a wider one here would be the first step to a
 // second way of writing their files.
 type Workspace interface {
-	Command(ctx context.Context, bearer string, cmd kernel.Command) (kernel.CommandResult, error)
+	Command(ctx context.Context, ref kernel.Ref, cmd kernel.Command) (kernel.CommandResult, error)
 }
 
 // Repository is the working copy's state, as this package needs it. *repo.Service
@@ -202,20 +202,20 @@ const (
 // degradation the profiler, the kernel and the repo surface already do.
 func New(deps Deps) (*Service, error) {
 	if deps.RayURL == "" {
-		return nil, errors.New("experiments: a ray_url is required (SPEC §5.12)")
+		return nil, errors.New("experiments: a ray_url is required (§5.12)")
 	}
 	if deps.MLflowURL == "" {
-		return nil, errors.New("experiments: an mlflow_url is required (SPEC §5.12)")
+		return nil, errors.New("experiments: an mlflow_url is required (§5.12)")
 	}
 	if deps.Workspace == nil {
 		return nil, errors.New(
 			"experiments: a workspace is required: the job package is built by git in " +
-				"the developer's pod (SPEC §5.11 item 5)")
+				"the developer's pod (§5.11 item 5)")
 	}
 	if deps.Repo == nil {
 		return nil, errors.New(
 			"experiments: a repository service is required: a run is submitted from a " +
-				"commit, not from a working copy (SPEC §5.11 item 7)")
+				"commit, not from a working copy (§5.11 item 7)")
 	}
 	if deps.Store == nil {
 		return nil, errors.New("experiments: a store is required")
@@ -315,6 +315,10 @@ type Request struct {
 	// experiment (D17). Empty falls back to the subject, which is stable but
 	// unreadable in MLflow's own UI.
 	Username string
+	// WorkbenchID names the working context this is about: which checkout the
+	// commit comes from, and which kernel packages it. Empty is the developer's
+	// only workbench, as everywhere else.
+	WorkbenchID string
 	// SessionID is the chat session a launch came from, when it came from one. One
 	// of the four metadata keys §5.12 names.
 	SessionID string
@@ -365,17 +369,16 @@ var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // the job submitted.
 //
 // The consequence of that order, stated rather than hidden: a submission that
-// fails leaves a created MLflow run behind, and that run stays open — ODE records
-// the *experiment* as FAILED with the cluster's refusal in its message, but does
-// not close the run. Deleting it is not right either: a run that existed and failed
-// to launch is a fact about the developer's day, and MLflow's own delete is a
-// developer action. The wart is a run that reads RUNNING forever in MLflow's UI
-// while ODE's record says otherwise, which is worth closing when M9 starts reading
-// run state for interpretation.
+// fails leaves a created MLflow run behind. ODE records the *experiment* as FAILED
+// with the cluster's refusal in its message and closes the run it opened, with
+// FAILED and an end time, because nothing else will. Deleting it is not right
+// either: a run that existed and failed to launch is a fact about the developer's
+// day, and MLflow's own delete is a developer action.
 func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, error) {
 	status, err := s.repo.Status(ctx, repo.StatusRequest{
 		Request: repo.Request{
 			Bearer: req.Bearer, UserSub: req.UserSub, Author: req.Author,
+			WorkbenchID: req.WorkbenchID,
 		},
 	})
 	if err != nil {
@@ -398,8 +401,12 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 	experimentID := s.ids.NewID()
 	submissionID := s.ids.NewID()
 
-	built, err := s.buildArchive(ctx, req.Bearer, status.Link.FullName, status.Link.Path,
-		commitSHA, packagePath(submissionID))
+	// The workbench comes from the link rather than from the request: the request
+	// may name none because the developer has one, while the link always names the
+	// concrete one whose kernel holds that checkout.
+	built, err := s.buildArchive(ctx, kernel.Ref{
+		Bearer: req.Bearer, Workbench: status.Link.WorkbenchID,
+	}, status.Link.FullName, status.Link.Path, commitSHA, packagePath(submissionID))
 	if err != nil {
 		return LaunchResult{}, err
 	}
@@ -434,6 +441,7 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 		MLflowExperimentID:   mlflowExperimentID,
 		MLflowExperimentName: mlflowExperimentName,
 		SessionID:            req.SessionID,
+		WorkbenchID:          status.Link.WorkbenchID,
 		Repository:           status.Link.FullName,
 		CommitSHA:            commitSHA,
 		Branch:               status.Branch,
@@ -593,7 +601,7 @@ func requireCommittedState(status repo.Status) (string, error) {
 		return "", fmt.Errorf(
 			"%w: the working copy at %s has origin %s while the selected repository is %s; "+
 				"an experiment records the two as a pair, and a commit SHA tagged with the "+
-				"wrong repository resolves nowhere (SPEC §5.11 item 7)",
+				"wrong repository resolves nowhere",
 			repo.ErrRemoteMismatch, status.Link.Path, remoteOrNone(status.Remote),
 			status.Link.FullName)
 	}
@@ -1049,9 +1057,9 @@ func (s *Service) Summarise(ctx context.Context, record Experiment) (Summary, er
 
 	problem := notComputed(ReasonNoDeveloperCredential,
 		"this summary was built when the run finished, with ODE's own Ray and MLflow "+
-			"credential (SPEC §3.1 item 5) and nobody connected. %s is on the developer's "+
-			"workspace and is read on their behalf (§3.1 item 3), so the criteria are "+
-			"applied when they are next connected",
+			"credential and nobody connected. %s is on the developer's workspace and is "+
+			"read on their behalf, so the criteria are applied when they are next "+
+			"connected",
 		EvaluationCriteriaPath)
 	return buildSummary(record, run, previousRun, CriteriaDocument{}, &problem), nil
 }

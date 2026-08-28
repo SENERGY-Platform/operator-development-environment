@@ -370,6 +370,18 @@ func TestWSChatRefusalsCarryAStatus(t *testing.T) {
 		{"confirmation without a decision", "chat_confirm",
 			map[string]any{"session_id": sessionID, "confirmation_id": "x"},
 			http.StatusForbidden},
+		{"decision on an unknown session", "chat_decide",
+			map[string]any{"session_id": "nope", "confirmation_id": "x", "approve": true},
+			http.StatusNotFound},
+		// Gone, not Not Found: a decision the developer made after the call holding
+		// it timed out is a different thing from one for a confirmation that never
+		// existed, and the SPA reloads the session for only one of them.
+		{"decision on nothing held", "chat_decide",
+			map[string]any{"session_id": sessionID, "confirmation_id": "nope", "approve": true},
+			http.StatusGone},
+		{"decision without a decision", "chat_decide",
+			map[string]any{"session_id": sessionID, "confirmation_id": "x"},
+			http.StatusBadRequest},
 	}
 
 	for i, tc := range cases {
@@ -443,6 +455,79 @@ func TestOneExchangePerSession(t *testing.T) {
 	if frame.Type != "error" {
 		t.Errorf("a second concurrent exchange was accepted: %+v", frame)
 	}
+}
+
+// activityState reads the state out of a chat_watch frame, or "" for anything
+// else — the watch shares a connection with the turn it is reporting on, so a test
+// has to sort its own frames out of the stream.
+func activityState(t *testing.T, frame wsFrame, id string) (string, string) {
+	t.Helper()
+	if frame.ID != id || frame.Type != "event" {
+		return "", ""
+	}
+	var activity struct {
+		SessionID string `json:"session_id"`
+		State     string `json:"state"`
+	}
+	if err := json.Unmarshal(frame.Payload, &activity); err != nil {
+		t.Fatalf("decode activity: %v", err)
+	}
+	return activity.SessionID, activity.State
+}
+
+// TestChatWatchReportsATurnNobodyIsViewing is the case the sessions panel exists
+// for: the developer starts a turn, switches to another conversation — which
+// detaches the view — and has to be told when the first one is done.
+func TestChatWatchReportsATurnNobodyIsViewing(t *testing.T) {
+	h := newWSChatHarness(t)
+	sessionID := h.session(t)
+
+	watch := h.dial(t)
+	writeFrame(t, watch, "chat_watch", "w1", map[string]any{})
+	readUntil(t, watch, func(f wsFrame) bool { return f.ID == "w1" && f.Type == "accepted" })
+
+	// The turn is started on another connection, which is then dropped: the same
+	// shape as switching sessions, since both leave the exchange with no view.
+	sender := h.dial(t)
+	writeFrame(t, sender, "chat_send", "r1", map[string]any{
+		"session_id": sessionID, "message": "profile it",
+	})
+	readUntil(t, sender, func(f wsFrame) bool { return eventType(t, f) == "progress" })
+	_ = sender.Close()
+
+	readUntil(t, watch, func(f wsFrame) bool {
+		id, state := activityState(t, f, "w1")
+		return id == sessionID && state == "running"
+	})
+
+	h.release()
+	readUntil(t, watch, func(f wsFrame) bool {
+		id, state := activityState(t, f, "w1")
+		return id == sessionID && state == "idle"
+	})
+}
+
+// TestChatWatchOpensWithWhatIsAlreadyRunning: a reload during a long turn has to
+// find the conversation marked busy, or the panel would say nothing is happening
+// until the turn ends.
+func TestChatWatchOpensWithWhatIsAlreadyRunning(t *testing.T) {
+	h := newWSChatHarness(t)
+	sessionID := h.session(t)
+
+	sender := h.dial(t)
+	writeFrame(t, sender, "chat_send", "r1", map[string]any{
+		"session_id": sessionID, "message": "profile it",
+	})
+	readUntil(t, sender, func(f wsFrame) bool { return eventType(t, f) == "progress" })
+
+	watch := h.dial(t)
+	writeFrame(t, watch, "chat_watch", "w1", map[string]any{})
+	readUntil(t, watch, func(f wsFrame) bool {
+		id, state := activityState(t, f, "w1")
+		return id == sessionID && state == "running"
+	})
+
+	h.release()
 }
 
 func contains(haystack []string, needle string) bool {

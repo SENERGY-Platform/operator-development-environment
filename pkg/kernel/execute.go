@@ -111,9 +111,22 @@ func (c *connection) relay(
 		replyStatus = StatusOK
 	)
 
+	// send places an event without blocking, and reports whether the consumer
+	// still had room for it. Used for the terminal event, which has to be tried
+	// even on a context that is already done.
+	send := func(event ExecutionEvent) bool {
+		select {
+		case events <- event:
+			return true
+		default:
+			return false
+		}
+	}
+
 	// emit drops the event rather than blocking when the consumer has stopped
 	// reading, which happens whenever a developer closes the tab mid-cell. The
-	// execution itself is unaffected; only this view of it ends.
+	// execution itself is unaffected; only this view of it ends. A false answer
+	// means the context ended, and the caller owes the stream its KindDone.
 	emit := func(event ExecutionEvent) bool {
 		select {
 		case events <- event:
@@ -124,11 +137,36 @@ func (c *connection) relay(
 	}
 
 	finish := func(status, failure string) {
-		emit(ExecutionEvent{
+		event := ExecutionEvent{
 			Kind:      KindDone,
 			Status:    status,
 			Truncated: truncated || c.dropped(msgID) > 0,
 			Error:     failure,
+		}
+		if emit(event) {
+			return
+		}
+		// The context ended while the completion was in flight. The cell is over
+		// either way, so report how it ended rather than let the stream close on
+		// nothing.
+		send(event)
+	}
+
+	// interrupted ends the execution the way a cancelled context demands: stop the
+	// cell rather than only stop watching it. A cell left running holds the kernel,
+	// and the next execution would queue behind something nobody is waiting for.
+	interrupted := func() {
+		if opts.OnCancel != nil {
+			opts.OnCancel()
+		}
+		failure := ""
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			failure = "the execution exceeded its time limit and the kernel was interrupted"
+		}
+		// Emitted on a context that is already done, so it cannot use emit.
+		send(ExecutionEvent{
+			Kind: KindDone, Status: StatusInterrupted, Error: failure,
+			Truncated: truncated || c.dropped(msgID) > 0,
 		})
 	}
 
@@ -189,29 +227,16 @@ func (c *connection) relay(
 			}
 
 			if !emit(event) {
+				// The cancellation reached this event before the ctx.Done case below
+				// could see it. Same ending, and it has to be the same ending: dropping
+				// out here would leave the cell running and the stream without its
+				// KindDone.
+				interrupted()
 				return
 			}
 
 		case <-ctx.Done():
-			// Stop the cell rather than only stopping the watching. A cell left
-			// running holds the kernel, and the next execution would queue behind
-			// something nobody is waiting for.
-			if opts.OnCancel != nil {
-				opts.OnCancel()
-			}
-			status := StatusInterrupted
-			failure := ""
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				failure = "the execution exceeded its time limit and the kernel was interrupted"
-			}
-			// Emitted on a context that is already done, so it cannot use emit.
-			select {
-			case events <- ExecutionEvent{
-				Kind: KindDone, Status: status, Error: failure,
-				Truncated: truncated || c.dropped(msgID) > 0,
-			}:
-			default:
-			}
+			interrupted()
 			return
 
 		case <-c.done:

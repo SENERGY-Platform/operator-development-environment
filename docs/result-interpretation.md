@@ -13,7 +13,7 @@ Working on `pkg/interpret`, or on the grading of a run against the developer's
 **Not this if**: the question is how the run was launched or what the job could
 reach — see [experiments.md](experiments.md).
 
-`geltung`: `allgemein` — follows from SPEC §5.13, D28 and §3.1 item 5.
+`geltung`: `allgemein` — follows from §5.13, D28 and §3.1 item 5.
 
 ## The token, which is the whole problem
 
@@ -54,7 +54,7 @@ GET /experiments/{id}/results
  "evaluation_criteria":{
    "metric":"rmse","threshold":0.35,"value":0.31,"met":true,
    "goal":"minimise","goal_stated":true,"lower_is_better":true,
-   "source":"evaluation.yaml at 1dba90e, which is the developer's own (SPEC §5.8: no tool may modify it)"}}
+   "source":"evaluation.yaml at 1dba90e, which is the developer's own (§5.8: no tool may modify it)"}}
 ```
 
 The conversation is still untouched at this point. Open the SPA — that is the whole

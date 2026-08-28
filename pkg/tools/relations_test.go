@@ -515,8 +515,9 @@ func TestProposeRelatedSetsIsReachableAtTheDefaultTier(t *testing.T) {
 	for _, definition := range available {
 		names = append(names, definition.Name)
 	}
-	if len(available) != 9 {
-		t.Errorf("L0 tools = %d, want 9 — the figure the README quotes: %v", len(available), names)
+	// Ten with probe_export_data, which the README quotes alongside the rest.
+	if len(available) != 10 {
+		t.Errorf("L0 tools = %d, want 10 — the figure the README quotes: %v", len(available), names)
 	}
 	found := false
 	for _, name := range names {

@@ -101,12 +101,12 @@ const tooLargeMarker = "ODE_TOO_LARGE"
 // checkout is workspace-relative; tempPath is an absolute path in the pod, unique
 // per submission so two launches cannot collide over it.
 func (s *Service) buildArchive(
-	ctx context.Context, bearer, repository, checkout, commitSHA, tempPath string,
+	ctx context.Context, ref kernel.Ref, repository, checkout, commitSHA, tempPath string,
 ) (archive, error) {
 	// git archive writes the zip itself. -o rather than stdout because the workspace
 	// surface decodes a command's stdout as text with replacement characters, which
 	// would corrupt every byte of a zip that is not valid UTF-8.
-	written, err := s.workspace.Command(ctx, bearer, kernel.Command{
+	written, err := s.workspace.Command(ctx, ref, kernel.Command{
 		Argv:           []string{"git", "archive", "--format=zip", "-o", tempPath, commitSHA},
 		Dir:            checkout,
 		Timeout:        s.opts.CommandTimeout,
@@ -125,7 +125,7 @@ func (s *Service) buildArchive(
 	// more, so the output bound is derived from the package bound rather than
 	// configured separately — two figures that must stay in step are one figure.
 	limit := s.opts.MaxPackageBytes
-	read, err := s.workspace.Command(ctx, bearer, kernel.Command{
+	read, err := s.workspace.Command(ctx, ref, kernel.Command{
 		Argv:           []string{"python3", "-c", archiveReader, tempPath, strconv.FormatInt(limit, 10)},
 		Dir:            checkout,
 		Timeout:        s.opts.CommandTimeout,

@@ -80,8 +80,8 @@ func (s *surface) writeFile(ctx context.Context, req Request) (any, error) {
 	}
 	if strings.EqualFold(path.Base(path.Clean(strings.TrimSpace(in.Path))), evaluationCriteria) {
 		return nil, fmt.Errorf(
-			"%w: %s holds the developer's evaluation criteria and no tool may write it "+
-				"(SPEC §5.8). Propose the change in the conversation instead",
+			"%w: %s holds the developer's evaluation criteria and no tool may write it. "+
+				"Propose the change in the conversation instead",
 			ErrInvalidInput, evaluationCriteria)
 	}
 	// An empty content is a legitimate write — a placeholder module, a cleared
@@ -92,6 +92,10 @@ func (s *surface) writeFile(ctx context.Context, req Request) (any, error) {
 	written, err := s.deps.Repo.WriteFile(ctx, repo.Request{
 		Bearer:  req.Token,
 		UserSub: req.UserSub,
+		// The session's own workbench, so a model working on one operator cannot
+		// write into another's checkout — which is the whole reason the session
+		// carries one.
+		WorkbenchID: req.WorkbenchID,
 	}, in.Path, []byte(in.Content))
 	if err != nil {
 		return nil, err

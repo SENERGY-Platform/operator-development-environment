@@ -298,7 +298,7 @@ func (d ProposalDecision) Validate() error {
 		// something will set eventually.
 		return fmt.Errorf(
 			"%w: a decision is never binding; promoting a value into %s or the operator "+
-				"config is a separate developer action (SPEC D28, §5.8)",
+				"config is a separate developer action",
 			ErrInvalidRequest, experiments.EvaluationCriteriaPath)
 	}
 	return nil

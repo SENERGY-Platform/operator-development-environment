@@ -85,7 +85,7 @@ func TestDataAvailabilityRejectsAnEmptyDeviceIdWithoutCallingThePlatform(t *test
 	}
 }
 
-// SPEC §5.3 and timescale-wrapper's own swagger annotation both describe
+// §5.3 and timescale-wrapper's own swagger annotation both describe
 // /usage/devices as GET. The route registration is POST with a JSON id array,
 // and the route is what answers.
 func TestDeviceUsageIsPostedAsAnIdArray(t *testing.T) {
@@ -103,6 +103,84 @@ func TestDeviceUsageIsPostedAsAnIdArray(t *testing.T) {
 	}
 	if len(usage) != 1 || usage[0].BytesPerDay != 10.5 {
 		t.Errorf("usage = %v, want the rate the platform reported", usage)
+	}
+}
+
+func TestExportUsageIsPostedAsAnIdArray(t *testing.T) {
+	client, got := serve(t, http.StatusOK, `[{"exportId":"e1","bytes":100,"bytesPerDay":10.5}]`)
+
+	usage, err := client.ExportUsage(context.Background(), "Bearer caller", []string{"e1", "e2"})
+	if err != nil {
+		t.Fatalf("ExportUsage: %v", err)
+	}
+	if got.method != http.MethodPost || got.path != "/usage/exports" {
+		t.Errorf("request = %s %s, want POST /usage/exports", got.method, got.path)
+	}
+	if got.body != `["e1","e2"]` {
+		t.Errorf("body = %s, want a bare id array", got.body)
+	}
+	if len(usage) != 1 || usage[0].ExportId != "e1" || usage[0].BytesPerDay != 10.5 {
+		t.Errorf("usage = %v, want the export the platform reported", usage)
+	}
+}
+
+// An export with no usage row is the case that must not be read as an empty
+// export: the collector fills that table per timescale table and has not
+// necessarily run. The client's job is to hand the absence through unchanged.
+func TestExportUsageAnswersAnAbsentEntryAsAnAbsence(t *testing.T) {
+	client, _ := serve(t, http.StatusOK, `[]`)
+
+	usage, err := client.ExportUsage(context.Background(), "Bearer caller", []string{"e1"})
+	if err != nil {
+		t.Fatalf("ExportUsage: %v", err)
+	}
+	if len(usage) != 0 {
+		t.Errorf("usage = %v, want nothing for an export the usage table has no row for", usage)
+	}
+}
+
+func TestExportUsageRejectsAnEmptyListWithoutCallingThePlatform(t *testing.T) {
+	client, got := serve(t, http.StatusOK, `[]`)
+	if _, err := client.ExportUsage(context.Background(), "Bearer caller", nil); !errors.Is(err, timeseries.ErrInvalidRequest) {
+		t.Errorf("error = %v, want ErrInvalidRequest", err)
+	}
+	if got.path != "" {
+		t.Errorf("the platform was called with %q, want no call at all", got.path)
+	}
+}
+
+// An export element carries exportId and neither deviceId nor serviceId, which is
+// the shape the shared schema validates. A query built the other way round — both
+// set — is what Valid() refuses, and refusing it here is what turns a bare 400
+// into an error naming the element.
+func TestQueryAddressesAnExportAndRefusesAMixedElement(t *testing.T) {
+	client, got := serve(t, http.StatusOK, `[]`)
+
+	exportID := "urn:infai:ses:export:1"
+	if _, err := client.Query(context.Background(), "Bearer caller", []timeseries.QueryElement{{
+		ExportId: &exportID,
+		Columns:  []timeseries.QueryColumn{{Name: "power"}},
+	}}, timeseries.QueryOptions{}); err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if got.method != http.MethodPost || got.path != "/queries/v2" {
+		t.Errorf("request = %s %s, want POST /queries/v2", got.method, got.path)
+	}
+	if !strings.Contains(got.body, `"exportId":"urn:infai:ses:export:1"`) {
+		t.Errorf("body = %s, want the export id in the element", got.body)
+	}
+
+	deviceID := "urn:infai:ses:device:1"
+	_, err := client.Query(context.Background(), "Bearer caller", []timeseries.QueryElement{{
+		ExportId: &exportID,
+		DeviceId: &deviceID,
+		Columns:  []timeseries.QueryColumn{{Name: "power"}},
+	}}, timeseries.QueryOptions{})
+	if !errors.Is(err, timeseries.ErrInvalidRequest) {
+		t.Errorf("error = %v, want ErrInvalidRequest for an element that is both", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "export=") {
+		t.Errorf("error = %v, want it to name the export the element addressed", err)
 	}
 }
 

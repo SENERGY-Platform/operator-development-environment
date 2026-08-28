@@ -8,12 +8,18 @@
   "timescale_wrapper_url": "https://<platform-gateway>/db/v3",
 
   "//platform": "The platform base URLs are placeholders on purpose. A reachable endpoint is deployment data and does not belong in a repository, so the host is filled in from the environment — see .env.example. The paths are the platform's own API shape and are kept.",
-  "//imports": "An operator can take an import as an input the way it takes a device, and an import type carries the same content variables a device type does. device_selection_url is the discovery half: empty means semantic selection reports devices only, and says so in its notes rather than implying the platform has no imports. It is deliberately not used for devices — its device answer drops the connection state, the device type name and the full device type, and hard-codes `shared` to false, so ODE would have to read the devices again anyway. Setting it requires import_deploy_url, because discovery carries no container status and a stopped import would otherwise be indistinguishable from a live one. import_repo_url is needed only for get_import_type_metadata by type id; discovery returns the type alongside every instance. analytics_serving_url is how a live-only import is told from an exported one: timescale-wrapper has no importId and there is no table worker for imports, so an import's history exists only if an export was created for it — without this the question answers `unknown`, which is honest and different from `no history`.",
+  "//imports": "An operator can take an import as an input the way it takes a device, and an import type carries the same content variables a device type does. device_selection_url is the discovery half: empty means semantic selection reports devices only, and says so in its notes rather than implying the platform has no imports. It is deliberately not used for devices — its device answer drops the connection state, the device type name and the full device type, and hard-codes `shared` to false, so ODE would have to read the devices again anyway. Setting it requires import_deploy_url, because discovery carries no container status and a stopped import would otherwise be indistinguishable from a live one. import_repo_url is the import type catalogue, and it is not optional in the way it looks: discovery joins every matching type to its instances and reports one row per instance, so a type nobody has deployed yet is invisible to it — and that is exactly the type create_import_instance exists for. Without this, get_import_type_metadata and list_import_types refuse, a resolution reports no deployable_import_types, and an empty import half cannot say whether the platform describes the wanted signal at all. analytics_serving_url is how a live-only import is told from an exported one: timescale-wrapper has no importId and there is no table worker for imports, so an import's history exists only if an export was created for it — without this the question answers `unknown`, which is honest and different from `no history`.",
   "device_selection_url": "https://<platform-gateway>/device-selection",
   "import_deploy_url": "https://<platform-gateway>/import/deploy",
   "import_repo_url": "https://<platform-gateway>/import/repo",
   "analytics_serving_url": "https://<platform-gateway>/analytics/serving",
   "import_request_timeout": "30s",
+
+  "//exports": "The four fields of an export that belong to this deployment rather than to the import being exported, used by create_export. export_offset is where the export worker starts reading: `smallest` takes what the Kafka topic still retains, `largest` only what arrives from now on, and the assistant may choose between the two per export. export_time_path is where the timestamp sits in an import message, which is `time` beside the `value` payload for every import type; an import whose values describe a time other than their arrival — a backfill, a forecast — overrides it per export, because that is a property of the import type and not of this deployment. The two empty ones are not defaults: export_timestamp_format is whatever this platform's export worker parses and export_database_id is minted by analytics-serving's own migration, so neither can be derived — left empty, ODE copies them from an export this platform already has, and refuses to create one rather than guessing when there is nothing to copy.",
+  "export_offset": "smallest",
+  "export_time_path": "time",
+  "export_timestamp_format": "",
+  "export_database_id": "",
 
   "ontology_cache_ttl": "1h",
   "ontology_invalidate_interval": "5m",
@@ -31,11 +37,11 @@
   "selection_max_criteria": 12,
   "selection_device_limit": 10,
 
-  "//postgres": "Empty runs the in-memory stores. A per-user LLM spend cap is then only as old as the process, so set this before relying on one (SPEC §3.3).",
+  "//postgres": "Empty runs the in-memory stores. A per-user LLM spend cap is then only as old as the process, so set this before relying on one (§3.3).",
   "postgres_url": "",
   "postgres_max_conns": 8,
 
-  "//llm": "Any subset of the four providers of SPEC §5.7. With none configured, ODE serves M0-M2 and no chat. Keys belong in the environment, not here.",
+  "//llm": "Any subset of the four providers of §5.7. With none configured, ODE serves the ontology, selection and profiler surfaces and no chat. Keys belong in the environment, not here.",
   "anthropic_api_key": "",
   "anthropic_models": ["claude-opus-5"],
 
@@ -52,6 +58,9 @@
   "claude_cli_binary": "claude",
   "claude_cli_models": [],
 
+  "//chat_confirmation_timeout": "How long a tool call that needs the developer's confirmation (D11) is held open waiting for their answer. It only applies where a provider runs its own tool loop, which today means the CLI above: the call blocks on ODE's side while the card is on screen, and the decision becomes its result. It is not chat_exchange_timeout, which bounds the whole turn, and it has to stay well under the CLI's own ten-minute turn timeout — a turn that ends underneath the card leaves an approval with nothing to run into. Startup warns when it does not.",
+  "chat_confirmation_timeout": "5m",
+
   "public_url": "http://localhost:8080",
 
   "llm_max_tokens": 8192,
@@ -59,7 +68,7 @@
   "llm_adaptive_thinking": true,
   "llm_max_tool_iterations": 12,
 
-  "//llm_pricing": "Per million tokens, for the estimated cost SPEC §3.3 accounts against. Matched exactly, else by longest prefix. Not baked into the binary: published prices change, and a stale figure makes a cost cap quietly wrong. Verify before relying on these.",
+  "//llm_pricing": "Per million tokens, for the estimated cost §3.3 accounts against. Matched exactly, else by longest prefix. Not baked into the binary: published prices change, and a stale figure makes a cost cap quietly wrong. Verify before relying on these.",
   "llm_currency": "EUR",
   "llm_pricing": [
     { "model": "claude-opus-5", "input_per_mtok": 5.0, "output_per_mtok": 25.0 },
@@ -67,7 +76,7 @@
     { "model": "claude-haiku-4-5", "input_per_mtok": 1.0, "output_per_mtok": 5.0 }
   ],
 
-  "//jupyterhub": "SPEC §5.6. Empty leaves the kernel surface unserved. The token is ODE's JupyterHub *service* credential and must hold servers, tokens, access:servers and users:activity — startup fails if it does not. Granting them is deployment configuration and is not part of this repository. The workspace path is relative to the singleuser server root and has to be inside the mounted PVC, which is why the default sits under data/ rather than at the home root.",
+  "//jupyterhub": "§5.6. Empty leaves the kernel surface unserved. The token is ODE's JupyterHub *service* credential and must hold servers, tokens, access:servers and users:activity — startup fails if it does not. Granting them is deployment configuration and is not part of this repository. The workspace path is relative to the singleuser server root and has to be inside the mounted PVC, which is why the default sits under data/ rather than at the home root.",
   "jupyterhub_url": "",
   "jupyterhub_token": "",
   "jupyterhub_username_claim": "preferred_username",
@@ -89,13 +98,13 @@
   "tool_preview_max_points": 500,
   "tool_relation_max_rules": 12,
   "tool_relation_token_budget": 4000,
-  "//charts": "SPEC §5.9. chart_max_points bounds one series of one chart: the aggregation bucket is widened until the window fits it, so this trades resolution against the size of the read and never truncates the window. chart_default_lookback is what a chart covers when neither the author nor a named profile says.",
+  "//charts": "§5.9. chart_max_points bounds one series of one chart: the aggregation bucket is widened until the window fits it, so this trades resolution against the size of the read and never truncates the window. chart_default_lookback is what a chart covers when neither the author nor a named profile says.",
   "chart_max_points": 2000,
   "chart_max_annotations": 200,
   "chart_max_per_user": 100,
   "chart_default_lookback": "168h",
 
-  "//relations": "SPEC §5.5. relation_max_members bounds one relational pass; the pair count grows with the square of it and the rule count with four times that, so this bounds how readable the rule list is rather than how expensive the read is — the aligned read is one batched query either way. relation_max_buckets bounds the aligned grid, which is widened to fit rather than shortening the window. relation_default_lookback is a month rather than a week because an exception at certain times of day needs several samples in each hour bucket of each weekday. relation_max_graph_neighbours bounds how far out of the requested aspect a device relationship graph may pull: a graph of a whole site names hundreds of devices, and each one outside the aspect costs a device read, so this is what keeps one room's question from becoming a site survey.",
+  "//relations": "§5.5. relation_max_members bounds one relational pass; the pair count grows with the square of it and the rule count with four times that, so this bounds how readable the rule list is rather than how expensive the read is — the aligned read is one batched query either way. relation_max_buckets bounds the aligned grid, which is widened to fit rather than shortening the window. relation_default_lookback is a month rather than a week because an exception at certain times of day needs several samples in each hour bucket of each weekday. relation_max_graph_neighbours bounds how far out of the requested aspect a device relationship graph may pull: a graph of a whole site names hundreds of devices, and each one outside the aspect costs a device read, so this is what keeps one room's question from becoming a site survey.",
   "relation_max_members": 6,
   "relation_max_graph_neighbours": 12,
   "relation_max_buckets": 20000,
@@ -103,7 +112,7 @@
   "relation_max_stored": 200,
   "relation_default_lookback": "720h",
 
-  "//github": "SPEC §5.11, M7. Empty github_client_id leaves the repo surface unserved and write_file declared-but-unavailable; the surface also needs a jupyterhub_url, because the working copy lives on the developer's pod. github_token_key is required when a client id is set — the developer's GitHub token is stored encrypted (item 1) — and is base64 of 32 bytes: `openssl rand -base64 32`. The secret and the key belong in the environment, not here. github_redirect_uri is the *SPA's* callback and has to match the OAuth app's registered one exactly; empty derives it from public_url, which is right only when ODE serves the SPA itself.",
+  "//github": "§5.11. Empty github_client_id leaves the repo surface unserved and write_file declared-but-unavailable; the surface also needs a jupyterhub_url, because the working copy lives on the developer's pod. github_token_key is required when a client id is set — the developer's GitHub token is stored encrypted (item 1) — and is base64 of 32 bytes: `openssl rand -base64 32`. The secret and the key belong in the environment, not here. github_redirect_uri is the *SPA's* callback and has to match the OAuth app's registered one exactly; empty derives it from public_url, which is right only when ODE serves the SPA itself.",
   "github_client_id": "",
   "github_client_secret": "",
   "github_token_key": "",
@@ -112,15 +121,16 @@
   "github_scopes": ["repo", "workflow"],
   "github_redirect_uri": "http://localhost:5173/github/callback",
 
-  "//repo": "repo_command_timeout bounds one git command, and is minutes because a clone of a repository with history is the slow one. repo_max_file_bytes bounds a file the Code pane or write_file may move in one request. operator_lib_ref empty resolves the newest tag at scaffold time and records it per repository, which is D15's `track latest, pin per repo`; setting it fixes every new repository to one ref.",
+  "//repo": "repo_command_timeout bounds one git command, and is minutes because a clone of a repository with history is the slow one. repo_max_file_bytes bounds a file the Code pane or write_file may move in one request. repo_max_workbenches caps how many working contexts a developer may hold open; each one is a kernel process in their pod, so this figure and the memory on the KubeSpawner profile have to be raised together. operator_lib_ref empty resolves the newest tag at scaffold time and records it per repository, which is D15's `track latest, pin per repo`; setting it fixes every new repository to one ref.",
   "repo_command_timeout": "300s",
   "repo_max_file_bytes": 1048576,
   "repo_max_tree_entries": 4000,
   "repo_max_command_output_bytes": 1048576,
+  "repo_max_workbenches": 3,
   "operator_lib_repo": "SENERGY-Platform/analytics-operator-lib-python",
   "operator_lib_ref": "",
 
-  "//experiments": "SPEC §5.12, M8. Empty ray_url or mlflow_url leaves the experiment routes unserved and launch_experiment and get_experiment_results declared-but-unavailable; setting one without the other fails startup, because ODE creates the MLflow run before submitting the job and a cluster without a tracking server cannot launch anything. The surface also needs a jupyterhub_url and a github_client_id: the job package is `git archive` of the developer's *committed* working copy, and that copy lives on their pod. ray_url and mlflow_url are the API bases ODE calls; ray_dashboard_url and mlflow_ui_url are what a browser should open, which in a cluster is routinely a different host — they are what the embed probe of D6 asks and what the pane links to, and empty falls back to the API base. The two tokens are the service accounts §3.1 item 5 permits, the only place in ODE where one is legitimate, and both may be empty because an in-cluster dashboard is commonly unauthenticated and M10's NetworkPolicy is what bounds who reaches it. They belong in the environment, not here.",
+  "//experiments": "§5.12. Empty ray_url or mlflow_url leaves the experiment routes unserved and launch_experiment and get_experiment_results declared-but-unavailable; setting one without the other fails startup, because ODE creates the MLflow run before submitting the job and a cluster without a tracking server cannot launch anything. The surface also needs a jupyterhub_url and a github_client_id: the job package is `git archive` of the developer's *committed* working copy, and that copy lives on their pod. ray_url and mlflow_url are the API bases ODE calls; ray_dashboard_url and mlflow_ui_url are what a browser should open, which in a cluster is routinely a different host — they are what the embed probe of D6 asks and what the pane links to, and empty falls back to the API base. The two tokens are the service accounts §3.1 item 5 permits, the only place in ODE where one is legitimate, and both may be empty because an in-cluster dashboard is commonly unauthenticated and M10's NetworkPolicy is what bounds who reaches it. They belong in the environment, not here.",
   "ray_url": "",
   "ray_token": "",
   "ray_dashboard_url": "",
@@ -142,7 +152,7 @@
   "experiment_embed_ttl": "10m",
   "experiment_embed_timeout": "5s",
 
-  "//result_interpretation": "SPEC §5.13, M9. This is what makes a finished run reach the conversation it came from without anyone watching. experiment_poll_interval is how often ODE asks Ray about the runs it still calls unfinished — M8 refreshed a status only when somebody looked, which was right while nothing acted on a status change and is not right once §5.13 does. experiment_poll_window is how far back a finished run is still offered for interpretation, and it is not a tuning knob: it is the figure that covers an ODE restart. A deployment that was down for an hour should still interpret the runs that finished during it, and one that has been down for a week should not replay the week into every developer's conversation on the first tick. experiment_poll_batch caps how many records one tick touches and experiment_poll_timeout bounds the whole tick, so a Ray dashboard that has stopped answering costs one tick rather than the loop.\n\ninterpretation_retry_interval is how often the runs waiting for a developer are tried again. Every reason an automated turn is refused is transient — the session is already running an exchange, the §3.3 spend cap has not reset, the developer has not come back — so this is the interval at which those resolve rather than a backoff. interpretation_turn_timeout bounds how long one turn is *waited for*, not how long it may run: chat_exchange_timeout is the real ceiling, and abandoning a turn the developer is watching in order to record its proposal on time would be the wrong trade. interpretation_max_pending bounds the summaries held for developers who are away, so a cluster that finished a thousand jobs overnight does not become a thousand held documents.\n\nNone of these buys ODE a credential. The summary is built with the Ray and MLflow service accounts §3.1 item 5 permits; the interpretation turn runs only while a developer is connected and presenting their own token, because it dispatches tools and every platform read is on their behalf (§3.1 item 3). That is why a run can be summarised at three in the morning and interpreted at nine, and why the evaluation criteria in the summary say `no_developer_credential` until then rather than reporting a criterion as unmet.",
+  "//result_interpretation": "§5.13. This is what makes a finished run reach the conversation it came from without anyone watching. experiment_poll_interval is how often ODE asks Ray about the runs it still calls unfinished — a status refreshed only when somebody looked was right while nothing acted on a status change, and is not right once §5.13 does. experiment_poll_window is how far back a finished run is still offered for interpretation, and it is not a tuning knob: it is the figure that covers an ODE restart. A deployment that was down for an hour should still interpret the runs that finished during it, and one that has been down for a week should not replay the week into every developer's conversation on the first tick. experiment_poll_batch caps how many records one tick touches and experiment_poll_timeout bounds the whole tick, so a Ray dashboard that has stopped answering costs one tick rather than the loop.\n\ninterpretation_retry_interval is how often the runs waiting for a developer are tried again. Every reason an automated turn is refused is transient — the session is already running an exchange, the §3.3 spend cap has not reset, the developer has not come back — so this is the interval at which those resolve rather than a backoff. interpretation_turn_timeout bounds how long one turn is *waited for*, not how long it may run: chat_exchange_timeout is the real ceiling, and abandoning a turn the developer is watching in order to record its proposal on time would be the wrong trade. interpretation_max_pending bounds the summaries held for developers who are away, so a cluster that finished a thousand jobs overnight does not become a thousand held documents.\n\nNone of these buys ODE a credential. The summary is built with the Ray and MLflow service accounts §3.1 item 5 permits; the interpretation turn runs only while a developer is connected and presenting their own token, because it dispatches tools and every platform read is on their behalf (§3.1 item 3). That is why a run can be summarised at three in the morning and interpreted at nine, and why the evaluation criteria in the summary say `no_developer_credential` until then rather than reporting a criterion as unmet.",
   "experiment_poll_interval": "30s",
   "experiment_poll_window": "6h",
   "experiment_poll_batch": 200,
@@ -151,7 +161,7 @@
   "interpretation_turn_timeout": "10m",
   "interpretation_max_pending": 200,
 
-  "//job_token": "SPEC §3.1 item 6, and the risk register's `token expiry vs. long Ray jobs` row. A Ray job reads its training data from timescale-wrapper directly with its own token (§5.3.4) and a training run outlives an interactive session, so where these four are set ODE mints one token per submission through an RFC 8693 token exchange, on behalf of the developer — the job's authorisation stays theirs, which a service account would have violated. Where they are not set ODE degrades the way the rest of ODE degrades: the caller's session token is passed, a warning at startup names what is missing, and every launch result says the credential expires with the session. job_token_audience is not optional in practice, because Keycloak returns a token for the *requesting* client unless an audience names another and a job reads timescale-wrapper. job_token_lifetime is an expectation rather than a request: neither RFC 8693 nor Keycloak accepts a requested lifetime, so ODE compares it against the issuer's own expires_in and warns on a shortfall. The secret belongs in the environment, not here.",
+  "//job_token": "§3.1 item 6, and the risk register's `token expiry vs. long Ray jobs` row. A Ray job reads its training data from timescale-wrapper directly with its own token (§5.3.4) and a training run outlives an interactive session, so where these four are set ODE mints one token per submission through an RFC 8693 token exchange, on behalf of the developer — the job's authorisation stays theirs, which a service account would have violated. Where they are not set ODE degrades the way the rest of ODE degrades: the caller's session token is passed, a warning at startup names what is missing, and every launch result says the credential expires with the session. job_token_audience is not optional in practice, because Keycloak returns a token for the *requesting* client unless an audience names another and a job reads timescale-wrapper. job_token_lifetime is an expectation rather than a request: neither RFC 8693 nor Keycloak accepts a requested lifetime, so ODE compares it against the issuer's own expires_in and warns on a shortfall. The secret belongs in the environment, not here.",
   "keycloak_url": "",
   "keycloak_realm": "master",
   "keycloak_client_id": "",

@@ -20,8 +20,9 @@ index is in the README.
 
 *where the app's instrumentation starts, and the one pane that reads values*
 
-Start the backend and the SPA as above and open the **Profiler** tab, which is
-where the app lands. In order:
+Start the backend and the SPA as above and open **Under the hood → Profiler**.
+The app itself lands on the workspace — the conversation beside the Code pane —
+and every view below is one entry of that menu. In order:
 
 1. **Candidates.** The list is assembled from availability, usage, liveness and
    the ontology, and the counter above it says how many *values* were read to
@@ -59,8 +60,8 @@ profiler is reachable at L0. What enforces the tier is the tool dispatcher — s
 
 *a text intent resolved through the ontology, with every step auditable*
 
-Open the **Selection** tab and type what you want to model — `forecast PV
-generation for this site` is the example SPEC §5.2 is written around. There is no
+Open **Under the hood → Selection** and type what you want to model — `forecast PV
+generation for this site` is the example §5.2 is written around. There is no
 model involved: the words are matched against the ontology's own function, aspect
 and device-class names.
 
@@ -96,8 +97,8 @@ read — a service input, a JSONB list column — are shown and marked rather th
 dropped, because the developer who searched for one needs to know it was seen.
 
 There is no button from a resolved series into the profiler. Promoting a selection
-is `propose_data_selection`, which requires developer confirmation and arrives with
-the tool surface; the Profiler tab also starts from its own list.
+is `propose_data_selection`, a tool on the assistant's surface that requires
+developer confirmation; the Profiler view also starts from its own list.
 
 ## Chat
 
@@ -119,12 +120,19 @@ Startup logs what came up:
 
 ```json
 {"level":"INFO","msg":"llm surface ready","providers":["claude-cli"],
- "tools_declared":18,"tools_available_at_l0":9,"persistent":false}
+ "tools_declared":27,"tools_available_at_l0":10,"persistent":false}
 ```
 
-`tools_declared` is §5.8's whole table; `tools_available_at_l0` is what a session
-can actually reach at the default tier. The gap between the two is the point of the
-milestone.
+`tools_declared` is the whole published table — §5.8's eighteen, the eight the
+import surface adds, and `probe_export_data`; `tools_available_at_l0` is what a
+session can actually reach at the default tier. The gap between the two is the tier doing its work.
+
+The four tools that need your confirmation — `run_code`, `propose_data_selection`,
+`propose_operator_input`, `launch_experiment` — work here as they do on an API key.
+The CLI runs its own tool loop, so the call is held open on ODE's side while the
+card appears in the chat pane; approving it is what runs the tool, and the answer
+goes back to the model as that call's result. `chat_confirmation_timeout` bounds
+how long it waits.
 
 With an API key instead, set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Several
 providers may be configured at once; the first registered is the default, and a
@@ -160,7 +168,7 @@ That warning is the honest report of the development shortcut: a developer's own
 Hub token holds exactly the four scopes, restricted to themselves, which is
 enough to try everything below without touching the Hub's configuration.
 
-Open the **Kernel** tab. The pod is spawned on open rather than on the first
+Open **Under the hood → Kernel**. The pod is spawned on open rather than on the first
 run — a cold start is up to a minute (§5.6) — and the pane says so while it
 happens. Then:
 
@@ -171,7 +179,7 @@ print(os.getcwd())
 print("platform token bytes:", len(os.environ["SENERGY_TOKEN"]))
 ```
 
-Three things in that output are the milestone.
+Three things in that output are the point.
 
 `os.getcwd()` is inside the **mounted PVC**, not the pod's home. Only that
 directory survives the pod being culled and respawned, so it is where the kernel
@@ -194,7 +202,7 @@ watching it. A cell left running would hold the kernel against the next one.
 This pane needs nothing beyond a `timescale_wrapper_url`, and it is the first surface that
 puts values in front of a human rather than in front of a detector.
 
-Open the **Profiler** tab, compute a profile, and press **Chart it**. The
+Open **Under the hood → Profiler**, compute a profile, and press **Chart it**. The
 exploration pane opens with that series drawn over the profile's own analysis
 window, and the profile's detections on top of it: sessions as bands, gaps in
 amber, advised exclusions in red, counter resets as marks. Each band says who
@@ -202,7 +210,7 @@ claimed it — `profiler`, `llm` or `developer` — because those are three diff
 kinds of claim and a chart that blurred them would be arguing on borrowed
 authority.
 
-Then the two things the milestone is accepted on.
+Then the two things this pane rests on.
 
 **The assistant proposes a selection and shows it.** In chat, at tier L1 or above,
 ask for a chart of what it has profiled. `render_chart` answers with a chart id, the
@@ -254,7 +262,7 @@ This pane needs nothing beyond a `timescale_wrapper_url` either, and it is the s
 where the ontology earns its keep twice over: once to decide *which devices* a
 question is about, and once so the answer needs no second detector of its own.
 
-Open the **Relations** tab and pick an aspect — a room, a subsystem. What comes back
+Open **Under the hood → Relations** and pick an aspect — a room, a subsystem. What comes back
 is device sets, and the order is a claim about how much each grouping is worth
 trusting:
 
@@ -317,14 +325,14 @@ INFO  repo surface ready  github=https://api.github.com scopes=[repo workflow]
       operator_lib_ref=(resolved at scaffold time) persistent=true
 ```
 
-Open the **Code** tab, connect GitHub, and create a repository. What happens next
-is the milestone, and the order matters:
+Open the workspace at `/`, connect GitHub in the Code pane, and create a
+repository. The order matters:
 
 1. ODE creates an **empty** repository — `auto_init` is false — so the first commit
    in its history is the developer's.
 2. It clones into the workspace on the per-user PVC, at `data/ode/{repo-name}`.
    The pane shows that path, because it is the same directory the kernel runs in:
-   code in the Kernel tab can `open("op.py")` and read what the editor is showing.
+   code in the Kernel view can `open("op.py")` and read what the editor is showing.
 3. It writes the template of §5.11 item 3 into the working copy — eleven files,
    none of them committed. The pane lists them as uncommitted changes with
    **commit**, **stash** and **discard** beside them.
@@ -379,10 +387,10 @@ INFO  experiment surface ready  ray=http://ray-head:8265 mlflow=http://mlflow:50
       scoped_job_token=false persistent=true
 WARN  no keycloak token exchange is configured: a Ray job carries the developer's
       interactive session token, so a run that outlives the session loses its
-      platform access partway through (SPEC §3.1 item 6). …
+      platform access partway through (§3.1 item 6). …
 ```
 
-That warning is the second half of the milestone and is discussed below.
+That warning is discussed below.
 
 ## Interpretation
 

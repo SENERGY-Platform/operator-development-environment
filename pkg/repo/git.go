@@ -49,7 +49,8 @@ import (
 // gitContext is git in one place, for one developer.
 type gitContext struct {
 	workspace Workspace
-	bearer    string
+	// ref is whose pod and which workbench's kernel these commands run in.
+	ref kernel.Ref
 	// dir is the checkout, relative to the workspace. Empty runs in the workspace
 	// root, which is what a clone needs.
 	dir    string
@@ -136,7 +137,7 @@ func (g gitContext) runAll(ctx context.Context, argvs ...[]string) ([]kernel.Com
 		command.Env = g.authEnv()
 		commands = append(commands, command)
 	}
-	return g.workspace.CommandBatch(ctx, g.bearer, commands)
+	return g.workspace.CommandBatch(ctx, g.ref, commands)
 }
 
 // batchFailure is the first command of a batch that refused, as an error.
@@ -164,7 +165,7 @@ func (g gitContext) attempt(ctx context.Context, args ...string) (kernel.Command
 	command.Argv = append([]string{"git"}, args...)
 	command.Dir = g.dir
 	command.Env = g.authEnv()
-	return g.workspace.Command(ctx, g.bearer, command)
+	return g.workspace.Command(ctx, g.ref, command)
 }
 
 // redact removes the credential from text, in both the forms it exists in.

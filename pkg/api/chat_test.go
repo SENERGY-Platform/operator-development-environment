@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -80,7 +81,12 @@ func (s *stubIDs) NewID() string {
 	return fmt.Sprintf("id-%d", s.n)
 }
 
-func newChatHarness(t *testing.T) *chatHarness {
+func newChatHarness(t *testing.T) *chatHarness { return newChatHarnessWith(t, nil) }
+
+// newChatHarnessWith lets one test add to the dependencies before the router is
+// built. Only the workbench route needs that — it is registered only where there is
+// a repository surface — and every other chat test here is a deployment without one.
+func newChatHarnessWith(t *testing.T, with func(*api.Deps)) *chatHarness {
 	t.Helper()
 
 	schema := json.RawMessage(`{"type":"object","properties":{}}`)
@@ -117,9 +123,13 @@ func newChatHarness(t *testing.T) *chatHarness {
 		t.Fatalf("engine: %v", err)
 	}
 
+	deps := api.Deps{Chat: engine, Admin: adminService}
+	if with != nil {
+		with(&deps)
+	}
 	router := api.NewRouter(
 		api.Config{RequiredRealmRole: "developer", Debug: false},
-		api.Deps{Chat: engine, Admin: adminService},
+		deps,
 	)
 	return &chatHarness{router: router, engine: engine, admin: adminService}
 }
@@ -295,6 +305,121 @@ func TestTierCeilingIsEnforcedOverHTTP(t *testing.T) {
 	}
 }
 
+// --- renaming ---
+
+// The title a developer sets is theirs. What ODE guessed from the opening message
+// is a starting point, and this is the route that replaces it.
+func TestRenameSessionSetsTheDevelopersOwnName(t *testing.T) {
+	h := newChatHarness(t)
+	id := h.createSession(t, "")
+
+	recorder := h.do(t, http.MethodPut, "/chat/sessions/"+id+"/title",
+		map[string]any{"title": "  the pv forecast operator  "}, "developer")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("rename: %d %s", recorder.Code, recorder.Body.String())
+	}
+	// Trimmed: a title is a label in a list, and leading spaces in one are a typo
+	// rather than a decision.
+	if got := decodeBody(t, recorder)["title"]; got != "the pv forecast operator" {
+		t.Errorf("title in the answer = %v, want the trimmed name", got)
+	}
+
+	recorder = h.do(t, http.MethodGet, "/chat/sessions/"+id, nil, "developer")
+	session := decodeBody(t, recorder)["session"].(map[string]any)
+	if got := session["title"]; got != "the pv forecast operator" {
+		t.Errorf("title after a re-read = %v, want it stored", got)
+	}
+}
+
+// An empty title hands the guess back rather than leaving a blank row: the next
+// message titles the session again, because that is what the engine does with a
+// session that has no title.
+func TestRenameSessionWithAnEmptyTitleClearsIt(t *testing.T) {
+	h := newChatHarness(t)
+	id := h.createSession(t, "")
+
+	if got := h.do(t, http.MethodPut, "/chat/sessions/"+id+"/title",
+		map[string]any{"title": "named"}, "developer").Code; got != http.StatusOK {
+		t.Fatalf("rename: %d", got)
+	}
+	recorder := h.do(t, http.MethodPut, "/chat/sessions/"+id+"/title",
+		map[string]any{"title": "   "}, "developer")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if got := decodeBody(t, recorder)["title"]; got != nil && got != "" {
+		t.Errorf("title = %v, want it cleared", got)
+	}
+}
+
+// The column is TEXT, so the bound is ODE's. Refused rather than truncated: a
+// silently shortened title is a rename the developer did not ask for.
+func TestRenameSessionRejectsAnOverlongTitle(t *testing.T) {
+	h := newChatHarness(t)
+	id := h.createSession(t, "")
+
+	if got := h.do(t, http.MethodPut, "/chat/sessions/"+id+"/title",
+		map[string]any{"title": strings.Repeat("a", 201)}, "developer").Code; got != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for a title past the bound", got)
+	}
+}
+
+/*
+ * Renaming must not move a tier, and in particular must not write back a clamped
+ * one.
+ *
+ * Every other read of a session reports the *effective* tier — the stored value
+ * held down by the §3.3 ceiling — so a rename that saved the session it had just
+ * read would persist the clamp. The developer's stored L2 would become L0 because
+ * they renamed a conversation, and raising the ceiling again would no longer bring
+ * it back. That is the shape SetTier's own comment warns about, checked here from
+ * the outside: it is invisible while the ceiling is in place.
+ */
+func TestRenamingASessionKeepsATierTheCeilingIsHidingUnderneath(t *testing.T) {
+	h := newChatHarness(t)
+	id := h.createSession(t, "L2")
+
+	ceiling := func(t *testing.T, tier tools.Tier) {
+		t.Helper()
+		if err := h.admin.SetLimits(context.Background(), admin.GlobalSubject, admin.Limits{
+			MaxTier: &tier,
+		}, "admin"); err != nil {
+			t.Fatalf("SetLimits: %v", err)
+		}
+	}
+
+	ceiling(t, tools.L0)
+	recorder := h.do(t, http.MethodPut, "/chat/sessions/"+id+"/title",
+		map[string]any{"title": "renamed under the ceiling"}, "developer")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("rename: %d %s", recorder.Code, recorder.Body.String())
+	}
+	// The answer reports what the session may currently reach, as every read does.
+	if got := decodeBody(t, recorder)["exposure_tier"]; got != "L0" {
+		t.Errorf("tier in the answer = %v, want the clamped L0", got)
+	}
+
+	ceiling(t, tools.L2)
+	recorder = h.do(t, http.MethodGet, "/chat/sessions/"+id, nil, "developer")
+	session := decodeBody(t, recorder)["session"].(map[string]any)
+	if got := session["exposure_tier"]; got != "L2" {
+		t.Errorf("tier after the ceiling was lifted = %v, want the stored L2 back", got)
+	}
+}
+
+func TestRenamingAnotherUsersSessionIs404(t *testing.T) {
+	h := newChatHarness(t)
+	other, err := h.engine.CreateSession(context.Background(), "someone-else", chat.CreateRequest{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if got := h.do(t, http.MethodPut, "/chat/sessions/"+other.ID+"/title",
+		map[string]any{"title": "mine now"}, "developer").Code; got != http.StatusNotFound {
+		t.Errorf("renaming another user's session gave %d, want 404", got)
+	}
+}
+
 // --- SSE ---
 
 // --- ownership over HTTP ---
@@ -389,7 +514,7 @@ func TestAdminCanSetAndReadLimits(t *testing.T) {
 		t.Error("the limits surface does not say which fields are declared but not yet enforced")
 	}
 	if _, present := declared["kernel_cpu_max"]; !present {
-		t.Error("the kernel caps should be listed as declared-not-enforced until M4")
+		t.Error("the kernel caps should be listed as declared but not enforced")
 	}
 }
 

@@ -72,9 +72,26 @@ put them there, in
 | --- | --- | --- |
 | `device_selection_url` | none | The switch for the whole import half. Empty means semantic selection reports devices only, and says so in its notes |
 | `import_deploy_url` | none | Instance status. **Required once `device_selection_url` is set** — the import service refuses to be built without it, because discovery carries no container status and a stopped import would be indistinguishable from a live one |
-| `import_repo_url` | none | Needed only for `get_import_type_metadata` by type id; discovery returns the type alongside every instance |
-| `analytics_serving_url` | none | Tells a live-only import from an exported one. Without it the history question answers `unknown`, which differs from `no history` |
+| `import_repo_url` | none | `get_import_type_metadata` by type id, `list_import_types`, the `deployable_import_types` half of a resolution, and both creations — `create_import_instance` and `create_export` check their request against the import type and refuse rather than send one they could not check. Discovery does not need it for a type that already has an instance: it returns the type alongside every one of them. It is the only route to a type that has none, which is the only kind `create_import_instance` is for |
+| `analytics_serving_url` | none | Tells a live-only import from an exported one, and carries `create_export` / `delete_export`. It also gates **reading** an export: a query over one takes column names, and they exist only in the export definition — so without it `probe_export_data` is declared-but-unavailable and `profile_series` refuses an `export_id`. Without it the history question answers `unknown`, which differs from `no history` |
 | `import_request_timeout` | `30s` | Bounds one call to any of the four |
+
+### Creating an export
+
+Four fields of an export belong to the deployment rather than to the import being
+exported, and none is derivable: the export database is created per deployment by
+analytics-serving's own migration, and the timestamp format is whatever this
+platform's export worker parses. An export created with the wrong one is accepted,
+deploys, and stores nothing — so ODE refuses rather than guessing. The reasoning
+is in
+[imports-as-operator-inputs.md](imports-as-operator-inputs.md#the-four-fields-that-are-the-deployments-not-the-imports).
+
+| Key | Default | What it decides |
+| --- | --- | --- |
+| `export_offset` | `smallest` | Where the export worker starts reading. `smallest` takes what the Kafka topic still retains, `largest` only what arrives from now on. The one field the assistant may choose per export, because it is a modelling decision rather than a deployment fact |
+| `export_time_path` | `time` | Where an import message carries its timestamp. A real default: every import message carries `time` beside its `value` payload. Overridable per export, for an import whose values describe a time other than their arrival |
+| `export_timestamp_format` | none | What the export worker parses the timestamp with. Empty means "copy it from the newest export this platform already has", reported in the answer's `derived`; with nothing to copy, creating an export is refused. Overridable per export, and belongs with a per-export `export_time_path` |
+| `export_database_id` | none | Where the export writes. Empty means "the one this platform offers", resolved from `GET /databases`; two is a refusal naming both, because putting an export in the wrong database is found only by the history lookup coming back empty |
 
 ## Profiler
 
@@ -84,7 +101,7 @@ The bounds and the two-pass read they describe are in
 
 | Key | Default | What it decides |
 | --- | --- | --- |
-| `profiler_raw_window_days` | `14` | Lookback of the raw pass. The smaller of this and the points bound wins (SPEC D25) |
+| `profiler_raw_window_days` | `14` | Lookback of the raw pass. The smaller of this and the points bound wins (D25) |
 | `profiler_raw_window_points` | `100000` | Bounds the raw pass's **response, not its rows**: the read is one wide row per message carrying one value per variable, so the figure is divided by the variables read (floored at 2000 rows) and the applied number is recorded as `raw_window.row_limit` |
 | `profiler_coverage_window_days` | `90` | Lookback the QuickProfile coverage proxy uses when a request names no window |
 | `profiler_concurrency` | `4` | How many series are profiled at once |
@@ -108,7 +125,7 @@ The bounds and the two-pass read they describe are in
 
 ## LLM providers
 
-Any subset of the four providers of SPEC §5.7 may be configured. With none, the
+Any subset of the four providers of §5.7 may be configured. With none, the
 chat, tool and admin routes are not served. Keys belong in the environment.
 
 | Key | Default | What it decides |
@@ -132,6 +149,7 @@ chat, tool and admin routes are not served. Keys belong in the environment.
 | `llm_currency` | `EUR` | The currency the figures below are in |
 | `llm_pricing` | the three models in `config.json` | Per million tokens, for the estimated cost §3.3 accounts against. Entries are `{model, input_per_mtok, output_per_mtok, cached_input_per_mtok}`, matched exactly and otherwise by longest prefix. Not baked into the binary, because a stale price makes a cost cap quietly wrong — **verify before relying on one** |
 | `chat_exchange_timeout` | `30m` | Ceiling on one detached turn. It exists because an exchange no longer ends with its connection — see [chat-and-streaming.md](chat-and-streaming.md) |
+| `chat_confirmation_timeout` | `5m` | How long a confirmed tool call is held open waiting for the developer, where the provider runs its own tool loop (the CLI). Not the turn's ceiling above: it has to fit *inside* one, or the turn ends underneath the card. Startup warns when it does not |
 
 ## JupyterHub and the kernel
 
@@ -207,6 +225,7 @@ Where a candidate set comes from is in [relations.md](relations.md).
 | `repo_max_file_bytes` | `1048576` | A file the Code pane or `write_file` may move in one request |
 | `repo_max_tree_entries` | `4000` | Entries one tree listing returns |
 | `repo_max_command_output_bytes` | `1048576` | What one git command may return |
+| `repo_max_workbenches` | `3` | How many working contexts one developer may hold open. Each is a kernel process in their pod, so this and the KubeSpawner profile's memory limit are raised together — otherwise a second workbench OOM-kills the first one's training run. A per-user override is `max_workbenches` in the admin limits |
 | `operator_lib_repo` | `SENERGY-Platform/analytics-operator-lib-python` | Where the scaffold takes Operator Lib from |
 | `operator_lib_ref` | empty | Empty resolves the newest tag at scaffold time and records it per repository, which is D15's *track latest, pin per repo*. Setting it fixes every new repository to one ref |
 
@@ -245,7 +264,7 @@ Why the interpretation waits for the developer is in
 
 ## The job token
 
-SPEC §3.1 item 6. A Ray job reads its training data from timescale-wrapper with
+§3.1 item 6. A Ray job reads its training data from timescale-wrapper with
 its own token, and a training run outlives an interactive session. Where these
 are set, ODE mints one token per submission through an RFC 8693 token exchange on
 behalf of the developer, so the job's authorisation stays theirs — which a

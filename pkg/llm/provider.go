@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// Package llm is the provider abstraction of SPEC §5.7 (D7).
+// Package llm is the provider abstraction of §5.7 (D7).
 //
 // One interface, one event stream, four transports. The point of the
 // indirection is stated as an exit criterion for M3 — "provider swap requires no
@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Role is who produced a message. There is deliberately no system role: the
@@ -154,6 +155,13 @@ type ToolEndpoint struct {
 	// explicitly, because it decides what to call and a name it never sees is a
 	// refusal that never happens.
 	AllowedTools []string
+	// CallTimeout is how long one tool call on this endpoint may take.
+	//
+	// Stated rather than left to the client's default, because a confirmed tool
+	// blocks on the developer reading a card (D11), and a client whose own tool
+	// timeout is shorter than that wait would kill the call while ODE is still
+	// legitimately holding it. Zero leaves the client's default in place.
+	CallTimeout time.Duration
 }
 
 // Capabilities is what a provider can actually do, probed or declared. §5.7

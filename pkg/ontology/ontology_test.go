@@ -335,7 +335,7 @@ func TestSnapshotSurvivesAFailingGenerationProbe(t *testing.T) {
 }
 
 // Without a token there is nothing to probe with, and ODE holds no service
-// account for platform reads (SPEC D5).
+// account for platform reads (D5).
 func TestSnapshotSkipsTheProbeWithoutAToken(t *testing.T) {
 	fake := newFakeClient()
 	repo := New(staticFactory(fake), Options{TTL: time.Hour, InvalidateInterval: time.Nanosecond})

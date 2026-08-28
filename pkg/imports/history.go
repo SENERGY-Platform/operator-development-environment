@@ -18,6 +18,8 @@ package imports
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -107,6 +109,67 @@ type Export struct {
 	// timescale columns cannot be derived from its import type.
 	Values    []ExportValue `json:"Values"`
 	CreatedAt time.Time     `json:"CreatedAt"`
+
+	// The four below are read for one reason only: creating an export needs them,
+	// and where a deployment has not configured them, an export that already exists
+	// is the only evidence of what this platform's export worker accepts. See
+	// ExportDefaults.
+	EntityName       string `json:"EntityName"`
+	ServiceName      string `json:"ServiceName"`
+	TimePath         string `json:"TimePath"`
+	TimestampFormat  string `json:"TimestampFormat"`
+	Offset           string `json:"Offset"`
+	ExportDatabaseID string `json:"ExportDatabaseID"`
+}
+
+// ExportDatabase is one destination an export can be written to.
+//
+// Read only to answer "which one", and only when no export_database_id is
+// configured. Type is carried because a platform with two databases usually has
+// an influx one and a timescale one, and the refusal that names them is more use
+// than a list of opaque ids.
+type ExportDatabase struct {
+	ID   string `json:"ID"`
+	Name string `json:"Name"`
+	Type string `json:"Type"`
+}
+
+// ServingRequest is analytics-serving's own create body.
+//
+// Declared here for the reason Export is: the shape lives in an `internal`
+// package upstream with no JSON tags, so there is nothing importable to couple
+// to. Every field name below is the Go field name that service happens to
+// marshal, and the JSON tags are what makes that explicit rather than incidental.
+//
+// FilterType, Filter, Name, EntityName, ServiceName, Topic and Offset are all
+// `validate:"required"` upstream; omitting one produces a 400 whose body is a map
+// of field names, which is why CreateExport fills every one of them.
+type ServingRequest struct {
+	FilterType       string                `json:"FilterType"`
+	Filter           string                `json:"Filter"`
+	Name             string                `json:"Name"`
+	EntityName       string                `json:"EntityName"`
+	ServiceName      string                `json:"ServiceName"`
+	Description      string                `json:"Description,omitempty"`
+	Topic            string                `json:"Topic"`
+	TimePath         string                `json:"TimePath"`
+	Offset           string                `json:"Offset"`
+	Values           []ServingRequestValue `json:"Values"`
+	ExportDatabaseID string                `json:"ExportDatabaseID"`
+	TimestampFormat  string                `json:"TimestampFormat,omitempty"`
+	TimestampUnique  bool                  `json:"TimestampUnique,omitempty"`
+}
+
+// ServingRequestValue is one column of an export.
+//
+// Path is message-relative, as a Selectable carries it and as the TimePath
+// beside it is; Name is the column it lands in. Tag has no omitempty upstream
+// and none here: false is meaningful.
+type ServingRequestValue struct {
+	Name string `json:"Name"`
+	Type string `json:"Type"`
+	Path string `json:"Path"`
+	Tag  bool   `json:"Tag"`
 }
 
 type ExportValue struct {
@@ -205,11 +268,12 @@ func historyOf(instanceID string, found []Export, total int64) History {
 		columns := make([]HistoryColumn, 0, len(export.Values))
 		for _, value := range export.Values {
 			columns = append(columns, HistoryColumn{
-				// The export's Path is relative to the payload, one level below the
-				// message-relative path a Selectable carries — the export dialog walks
-				// from the `value` node with an empty prefix. Putting the prefix back is
-				// what makes the two addressable by the same key.
-				VariablePath: pathPrefix + "." + value.Path,
+				// The export's Path is message-relative, the same key a Selectable
+				// carries, so it is reported as stored. An export whose paths lost the
+				// `value` envelope resolves against the message root and writes null
+				// columns; putting the prefix back here would report it as if it did
+				// not.
+				VariablePath: value.Path,
 				Column:       value.Name,
 				Tag:          value.Tag,
 			})
@@ -315,4 +379,44 @@ func (c *ServingClient) ListExports(ctx context.Context, token string, limit, of
 		response.Instances = []Export{}
 	}
 	return response.Instances, response.Total, nil
+}
+
+// CreateExport creates one export. The answer is the stored export, including
+// the id timescale-wrapper takes as exportId.
+//
+// A 201 is not proof of anything on its own here: analytics-serving returns an
+// empty instance and no error when the caller may not access the source, and its
+// handler encodes that with a 201 all the same. The caller checks the id — see
+// Service.CreateExport.
+func (c *ServingClient) CreateExport(ctx context.Context, token string, request ServingRequest) (Export, error) {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return Export{}, fmt.Errorf("imports: encoding export request: %w", err)
+	}
+	return do[Export](ctx, c.http, c.timeout, token,
+		http.MethodPost, c.baseURL+"/instance", nil, body)
+}
+
+// DeleteExport removes one export, and its timescale table with it.
+func (c *ServingClient) DeleteExport(ctx context.Context, token string, id string) error {
+	_, err := doRaw(ctx, c.http, c.timeout, token,
+		http.MethodDelete, c.baseURL+"/instance/"+url.PathEscape(id), nil, nil)
+	return err
+}
+
+// ListDatabases lists the export databases this account may write to.
+//
+// Unlike the export listing, the answer is a bare array rather than a paged
+// envelope — a different shape from the same service, and the reason this is not
+// folded into ListExports.
+func (c *ServingClient) ListDatabases(ctx context.Context, token string) ([]ExportDatabase, error) {
+	found, err := do[[]ExportDatabase](ctx, c.http, c.timeout, token,
+		http.MethodGet, c.baseURL+"/databases", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if found == nil {
+		found = []ExportDatabase{}
+	}
+	return found, nil
 }

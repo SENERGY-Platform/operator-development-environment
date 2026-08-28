@@ -27,7 +27,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 )
 
-// The exploration pane's routes (SPEC §5.9, §5.10, M5).
+// The exploration pane's routes (§5.9, §5.10, M5).
 //
 // Two things about this surface are decisions rather than defaults.
 //
@@ -60,7 +60,7 @@ type chartBody struct {
 }
 
 // @Summary		Create a chart specification
-// @Description	Validates a declarative chart specification (SPEC §5.9), resolves every
+// @Description	Validates a declarative chart specification (§5.9), resolves every
 // @Description	series against the device type and the ontology, and stores it. No values
 // @Description	are read: this answers with the resolved units, the axis and the chart id,
 // @Description	and GET /charts/{id}/data is what reads the data behind it.

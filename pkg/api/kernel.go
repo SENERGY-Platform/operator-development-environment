@@ -19,6 +19,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -26,16 +27,33 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 )
 
-// The kernel surface (SPEC §5.6, M4).
+// The kernel surface (§5.6, M4).
 //
 // Every route resolves the developer from their own token and nothing else.
 // There is no user parameter anywhere here, which is what makes "your pod" mean
 // yours: ODE's Hub credential could address any user's server, and the only
 // thing that stops a request doing so is that no route offers a way to say which.
 //
+// There is a `workbench` parameter, and it is a different thing: it says which of
+// the caller's *own* kernels the request means. Absent means their default one, so
+// a client that predates workbenches and a deployment with one working copy per
+// developer both behave exactly as they did.
+//
 // Execution is not here. It streams, and a cell outlives an HTTP request as
 // readily as a profile does, so it lives on the WebSocket beside the profiler
 // operations (ws_kernel.go).
+
+// kernelRef says whose kernel and which one, from the validated token and the
+// query. A workbench the caller does not own resolves to no checkout rather than
+// to somebody else's — the repository surface checks ownership before answering
+// where a workbench points — so the worst a guessed id does is start a kernel in
+// the guesser's own workspace root.
+func kernelRef(c *gin.Context) kernel.Ref {
+	return kernel.Ref{
+		Bearer:    auth.Bearer(c),
+		Workbench: strings.TrimSpace(c.Query("workbench")),
+	}
+}
 
 // @Summary		The caller's kernel status
 // @Description	Resolved from the caller's own token: no route here takes a user
@@ -46,10 +64,11 @@ import (
 // @Success		200	{object}	kernel.Status
 // @Failure		401	{object}	map[string]string
 // @Failure		502	{object}	map[string]string	"the Hub or the singleuser server could not be reached"
+// @Param			workbench	query	string	false	"Which of the caller's workbenches; their default one when absent"
 // @Router			/kernel [get]
 func handleKernelStatus(svc *kernel.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		status, err := svc.Status(c.Request.Context(), auth.Bearer(c))
+		status, err := svc.Status(c.Request.Context(), kernelRef(c))
 		if err != nil {
 			respondKernel(c, err)
 			return
@@ -77,7 +96,7 @@ func handleKernelStatus(svc *kernel.Service) gin.HandlerFunc {
 // @Router			/kernel [post]
 func handleKernelEnsure(svc *kernel.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		status, err := svc.Ensure(c.Request.Context(), auth.Bearer(c))
+		status, err := svc.Ensure(c.Request.Context(), kernelRef(c))
 		if err != nil {
 			respondKernel(c, err)
 			return
@@ -98,7 +117,7 @@ func handleKernelEnsure(svc *kernel.Service) gin.HandlerFunc {
 // @Router			/kernel/restart [post]
 func handleKernelRestart(svc *kernel.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		status, err := svc.Restart(c.Request.Context(), auth.Bearer(c))
+		status, err := svc.Restart(c.Request.Context(), kernelRef(c))
 		if err != nil {
 			respondKernel(c, err)
 			return
@@ -119,7 +138,7 @@ func handleKernelRestart(svc *kernel.Service) gin.HandlerFunc {
 // @Router			/kernel/interrupt [post]
 func handleKernelInterrupt(svc *kernel.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if err := svc.InterruptUser(c.Request.Context(), auth.Bearer(c)); err != nil {
+		if err := svc.InterruptUser(c.Request.Context(), kernelRef(c)); err != nil {
 			respondKernel(c, err)
 			return
 		}
@@ -143,7 +162,7 @@ func handleKernelInterrupt(svc *kernel.Service) gin.HandlerFunc {
 // @Router			/kernel [delete]
 func handleKernelShutdown(svc *kernel.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if err := svc.ShutdownUser(c.Request.Context(), auth.Bearer(c)); err != nil {
+		if err := svc.ShutdownUser(c.Request.Context(), kernelRef(c)); err != nil {
 			respondKernel(c, err)
 			return
 		}
@@ -171,7 +190,7 @@ func handleKernelShutdown(svc *kernel.Service) gin.HandlerFunc {
 // @Router			/kernel/files [get]
 func handleKernelFiles(svc *kernel.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		entries, err := svc.Files(c.Request.Context(), auth.Bearer(c), c.Query("path"))
+		entries, err := svc.Files(c.Request.Context(), kernelRef(c), c.Query("path"))
 		if err != nil {
 			respondKernel(c, err)
 			return

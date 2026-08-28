@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
@@ -267,10 +268,71 @@ func (s *surface) probeAvailability(ctx context.Context, req Request) (any, erro
 	}, nil
 }
 
+// ---- probe_export_data (L0) ----
+
+type probeExportInput struct {
+	ExportID string `json:"export_id"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+}
+
+// probeExportData is probe_availability's export-side counterpart, and it is a
+// separate tool rather than a parameter for a reason worth stating: there is no
+// /data-availability for an export. The endpoint is device-scoped, so the window
+// a device answers with has to be counted for an export — and counting is what
+// also answers the question a developer actually has after creating one, which is
+// whether anything is in it.
+//
+// It stays at L0 on the same footing probe_availability does: what it asks for is
+// how many rows carry a value, never what the value is. Every figure it can return
+// is metadata about the table.
+func (s *surface) probeExportData(ctx context.Context, req Request) (any, error) {
+	var in probeExportInput
+	if err := decode(req.Input, &in); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(in.ExportID) == "" {
+		return nil, fmt.Errorf("%w: export_id is required", ErrInvalidInput)
+	}
+	window, err := parseWindow(in.From, in.To)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Progress("export_definition", "reading the export's column list")
+	fill, err := s.deps.Profiler.ExportFill(ctx, req.Token, profiler.ExportFillRequest{
+		ExportID: in.ExportID,
+		Window:   window,
+		Progress: func(phase profiler.Phase) { req.Progress(phase.Stage, phase.Detail) },
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"export": fill,
+		"reads": map[string]int{
+			// Stated rather than implied, as probe_availability does it. The query
+			// this tool makes asks for counts per bucket, so there is no value in
+			// anything it can answer with.
+			"values": 0,
+			"counts": fill.Reads.Values,
+			"usage":  fill.Reads.Usage,
+		},
+		"note": "state \"filled\" means rows exist and every readable column carries values. " +
+			"\"partly_filled\" means rows exist and a named column is null in all of them, which is " +
+			"an export whose value path resolves against the message root rather than its payload — " +
+			"report the column, do not report the export as working. \"empty\" means nothing was " +
+			"written in the window. \"unknown\" is not \"empty\": it means the question could not be " +
+			"answered, and the two call for opposite advice. Counts are row counts; no value was read.",
+	}, nil
+}
+
 // ---- estimate_read_cost (L0) ----
 
 type estimateCostInput struct {
 	DeviceIDs []string `json:"device_ids"`
+	ExportIDs []string `json:"export_ids"`
 	From      string   `json:"from"`
 	To        string   `json:"to"`
 }
@@ -287,11 +349,14 @@ func (s *surface) estimateReadCost(ctx context.Context, req Request) (any, error
 	if err := decode(req.Input, &in); err != nil {
 		return nil, err
 	}
-	if len(in.DeviceIDs) == 0 {
-		return nil, fmt.Errorf("%w: device_ids is required", ErrInvalidInput)
+	if len(in.DeviceIDs) == 0 && len(in.ExportIDs) == 0 {
+		return nil, fmt.Errorf("%w: device_ids or export_ids is required", ErrInvalidInput)
 	}
 	if int64(len(in.DeviceIDs)) > s.deps.DeviceLimit {
 		in.DeviceIDs = in.DeviceIDs[:s.deps.DeviceLimit]
+	}
+	if int64(len(in.ExportIDs)) > s.deps.DeviceLimit {
+		in.ExportIDs = in.ExportIDs[:s.deps.DeviceLimit]
 	}
 
 	window, err := parseWindow(in.From, in.To)
@@ -299,18 +364,51 @@ func (s *surface) estimateReadCost(ctx context.Context, req Request) (any, error
 		return nil, err
 	}
 
-	usage, err := s.deps.Timeseries.DeviceUsage(ctx, req.Token, in.DeviceIDs)
-	if err != nil {
-		return nil, err
+	// Two endpoints, one answer. They are separate calls upstream because a device
+	// and an export are separate tables, and merging them here is what keeps a
+	// model from having to know that a series it was offered came from one or the
+	// other before it can ask what reading it costs.
+	usage := []timeseries.Usage{}
+	if len(in.DeviceIDs) > 0 {
+		devices, err := s.deps.Timeseries.DeviceUsage(ctx, req.Token, in.DeviceIDs)
+		if err != nil {
+			return nil, err
+		}
+		usage = append(usage, devices...)
+	}
+	missingExports := []string{}
+	if len(in.ExportIDs) > 0 {
+		exports, err := s.deps.Timeseries.ExportUsage(ctx, req.Token, in.ExportIDs)
+		if err != nil {
+			return nil, err
+		}
+		usage = append(usage, exports...)
+
+		// An export with no usage row is the one absence that must not read as an
+		// empty export: the usage table is filled per timescale table by a collector,
+		// so a young export is simply not in it yet.
+		accounted := map[string]bool{}
+		for _, entry := range exports {
+			accounted[entry.ExportId] = true
+		}
+		for _, id := range in.ExportIDs {
+			if !accounted[id] {
+				missingExports = append(missingExports, id)
+			}
+		}
 	}
 
 	estimates := make([]map[string]any, 0, len(usage))
 	for _, entry := range usage {
 		estimate := map[string]any{
-			"device_id":     entry.DeviceId,
 			"bytes":         entry.Bytes,
 			"bytes_per_day": entry.BytesPerDay,
 			"updated_at":    entry.UpdatedAt,
+		}
+		if entry.ExportId != "" {
+			estimate["export_id"] = entry.ExportId
+		} else {
+			estimate["device_id"] = entry.DeviceId
 		}
 		if window.Valid() && entry.BytesPerDay > 0 {
 			days := window.SpanDays()
@@ -327,13 +425,21 @@ func (s *surface) estimateReadCost(ctx context.Context, req Request) (any, error
 		estimates = append(estimates, estimate)
 	}
 
-	return map[string]any{
+	out := map[string]any{
 		"estimates": estimates,
 		"caveat": "order-of-magnitude only, derived from stored bytes per day across all of a " +
-			"device's columns. Never use it to choose a resampling interval; profile_series " +
-			"detects the real sampling interval.",
+			"device's or export's columns. Never use it to choose a resampling interval; " +
+			"profile_series detects the real sampling interval.",
 		"reads": map[string]int{"values": 0},
-	}, nil
+	}
+	if len(missingExports) > 0 {
+		out["exports_not_accounted"] = missingExports
+		out["exports_not_accounted_note"] = "the usage accounting has no row for these exports. It is " +
+			"filled per timescale table by a collector, so a young export is simply not in it yet — " +
+			"this is not evidence that nothing is stored. probe_export_data counts the rows and answers " +
+			"that question."
+	}
+	return out, nil
 }
 
 // approxBytesPerPoint is a rough stored size for one timestamped numeric point,
@@ -404,8 +510,12 @@ func (s *surface) quickProfile(ctx context.Context, req Request) (any, error) {
 // ---- profile_series (L1) ----
 
 type profileSeriesInput struct {
-	DeviceID      string   `json:"device_id"`
-	ServiceID     string   `json:"service_id"`
+	DeviceID  string `json:"device_id"`
+	ServiceID string `json:"service_id"`
+	// ExportID addresses an export instead of a device's service. Exclusive with
+	// the two above: a series lives in one table or the other, and an input naming
+	// both is a mistake rather than a narrower request.
+	ExportID      string   `json:"export_id"`
 	From          string   `json:"from"`
 	To            string   `json:"to"`
 	GroupTime     string   `json:"group_time"`
@@ -417,41 +527,69 @@ func (s *surface) profileSeries(ctx context.Context, req Request) (any, error) {
 	if err := decode(req.Input, &in); err != nil {
 		return nil, err
 	}
-	if in.DeviceID == "" || in.ServiceID == "" {
-		return nil, fmt.Errorf("%w: device_id and service_id are required", ErrInvalidInput)
+	export := strings.TrimSpace(in.ExportID)
+	switch {
+	case export != "" && (in.DeviceID != "" || in.ServiceID != ""):
+		return nil, fmt.Errorf(
+			"%w: an export_id addresses an export's own table and a device_id with a service_id "+
+				"addresses a device's — give one or the other, not both", ErrInvalidInput)
+	case export == "" && (in.DeviceID == "" || in.ServiceID == ""):
+		return nil, fmt.Errorf(
+			"%w: device_id and service_id are required, or export_id for an export", ErrInvalidInput)
 	}
 	window, err := parseWindow(in.From, in.To)
 	if err != nil {
 		return nil, err
 	}
 
-	// Execute: this is about to read the device's data.
-	req.Progress("permission", "checking execute permission on the device")
-	device, err := s.deps.Devices.Get(req.Token, in.DeviceID, models.Execute)
+	// The profiler's own phases, forwarded verbatim. This is the tool that
+	// actually needs it: the passes it runs are where the minutes go.
+	progress := func(phase profiler.Phase) {
+		req.Progress(phase.Stage, phase.Detail)
+	}
+
+	// The scope a variable_paths filter is reported against, and the scope an
+	// unmatched filter names in its refusal.
+	scope := in.ServiceID
+
+	var result profiler.ProfileResult
+	if export != "" {
+		// No permission check of ODE's own here, unlike the device branch. An
+		// export is not in the device repository, so there is no Execute to ask
+		// about: timescale-wrapper verifies the caller's access to the export
+		// itself, on the caller's own token, and refuses the read if they may not
+		// have it (§5.1).
+		scope = export
+		result, err = s.deps.Profiler.ProfileExport(ctx, req.Token, profiler.ExportProfileRequest{
+			ExportID:       export,
+			AnalysisWindow: window,
+			GroupTime:      in.GroupTime,
+			Progress:       progress,
+		})
+	} else {
+		// Execute: this is about to read the device's data.
+		req.Progress("permission", "checking execute permission on the device")
+		device, deviceErr := s.deps.Devices.Get(req.Token, in.DeviceID, models.Execute)
+		if deviceErr != nil {
+			return nil, deviceErr
+		}
+		result, err = s.deps.Profiler.ProfileService(ctx, req.Token, profiler.ProfileRequest{
+			Device:         device,
+			ServiceID:      in.ServiceID,
+			AnalysisWindow: window,
+			GroupTime:      in.GroupTime,
+			Progress:       progress,
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := s.deps.Profiler.ProfileService(ctx, req.Token, profiler.ProfileRequest{
-		Device:         device,
-		ServiceID:      in.ServiceID,
-		AnalysisWindow: window,
-		GroupTime:      in.GroupTime,
-		// The profiler's own phases, forwarded verbatim. This is the tool that
-		// actually needs it: the passes below are where the minutes go.
-		Progress: func(phase profiler.Phase) {
-			req.Progress(phase.Stage, phase.Detail)
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// The whole service was profiled, because the read is service-scoped and
-	// batched (§5.3.2). A variable_paths filter therefore narrows the answer and
-	// not the cost, and it is how a caller asks for a variable the cap below
-	// would otherwise have cut.
-	matched, err := selectProfiles(result.Profiles, in.VariablePaths, in.ServiceID)
+	// The whole service, or the whole export, was profiled: the read is
+	// source-scoped and batched (§5.3.2). A variable_paths filter therefore
+	// narrows the answer and not the cost, and it is how a caller asks for a
+	// variable the cap below would otherwise have cut.
+	matched, err := selectProfiles(result.Profiles, in.VariablePaths, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -507,8 +645,10 @@ func (s *surface) profileSeries(ctx context.Context, req Request) (any, error) {
 // list: a mistyped path and a service that genuinely has no such variable look
 // identical in an empty response, and the paths the service does have are the
 // one thing that makes either fixable.
+// scope is the service or the export the profiles came from, and appears only in
+// the refusal: naming it is what makes a mistyped path fixable.
 func selectProfiles(
-	profiles []profiler.ResolvedProfile, paths []string, serviceID string,
+	profiles []profiler.ResolvedProfile, paths []string, scope string,
 ) ([]profiler.ResolvedProfile, error) {
 	if len(paths) == 0 {
 		return profiles, nil
@@ -528,8 +668,8 @@ func selectProfiles(
 		}
 	}
 	if len(matched) == 0 {
-		return nil, fmt.Errorf("%w: service %s has none of the requested variable_paths; it has %v",
-			ErrInvalidInput, serviceID, available)
+		return nil, fmt.Errorf("%w: %s has none of the requested variable_paths; it has %v",
+			ErrInvalidInput, scope, available)
 	}
 	return matched, nil
 }
@@ -760,8 +900,11 @@ func decidedRules(rules []relations.CandidateRule) int {
 // ---- preview_series (L2) ----
 
 type previewSeriesInput struct {
-	DeviceID     string `json:"device_id"`
-	ServiceID    string `json:"service_id"`
+	DeviceID  string `json:"device_id"`
+	ServiceID string `json:"service_id"`
+	// ExportID addresses an export instead, and the variable path is then the
+	// export's column name rather than a message path.
+	ExportID     string `json:"export_id"`
 	VariablePath string `json:"variable_path"`
 	From         string `json:"from"`
 	To           string `json:"to"`
@@ -783,9 +926,18 @@ func (s *surface) previewSeries(ctx context.Context, req Request) (any, error) {
 	if err := decode(req.Input, &in); err != nil {
 		return nil, err
 	}
-	if in.DeviceID == "" || in.ServiceID == "" || in.VariablePath == "" {
+	export := strings.TrimSpace(in.ExportID)
+	switch {
+	case in.VariablePath == "":
+		return nil, fmt.Errorf("%w: variable_path is required — for an export it is the column name",
+			ErrInvalidInput)
+	case export != "" && (in.DeviceID != "" || in.ServiceID != ""):
 		return nil, fmt.Errorf(
-			"%w: device_id, service_id and variable_path are required — a series is addressed by all three",
+			"%w: give export_id, or device_id with service_id, not both", ErrInvalidInput)
+	case export == "" && (in.DeviceID == "" || in.ServiceID == ""):
+		return nil, fmt.Errorf(
+			"%w: device_id, service_id and variable_path are required — a device series is addressed "+
+				"by all three; an export series by export_id and the column name",
 			ErrInvalidInput)
 	}
 
@@ -812,17 +964,25 @@ func (s *surface) previewSeries(ctx context.Context, req Request) (any, error) {
 
 	groupTime, widened := previewBucket(in.GroupTime, window, maxPoints)
 
-	deviceID, serviceID, bucket := in.DeviceID, in.ServiceID, groupTime
+	bucket := groupTime
 	aggregate := groupType
+	ref := profiler.SeriesRef{
+		DeviceID: in.DeviceID, ServiceID: in.ServiceID, VariablePath: in.VariablePath,
+	}
 	element := timeseries.QueryElement{
-		DeviceId:  &deviceID,
-		ServiceId: &serviceID,
 		Columns:   []timeseries.QueryColumn{{Name: in.VariablePath, GroupType: &aggregate}},
 		GroupTime: &bucket,
 		Time: &timeseries.QueryTime{
 			Start: stringPtr(window.From.UTC().Format(time.RFC3339)),
 			End:   stringPtr(window.To.UTC().Format(time.RFC3339)),
 		},
+	}
+	if export != "" {
+		ref = profiler.SeriesRef{ExportID: export, VariablePath: in.VariablePath}
+		element.ExportId = &export
+	} else {
+		deviceID, serviceID := in.DeviceID, in.ServiceID
+		element.DeviceId, element.ServiceId = &deviceID, &serviceID
 	}
 
 	results, err := s.deps.Timeseries.Query(ctx, req.Token, []timeseries.QueryElement{element},
@@ -855,9 +1015,7 @@ func (s *surface) previewSeries(ctx context.Context, req Request) (any, error) {
 	}
 
 	out := map[string]any{
-		"series_ref": profiler.SeriesRef{
-			DeviceID: in.DeviceID, ServiceID: in.ServiceID, VariablePath: in.VariablePath,
-		},
+		"series_ref":  ref,
 		"window":      window,
 		"group_time":  groupTime,
 		"group_type":  groupType,

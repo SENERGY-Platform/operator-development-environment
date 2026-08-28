@@ -170,6 +170,20 @@ CREATE TABLE IF NOT EXISTS ode_chat_sessions (
               ON ode_chat_sessions (user_sub, updated_at DESC)`,
 	},
 	{
+		// Which workbench the session acts in — its checkout and its kernel. Added
+		// rather than declared in the CREATE above so a deployment that already has
+		// the table gets it too, and additive with a default, which is the only shape
+		// of change this migration style can carry (see Migrate).
+		//
+		// Empty means a session written before workbenches existed, or one whose
+		// workbench has since been deleted. Both resolve to the developer's first
+		// workbench on read, so no conversation loses its code context.
+		name: "ode_chat_sessions_workbench",
+		sql: `
+ALTER TABLE ode_chat_sessions
+    ADD COLUMN IF NOT EXISTS workbench_id TEXT NOT NULL DEFAULT ''`,
+	},
+	{
 		name: "ode_chat_messages",
 		sql: `
 CREATE TABLE IF NOT EXISTS ode_chat_messages (
@@ -305,6 +319,31 @@ CREATE TABLE IF NOT EXISTS ode_confirmations (
               ON ode_confirmations (session_id, created_at DESC)`,
 	},
 	{
+		name: "ode_platform_creations",
+		sql: `
+-- What a chat session created on the platform (§5.8's two create tools), and the
+-- only thing the two delete tools may reach. Append-only, and deliberately not
+-- cascaded from ode_sessions: a deleted session takes its ability to delete
+-- anything with it, and the record of what was created outlives the conversation
+-- that created it.
+CREATE TABLE IF NOT EXISTS ode_platform_creations (
+    id         BIGSERIAL PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    -- "import_instance" or "export". Not an enum: a third kind would otherwise be
+    -- a migration on a table whose rows are a log.
+    kind       TEXT NOT NULL,
+    object_id  TEXT NOT NULL,
+    name       TEXT NOT NULL DEFAULT '',
+    tool       TEXT NOT NULL DEFAULT '',
+    at         TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+	},
+	{
+		name: "ode_platform_creations_by_session",
+		sql: `CREATE INDEX IF NOT EXISTS ode_platform_creations_session_idx
+              ON ode_platform_creations (session_id, at)`,
+	},
+	{
 		name: "ode_profile_overrides",
 		sql: `
 -- The override overlay of §5.4.3: append-only, keyed by series reference rather
@@ -314,12 +353,33 @@ CREATE TABLE IF NOT EXISTS ode_profile_overrides (
     id            TEXT PRIMARY KEY,
     device_id     TEXT NOT NULL,
     service_id    TEXT NOT NULL,
+    export_id     TEXT NOT NULL DEFAULT '',
     variable_path TEXT NOT NULL,
     override      JSONB NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 )`,
 	},
 	{
+		// A series is addressed by a device's service or by an export, and the
+		// overlay is keyed by whichever it is. Added rather than folded into the
+		// CREATE above because the CREATE is IF NOT EXISTS and would not touch a
+		// table that already exists — the deployments that have one would keep a
+		// four-column key and put every export's overrides in one bucket.
+		//
+		// The default is '' rather than NULL so the lookup stays one equality per
+		// column: a NULL would need IS NULL for the device form and never match.
+		name: "ode_profile_overrides_export_id",
+		sql: `ALTER TABLE ode_profile_overrides
+              ADD COLUMN IF NOT EXISTS export_id TEXT NOT NULL DEFAULT ''`,
+	},
+	{
+		// Deliberately unchanged by the export_id column above. The name is what
+		// CREATE INDEX IF NOT EXISTS keys on, so widening the index here would be a
+		// no-op wherever the table already exists, and renaming it would leave every
+		// existing deployment carrying two indexes for one lookup with nothing to
+		// drop the old one. The columns below still narrow a lookup to its series —
+		// an export's rows share two empty device columns and are separated by the
+		// variable path — and export_id is filtered on top of that.
 		name: "ode_profile_overrides_by_series",
 		sql: `CREATE INDEX IF NOT EXISTS ode_profile_overrides_series_idx
               ON ode_profile_overrides (device_id, service_id, variable_path, created_at)`,
@@ -374,8 +434,12 @@ CREATE TABLE IF NOT EXISTS ode_github_identities (
 -- history, its divergence — is read from the checkout or from GitHub, because both
 -- are authoritative and a cached copy here could only be wrong.
 --
--- One active repository per developer. Switching replaces the row and leaves the old
--- checkout in place, which is what makes switching back a reuse rather than a clone.
+-- Superseded by ode_workbenches, and kept only to be read once: a developer who
+-- has a row here and no workbench yet has it adopted into one on their next
+-- request, so nobody re-selects a repository whose checkout is already on their
+-- PVC. The only write left is the adopted_at stamp below, which says the reading
+-- has happened. It can be dropped once every deployment has run a version that
+-- adopts, which needs a real migration tool — see Migrate.
 CREATE TABLE IF NOT EXISTS ode_repo_links (
     user_sub         TEXT PRIMARY KEY,
     full_name        TEXT NOT NULL,
@@ -392,6 +456,97 @@ CREATE TABLE IF NOT EXISTS ode_repo_links (
     scaffolded_at    TIMESTAMPTZ,
     selected_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 )`,
+	},
+	{
+		// When this row became a workbench. Added rather than declared in the CREATE
+		// above so a deployment that already has the table gets it too, and additive
+		// and nullable, which is the only shape of change this migration style can
+		// carry (see Migrate).
+		//
+		// NULL is a row that has not been adopted yet, which is every row a release
+		// before workbenches wrote. It is what makes the adoption happen once for a
+		// developer rather than every time their workbench list is empty: closing
+		// the last workbench would otherwise bring the old link back as a new one on
+		// the next request.
+		name: "ode_repo_links_adopted_at",
+		sql: `
+ALTER TABLE ode_repo_links
+    ADD COLUMN IF NOT EXISTS adopted_at TIMESTAMPTZ`,
+	},
+	{
+		name: "ode_workbenches",
+		sql: `
+-- One working context: a repository checkout on the PVC and the kernel that runs
+-- in it. It is what ode_repo_links was, made plural — a developer working on two
+-- operators at once has two of these, and each chat session names the one it acts
+-- in.
+--
+-- The link columns are the same ones ode_repo_links holds and mean the same
+-- things. They live here rather than in a second table because a workbench
+-- without a repository and a repository without a workbench are both states
+-- nothing can do anything with: selecting is what a workbench is for, and the two
+-- are created and forgotten together.
+--
+-- Empty full_name is a workbench whose repository has not been selected yet,
+-- which is the state between creating one and choosing what to work on.
+CREATE TABLE IF NOT EXISTS ode_workbenches (
+    id               TEXT PRIMARY KEY,
+    user_sub         TEXT NOT NULL,
+    -- The developer's own name for it. Empty falls back to the repository, and
+    -- before there is one, to the id.
+    title            TEXT NOT NULL DEFAULT '',
+    full_name        TEXT NOT NULL DEFAULT '',
+    name             TEXT NOT NULL DEFAULT '',
+    owner            TEXT NOT NULL DEFAULT '',
+    default_branch   TEXT NOT NULL DEFAULT '',
+    private          BOOLEAN NOT NULL DEFAULT FALSE,
+    clone_url        TEXT NOT NULL DEFAULT '',
+    html_url         TEXT NOT NULL DEFAULT '',
+    path             TEXT NOT NULL DEFAULT '',
+    operator_lib_ref TEXT NOT NULL DEFAULT '',
+    scaffolded_at    TIMESTAMPTZ,
+    selected_at      TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+	},
+	{
+		name: "ode_workbenches_by_user",
+		sql: `CREATE INDEX IF NOT EXISTS ode_workbenches_user_idx
+              ON ode_workbenches (user_sub, created_at)`,
+	},
+	{
+		// The invariant the working copy depends on, held where it cannot be argued
+		// with. A checkout is at {owner}/{name} under the workspace, so two
+		// workbenches on one repository would be two kernels and two streams of git
+		// commands in one working tree: a corrupted index and a lost diff. The
+		// service refuses it with an explanation; this is what makes the refusal
+		// true even if a second ODE is talking to the same database.
+		name: "ode_workbenches_one_repository_per_user",
+		sql: `CREATE UNIQUE INDEX IF NOT EXISTS ode_workbenches_repository_idx
+              ON ode_workbenches (user_sub, full_name)
+              WHERE full_name <> ''`,
+	},
+	{
+		// The stamp for everyone who was adopted before there was one to write.
+		//
+		// A deployment that has already run an adopting release has developers with a
+		// workbench and an unstamped row, and without this they keep the behaviour
+		// the column exists to end: close the last workbench, and the old link comes
+		// back as a new one. Having any workbench at all is what says the adoption
+		// ran — it is the only way one gets created, since every path to a workbench
+		// reads the list first, and the list is where adoption happens.
+		//
+		// Idempotent, like everything here: the second run finds nothing to stamp.
+		// The cost if it ever stamped a row too early is one re-selection of a
+		// repository whose checkout is still on the PVC, which is what selecting
+		// already does.
+		name: "ode_repo_links_adopted_backfill",
+		sql: `
+UPDATE ode_repo_links AS l
+   SET adopted_at = now()
+ WHERE l.adopted_at IS NULL
+   AND EXISTS (SELECT 1 FROM ode_workbenches AS w WHERE w.user_sub = l.user_sub)`,
 	},
 	{
 		name: "ode_experiments",
@@ -440,6 +595,21 @@ CREATE TABLE IF NOT EXISTS ode_experiments (
     started_at             TIMESTAMPTZ,
     ended_at               TIMESTAMPTZ
 )`,
+	},
+	{
+		// Which working context a run was launched from. Added rather than declared
+		// in the CREATE above so a deployment that already has the table gets it too
+		// (see Migrate), and it completes the trail §5.11 item 7 is about: a run
+		// leads back to a commit, and now also to the checkout that commit was
+		// packaged from — which is what the interpretation turn needs to read the
+		// run's own evaluation.yaml once a developer has more than one open.
+		//
+		// Empty is a run from before workbenches existed, which resolves to the
+		// developer's only one.
+		name: "ode_experiments_workbench",
+		sql: `
+ALTER TABLE ode_experiments
+    ADD COLUMN IF NOT EXISTS workbench_id TEXT NOT NULL DEFAULT ''`,
 	},
 	{
 		name: "ode_proposal_decisions",

@@ -36,7 +36,7 @@ type fakeKernel struct {
 
 func (f *fakeKernel) Workspace() string { return "data/ode" }
 
-func (f *fakeKernel) Run(_ context.Context, _, code string) (<-chan kernel.ExecutionEvent, error) {
+func (f *fakeKernel) Run(_ context.Context, _ kernel.Ref, code string) (<-chan kernel.ExecutionEvent, error) {
 	if f.err != nil {
 		return nil, f.err
 	}

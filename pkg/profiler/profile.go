@@ -15,7 +15,7 @@
  */
 
 // Package profiler computes deterministic profiles of platform series
-// (SPEC §5.4). It is the component the core design rule of §4 rests on: the
+// (§5.4). It is the component the core design rule of §4 rests on: the
 // profiler computes statistics, the LLM reads a profile and interprets it, and
 // raw series never enter an LLM context.
 //
@@ -51,19 +51,51 @@ const DetectorVersion = "1.1.0"
 // SeriesRef is the addressable unit (D19). Not {device_id, service_id}: a
 // service output is a ContentVariable tree and timescale-wrapper addresses its
 // leaves individually, so a profile per service would mix unrelated variables.
+//
+// A series has two possible addresses, because timescale holds two kinds of table
+// and ODE profiles both: a device's service, and an export. They are exclusive —
+// an element carrying both is what timescale-wrapper's own schema refuses — so
+// exactly one of {DeviceID, ServiceID} and ExportID is set. For an export the
+// variable path is the export's **column name**, which is the export author's
+// choice rather than the variable path it was fed from; the two are not derivable
+// from one another, which is why nothing here tries.
+//
+// The device fields keep their JSON names and gain omitempty. A device profile is
+// unaffected — both are always set — and an export profile would otherwise report
+// two empty ids as though it had a device.
 type SeriesRef struct {
-	DeviceID     string `json:"device_id"`
-	ServiceID    string `json:"service_id"`
+	DeviceID     string `json:"device_id,omitempty"`
+	ServiceID    string `json:"service_id,omitempty"`
+	ExportID     string `json:"export_id,omitempty"`
 	VariablePath string `json:"variable_path"`
 }
 
+// String is the cache key's series component and the override overlay's lookup
+// key, so the device form is left byte-identical: a profile computed before
+// exports existed keeps its id, and an override recorded against it keeps
+// applying.
 func (r SeriesRef) String() string {
+	if r.ExportID != "" {
+		return "export:" + r.ExportID + "|" + r.VariablePath
+	}
 	return r.DeviceID + "|" + r.ServiceID + "|" + r.VariablePath
 }
 
 func (r SeriesRef) Valid() bool {
-	return r.DeviceID != "" && r.ServiceID != "" && r.VariablePath != ""
+	if r.VariablePath == "" {
+		return false
+	}
+	if r.ExportID != "" {
+		// Both would be an ambiguous reference rather than a richer one, and the
+		// platform would refuse the query it produces.
+		return r.DeviceID == "" && r.ServiceID == ""
+	}
+	return r.DeviceID != "" && r.ServiceID != ""
 }
+
+// IsExport says which of the two addresses this is, for the callers that have to
+// branch on it rather than inspect the fields.
+func (r SeriesRef) IsExport() bool { return r.ExportID != "" }
 
 // Window is a half-open time range, always in UTC. Time handling is not
 // optional in this domain (§5.4.13): store and compute in UTC, display local,
@@ -431,7 +463,7 @@ type Trend struct {
 // PValueBracket brackets the ADF p-value between two published quantiles
 // instead of interpolating a point estimate.
 //
-// SPEC §5.4.12 asks for `adf_p`. Producing one needs MacKinnon's p-value
+// §5.4.12 asks for `adf_p`. Producing one needs MacKinnon's p-value
 // response surface, which is a table this implementation does not have; a
 // bracket read off the critical values it does have is exact, and §5.4.14 is
 // explicit that faking the number is not an option. Lower 0 means "below the

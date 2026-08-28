@@ -101,6 +101,39 @@ func TestARowSetDecodesIntoTimestampsAndColumnMajorValues(t *testing.T) {
 
 // The raw pass orders descending so the point limit takes the newest points.
 // Decoding sorts back, so the detectors always see a forward-running series.
+// An export answers with exportId where a device answers with deviceId and
+// serviceId. The set has to carry that through: a batch may mix the two, and a
+// caller that read an export's set as a device's would attribute the rows to a
+// device with an empty id.
+func TestAnExportSetCarriesTheExportIdRatherThanADevice(t *testing.T) {
+	exportID := "urn:infai:ses:export:1"
+	element := timeseries.QueryElement{
+		ExportId: &exportID,
+		Columns:  []timeseries.QueryColumn{{Name: "power"}},
+	}
+	sets, err := timeseries.DecodeResults([]timeseries.QueryElement{element}, []timeseries.QueryResult{{
+		RequestIndex: 0,
+		ExportId:     &exportID,
+		ColumnNames:  []string{"power"},
+		Data: [][][]any{{
+			{"2026-06-01T00:00:00.000Z", json.Number("10")},
+		}},
+	}}, "")
+	if err != nil {
+		t.Fatalf("DecodeResults: %v", err)
+	}
+	set := sets[0]
+	if set.ExportID != exportID {
+		t.Errorf("export id = %q, want %q", set.ExportID, exportID)
+	}
+	if set.DeviceID != "" || set.ServiceID != "" {
+		t.Errorf("set claims device %q service %q, want neither for an export", set.DeviceID, set.ServiceID)
+	}
+	if power, ok := set.Column("power"); !ok || power.Len() != 1 {
+		t.Errorf("power column = %+v, want the one value", power)
+	}
+}
+
 func TestRowsAreSortedAscendingWhateverOrderTheyArriveIn(t *testing.T) {
 	sets, err := timeseries.DecodeResults(request("value.power"), []timeseries.QueryResult{result([][]any{
 		{"2026-06-01T02:00:00.000Z", json.Number("3")},

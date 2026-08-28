@@ -15,7 +15,7 @@
  */
 
 // Package experiments submits training runs to Ray and records them in MLflow
-// (SPEC §5.12, D6, D17, D18, M8).
+// (§5.12, D6, D17, D18, M8).
 //
 // Four properties shape everything in here, and each of them is a decision
 // rather than an implementation detail.
@@ -104,6 +104,11 @@ type Experiment struct {
 	// SessionID is the chat session this was launched from, when it was. One of the
 	// four metadata keys §5.12 names.
 	SessionID string `json:"session_id,omitempty"`
+	// WorkbenchID is the working context the package came from: which checkout, and
+	// which kernel packaged it. Kept so an interpretation months later reads this
+	// run's own evaluation.yaml rather than whichever workbench happens to be the
+	// developer's only one by then.
+	WorkbenchID string `json:"workbench_id,omitempty"`
 	// Repository is owner/name, and CommitSHA the state the package was built from.
 	Repository string `json:"repository"`
 	CommitSHA  string `json:"commit_sha"`

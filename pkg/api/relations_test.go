@@ -43,7 +43,7 @@ import (
 )
 
 // The M6 surface, end to end through the routes and over the *real* profiler
-// (SPEC §5.5).
+// (§5.5).
 //
 // The profiler is not faked here on purpose. The relational pass rests on
 // activity_pattern — a detected threshold, a hysteresis band and a classification —
@@ -93,6 +93,19 @@ func (r *relationTimeseries) DeviceUsage(
 	out := []timeseries.Usage{}
 	for _, id := range deviceIDs {
 		out = append(out, timeseries.Usage{DeviceId: id, Bytes: 1 << 20, BytesPerDay: 8640})
+	}
+	return out, nil
+}
+
+func (r *relationTimeseries) ExportUsage(
+	_ context.Context, token string, exportIDs []string,
+) ([]timeseries.Usage, error) {
+	r.mux.Lock()
+	r.token = token
+	r.mux.Unlock()
+	out := []timeseries.Usage{}
+	for _, id := range exportIDs {
+		out = append(out, timeseries.Usage{ExportId: id, Bytes: 1 << 20, BytesPerDay: 8640})
 	}
 	return out, nil
 }

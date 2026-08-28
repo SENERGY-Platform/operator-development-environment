@@ -7,7 +7,7 @@ in, and which numerical methods are available in Go and which are deliberately
 ## Applies when
 
 Adding a detector or a profile field, or checking what a given field is supposed
-to contain. This is reference detail extracted from SPEC §5.4; the *decisions*
+to contain. This is reference detail extracted from §5.4; the *decisions*
 behind it — immutability, the override overlay, provenance, never-null, the cache
 key, the projection — stay in [component-design.md](component-design.md) §5.4.1
 to §5.4.11, as D19 to D30.

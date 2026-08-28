@@ -15,7 +15,7 @@
  */
 
 // Package timeseries reads from the platform's timescale-wrapper on behalf of
-// the calling user (SPEC §5.3). Every method takes the caller's token; ODE
+// the calling user (§5.3). Every method takes the caller's token; ODE
 // holds no service account for user data (D5).
 //
 // The request and response types come from timescale-wrapper/pkg/model rather
@@ -25,10 +25,16 @@
 // authoritative record of which groupType, groupTime and math values the server
 // accepts.
 //
+// A series is addressed either by device and service or by export id, and both
+// go through the same Query: an export is a table of its own in the same
+// timescale, so nothing but the request element changes. What does not exist for
+// an export is /data-availability, which is device-scoped — see ExportUsage for
+// what stands in its place and what it cannot answer.
+//
 // The HTTP calls are ODE's own rather than timescale-wrapper/pkg/client for two
-// reasons: that client implements two of the four endpoints ODE needs, and none
+// reasons: that client implements two of the five endpoints ODE needs, and none
 // of its methods take a context, so a profiler read could not be cancelled when
-// the caller disconnects. Splitting the four endpoints across two clients would
+// the caller disconnects. Splitting the five endpoints across two clients would
 // cost more than it saves. Adding context and the missing endpoints upstream
 // would be the better fix and is worth proposing separately.
 package timeseries
@@ -67,7 +73,7 @@ const (
 )
 
 // Group types accepted by POST /queries/v2, from the allow-list in
-// timescale-wrapper's QueriesRequestElementColumn.Valid. SPEC §5.3.5 lists
+// timescale-wrapper's QueriesRequestElementColumn.Valid. §5.3.5 lists
 // these as an open item to probe at runtime; they are enumerated in the
 // server's own validation, so there is nothing to probe.
 //
@@ -139,7 +145,7 @@ func New(baseURL string, opts Options) *Client {
 	}
 }
 
-// DataAvailability implements probe_availability (SPEC §5.3): per service, the
+// DataAvailability implements probe_availability (§5.3): per service, the
 // window over which data exists and which pre-aggregated variants are
 // materialised. It reads no values, which is what keeps QuickProfile at
 // exposure tier L0.
@@ -154,7 +160,7 @@ func (c *Client) DataAvailability(ctx context.Context, token string, deviceID st
 // DeviceUsage returns bytes and bytes-per-day per device, the basis for cost
 // estimation at tier L0 (§5.3.3).
 //
-// The endpoint is POST with a JSON array of device ids. SPEC §5.3 and
+// The endpoint is POST with a JSON array of device ids. §5.3 and
 // timescale-wrapper's own swagger annotation both call it GET; the route
 // registration is POST, and the route is what answers.
 func (c *Client) DeviceUsage(ctx context.Context, token string, deviceIDs []string) ([]Usage, error) {
@@ -162,6 +168,36 @@ func (c *Client) DeviceUsage(ctx context.Context, token string, deviceIDs []stri
 		return nil, fmt.Errorf("timeseries: usage/devices: %w: no device ids", ErrInvalidRequest)
 	}
 	return post[[]Usage](ctx, c, token, "/usage/devices", nil, deviceIDs, 0)
+}
+
+// ExportUsage returns bytes and bytes-per-day per export, the export-side
+// counterpart of DeviceUsage.
+//
+// It is the only thing about an export's stored data that costs no read at all,
+// which is what makes it the first question to ask about one: an export exists in
+// analytics-serving whether or not its timescale table ever received a row, and
+// the two are indistinguishable from the export definition alone.
+//
+// Two properties of the answer decide how it may be read, and both come from the
+// server's own query rather than from a promise:
+//
+//   - An absent entry is not an empty export. The figures are read from a usage
+//     table a separate collector fills per timescale table, so an export created
+//     minutes ago has no row yet and answers with nothing.
+//   - A present entry with bytes is not a populated export either. The size is the
+//     table's, and a table with rows whose every column is null has both — which is
+//     exactly the failure an export built on message-root paths produces.
+//
+// So this bounds the cost and refutes nothing; ExportFill in pkg/profiler is what
+// answers whether anything is actually stored.
+//
+// POST, for the reason DeviceUsage is: the route registration is POST where the
+// swagger annotation says GET, and the route is what answers.
+func (c *Client) ExportUsage(ctx context.Context, token string, exportIDs []string) ([]Usage, error) {
+	if len(exportIDs) == 0 {
+		return nil, fmt.Errorf("timeseries: usage/exports: %w: no export ids", ErrInvalidRequest)
+	}
+	return post[[]Usage](ctx, c, token, "/usage/exports", nil, exportIDs, 0)
 }
 
 type QueryOptions struct {
@@ -215,6 +251,9 @@ func describeElement(e QueryElement) string {
 	parts := make([]string, 0, 4)
 	if e.DeviceId != nil {
 		parts = append(parts, "device="+*e.DeviceId)
+	}
+	if e.ExportId != nil {
+		parts = append(parts, "export="+*e.ExportId)
 	}
 	if e.ServiceId != nil {
 		parts = append(parts, "service="+*e.ServiceId)

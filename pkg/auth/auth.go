@@ -26,11 +26,11 @@
 // Two consequences worth keeping in mind:
 //
 //   - The gateway must be the only route to this service. Cluster-internal
-//     callers that bypass it are not authenticated by anything. SPEC §5.6
+//     callers that bypass it are not authenticated by anything. §5.6
 //     item 2 and M10 cover the NetworkPolicy that enforces this, and the
 //     JupyterHub singleuser pods running developer code make it concrete.
 //   - Role checking stays here. The gateway authenticates; which realm role
-//     ODE requires is ODE's own authorisation decision (SPEC D5).
+//     ODE requires is ODE's own authorisation decision (D5).
 package auth
 
 import (
@@ -105,7 +105,7 @@ func MustFromContext(c *gin.Context) Token {
 }
 
 // Bearer returns the caller's token as an Authorization header value, for
-// reading from the platform on their behalf (SPEC D5, §3.1 step 3).
+// reading from the platform on their behalf (D5, §3.1 step 3).
 func Bearer(c *gin.Context) string {
 	token := MustFromContext(c)
 	return token.Jwt()

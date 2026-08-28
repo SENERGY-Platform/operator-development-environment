@@ -62,7 +62,7 @@ func query(raw string) url.Values {
 	return v
 }
 
-// SPEC D5: the platform's per-user authorisation is the single source of
+// D5: the platform's per-user authorisation is the single source of
 // truth, so the caller's token has to reach it unchanged.
 func TestListForwardsTheCallersToken(t *testing.T) {
 	fake := &fakeClient{devices: []models.ExtendedDevice{}}

@@ -207,6 +207,30 @@ func (s *Service) CheckSessionCount(ctx context.Context, sub string, current int
 	return nil
 }
 
+// CheckWorkbenchCount enforces the per-user cap on open working contexts.
+//
+// Absent is not "unlimited" here: the repository surface applies its own
+// deployment ceiling when this says nothing, because the thing being bounded is
+// kernels in a pod and a pod has a memory limit whatever the admin settings say.
+func (s *Service) CheckWorkbenchCount(ctx context.Context, sub string, current int) error {
+	limits, err := s.Effective(ctx, sub)
+	if err != nil {
+		return err
+	}
+	if limits.MaxWorkbenches == nil || *limits.MaxWorkbenches <= 0 {
+		return nil
+	}
+	if current >= *limits.MaxWorkbenches {
+		// Plain text rather than a typed error from pkg/repo: that package declares
+		// the interface this satisfies, and importing it back for one sentinel would
+		// be a cycle. The repository surface wraps this in its own error, which is
+		// what the API layer maps to a 409.
+		return fmt.Errorf("this user may have at most %d workbenches open",
+			*limits.MaxWorkbenches)
+	}
+	return nil
+}
+
 // RecordUsage accounts one provider request.
 //
 // A failure to record is logged and swallowed rather than failing the developer's

@@ -36,8 +36,13 @@ type ResultSet struct {
 	RequestIndex int
 	DeviceID     string
 	ServiceID    string
-	ColumnNames  []string
-	Times        []time.Time
+	// ExportID is set instead of DeviceID and ServiceID when the element
+	// addressed an export. Which of the two a set came from is not derivable
+	// otherwise, and a caller mixing device and export elements in one batch would
+	// have no way to tell them apart.
+	ExportID    string
+	ColumnNames []string
+	Times       []time.Time
 	// Values is column-major: Values[column][row]. A nil entry is a NULL in
 	// that row, which is normal — a service message need not carry every
 	// variable it declares.
@@ -45,6 +50,15 @@ type ResultSet struct {
 }
 
 func (r ResultSet) Rows() int { return len(r.Times) }
+
+// source names where a set came from, for an error that would otherwise report an
+// export as a device with two empty ids.
+func (r ResultSet) source() string {
+	if r.ExportID != "" {
+		return "export " + r.ExportID
+	}
+	return "device " + r.DeviceID + " service " + r.ServiceID
+}
 
 // Column is one variable's series, with the NULL rows dropped. Timestamps are
 // therefore per column: two variables of the same service can legitimately have
@@ -191,6 +205,9 @@ func decodeElement(element QueryElement, result QueryResult, layout string) (Res
 	if result.ServiceId != nil {
 		set.ServiceID = *result.ServiceId
 	}
+	if result.ExportId != nil {
+		set.ExportID = *result.ExportId
+	}
 	for _, column := range element.Columns {
 		set.ColumnNames = append(set.ColumnNames, column.Name)
 	}
@@ -209,8 +226,8 @@ func decodeElement(element QueryElement, result QueryResult, layout string) (Res
 			}
 			at, err := parseTime(row[0], layout)
 			if err != nil {
-				return ResultSet{}, fmt.Errorf("timeseries: decoding row %d of series %d for device %q service %q: %w",
-					rowIndex, seriesIndex, set.DeviceID, set.ServiceID, err)
+				return ResultSet{}, fmt.Errorf("timeseries: decoding row %d of series %d for %s: %w",
+					rowIndex, seriesIndex, set.source(), err)
 			}
 			key := at.UnixNano()
 			if _, seen := rows[key]; !seen {

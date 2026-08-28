@@ -261,7 +261,7 @@ func (s *Service) normalise(req CreateRequest) (Spec, error) {
 	for i, series := range req.Series {
 		if !series.Ref.Valid() {
 			return Spec{}, fmt.Errorf(
-				"%w: series %d is not fully addressed; a series is {device_id, service_id, variable_path} (D19)",
+				"%w: series %d is not fully addressed; a series is {device_id, service_id, variable_path}",
 				ErrInvalidSpec, i)
 		}
 		parsed, err := parseTransform(series.Transform)
@@ -349,7 +349,7 @@ func (s *Service) normaliseAnnotation(annotation Annotation, series int, author 
 	if annotation.Confirmable {
 		if _, confirmable := profiler.ConfirmablePaths[annotation.FieldPath]; !confirmable {
 			return annotation, fmt.Errorf(
-				"%w: a confirmable annotation must name a confirmable field_path (§5.10); %q is not one",
+				"%w: a confirmable annotation must name a confirmable field_path; %q is not one",
 				ErrInvalidSpec, annotation.FieldPath)
 		}
 		if annotation.SeriesIndex == nil {

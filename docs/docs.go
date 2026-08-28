@@ -21,7 +21,7 @@ const docTemplate = `{
     "paths": {
         "/admin/limits": {
             "get": {
-                "description": "Returns the stored policies, the built-in defaults, which fields\nthis build enforces versus merely stores for a later milestone, and\nthe model pricing a cost cap is computed from (SPEC §3.3).",
+                "description": "Returns the stored policies, the built-in defaults, which fields\nthis build enforces versus merely stores, with the reason, and the\nmodel pricing a cost cap is computed from (§3.3).",
                 "produces": [
                     "application/json"
                 ],
@@ -484,7 +484,7 @@ const docTemplate = `{
                 ]
             },
             "post": {
-                "description": "Validates a declarative chart specification (SPEC §5.9), resolves every\nseries against the device type and the ontology, and stores it. No values\nare read: this answers with the resolved units, the axis and the chart id,\nand GET /charts/{id}/data is what reads the data behind it.\n\nThe resolution happens now rather than at first render so that a\n` + "`" + `convert:` + "`" + ` naming an unreachable characteristic is refused while the author\ncan still fix it — and because the device read it takes is the same\npermission check the value read will need.",
+                "description": "Validates a declarative chart specification (§5.9), resolves every\nseries against the device type and the ontology, and stores it. No values\nare read: this answers with the resolved units, the axis and the chart id,\nand GET /charts/{id}/data is what reads the data behind it.\n\nThe resolution happens now rather than at first render so that a\n` + "`" + `convert:` + "`" + ` naming an unreachable characteristic is refused while the author\ncan still fix it — and because the device read it takes is the same\npermission check the value read will need.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1190,9 +1190,165 @@ const docTemplate = `{
                 ]
             }
         },
+        "/chat/sessions/{id}/title": {
+            "put": {
+                "description": "Sets the developer's own name for a conversation, in place of the\nfirst few words of its opening message. An empty title clears the\nname, and the next message titles the session again.\n\nIts own sub-resource rather than a PUT of the whole session, so that\nnothing changes a tier through a route that does not write §3.2's\naudit trail.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chat"
+                ],
+                "summary": "Rename a session",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "session id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "the new title; empty clears it",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "title": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/chat.Session"
+                        }
+                    },
+                    "400": {
+                        "description": "a malformed body, or a title longer than a session keeps",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
+        "/chat/sessions/{id}/workbench": {
+            "put": {
+                "description": "Changes the working context an existing conversation acts in: which\ncheckout its file tools write into, and which kernel its cells run in.\nAn empty workbench_id clears the assignment, which everything below\nreads as \"my only workbench\".\n\nThe move leaves a note in the conversation. Every file read, file write\nand cell run above it happened in the previous checkout, and a model\nhanded that history with no marker goes on believing the files it wrote\nare still there.\n\nRefused with 400 while a turn is running on the session: that turn is\nacting in the workbench the move would take it away from.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chat"
+                ],
+                "summary": "Move a session to another workbench",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "session id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "the workbench to act in; empty clears it",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "workbench_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/chat.Session"
+                        }
+                    },
+                    "400": {
+                        "description": "a malformed body, or a turn is running on this session",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "no such session, or no such workbench of this developer's",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
         "/devices": {
             "get": {
-                "description": "Read on behalf of the caller, never as a service account (SPEC D5), so\nthis returns exactly what that user may see.",
+                "description": "Read on behalf of the caller, never as a service account (D5), so\nthis returns exactly what that user may see.",
                 "produces": [
                     "application/json"
                 ],
@@ -1946,6 +2102,14 @@ const docTemplate = `{
                     "kernel"
                 ],
                 "summary": "The caller's kernel status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Which of the caller's workbenches; their default one when absent",
+                        "name": "workbench",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -2525,7 +2689,7 @@ const docTemplate = `{
         },
         "/ontology/functions": {
             "get": {
-                "description": "Semantic selection resolves an intent to a measuring function (SPEC\n§5.2), so that is the default list.",
+                "description": "Semantic selection resolves an intent to a measuring function (§5.2), so that is the default list.",
                 "produces": [
                     "application/json"
                 ],
@@ -2592,7 +2756,7 @@ const docTemplate = `{
         },
         "/profiles": {
             "post": {
-                "description": "The batched unit of work of D19: one request profiles all variables of\na service rather than one variable at a time. The raw pass reads the\nsmaller of the configured window bounds, anchored at the most recent\ndata (D25).",
+                "description": "The batched unit of work of D19: one request profiles all variables of\na service rather than one variable at a time. The raw pass reads the\nsmaller of the configured window bounds, anchored at the most recent\ndata (D25).\n\nGive export_id instead of device_id and service_id to profile an\nexport. Its window comes from counting rows rather than from\n/data-availability, which the platform offers for devices only.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2602,7 +2766,7 @@ const docTemplate = `{
                 "tags": [
                     "profiler"
                 ],
-                "summary": "Profile every variable of one service",
+                "summary": "Profile every variable of one service, or every column of one export",
                 "parameters": [
                     {
                         "description": "which service to profile, and over which windows",
@@ -3040,7 +3204,7 @@ const docTemplate = `{
         },
         "/relations": {
             "post": {
-                "description": "Profiles every participating service, aligns the members onto one grid with\na single batched query, derives idle and active from each activity_pattern,\nand proposes candidate rules with their exception windows (SPEC §5.5).\n\nValues are read, so this is tier L1 for an LLM — but nothing that comes\nback carries one: the document is contingency counts, ratios and bucket\ndurations.\n\nAlso available over the WebSocket as ` + "`" + `relate` + "`" + `, which is the better route for\na wide window: the pass reads two passes per service plus the aligned read,\nand the socket can cancel it.",
+                "description": "Profiles every participating service, aligns the members onto one grid with\na single batched query, derives idle and active from each activity_pattern,\nand proposes candidate rules with their exception windows (§5.5).\n\nValues are read, so this is tier L1 for an LLM — but nothing that comes\nback carries one: the document is contingency counts, ratios and bucket\ndurations.\n\nAlso available over the WebSocket as ` + "`" + `relate` + "`" + `, which is the better route for\na wide window: the pass reads two passes per service plus the aligned read,\nand the socket can cancel it.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3115,7 +3279,7 @@ const docTemplate = `{
         },
         "/relations/candidate-sets": {
             "get": {
-                "description": "Turns an aspect node into candidate device sets (SPEC §5.5). The aspect\nhierarchy is what solves candidate selection: the devices under \"Kitchen\"\nyield the oven and the lights without the developer naming either.\n\nThree kinds of set come back, in order of how much the grouping is worth\ntrusting: an existing platform device group, then one set per aspect node,\nthen the whole subtree. Every set names at least two devices, because a\nsingle-device set has no conditional pattern in it.\n\nReads no values. The reads block says so, which is what makes the tier-L0\nclaim checkable from the answer.",
+                "description": "Turns an aspect node into candidate device sets (§5.5). The aspect\nhierarchy is what solves candidate selection: the devices under \"Kitchen\"\nyield the oven and the lights without the developer naming either.\n\nThree kinds of set come back, in order of how much the grouping is worth\ntrusting: an existing platform device group, then one set per aspect node,\nthen the whole subtree. Every set names at least two devices, because a\nsingle-device set has no conditional pattern in it.\n\nReads no values. The reads block says so, which is what makes the tier-L0\nclaim checkable from the answer.",
                 "produces": [
                     "application/json"
                 ],
@@ -3299,7 +3463,7 @@ const docTemplate = `{
         },
         "/relations/{id}/rule-decisions": {
             "post": {
-                "description": "Records a developer's verdict on one candidate rule (SPEC §5.10, D21). The\nlog is append-only and keyed by a fingerprint of what the rule *says*, so\na verdict survives the rule being recomputed over a different window by a\nlater detector — and a developer who changes their mind adds a record\nrather than replacing one.\n\nDeveloper action only. No LLM tool exists for it, for the reason §5.8 gives\nabout writing a ProfileOverride: a model confirming its own findings is\ngrading its own work.",
+                "description": "Records a developer's verdict on one candidate rule (§5.10, D21). The\nlog is append-only and keyed by a fingerprint of what the rule *says*, so\na verdict survives the rule being recomputed over a different window by a\nlater detector — and a developer who changes their mind adds a record\nrather than replacing one.\n\nDeveloper action only. No LLM tool exists for it, for the reason §5.8 gives\nabout writing a ProfileOverride: a model confirming its own findings is\ngrading its own work.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4479,7 +4643,7 @@ const docTemplate = `{
         },
         "/session": {
             "get": {
-                "description": "Identity from the token, the realm roles behind it, which capabilities\nthis deployment serves, and — when an admin service is configured —\nthe caller's limits and spend so far (SPEC §3.3).",
+                "description": "Identity from the token, the realm roles behind it, which capabilities\nthis deployment serves, and — when an admin service is configured —\nthe caller's limits and spend so far (§3.3).",
                 "produces": [
                     "application/json"
                 ],
@@ -4574,6 +4738,88 @@ const docTemplate = `{
                 ]
             }
         },
+        "/timeseries/export-data": {
+            "get": {
+                "description": "The export-side counterpart of /timeseries/availability, and a\ndifferent kind of answer because the platform has no availability\nendpoint for an export: the rows are counted per column, so the reply\nsays whether anything is stored and which columns are null throughout.\nNo value is read.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "timeseries"
+                ],
+                "summary": "Whether an export holds any rows",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "export id",
+                        "name": "export_id",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "window start, RFC3339; empty means a multi-year lookback",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "window end, RFC3339",
+                        "name": "to",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/profiler.ExportFill"
+                        }
+                    },
+                    "400": {
+                        "description": "export_id is missing, or an unparseable window",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "no such export is visible to this account",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "the platform could not be read",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
         "/timeseries/usage": {
             "get": {
                 "produces": [
@@ -4625,6 +4871,185 @@ const docTemplate = `{
                     },
                     "502": {
                         "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
+        "/workbenches": {
+            "get": {
+                "description": "One working context each: a repository checkout and the kernel that\nruns in it. Oldest first, so a picker does not reorder itself while\nthe developer is aiming at an entry.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "workbenches"
+                ],
+                "summary": "The caller's workbenches",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            },
+            "post": {
+                "description": "Creates an empty one. Nothing is cloned and no pod is touched: the\nrepository is chosen afterwards with POST /repo/link, naming this\nworkbench.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "workbenches"
+                ],
+                "summary": "Open a workbench",
+                "parameters": [
+                    {
+                        "description": "an optional title",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/api.workbenchBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/repo.Workbench"
+                        }
+                    },
+                    "409": {
+                        "description": "as many are open as this deployment allows",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
+        "/workbenches/{id}": {
+            "put": {
+                "description": "Sets the developer's own name for it. An empty title clears it, which\nputs the label back to the repository.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "workbenches"
+                ],
+                "summary": "Rename a workbench",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "workbench id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "the new title",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.workbenchBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/repo.Workbench"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            },
+            "delete": {
+                "description": "Forgets it. The checkout stays on the PVC — it is the developer's work\nand may hold uncommitted changes (§5.11 item 6) — and the kernel is\nleft running rather than killed, because something may still be in it.\nOpening a workbench on the same repository again reuses the directory.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "workbenches"
+                ],
+                "summary": "Close a workbench",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "workbench id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "boolean"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -4723,6 +5148,10 @@ const docTemplate = `{
                             "$ref": "#/definitions/tools.Tier"
                         }
                     ]
+                },
+                "max_workbenches": {
+                    "description": "MaxWorkbenches caps how many working contexts a developer may hold open.\nAbsent takes the deployment's own ceiling (repo_max_workbenches).\n\nUnlike the kernel resource fields below, this one ODE can enforce, because\nwhat it bounds is how many kernels ODE starts in a pod rather than how large\nthe pod is. The two belong together in an administrator's head: raising this\nwithout raising the profile's memory is how a developer's training run gets\nOOM-killed by their own second workbench.",
+                    "type": "integer"
                 },
                 "period": {
                     "description": "Period is the window a cap applies over, as a Go duration (\"720h\"). Empty\nmeans the default.",
@@ -4930,6 +5359,10 @@ const docTemplate = `{
                 "device_id": {
                     "type": "string"
                 },
+                "export_id": {
+                    "description": "ExportID profiles an export instead of a device's service. Exclusive with\nthe two above.",
+                    "type": "string"
+                },
                 "group_time": {
                     "type": "string"
                 },
@@ -5104,6 +5537,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "to": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.workbenchBody": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "description": "Title is the developer's own name for it. Optional: without one the label\nfalls back to the repository, and before there is one, to the id.",
                     "type": "string"
                 }
             }
@@ -5634,6 +6076,10 @@ const docTemplate = `{
                 "user_sub": {
                     "description": "UserSub owns the session. Every read checks it: a session id in a URL must\nnot be enough to read someone else's conversation.",
                     "type": "string"
+                },
+                "workbench_id": {
+                    "description": "WorkbenchID is the working context this conversation acts in: which checkout\nwrite_file writes into, and which kernel run_code runs in. Two sessions may\nname the same one — talking about one operator from two angles — or different\nones, which is a developer working on two operators at once.\n\nEmpty is a session written before workbenches existed, or one whose workbench\nhas since been closed. Both resolve to the developer's only workbench when\nthey have one, so no conversation loses its code context.",
+                    "type": "string"
                 }
             }
         },
@@ -5814,6 +6260,10 @@ const docTemplate = `{
                 },
                 "updated_at": {
                     "type": "string"
+                },
+                "workbench_id": {
+                    "description": "WorkbenchID is the working context the package came from: which checkout, and\nwhich kernel packaged it. Kept so an interpretation months later reads this\nrun's own evaluation.yaml rather than whichever workbench happens to be the\ndeveloper's only one by then.",
+                    "type": "string"
                 }
             }
         },
@@ -5902,6 +6352,10 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                },
+                "workbench_id": {
+                    "description": "WorkbenchID is the working context the package came from: which checkout, and\nwhich kernel packaged it. Kept so an interpretation months later reads this\nrun's own evaluation.yaml rather than whichever workbench happens to be the\ndeveloper's only one by then.",
+                    "type": "string"
                 }
             }
         },
@@ -6209,8 +6663,16 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "busy": {
-                    "description": "Busy is true while an execution ODE started is still running.",
+                    "description": "Busy is true while an execution ODE started is still running in this kernel.\nOne workbench's own kernel only: a busy workbench says nothing about another.",
                     "type": "boolean"
+                },
+                "directory": {
+                    "description": "Directory is where this kernel actually runs, workspace-relative and empty\nfor the root. It is the workbench's checkout, so ` + "`" + `open(\"notes.txt\")` + "`" + ` in a\ncell lands next to the operator's code.",
+                    "type": "string"
+                },
+                "kernel_count": {
+                    "description": "KernelCount is how many kernels ODE is holding in this pod. Reported because\neach one is a Python process in a pod with one memory limit, and a developer\nwondering why their run was killed should be able to see it.",
+                    "type": "integer"
                 },
                 "kernel_id": {
                     "type": "string"
@@ -6240,8 +6702,12 @@ const docTemplate = `{
                 "user": {
                     "type": "string"
                 },
+                "workbench": {
+                    "description": "Workbench is which working context this kernel belongs to, empty for the\ndefault one.",
+                    "type": "string"
+                },
                 "workspace": {
-                    "description": "Workspace is the persistent working directory the kernel runs in.",
+                    "description": "Workspace is the persistent working directory tree, the root of everything on\nthe PVC.",
                     "type": "string"
                 },
                 "workspace_ready": {
@@ -6469,6 +6935,123 @@ const docTemplate = `{
                 }
             }
         },
+        "profiler.ExportColumnFill": {
+            "type": "object",
+            "properties": {
+                "column": {
+                    "type": "string"
+                },
+                "counted": {
+                    "description": "Counted is false for a column the probe could not ask about — an unreadable\ncolumn name, an unknown type. Reason says which.",
+                    "type": "boolean"
+                },
+                "empty": {
+                    "type": "boolean"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "rows": {
+                    "description": "Rows is how many rows of the counted window carry a value here. Zero beside\na non-zero ExportFill.Rows is the null-column case, and Empty says so\nwithout the reader having to compare the two.",
+                    "type": "integer"
+                },
+                "tag": {
+                    "type": "boolean"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "variable_path": {
+                    "type": "string"
+                }
+            }
+        },
+        "profiler.ExportFill": {
+            "type": "object",
+            "properties": {
+                "bucket": {
+                    "type": "string"
+                },
+                "buckets_with_rows": {
+                    "description": "BucketsWithRows is how many buckets of the counted window contained at least\none row, null columns included.\n\nThis is what distinguishes \"nothing was written\" from \"everything written is\nnull\", and it is readable off the response because the server groups by the\nbucket: a bucket appears in the answer only where a row falls in it, and it\nappears with a count of zero for a column that is null in every row of it.\nWithout this, an export whose value paths all miss would report as empty —\nwhich is the one wrong answer here, because it sends a developer to look at\nthe topic rather than at the paths.",
+                    "type": "integer"
+                },
+                "columns": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/profiler.ExportColumnFill"
+                    }
+                },
+                "export_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "notes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "reads": {
+                    "$ref": "#/definitions/profiler.ReadCounts"
+                },
+                "reason": {
+                    "description": "Reason says why, in the words a developer needs, for every state including\nthe good one. Never empty.",
+                    "type": "string"
+                },
+                "rows": {
+                    "description": "Rows is how many rows of the counted window carry a value in at least one\ncolumn, taken from the column that carries the most.\n\nIt is not the row count, and the difference is the whole point of this\nanswer: an export whose every column is null has rows and reports 0 here.\nBucketsWithRows is what says rows exist at all.",
+                    "type": "integer"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "span": {
+                    "description": "Span is the first and last bucket that carried a row, at bucket resolution.\nIt is what stands in for an availability window: a profile over an export is\nbounded by this, and its coarseness is the reason Bucket is reported beside\nit.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/profiler.Value-profiler_Window"
+                        }
+                    ]
+                },
+                "state": {
+                    "$ref": "#/definitions/profiler.ExportFillState"
+                },
+                "usage": {
+                    "description": "Usage is /usage/exports, which is metadata and reads nothing. Absent is an\nordinary answer: the usage table is filled per timescale table by a\ncollector, so a young export has no row in it.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/profiler.Value-profiler_Volume"
+                        }
+                    ]
+                },
+                "window": {
+                    "description": "Window is the range the counts were taken over.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/profiler.Window"
+                        }
+                    ]
+                }
+            }
+        },
+        "profiler.ExportFillState": {
+            "type": "string",
+            "enum": [
+                "filled",
+                "partly_filled",
+                "empty",
+                "unknown"
+            ],
+            "x-enum-varnames": [
+                "ExportFilled",
+                "ExportPartlyFilled",
+                "ExportEmpty",
+                "ExportFillUnknown"
+            ]
+        },
         "profiler.NotComputed": {
             "type": "object",
             "properties": {
@@ -6622,6 +7205,20 @@ const docTemplate = `{
                 "truncated": {
                     "description": "Truncated says the point limit cut the window short, in which case From\nis the oldest point actually read rather than the one requested. Without\nthis the gap detector would report a gap that is only a missing read.",
                     "type": "boolean"
+                }
+            }
+        },
+        "profiler.ReadCounts": {
+            "type": "object",
+            "properties": {
+                "availability": {
+                    "type": "integer"
+                },
+                "usage": {
+                    "type": "integer"
+                },
+                "values": {
+                    "type": "integer"
                 }
             }
         },
@@ -6820,6 +7417,9 @@ const docTemplate = `{
                 "device_id": {
                     "type": "string"
                 },
+                "export_id": {
+                    "type": "string"
+                },
                 "service_id": {
                     "type": "string"
                 },
@@ -6996,6 +7596,9 @@ const docTemplate = `{
             "type": "object"
         },
         "profiler.Value-profiler_ValueKind": {
+            "type": "object"
+        },
+        "profiler.Value-profiler_Volume": {
             "type": "object"
         },
         "profiler.Value-profiler_Window": {
@@ -7984,6 +8587,10 @@ const docTemplate = `{
                 },
                 "selected_at": {
                     "type": "string"
+                },
+                "workbench_id": {
+                    "description": "WorkbenchID is the working context this link belongs to. Carried on the link\nas well as on the workbench because every operation below takes a link and\nthen has to say which kernel to run in, and threading it separately through\ntwenty call sites is how one of them ends up running in the wrong checkout.",
+                    "type": "string"
                 }
             }
         },
@@ -8168,6 +8775,33 @@ const docTemplate = `{
                 }
             }
         },
+        "repo.Workbench": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_used_at": {
+                    "description": "LastUsedAt orders the list and is what a picker shows first. Not a liveness\nsignal: whether a kernel is actually running is the kernel surface's answer.",
+                    "type": "string"
+                },
+                "link": {
+                    "description": "Link is the repository this workbench works on. Zero until one is selected.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/repo.Link"
+                        }
+                    ]
+                },
+                "title": {
+                    "description": "Title is the developer's own name for it. Empty falls back to the repository\nand, before there is one, to the id — see Label.",
+                    "type": "string"
+                }
+            }
+        },
         "repo.WriteResult": {
             "type": "object",
             "properties": {
@@ -8335,7 +8969,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/",
 	Schemes:          []string{},
 	Title:            "Operator Development Environment",
-	Description:      "ODE helps a developer build a SENERGY analytics operator: it profiles\nthe series behind a device, resolves a semantic intent to concrete\nseries, and runs code in the developer's own kernel — with an LLM\nassistant whose reach over platform data is bounded by an exposure\ntier (SPEC §3.2).\n\nEvery route except /health and /doc requires a bearer token carrying\nthe configured realm role. The platform API gateway validates the\ntoken; ODE authorises on it (SPEC §3.1, D5). Routes appear only when\nthe capability behind them is configured, so a deployment without a\ntimescale-wrapper answers 404 on the profiler rather than 500.",
+	Description:      "ODE helps a developer build a SENERGY analytics operator: it profiles\nthe series behind a device, resolves a semantic intent to concrete\nseries, and runs code in the developer's own kernel — with an LLM\nassistant whose reach over platform data is bounded by an exposure\ntier (§3.2).\n\nEvery route except /health and /doc requires a bearer token carrying\nthe configured realm role. The platform API gateway validates the\ntoken; ODE authorises on it (§3.1, D5). Routes appear only when\nthe capability behind them is configured, so a deployment without a\ntimescale-wrapper answers 404 on the profiler rather than 500.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

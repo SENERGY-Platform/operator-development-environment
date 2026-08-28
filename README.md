@@ -28,9 +28,14 @@ pkg/ontology/      cached snapshot facade over the device repository, the aspect
 pkg/devices/       per-user device reads, never cached across users
 pkg/imports/       imports as the second kind of operator input: discovery through
                    device-selection, instance status, the export-or-Kafka history
-                   verdict, and the flow-engine input that wires one up
-pkg/timeseries/    timescale-wrapper client: availability, usage, batched reads
-pkg/profiler/      QuickProfile, SeriesProfile, detectors, store, projection
+                   verdict, the flow-engine input that wires one up, and the only
+                   writes ODE makes to the platform — deploying an import and
+                   creating the export that gives it a history
+pkg/timeseries/    timescale-wrapper client: availability, device and export
+                   usage, batched reads addressed at a device service or an export
+pkg/profiler/      QuickProfile, SeriesProfile, detectors, store, projection —
+                   over a device's service, or over an export, where the row count
+                   stands in for the availability endpoint devices have
 pkg/selection/     semantic selection: intent → criteria → selectables → devices
                    → ranked series, plus ontology_gaps and the import half
 pkg/llm/           provider abstraction: one interface, one event stream, four
@@ -42,8 +47,10 @@ pkg/chat/          sessions, the tool loop, tier changes with their audit trail,
 pkg/admin/         §3.3: effective limits, the pre-request check, accounting
 pkg/mcp/           the same tool registry over MCP, for the CLI provider
 pkg/kernel/        JupyterHub: service registration, spawn, per-user token, the
-                   kernel WebSocket protocol, workspace and keep-alive
-pkg/repo/          the developer's git working copy, run in their own pod
+                   kernel WebSocket protocol, workspace and keep-alive — one pod
+                   per developer, one kernel per workbench inside it
+pkg/repo/          the developer's git working copies, run in their own pod: a
+                   workbench is one checkout and one kernel, and they hold several
 pkg/charts/        §5.9's chart specification: validation, the transform-to-query
                    mapping, the profiler-derived annotations, and the
                    confirmations §5.10 takes from a chart
@@ -139,11 +146,12 @@ there before deriving a service's behaviour from its code again.
 - [docs/relations.md](docs/relations.md) — where a candidate set comes from, and
   how much its grouping is worth
 - [docs/experiments.md](docs/experiments.md) — a run is submitted from a commit or
-  it is not submitted
+  it is not submitted, and why a cell that logs to MLflow is still not a run
 - [docs/result-interpretation.md](docs/result-interpretation.md) — an unwatched
   run, and why the interpretation waits for the developer
 - [docs/imports-as-operator-inputs.md](docs/imports-as-operator-inputs.md) — how
-  an import is found and wired, and the four ways it differs from a device
+  an import is found and wired, the four ways it differs from a device, and the
+  only two things ODE creates on the platform: an import and its export
 
 ## Licence
 

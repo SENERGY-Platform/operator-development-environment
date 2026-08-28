@@ -69,7 +69,7 @@ func aspectIDs(matches []AspectMatch) []string {
 	return out
 }
 
-// The example SPEC §5.2 is written around: "forecast PV generation for this
+// The example §5.2 is written around: "forecast PV generation for this
 // site" resolves to a measuring function and an aspect subtree, and to nothing
 // else. Power Consumption sharing the word "power" must not come along — it is
 // the mismatch that would silently profile the wrong series.

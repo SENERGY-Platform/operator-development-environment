@@ -176,7 +176,7 @@ func New(deps Deps) (*Service, error) {
 	if deps.Store == nil {
 		return nil, errors.New(
 			"interpret: a decision store is required, because a proposal the developer " +
-				"answered has to stay answered (SPEC §5.13, D28)")
+				"answered has to stay answered (§5.13, D28)")
 	}
 	if deps.IDs == nil {
 		return nil, errors.New("interpret: an id source is required")
@@ -648,7 +648,7 @@ func (s *Service) Interpretation(
 	if record.SessionID == "" {
 		out.Proposal = unstatedProposal(ReasonNotInterpreted,
 			"this run was launched outside a conversation, so there is no chat context "+
-				"for §5.13 to inject its summary into")
+				"for ODE to inject its summary into")
 		return out, nil
 	}
 
@@ -662,7 +662,7 @@ func (s *Service) Interpretation(
 		out.Proposal = unstatedProposal(ReasonNotInterpreted,
 			"the summary has not been put into the conversation yet; an interpretation "+
 				"turn runs on the developer's own credential and this developer has not "+
-				"been connected since the run finished (SPEC §3.1 item 3)")
+				"been connected since the run finished")
 		return out, nil
 	case !answered:
 		out.Proposal = unstatedProposal(ReasonNotInterpreted,

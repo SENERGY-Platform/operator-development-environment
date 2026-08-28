@@ -26,7 +26,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/interpret"
 )
 
-// The result interpretation surface (SPEC §5.13, M9).
+// The result interpretation surface (§5.13, M9).
 //
 // Two routes and no more. The interpretation itself is delivered into the
 // conversation — that is what §5.13 asks for and where the developer reads it — so

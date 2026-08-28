@@ -74,7 +74,7 @@ Two properties of that client shape ODE's design:
 
 **Caching.** The ontology is small and slow-changing. Cache aspects, functions, concepts, characteristics and device classes at startup; invalidate via `/last-update-timestamps`. Devices are per-user and must not be cached across users.
 
-**Permission nuance for later milestones.** `models.Read` ('r') governs device *metadata*; `models.Execute` ('x') governs *reading device data*. M0 lists devices under `Read`; every timeseries read from M1a onward must be scoped to `Execute`, or ODE will offer series it cannot actually read.
+**Permission nuance.** `models.Read` ('r') governs device *metadata*; `models.Execute` ('x') governs *reading device data*. Listing devices is a `Read`; every timeseries read must be scoped to `Execute`, or ODE will offer series it cannot actually read.
 
 ### 5.2 Semantic data selection (replaces name-based browsing)
 
@@ -168,6 +168,21 @@ Because of (3), imports are reported but never folded into the ranked
 `candidates`: a ranking that mixed them would compare a measured span against
 nothing at all.
 
+**A fourth consequence is the one discovery cannot express at all.** device-selection
+joins each matching type to its instances and emits one selectable per instance,
+so an import type nobody has deployed yet produces nothing — and an empty
+`import_candidates` therefore has two causes that look identical: the platform
+describes nothing of this kind, or it describes it and nobody has deployed an
+import for it. Only the second is actionable, and it is the case
+`create_import_instance` exists for. So a resolution also asks
+import-repository's own `GET /import-types` with the same criteria and reports
+what matched with no instance in this answer, as `deployable_import_types`
+beside the two lists above. Two things about that endpoint are the caller's to
+absorb rather than device-selection's: it ANDs its criteria, so ODE sends one per
+combination and unions the answers, and it matches aspect ids literally, so ODE
+sends the aspect node together with its descendants. `list_import_types` is the
+same read by name or by id (§5.8).
+
 **Wiring.** A resolved import variable becomes an operator input through
 `propose_operator_input` (§5.8), which emits the flow engine's node input:
 `filterType: "ImportId"` — compared exactly upstream, with a silent fallback to a
@@ -190,7 +205,30 @@ Source of truth: `timescale-wrapper/docs/swagger.yaml`. Same `Bearer` JWT scheme
 | `GET /last-message`, `GET /raw-value` | Single-value probes |
 | `GET /usage/devices` | `{bytes, bytesPerDay, updatedAt}` per device — **volume and rate estimate without reading any values** |
 | `GET /prepare-download` → `GET /download/{secret}` | Bulk export path for training data |
-| `GET /usage/exports` | Export volume accounting |
+| `POST /usage/exports` | The export half of `estimate_read_cost`. Same shape keyed on `exportId`; POST despite the annotation, as `/usage/devices` is |
+
+**An export has no availability endpoint, and that shapes the export half.**
+`/data-availability` takes a `device_id` and nothing else, so the window a device
+profile is bounded by cannot be asked for an export. Two facts fill the gap, and
+neither is a substitute on its own:
+
+- `/usage/exports` says what is stored in bytes. It cannot say whether a row
+  exists: the figures come from a usage table a collector fills per timescale
+  table, so a young export has no row at all, and a table whose rows are all null
+  has a size like any other.
+- One bucketed `count` per column over `POST /queries/v2` says how many rows carry
+  a value, per column, and which buckets they fall in. That answers the window
+  *and* the question a developer actually has after creating an export — whether
+  anything is in it — and it reads no value, which is why it sits at L0 beside
+  `probe_availability` (see
+  [authorisation-and-exposure-tiers.md](authorisation-and-exposure-tiers.md)).
+
+`profiler.ExportFill` is that probe, `probe_export_data` publishes it, and
+`ProfileExport` uses its span where the device path uses the availability window.
+The four states it reports — `filled`, `partly_filled`, `empty`, `unknown` — are
+kept apart for the reason `History`'s three are: `partly_filled` is an export whose
+value paths resolve against the message root, which stores rows in which every
+column is null, and `unknown` is not `empty`.
 
 **`QueriesRequestElement`:**
 
@@ -484,7 +522,7 @@ ODE registers as a **JupyterHub service** whose token holds `servers`, `tokens`,
 **What still needs doing — four items, none blocking:**
 
 1. **Custom singleuser image** containing Operator Lib (latest, per D15), `ray[client]`, `mlflow`, pandas, and the ontology/timeseries clients. Version alongside Operator Lib; rebuild on release. Decide whether this replaces the current image for all users or is offered as an additional profile — **an additional KubeSpawner profile is preferable**, so existing notebook users are unaffected.
-2. **NetworkPolicy on singleuser pods.** The one genuine gap: JupyterHub isolates users from one another but does not by itself restrict egress. Restrict to device-repository, timescale-wrapper, MLflow, Ray, `ghcr.io` and PyPI. **This is the residual former-M9 and it does not go away** — it is now the only hard security prerequisite before external users.
+2. **NetworkPolicy on singleuser pods.** The one genuine gap: JupyterHub isolates users from one another but does not by itself restrict egress. Restrict to device-repository, timescale-wrapper, MLflow, Ray, `ghcr.io` and PyPI. **This is M10 and it does not go away** — it is now the only hard security prerequisite before external users.
 3. **Idle culling exceptions.** Send keep-alives during an active ODE session, or configure a cull exception for ODE-spawned servers. The PVC preserves files, but a culled pod loses in-memory kernel state mid-task.
 4. **Platform token refresh.** Spawn-time env vars cannot be refreshed, so push the current Keycloak token into the kernel via a hidden `execute` at session start and on each refresh.
 
@@ -505,7 +543,9 @@ A `Provider` interface with `Stream()` and `Capabilities()`; normalise all provi
 
 **CLI provider.** Expose ODE's tool surface as an MCP server (`mcp/`) and point the CLI at it, rather than fighting the CLI's own tool loop. Same tool definitions serve both transports. Invoke in streaming JSON output mode; map events onto the internal stream.
 
-**Known risk.** CLI tool-calling parity is unverified. Probe capabilities at startup; degrade to text-only advisory mode if MCP invocation fails. Must not block M2 — this is a development convenience, not a production path.
+**Confirmed tools over MCP.** The CLI's loop has no pause for D11 to use, so a confirmed call is *held open* on the MCP request while the developer decides, and their answer becomes the tool's result. The waiting is ODE's, not the client's — see [chat-and-streaming.md](chat-and-streaming.md). Bounded by `chat_confirmation_timeout`, which has to fit inside one CLI turn. Where there is no turn in flight to ask on, the call is refused rather than left waiting.
+
+**Known risk.** CLI tool-calling parity is unverified. Probe capabilities at startup; degrade to text-only advisory mode if MCP invocation fails. It must not hold up the LLM surface — this is a development convenience, not a production path.
 
 ### 5.8 LLM tool surface — allow-list
 
@@ -519,33 +559,84 @@ The whole surface, in one table, because the omissions are the point.
 | `get_device_metadata` | read | L0 | no |
 | `list_import_instances` | read | L0 | no |
 | `get_import_type_metadata` | read | L0 | no |
+| `list_import_types` | read | L0 | no |
 | `probe_availability` | read `/data-availability` | L0 | no |
-| `estimate_read_cost` | read `/usage/devices` | L0 | no |
+| `probe_export_data` | read `/usage/exports` and one bucketed row count | L0 | no |
+| `estimate_read_cost` | read `/usage/devices` and `/usage/exports` | L0 | no |
 | `quick_profile` | assemble `QuickProfile`, no series read | L0 | no |
-| `profile_series` | compute `SeriesProfile` (service-scoped batch read) | L1 | no |
+| `profile_series` | compute `SeriesProfile` (source-scoped batch read: a service, or an export) | L1 | no |
 | `get_sessions` | read paginated session resource | L1 | no |
 | `propose_related_sets` | read ontology | L0 | no |
 | `relate_series` | compute + read | L1 | no |
-| `preview_series` | read values | L2 | no |
+| `preview_series` | read values (a device's variable or an export's column) | L2 | no |
 | `render_chart` | emit chart spec | L1 | no |
 | `propose_data_selection` | write session state | L0 | **yes** |
 | `propose_operator_input` | emit a pipeline input, no deployment | L0 | **yes** |
+| `create_import_instance` | deploy an import container on the platform | L0 | **yes** |
+| `create_export` | create an export and the timescale table behind it | L0 | **yes** |
+| `delete_import_instance` | remove an import instance this session created | L0 | **yes** |
+| `delete_export` | remove an export this session created | L0 | **yes** |
 | `write_file` | write repo working copy | L0 | no |
 | `run_code` | execute in kernel | L0 | **yes** |
 | `launch_experiment` | submit Ray job | L0 | **yes** |
 | `get_experiment_results` | read MLflow | L0 | no |
 
-**Imports have no discovery tool of their own, deliberately.** An operator's input
-can be an import as well as a device (§5.2.1), and both are described by the same
-content variables — so an import is found through `resolve_semantic_selection`
-like anything else. A separate "find imports" tool would let a model search one
-kind, get a plausible answer and never learn the other existed: a coverage gap
-that never announces itself. The two import tools above are the direct lookup and
-the type read, which a criteria query cannot express; `propose_operator_input` is
-the confirmed action that turns a resolved import variable into the pipeline input
-the analytics flow engine takes.
+**Imports have no *signal* discovery tool of their own, deliberately.** An
+operator's input can be an import as well as a device (§5.2.1), and both are
+described by the same content variables — so an import is found through
+`resolve_semantic_selection` like anything else. A separate "find imports" tool
+would let a model search one kind, get a plausible answer and never learn the
+other existed: a coverage gap that never announces itself. `list_import_instances`
+and `get_import_type_metadata` are the direct lookup and the type read, which a
+criteria query cannot express; `propose_operator_input` is the confirmed action
+that turns a resolved import variable into the pipeline input the analytics flow
+engine takes.
 
-**Denied, enforced server-side — no tool exists:** modifying evaluation criteria, modifying the Operator Lib, deploying to a production pipeline, deleting platform data, writing to the timeseries store, changing the exposure tier, changing admin limits, **writing a `ProfileOverride`**, and **promoting a `recommendations` value to binding config** — the last two are developer actions only (D21, D28).
+**`list_import_types` is not an exception to that rule**, and the distinction is
+worth stating because it looks like one. It searches the *catalogue* — the
+adapters that could be deployed — and structurally cannot answer what data the
+platform carries: a type has no instance, no topic, no status and no history.
+It exists because every other route to a type id runs through an instance.
+Discovery lists the matching types upstream and then joins each to its instances,
+emitting one row per instance, so a type nobody has deployed produces nothing at
+all — which is the state of every type `create_import_instance` is for. The
+coverage gap the rule above guards against is closed from the other side too:
+`resolve_semantic_selection` names the matching undeployed types itself, in
+`deployable_import_types`, so a model that never calls this tool still learns
+they exist. See [imports-as-operator-inputs.md](imports-as-operator-inputs.md).
+
+**The four that change the platform.** Everything else in this table reads, or
+emits a document the developer takes somewhere. These four do not, and three
+properties make them acceptable rather than a widening of the surface:
+
+- **Confirmed, like every other write.** Held in `ToolDispatcher` before the
+  executor, with the exact request in the developer's view. Nothing is created or
+  removed on the model's word.
+- **Checked against the import type before the request leaves.** Both creations
+  read the type first and refuse what upstream would accept and ignore — a config
+  name the type never declared, an exported path that is not a leaf of the output.
+  Upstream's own refusals name no field, and its worst answers are silent: a
+  config it passes to a container that nothing reads, and a 201 with an empty body
+  where the caller had no access to the import.
+- **A deletion reaches only what this session created.** Both deletions destroy
+  stored data — an export's timescale table, an import's Kafka topic — so they are
+  bounded by a per-session record of what ODE itself created. Any other id is
+  refused, and the refusal is not a judgement the model can argue with: the id is
+  not in the session's list. This is what keeps the denial below true.
+
+**A credential is never sent from a chat.** `create_import_instance` refuses an
+import type whose configuration includes a credential without a default, and
+refuses any credential-shaped value the model supplies. That import is created in
+the platform's own dialog, where the developer types the value. The test is a
+heuristic on the config name and errs toward refusing, because the confirmation
+card shows arguments and cannot edit them — "the developer will notice" is not a
+control here.
+
+**An export is not retroactive**, and the tool says so rather than letting a
+developer read "history" as the import's whole past: it stores what the Kafka
+topic still retains from the chosen offset onward.
+
+**Denied, enforced server-side — no tool exists:** modifying evaluation criteria, modifying the Operator Lib, deploying to a production pipeline, deleting platform data the developer did not just create through ODE, writing to the timeseries store, changing the exposure tier, changing admin limits, **writing a `ProfileOverride`**, and **promoting a `recommendations` value to binding config** — the last two are developer actions only (D21, D28).
 
 ### 5.9 Chart specification
 

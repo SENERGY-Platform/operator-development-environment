@@ -19,6 +19,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -27,7 +28,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 )
 
-// The repository surface (SPEC §5.11, M7).
+// The repository surface (§5.11, M7).
 //
 // Every route resolves the developer from their own token, exactly as the kernel
 // routes do and for the same reason: ODE holds a GitHub credential per developer
@@ -43,6 +44,11 @@ import (
 //
 // The author of a commit comes from the platform token rather than from the
 // GitHub account, so history says who did the work in the platform's terms.
+//
+// The workbench comes from a query parameter rather than the path, for the reason
+// the file routes give: it keeps every route static, and it lets a request that
+// names none mean "my only workbench" — which is what every client sent before
+// workbenches existed, and is still the right answer for a developer who has one.
 func repoRequest(c *gin.Context) repo.Request {
 	token := auth.MustFromContext(c)
 	return repo.Request{
@@ -53,6 +59,7 @@ func repoRequest(c *gin.Context) repo.Request {
 			Email: token.Email,
 			Sub:   token.Sub,
 		},
+		WorkbenchID: strings.TrimSpace(c.Query("workbench")),
 	}
 }
 
@@ -318,8 +325,7 @@ func handleRepoStatus(svc *repo.Service) gin.HandlerFunc {
 // @Router			/repo/link [delete]
 func handleRepoUnlink(svc *repo.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := auth.MustFromContext(c)
-		if err := svc.Unlink(c.Request.Context(), token.Sub); err != nil {
+		if err := svc.Unlink(c.Request.Context(), repoRequest(c)); err != nil {
 			respondRepo(c, err)
 			return
 		}
@@ -663,6 +669,24 @@ func respondRepo(c *gin.Context, err error) {
 			"needs": "github_connection",
 			"hint":  "start the OAuth flow with POST /repo/connection/authorize",
 		})
+	case errors.Is(err, repo.ErrNoWorkbench):
+		// The same answer for "does not exist" and "belongs to somebody else", which
+		// is what the service already decided: an id in a URL must not be enough to
+		// learn that another developer's workbench exists.
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+	case errors.Is(err, repo.ErrRepositoryInUse):
+		c.JSON(http.StatusConflict, gin.H{
+			"error": err.Error(),
+			"needs": "another_repository",
+			"hint": "a repository is open in one workbench at a time; work in the one " +
+				"that has it, or select a different repository here",
+		})
+	case errors.Is(err, repo.ErrTooManyWorkbenches):
+		c.JSON(http.StatusConflict, gin.H{
+			"error": err.Error(),
+			"needs": "free_workbench",
+			"hint":  "close a workbench before opening another; each one is a kernel in the pod",
+		})
 	case errors.Is(err, repo.ErrNoRepository):
 		c.JSON(http.StatusConflict, gin.H{
 			"error": err.Error(),
@@ -710,8 +734,9 @@ func respondRepo(c *gin.Context, err error) {
 		}
 	case errors.Is(err, kernel.ErrBusy):
 		// The pod runs one cell at a time, and the repository operations run in it.
-		// Saying so is the honest answer; the alternative would be queueing behind a
-		// training run of unknown length.
+		// Reported only after the bounded wait of kernel.Options.WorkspaceWait, so
+		// what is left here is a kernel held by something longer than any repository
+		// operation — a training run, and saying so is the honest answer.
 		c.JSON(http.StatusConflict, gin.H{
 			"error": err.Error(),
 			"needs": "idle_kernel",

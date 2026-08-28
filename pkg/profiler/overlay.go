@@ -121,11 +121,17 @@ func (s *PostgresOverrides) Append(override ProfileOverride) (ProfileOverride, e
 	// stored in columns. The columns are what the lookup uses; the document is what
 	// survives a change to the override schema, so an old confirmation stays
 	// readable rather than needing a migration to keep its meaning.
+	//
+	// export_id is the fourth key column rather than an alternative to the device
+	// pair: an export series has two empty device columns, and two exports with a
+	// like-named column would otherwise share one overlay. Both forms write all
+	// four, so the lookup below is one query for either.
 	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO ode_profile_overrides (id, device_id, service_id, variable_path, override, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
+		INSERT INTO ode_profile_overrides (id, device_id, service_id, export_id, variable_path, override, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		override.OverrideID, override.SeriesRef.DeviceID, override.SeriesRef.ServiceID,
-		override.SeriesRef.VariablePath, encoded, override.CreatedAt); err != nil {
+		override.SeriesRef.ExportID, override.SeriesRef.VariablePath, encoded,
+		override.CreatedAt); err != nil {
 		return ProfileOverride{}, fmt.Errorf("profiler: storing an override: %w", err)
 	}
 	return override, nil
@@ -151,9 +157,9 @@ func (s *PostgresOverrides) ForSeries(ref SeriesRef) []ProfileOverride {
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT override FROM ode_profile_overrides
-		WHERE device_id = $1 AND service_id = $2 AND variable_path = $3
+		WHERE device_id = $1 AND service_id = $2 AND export_id = $3 AND variable_path = $4
 		ORDER BY created_at`,
-		ref.DeviceID, ref.ServiceID, ref.VariablePath)
+		ref.DeviceID, ref.ServiceID, ref.ExportID, ref.VariablePath)
 	if err != nil {
 		slog.Warn("could not read the profile override overlay; the profile will be served "+
 			"without the developer's confirmations", "series", ref.String(), "error", err)

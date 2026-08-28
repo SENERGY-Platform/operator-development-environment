@@ -24,7 +24,7 @@ import (
 
 // TreeNode is an AspectNode with its children resolved. The device repository
 // returns aspect nodes as a flat list carrying parent and child ids; the SPA
-// needs the hierarchy (SPEC §5.1, "Hierarchical location/subsystem").
+// needs the hierarchy (§5.1, "Hierarchical location/subsystem").
 type TreeNode struct {
 	Id       string     `json:"id"`
 	Name     string     `json:"name"`
@@ -112,4 +112,59 @@ func sortNodes(nodes []TreeNode) {
 		}
 		return a < b
 	})
+}
+
+// AspectSubtreeIDs returns an aspect id together with every id below it, sorted,
+// or nil when the node is not in the list.
+//
+// It exists for the one upstream that does not expand an aspect criterion
+// itself. The device repository takes an aspect id and covers its whole subtree
+// (see DeviceTypeSelectables); import-repository matches `aspect_id $in
+// aspect_ids` literally, so a caller that sends only the node asks about that
+// node alone and gets a silently short answer — every import type described
+// against a child aspect is missing, with no error anywhere.
+//
+// Derived from ParentId rather than from AspectNode.DescendentIds, for the
+// reason AspectTree gives: the derivation holds when the field is unpopulated,
+// and this repository already walks the links this way twice.
+func AspectSubtreeIDs(nodes []models.AspectNode, rootID string) []string {
+	if rootID == "" {
+		return nil
+	}
+	present := make(map[string]bool, len(nodes))
+	children := make(map[string][]string, len(nodes))
+	for _, node := range nodes {
+		present[node.Id] = true
+	}
+	for _, node := range nodes {
+		if node.ParentId == "" || node.ParentId == node.Id {
+			continue
+		}
+		children[node.ParentId] = append(children[node.ParentId], node.Id)
+	}
+	if !present[rootID] {
+		return nil
+	}
+
+	// Breadth-first with a visited set, so a cycle in the parent links costs a
+	// bounded walk rather than the stack.
+	out := []string{rootID}
+	visited := map[string]bool{rootID: true}
+	frontier := []string{rootID}
+	for len(frontier) > 0 {
+		next := []string{}
+		for _, parent := range frontier {
+			for _, id := range children[parent] {
+				if visited[id] {
+					continue
+				}
+				visited[id] = true
+				out = append(out, id)
+				next = append(next, id)
+			}
+		}
+		frontier = next
+	}
+	sort.Strings(out)
+	return out
 }

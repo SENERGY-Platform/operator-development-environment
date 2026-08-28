@@ -16,7 +16,7 @@ precondition, not a code note.
 whether it may run — the budgets and the never-null rule are in
 [profiler-contracts.md](profiler-contracts.md).
 
-`geltung`: `allgemein` — each item follows from the code and from SPEC §3, not
+`geltung`: `allgemein` — each item follows from the code and from §3, not
 from one observation.
 
 ### ODE does not validate tokens, and must therefore sit behind the gateway
@@ -46,8 +46,8 @@ to `Execute` for the same reason: it offers series to read.
 
 `pkg/tools` is written so there is no path to an executor that skips a
 check: the executor lives in an unexported field, `Dispatch` is the only caller, and
-the order — exists, implemented, tier, confirmation, run — is the milestone's exit
-criterion rather than an implementation detail. The MCP transport shares the same
+the order — exists, implemented, tier, confirmation, run — is the guarantee the
+surface is built on rather than an implementation detail. The MCP transport shares the same
 dispatcher for the same reason; a second tool list would be a second, weaker gate.
 If you add a tool, add it to the registry, not beside it.
 
@@ -176,6 +176,24 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "X-ODE-Session: $SID" \
 The advertised list is the session's tier, read from the session on every request —
 never from a header a client could set for itself.
 
+### And the same confirmation
+
+A confirmed tool reached over MCP is **held**, not auto-approved and not refused.
+The call blocks while the request appears on the developer's screen as the same
+card the native providers produce, and their decision becomes its result — so D11
+binds identically whichever transport the model came in on. Details in
+[chat-and-streaming.md](chat-and-streaming.md).
+
+Two properties are worth checking rather than assuming, because a hold is a place a
+bypass could hide:
+
+- The tier gate comes **before** the hold. A tool the tier forbids is refused by the
+  dispatcher, not put to the developer as something an approval could get past.
+- The tier is re-read **at the decision**, not taken from the call that proposed it.
+  A developer may propose at L2, lower the session while the card is on screen, and
+  approve — and the approval then runs at L0, which refuses. Trusting the recorded
+  tier would make a pending confirmation a way around the ceiling.
+
 ## Admin limits
 
 Behind the `admin` realm role. A cap is checked before each provider request, and
@@ -201,6 +219,34 @@ And whether a cost cap can bind at all: cost is estimated from `llm_pricing`, so
 model with no configured price accrues zero and the cap silently does not apply to
 it. `GET /admin/usage` marks those requests `unpriced` rather than showing them as
 free.
+
+## probe_export_data at L0, and where the line actually is
+
+`probe_export_data` counts rows and sits at **L0**, which looks like a value read
+sitting below the tier that governs value reads. It is worth stating why it is
+not, because the argument is the line itself.
+
+The tier model separates *what the data is* from *facts about the store holding
+it*. `probe_availability` is already at L0 while reporting `from` and `to` —
+timestamps derived from the rows themselves — because a window says nothing about
+any value in it. A row count is the same kind of fact: `count("power")` answers how
+many rows carry something in that column, and no answer it can give distinguishes
+a kilowatt from a megawatt. The request carries `groupType: count` on every column,
+so there is no shape of response in which a value could arrive.
+
+What made this worth building at L0 rather than L1 is the sequence it belongs to.
+`create_export` is L0 with a confirmation, so a session at L0 can create an export
+— and the export worker's most common misconfiguration stores rows in which every
+column is null, which the export listing and stored bytes both report as healthy.
+A verification the creating session cannot perform is not a verification; it is a
+note in a log for somebody else. So the tool that checks the export is at the tier
+that can create one.
+
+The boundary is unchanged where it matters: reading what the rows *contain* is
+still `preview_series` at L2, and every statistic over them is still
+`profile_series` at L1. `probe_export_data` reports `values: 0` in its own answer,
+as `probe_availability` does, so the claim is checkable from the response rather
+than being a property of the code.
 
 ## run_code, and what the tier does not cover
 

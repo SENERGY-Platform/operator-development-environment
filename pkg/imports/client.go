@@ -202,6 +202,33 @@ func (c *DeployClient) ReadInstance(ctx context.Context, token string, id string
 		http.MethodGet, c.baseURL+"/instances/"+url.PathEscape(id), nil, nil)
 }
 
+// CreateInstance deploys an import instance.
+//
+// The id and the Kafka topic are cleared rather than trusted from the caller:
+// import-deploy refuses a request that sets either — "explicit setting of id not
+// allowed" — and both are its to mint. The image is cleared for the same reason
+// with a different failure: it is taken from the import type, and sending one
+// that differs is a 400 rather than an override.
+func (c *DeployClient) CreateInstance(ctx context.Context, token string, instance idmodel.Instance) (idmodel.Instance, error) {
+	instance.Id = ""
+	instance.KafkaTopic = ""
+	instance.Image = ""
+
+	body, err := json.Marshal(instance)
+	if err != nil {
+		return idmodel.Instance{}, fmt.Errorf("imports: encoding instance: %w", err)
+	}
+	return do[idmodel.Instance](ctx, c.http, c.timeout, token,
+		http.MethodPost, c.baseURL+"/instances", nil, body)
+}
+
+// DeleteInstance removes an import instance, its container and its Kafka topic.
+func (c *DeployClient) DeleteInstance(ctx context.Context, token string, id string) error {
+	_, err := doRaw(ctx, c.http, c.timeout, token,
+		http.MethodDelete, c.baseURL+"/instances/"+url.PathEscape(id), nil, nil)
+	return err
+}
+
 // RepositoryClient calls import-repository, for the direct lookup of one import
 // type by id.
 //
@@ -230,6 +257,83 @@ func NewRepositoryClient(baseURL string, opts ClientOptions) *RepositoryClient {
 func (c *RepositoryClient) ReadImportType(ctx context.Context, token string, id string) (dsmodel.ImportType, error) {
 	return do[dsmodel.ImportType](ctx, c.http, c.timeout, token,
 		http.MethodGet, c.baseURL+"/import-types/"+url.PathEscape(id), nil, nil)
+}
+
+// ListImportTypes is the type catalogue, and the only route to an import type
+// that has no instance yet.
+//
+// Discovery cannot answer this. device-selection lists the matching types and
+// then joins them to instances, emitting one selectable per *instance*, so a
+// type nobody has deployed produces nothing at all — and creating the first
+// instance of a type is exactly the case where nothing has been deployed. That
+// is the gap this closes; ReadImportType above needs an id that has to come from
+// somewhere.
+//
+// Three properties of the endpoint shape every caller:
+//
+//   - The criteria list is ANDed, one $elemMatch per entry, so a type must carry
+//     every criterion. Alternatives are separate requests, unioned by the caller —
+//     the same rule the selectables half already follows for a different reason.
+//   - An aspect criterion is matched literally: there is no subtree expansion
+//     here, so the caller sends the node together with its descendants (see
+//     ontology.AspectSubtreeIDs).
+//   - The total arrives in X-Total-Count rather than in the body.
+//
+// Decoded into device-selection's ImportType for the reason ReadImportType is:
+// import-repository's own type agrees on every field ODE reads and carries one
+// more (cost) that it does not, and one type here means the catalogue and the
+// discovery answer cannot describe the same import type two different ways.
+func (c *RepositoryClient) ListImportTypes(ctx context.Context, token string, opts TypeListOptions) ([]dsmodel.ImportType, int64, error) {
+	query := url.Values{}
+	if opts.Search != "" {
+		query.Set("search", opts.Search)
+	}
+	if opts.IDs != nil {
+		query.Set("ids", strings.Join(opts.IDs, ","))
+	}
+	if opts.SortBy != "" {
+		query.Set("sort", opts.SortBy)
+	}
+	if opts.Limit > 0 {
+		query.Set("limit", strconv.FormatInt(opts.Limit, 10))
+	}
+	if opts.Offset > 0 {
+		query.Set("offset", strconv.FormatInt(opts.Offset, 10))
+	}
+	if len(opts.Criteria) > 0 {
+		encoded, err := json.Marshal(opts.Criteria)
+		if err != nil {
+			return nil, 0, fmt.Errorf("imports: encoding import type criteria: %w", err)
+		}
+		// A query parameter carrying JSON, which is the endpoint's own shape rather
+		// than a choice here.
+		query.Set("criteria", string(encoded))
+	}
+
+	endpoint := c.baseURL + "/import-types"
+	raw, header, err := doRawWithHeader(ctx, c.http, c.timeout, token, http.MethodGet, endpoint, query, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	found := []dsmodel.ImportType{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &found); err != nil {
+			return nil, 0, &UpstreamError{
+				Resource: endpoint,
+				Code:     http.StatusOK,
+				Err:      fmt.Errorf("decoding response: %w", err),
+			}
+		}
+	}
+
+	// The page is the answer and the total is context for it, as in ListInstances:
+	// a missing or unparseable header reads as unknown rather than failing a
+	// listing that arrived intact.
+	total := int64(-1)
+	if parsed, err := strconv.ParseInt(strings.TrimSpace(header.Get("X-Total-Count")), 10, 64); err == nil {
+		total = parsed
+	}
+	return found, total, nil
 }
 
 func httpClient(opts ClientOptions) *http.Client {
@@ -267,6 +371,14 @@ func do[T any](ctx context.Context, client *http.Client, timeout time.Duration, 
 }
 
 func doRaw(ctx context.Context, client *http.Client, timeout time.Duration, token, method, endpoint string, query url.Values, body []byte) ([]byte, error) {
+	raw, _, err := doRawWithHeader(ctx, client, timeout, token, method, endpoint, query, body)
+	return raw, err
+}
+
+// doRawWithHeader is doRaw for the one endpoint whose answer is incomplete
+// without a header: import-repository reports the total of a type listing in
+// X-Total-Count rather than in the body.
+func doRawWithHeader(ctx context.Context, client *http.Client, timeout time.Duration, token, method, endpoint string, query url.Values, body []byte) ([]byte, http.Header, error) {
 	// Always bounded. A caller that passed a deadline-free context would otherwise
 	// wait forever, the same reasoning pkg/timeseries applies.
 	if timeout > 0 {
@@ -281,7 +393,7 @@ func doRaw(ctx context.Context, client *http.Client, timeout time.Duration, toke
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
 	if err != nil {
-		return nil, fmt.Errorf("imports: building request for %s: %w", endpoint, err)
+		return nil, nil, fmt.Errorf("imports: building request for %s: %w", endpoint, err)
 	}
 	if query != nil {
 		req.URL.RawQuery = query.Encode()
@@ -295,17 +407,18 @@ func doRaw(ctx context.Context, client *http.Client, timeout time.Duration, toke
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, &UpstreamError{Resource: endpoint, Code: 0, Err: err}
+		return nil, nil, &UpstreamError{Resource: endpoint, Code: 0, Err: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode > 299 {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, &UpstreamError{
+		return nil, resp.Header, &UpstreamError{
 			Resource: endpoint,
 			Code:     resp.StatusCode,
 			Err:      fmt.Errorf("%s", strings.TrimSpace(string(detail))),
 		}
 	}
-	return io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	return raw, resp.Header, err
 }

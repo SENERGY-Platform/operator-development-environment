@@ -88,7 +88,7 @@ func (s *Service) resolve(ctx context.Context, token string, spec Spec) ([]resol
 		if resolved.groupTime != chartBucket {
 			notes = append(notes, fmt.Sprintf(
 				"series %d is bucketed at %s rather than the chart's %s, so it is not aligned with the others "+
-					"(SPEC §5.3.1 item 4: alignment is a property of one shared groupTime)",
+					"(alignment is a property of one shared groupTime)",
 				i, resolved.groupTime, chartBucket))
 		}
 	}
@@ -229,7 +229,7 @@ func (s *Service) resolveSeries(
 	}
 	if unit.Confirmable {
 		resolved.Notes = append(resolved.Notes, "the unit is not settled: "+unit.Note+
-			" — confirming it is a developer action (§5.10)")
+			" — confirming it is a developer action")
 	}
 	return resolved, nil
 }
@@ -524,7 +524,7 @@ func (s *Service) Data(ctx context.Context, token string, req DataRequest) (Data
 	if data.AnnotationsDropped > 0 {
 		data.Notes = append(data.Notes, fmt.Sprintf(
 			"%d annotations were left out of the %d the window contains; narrow the window, "+
-				"or page the full list through the sessions resource (D27)",
+				"or page the full list through the sessions resource",
 			data.AnnotationsDropped, data.AnnotationsDropped+len(data.Annotations)))
 	}
 	if !data.Aligned {

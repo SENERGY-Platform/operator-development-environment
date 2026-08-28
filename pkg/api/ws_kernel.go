@@ -20,6 +20,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 )
 
 // Execution over the WebSocket.
@@ -39,6 +41,11 @@ import (
 
 type kernelExecuteBody struct {
 	Code string `json:"code"`
+	// Workbench is which working context to run in — which checkout the cell's
+	// relative paths resolve against, and which kernel it queues behind. Absent
+	// means the developer's default one, which is what a client that predates
+	// workbenches sends.
+	Workbench string `json:"workbench,omitempty"`
 }
 
 // startExecution runs one cell and relays its events.
@@ -92,9 +99,13 @@ func (s *wsSession) startExecution(ctx context.Context, message wsInbound) {
 		}()
 
 		// Deliberately not gated on s.slots. That gate bounds concurrent platform
-		// reads; an execution runs in the developer's own pod, and one developer can
-		// only have one cell running anyway — the kernel service refuses a second.
-		events, err := s.kernel.Run(operationCtx, s.token.Bearer(), body.Code)
+		// reads; an execution runs in the developer's own pod, and a workbench can
+		// only have one cell running anyway — the kernel service refuses a second in
+		// the same workbench, and allows one per workbench, which is the whole point
+		// of having them.
+		events, err := s.kernel.Run(operationCtx, kernel.Ref{
+			Bearer: s.token.Bearer(), Workbench: body.Workbench,
+		}, body.Code)
 		if err != nil {
 			s.send(wsOutbound{
 				Type: msgError, ID: message.ID,

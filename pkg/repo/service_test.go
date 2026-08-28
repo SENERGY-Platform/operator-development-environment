@@ -674,16 +674,16 @@ func (w *busyOn) refuses(argv []string) bool {
 }
 
 func (w *busyOn) Command(
-	ctx context.Context, bearer string, cmd kernel.Command,
+	ctx context.Context, ref kernel.Ref, cmd kernel.Command,
 ) (kernel.CommandResult, error) {
 	if w.refuses(cmd.Argv) {
 		return kernel.CommandResult{}, kernel.ErrBusy
 	}
-	return w.pod.Command(ctx, bearer, cmd)
+	return w.pod.Command(ctx, ref, cmd)
 }
 
 func (w *busyOn) CommandBatch(
-	ctx context.Context, bearer string, cmds []kernel.Command,
+	ctx context.Context, ref kernel.Ref, cmds []kernel.Command,
 ) ([]kernel.CommandResult, error) {
 	// A batch is one claim, so a busy kernel refuses the whole of it — which is
 	// the property the sequence is batched for.
@@ -692,31 +692,31 @@ func (w *busyOn) CommandBatch(
 			return nil, kernel.ErrBusy
 		}
 	}
-	return w.pod.CommandBatch(ctx, bearer, cmds)
+	return w.pod.CommandBatch(ctx, ref, cmds)
 }
 
-func (w *busyOn) Tree(ctx context.Context, bearer string, req kernel.TreeRequest) (kernel.Node, error) {
-	return w.pod.Tree(ctx, bearer, req)
+func (w *busyOn) Tree(ctx context.Context, ref kernel.Ref, req kernel.TreeRequest) (kernel.Node, error) {
+	return w.pod.Tree(ctx, ref, req)
 }
 
 func (w *busyOn) ReadFile(
-	ctx context.Context, bearer, path string, maxBytes int,
+	ctx context.Context, ref kernel.Ref, path string, maxBytes int,
 ) (kernel.FileContent, error) {
-	return w.pod.ReadFile(ctx, bearer, path, maxBytes)
+	return w.pod.ReadFile(ctx, ref, path, maxBytes)
 }
 
 func (w *busyOn) WriteFile(
-	ctx context.Context, bearer, path string, content []byte,
+	ctx context.Context, ref kernel.Ref, path string, content []byte,
 ) (kernel.Node, error) {
-	return w.pod.WriteFile(ctx, bearer, path, content)
+	return w.pod.WriteFile(ctx, ref, path, content)
 }
 
-func (w *busyOn) MakeDir(ctx context.Context, bearer, path string) (kernel.Node, error) {
-	return w.pod.MakeDir(ctx, bearer, path)
+func (w *busyOn) MakeDir(ctx context.Context, ref kernel.Ref, path string) (kernel.Node, error) {
+	return w.pod.MakeDir(ctx, ref, path)
 }
 
-func (w *busyOn) Remove(ctx context.Context, bearer, path string, recursive bool) error {
-	return w.pod.Remove(ctx, bearer, path, recursive)
+func (w *busyOn) Remove(ctx context.Context, ref kernel.Ref, path string, recursive bool) error {
+	return w.pod.Remove(ctx, ref, path, recursive)
 }
 
 func (w *busyOn) Workspace() string { return w.pod.Workspace() }

@@ -42,10 +42,62 @@ type fakeSessions struct {
 	mux   sync.RWMutex
 	tiers map[string]tools.Tier
 	owner map[string]string
+
+	// hold stands in for the chat engine's confirmation hold. Two things a test
+	// sets: whether a call is held at all, and what the developer answers.
+	holdable bool
+	approve  bool
+	// held records the calls that reached the hold, so a test can tell "held and
+	// approved" from "ran without asking".
+	held       []string
+	dispatcher *tools.Dispatcher
 }
 
 func newFakeSessions() *fakeSessions {
 	return &fakeSessions{tiers: map[string]tools.Tier{}, owner: map[string]string{}}
+}
+
+// Hold answers the way the engine does: refuse when nothing could ask the
+// developer, otherwise run the call the decision permits.
+func (s *fakeSessions) Hold(
+	ctx context.Context, req tools.Request, call tools.Call,
+) (tools.Result, bool, error) {
+	s.mux.Lock()
+	holdable, approve := s.holdable, s.approve
+	if holdable {
+		s.held = append(s.held, call.Name)
+	}
+	dispatcher := s.dispatcher
+	s.mux.Unlock()
+
+	if !holdable {
+		return tools.Result{}, false, nil
+	}
+	if !approve {
+		return tools.Result{
+			CallID: call.ID, Tool: call.Name, Outcome: tools.Outcome("rejected"),
+			Content: map[string]any{"rejected": true},
+		}, true, nil
+	}
+
+	// Through the dispatcher's confirmed path, so the test exercises the same gate
+	// the engine goes through rather than fabricating a result.
+	result := dispatcher.Dispatch(ctx, req, call)
+	if result.Confirmation == nil {
+		return result, true, nil
+	}
+	return dispatcher.Confirm(ctx, req, *result.Confirmation), true, nil
+}
+
+func (s *fakeSessions) wasHeld(name string) bool {
+	s.mux.RLock()
+	defer s.mux.RUnlock()
+	for _, held := range s.held {
+		if held == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *fakeSessions) add(sessionID, userSub string, tier tools.Tier) {
@@ -141,6 +193,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("dispatcher: %v", err)
 	}
 	sessions := newFakeSessions()
+	sessions.dispatcher = dispatcher
 
 	server, err := New(dispatcher, sessions, "test")
 	if err != nil {
@@ -352,11 +405,13 @@ func (t *tierClaimingTransport) RoundTrip(request *http.Request) (*http.Response
 
 // --- confirmed tools ---
 
-// TestMCPRefusesAConfirmedTool checks that a tool needing a developer decision is
-// not silently auto-approved on a transport that cannot ask for one.
-func TestMCPRefusesAConfirmedTool(t *testing.T) {
+// TestMCPRefusesAConfirmedToolWithNobodyToAsk is the case the refusal is still
+// for: no turn in flight means the request would never reach a developer, so the
+// call says so rather than waiting for an answer that cannot come.
+func TestMCPRefusesAConfirmedToolWithNobodyToAsk(t *testing.T) {
 	h := newHarness(t)
 	h.sessions.add("sess-l0", "alice", tools.L0)
+	h.sessions.holdable = false
 	session := h.connect(t, "alice", "sess-l0")
 
 	result, err := session.CallTool(context.Background(), &sdk.CallToolParams{
@@ -373,6 +428,63 @@ func TestMCPRefusesAConfirmedTool(t *testing.T) {
 	}
 	if !strings.Contains(callText(t, result), "confirmation_unavailable") {
 		t.Errorf("refusal = %s, want confirmation_unavailable", callText(t, result))
+	}
+}
+
+// TestMCPHoldsAConfirmedToolAndRunsWhatIsApproved is the property the refusal used
+// to make impossible: on this transport a confirmed tool is held for the
+// developer, and their approval is what runs it.
+func TestMCPHoldsAConfirmedToolAndRunsWhatIsApproved(t *testing.T) {
+	h := newHarness(t)
+	h.sessions.add("sess-l0", "alice", tools.L0)
+	h.sessions.holdable = true
+	h.sessions.approve = true
+	session := h.connect(t, "alice", "sess-l0")
+
+	result, err := session.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "confirmed_tool", Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("an approved call was reported as an error: %s", callText(t, result))
+	}
+	if !h.sessions.wasHeld("confirmed_tool") {
+		t.Error("the call was not held for the developer")
+	}
+	if !h.tracker.was("confirmed_tool") {
+		t.Error("an approved call did not run")
+	}
+	if !strings.Contains(callText(t, result), `"ran":"confirmed_tool"`) {
+		t.Errorf("result = %s, want the tool's own answer", callText(t, result))
+	}
+}
+
+// TestMCPReturnsARejectionAsAnAnswer checks that declining is reported as an
+// outcome rather than as a failure. A rejection the model reads as an error is one
+// it learns to route around, and the tool exists to be asked about.
+func TestMCPReturnsARejectionAsAnAnswer(t *testing.T) {
+	h := newHarness(t)
+	h.sessions.add("sess-l0", "alice", tools.L0)
+	h.sessions.holdable = true
+	h.sessions.approve = false
+	session := h.connect(t, "alice", "sess-l0")
+
+	result, err := session.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "confirmed_tool", Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("a rejection was reported as an error: %s", callText(t, result))
+	}
+	if h.tracker.was("confirmed_tool") {
+		t.Fatal("a declined call ran anyway")
+	}
+	if !strings.Contains(callText(t, result), `"rejected":true`) {
+		t.Errorf("result = %s, want the rejection", callText(t, result))
 	}
 }
 

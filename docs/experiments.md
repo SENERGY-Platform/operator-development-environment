@@ -12,10 +12,13 @@ whose commit cannot be identified, or an embed that will not frame.
 
 **Not this if**: the question is what happens *after* a run finishes without
 anyone watching — that is the interpretation turn, see
-[result-interpretation.md](result-interpretation.md).
+[result-interpretation.md](result-interpretation.md). The kernel's own
+mechanics — the pod, the workspace, one cell at a time — are
+[kernel-and-repository.md](kernel-and-repository.md); what this file adds about
+them is only why a cell is not a run.
 
 `geltung`: `allgemein` for the commit rule and the credential model, which follow
-from SPEC §5.12 and §3.1 item 6; the embed probe's behaviour is `einzelfall`.
+from §5.12 and §3.1 item 6; the embed probe's behaviour is `einzelfall`.
 
 ## A run is submitted from a commit, or it is not submitted
 
@@ -26,7 +29,7 @@ the answer is a **409**, not a job:
 POST /experiments
 409 {"error":"the working copy of devuser/pv-forecast has no commit yet, and an
       experiment is submitted from a commit so that its MLflow run is
-      reproducible from one (SPEC §5.11 item 7)",
+      reproducible from one (§5.11 item 7)",
      "needs":"commit","unborn":true,"repository":"devuser/pv-forecast"}
 ```
 
@@ -54,6 +57,69 @@ a sentence, the same shape M7's two 409s have. ODE will not commit for the
 developer: §5.11 item 5 makes that a human action, and a launch that quietly
 committed to make itself possible would be exactly the silent commit that rules
 out.
+
+## The kernel loop is not a smaller experiment
+
+The question that follows a refusal is the obvious one: the operator code carries
+Operator Lib's own MLflow integration, so why not run it in a cell and skip the
+commit? The cell is a good loop and nothing here discourages it. It simply
+produces a different thing at the end.
+
+What ODE installs in a kernel is four variables (§5.6 item 4) — `SENERGY_TOKEN`,
+`ODE_WORKSPACE`, `SENERGY_DEVICE_REPO_URL`, `SENERGY_TIMESCALE_URL`. That is
+`kernelEnvironment` in `pkg/pkg.go`, and it is the whole list: no
+`MLFLOW_TRACKING_URI`, no `RAY_ADDRESS`. The MLflow trio is set at submission
+time only, and it could not be earlier — ODE creates the run before the job
+exists, so `MLFLOW_RUN_ID` has no value to carry until then. Those same three
+names sit in `reservedEnv`, so a caller's `env_vars` cannot supply them either.
+
+Both client libraries are in the pod regardless: the singleuser image installs
+Operator Lib, which brings `ray` and `mlflow` with it. The imports work, which is
+why the two gaps are worth naming rather than assuming.
+
+- **`ray.init()` in a cell gives a Ray inside the pod.** `training.py`'s
+  `_fit.remote()` runs, and it runs on the pod's CPUs and the pod's memory. The
+  scaffold's ninety-day `TRAINING_WINDOW` is roughly where that stops being the
+  same computation as the one the cluster would do.
+- **A run logged from a cell carries no tags.** With no tracking URI the MLflow
+  client writes to its local default store in the pod; with one set by hand the
+  run does reach the server, but it holds none of `runTags` — `commit_sha`,
+  `user_sub`, `ode_experiment_id`, `repository`, `submission_id`, `entrypoint`,
+  `source=ode`. The Experiments pane lists by those tags and the interpretation
+  turn reads them, so the run is invisible to both.
+
+The second gap is where the two MLflow uses part company, and they are genuinely
+two. Operator Lib's is the **registry** path in production: `MLOperator` loads the
+model registered under this pipeline and operator, and `train()` — handed a
+`TrainMlflowLogger` by the library itself — registers the next one. It is keyed by
+the deployment. ODE's is **tracking for comparison**, keyed by the commit. Both
+are MLflow; they answer different questions, and neither substitutes for the
+other.
+
+So there are three loops rather than two, and the middle one is not a lesser
+version of the third:
+
+1. **The scaffold's `tests/test_op.py`**, which runs without Kafka, without Ray
+   and without MLflow — that is what it is for. It is the loop a change to
+   `infer()` or `need_retraining()` wants.
+2. **`run_code` on the operator's own code.** The fit is ordinary Python, the
+   platform is reachable with the developer's token through the `ode_platform`
+   helper the singleuser image ships, and nothing is recorded. This is the loop
+   for "does this do what I think it does", and it needs no commit.
+3. **`launch_experiment`**, when the result is one to hold against another result
+   weeks later. That is the loop the commit rule belongs to, because the
+   comparison rests on knowing which code produced which number.
+
+The assistant is told the same thing, in the two tool descriptions rather than in
+the system prompt: `run_code`'s says the kernel is wired to neither MLflow nor the
+cluster, and `launch_experiment`'s says to ask whether a recorded run is what the
+developer wants before proposing one. The descriptions are where the choice is
+actually made, and a deployment without a Ray cluster does not pay for the
+paragraph — only implemented tools are offered to a model.
+
+Reaching for 3 where 2 would do is what makes the commit rule read as a toll
+gate. It is not one — it is what a result costs if it has to still mean something
+in a fortnight.
 
 ## The archive does not come back through ReadFile
 
@@ -275,8 +341,9 @@ verdict is cached with a TTL, keyed on the configured URLs — which is D6's
 "re-probe on config change" with one fewer moving part, since a changed URL simply
 misses — and `?refresh=true` forces a fresh probe for the pane's re-probe control.
 
-The SPA half is not built here. `frontend/src/api.ts` carries the types and the
-client method; the Experiments pane is a later agent's.
+The SPA half is the Experiments pane at `/tools/experiments`, which renders the
+verdict this probe returns: an embedded dashboard where framing allows, a link-only
+card where it does not, and a re-probe control that passes `?refresh=true`.
 
 ## The last two tools
 

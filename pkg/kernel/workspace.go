@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-// Working on the workspace from outside the pod (SPEC §5.11, M7).
+// Working on the workspace from outside the pod (§5.11, M7).
 //
 // The repo working copy lives on the developer's own PVC, which ODE's backend
 // cannot reach: the only process with that filesystem mounted is the singleuser
@@ -48,10 +48,19 @@ import (
 //     separates the answer from anything else the cell may have printed.
 //
 // The cost, stated rather than hidden: a kernel runs one cell at a time, so a
-// developer with a long training run in flight gets ErrBusy on a file read until
-// it finishes. A second, ODE-owned kernel per user would decouple the two; it is
-// not built, because doubling every developer's kernels is a real cost and the
-// case for it should come from use rather than from anticipation.
+// developer with a long training run in flight gets ErrBusy on a file read in
+// *that workbench* until it finishes. It is bounded by the workbench now rather
+// than by the developer — every other workbench has its own kernel and is
+// unaffected — which is what makes two operators at once workable. Within one
+// workbench the trade is unchanged, because the alternative is a second kernel per
+// workbench and that doubles the pod's memory for a case the developer can already
+// answer by opening another workbench.
+//
+// What that cost is *not* is these operations refusing each other. They are cells
+// of a few milliseconds and there are several of them behind one page load, so they
+// claim the kernel with a bounded wait (Options.WorkspaceWait) and queue among
+// themselves. The 409 is kept for the kernel that is still busy when the wait runs
+// out, which is the case worth reporting.
 
 // Command is one program to run in the developer's workspace.
 //
@@ -146,7 +155,7 @@ const (
 )
 
 // Command runs one program in the developer's workspace.
-func (s *Service) Command(ctx context.Context, bearer string, cmd Command) (CommandResult, error) {
+func (s *Service) Command(ctx context.Context, ref Ref, cmd Command) (CommandResult, error) {
 	if len(cmd.Argv) == 0 {
 		return CommandResult{}, fmt.Errorf("%w: a command needs an argv", ErrInvalidRequest)
 	}
@@ -169,7 +178,7 @@ func (s *Service) Command(ctx context.Context, bearer string, cmd Command) (Comm
 	}
 
 	var result CommandResult
-	err = s.workspaceCall(ctx, bearer, workspaceRequest{
+	err = s.workspaceCall(ctx, ref, workspaceRequest{
 		Op:         "command",
 		Path:       dir,
 		Argv:       cmd.Argv,
@@ -194,7 +203,7 @@ func (s *Service) Command(ctx context.Context, bearer string, cmd Command) (Comm
 // returns the results of the ones that ran — a caller that needs to know how far
 // it got can see it, rather than inferring it.
 func (s *Service) CommandBatch(
-	ctx context.Context, bearer string, cmds []Command,
+	ctx context.Context, ref Ref, cmds []Command,
 ) ([]CommandResult, error) {
 	if len(cmds) == 0 {
 		return nil, fmt.Errorf("%w: a batch needs at least one command", ErrInvalidRequest)
@@ -235,7 +244,7 @@ func (s *Service) CommandBatch(
 	var answer struct {
 		Results []CommandResult `json:"results"`
 	}
-	err := s.workspaceCall(ctx, bearer, workspaceRequest{
+	err := s.workspaceCall(ctx, ref, workspaceRequest{
 		Op:       "commands",
 		Commands: specs,
 	}, 2*budget+8192, &answer)
@@ -243,7 +252,7 @@ func (s *Service) CommandBatch(
 }
 
 // Tree lists the workspace, or one directory of it.
-func (s *Service) Tree(ctx context.Context, bearer string, req TreeRequest) (Node, error) {
+func (s *Service) Tree(ctx context.Context, ref Ref, req TreeRequest) (Node, error) {
 	path, err := cleanWorkspacePath(req.Path)
 	if err != nil {
 		return Node{}, err
@@ -254,7 +263,7 @@ func (s *Service) Tree(ctx context.Context, bearer string, req TreeRequest) (Nod
 	}
 
 	var node Node
-	err = s.workspaceCall(ctx, bearer, workspaceRequest{
+	err = s.workspaceCall(ctx, ref, workspaceRequest{
 		Op:         "tree",
 		Path:       path,
 		Recursive:  req.Recursive,
@@ -267,7 +276,7 @@ func (s *Service) Tree(ctx context.Context, bearer string, req TreeRequest) (Nod
 // ReadFile reads one file of the workspace. maxBytes bounds the read; a longer
 // file comes back truncated and says so.
 func (s *Service) ReadFile(
-	ctx context.Context, bearer, path string, maxBytes int,
+	ctx context.Context, ref Ref, path string, maxBytes int,
 ) (FileContent, error) {
 	clean, err := cleanWorkspacePath(path)
 	if err != nil {
@@ -281,7 +290,7 @@ func (s *Service) ReadFile(
 	}
 
 	var content FileContent
-	err = s.workspaceCall(ctx, bearer, workspaceRequest{
+	err = s.workspaceCall(ctx, ref, workspaceRequest{
 		Op:       "read",
 		Path:     clean,
 		MaxBytes: maxBytes,
@@ -295,7 +304,7 @@ func (s *Service) ReadFile(
 // and push explicit developer actions, and a write that quietly staged itself
 // would take that decision away.
 func (s *Service) WriteFile(
-	ctx context.Context, bearer, path string, content []byte,
+	ctx context.Context, ref Ref, path string, content []byte,
 ) (Node, error) {
 	clean, err := cleanWorkspacePath(path)
 	if err != nil {
@@ -306,7 +315,7 @@ func (s *Service) WriteFile(
 	}
 
 	var node Node
-	err = s.workspaceCall(ctx, bearer, workspaceRequest{
+	err = s.workspaceCall(ctx, ref, workspaceRequest{
 		Op:      "write",
 		Path:    clean,
 		Content: base64.StdEncoding.EncodeToString(content),
@@ -315,7 +324,7 @@ func (s *Service) WriteFile(
 }
 
 // MakeDir creates a directory and its parents.
-func (s *Service) MakeDir(ctx context.Context, bearer, path string) (Node, error) {
+func (s *Service) MakeDir(ctx context.Context, ref Ref, path string) (Node, error) {
 	clean, err := cleanWorkspacePath(path)
 	if err != nil {
 		return Node{}, err
@@ -325,12 +334,12 @@ func (s *Service) MakeDir(ctx context.Context, bearer, path string) (Node, error
 	}
 
 	var node Node
-	err = s.workspaceCall(ctx, bearer, workspaceRequest{Op: "mkdir", Path: clean}, 64<<10, &node)
+	err = s.workspaceCall(ctx, ref, workspaceRequest{Op: "mkdir", Path: clean}, 64<<10, &node)
 	return node, err
 }
 
 // Remove deletes a file, or a directory when recursive is set.
-func (s *Service) Remove(ctx context.Context, bearer, path string, recursive bool) error {
+func (s *Service) Remove(ctx context.Context, ref Ref, path string, recursive bool) error {
 	clean, err := cleanWorkspacePath(path)
 	if err != nil {
 		return err
@@ -339,7 +348,7 @@ func (s *Service) Remove(ctx context.Context, bearer, path string, recursive boo
 		return fmt.Errorf("%w: the workspace root cannot be removed", ErrInvalidRequest)
 	}
 	var ignored struct{}
-	return s.workspaceCall(ctx, bearer, workspaceRequest{
+	return s.workspaceCall(ctx, ref, workspaceRequest{
 		Op:        "remove",
 		Path:      clean,
 		Recursive: recursive,
@@ -381,18 +390,20 @@ type workspaceCommand struct {
 
 // workspaceCall runs one operation in the pod and decodes its answer into out.
 func (s *Service) workspaceCall(
-	ctx context.Context, bearer string, req workspaceRequest, maxOutput int, out any,
+	ctx context.Context, ref Ref, req workspaceRequest, maxOutput int, out any,
 ) error {
 	encoded, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
 
-	session, conn, handle, user, run, err := s.claim(ctx, bearer)
+	// Willing to wait: see claim. Two of these colliding is ODE competing with
+	// itself, and the loser of that race is worth a few seconds rather than a 409.
+	target, conn, handle, user, run, err := s.claim(ctx, ref, s.opts.WorkspaceWait)
 	if err != nil {
 		return err
 	}
-	defer s.finishRun(session, run)
+	defer s.finishRun(target, run)
 
 	executeCtx, cancel := context.WithTimeout(ctx, s.opts.ExecuteTimeout)
 	defer cancel()

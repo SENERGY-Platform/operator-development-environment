@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	servicejwt "github.com/SENERGY-Platform/service-commons/pkg/jwt"
 	"github.com/gin-gonic/gin"
@@ -28,6 +29,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/admin"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/auth"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
 
@@ -68,6 +70,11 @@ func handleCreateChatSession(engine *chat.Engine) gin.HandlerFunc {
 			Provider string `json:"provider"`
 			Model    string `json:"model"`
 			Tier     string `json:"exposure_tier"`
+			// Which working context this conversation acts in. Absent means the
+			// developer's only workbench; a second conversation naming the same one is
+			// two chats about a single operator, and naming a different one is a
+			// developer working on two at once.
+			Workbench string `json:"workbench_id"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil && err.Error() != "EOF" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -89,6 +96,7 @@ func handleCreateChatSession(engine *chat.Engine) gin.HandlerFunc {
 		token := auth.MustFromContext(c)
 		session, err := engine.CreateSession(c.Request.Context(), token.Sub, chat.CreateRequest{
 			Title: body.Title, Provider: body.Provider, Model: body.Model, Tier: tier,
+			WorkbenchID: body.Workbench,
 		})
 		if err != nil {
 			respondChatError(c, err)
@@ -179,6 +187,117 @@ func handleDeleteChatSession(engine *chat.Engine) gin.HandlerFunc {
 			return
 		}
 		c.Status(http.StatusNoContent)
+	}
+}
+
+// @Summary		Rename a session
+// @Description	Sets the developer's own name for a conversation, in place of the
+// @Description	first few words of its opening message. An empty title clears the
+// @Description	name, and the next message titles the session again.
+// @Description
+// @Description	Its own sub-resource rather than a PUT of the whole session, so that
+// @Description	nothing changes a tier through a route that does not write §3.2's
+// @Description	audit trail.
+// @Tags			chat
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			id		path		string				true	"session id"
+// @Param			request	body		object{title=string}	true	"the new title; empty clears it"
+// @Success		200		{object}	chat.Session
+// @Failure		400		{object}	map[string]string	"a malformed body, or a title longer than a session keeps"
+// @Failure		401		{object}	map[string]string
+// @Failure		404		{object}	map[string]string
+// @Router			/chat/sessions/{id}/title [put]
+func handleRenameChatSession(engine *chat.Engine) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			Title string `json:"title"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		token := auth.MustFromContext(c)
+		session, err := engine.RenameSession(
+			c.Request.Context(), token.Sub, c.Param("id"), body.Title)
+		if err != nil {
+			respondChatError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, session)
+	}
+}
+
+// handleMoveChatSession re-points a conversation at another working context.
+//
+// Its own sub-resource for the reason the title and the tier are: a PUT of the whole
+// session would be a second way to move a tier, and that one would not audit it.
+//
+// @Summary		Move a session to another workbench
+// @Description	Changes the working context an existing conversation acts in: which
+// @Description	checkout its file tools write into, and which kernel its cells run in.
+// @Description	An empty workbench_id clears the assignment, which everything below
+// @Description	reads as "my only workbench".
+// @Description
+// @Description	The move leaves a note in the conversation. Every file read, file write
+// @Description	and cell run above it happened in the previous checkout, and a model
+// @Description	handed that history with no marker goes on believing the files it wrote
+// @Description	are still there.
+// @Description
+// @Description	Refused with 400 while a turn is running on the session: that turn is
+// @Description	acting in the workbench the move would take it away from.
+// @Tags			chat
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			id		path		string							true	"session id"
+// @Param			request	body		object{workbench_id=string}		true	"the workbench to act in; empty clears it"
+// @Success		200		{object}	chat.Session
+// @Failure		400		{object}	map[string]string	"a malformed body, or a turn is running on this session"
+// @Failure		401		{object}	map[string]string
+// @Failure		404		{object}	map[string]string	"no such session, or no such workbench of this developer's"
+// @Router			/chat/sessions/{id}/workbench [put]
+func handleMoveChatSession(engine *chat.Engine, benches *repo.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			Workbench string `json:"workbench_id"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		token := auth.MustFromContext(c)
+
+		// Checked, unlike the workbench a session is *created* with, which is taken as
+		// sent — kernel.go says why a guessed one is harmless there. A move is a
+		// repair: the developer doing it has noticed the conversation is in the wrong
+		// place, and answering "moved" while pointing it at something that does not
+		// exist would hand them a conversation whose tools act in no checkout at all.
+		//
+		// Checked here rather than in the engine because workbenches live in pkg/repo,
+		// and a chat engine that had to know about them would couple the conversation
+		// surface to the repository surface for one lookup. The label travels with it so
+		// the note the move leaves names the workbench the way the tab bar does.
+		var label string
+		if strings.TrimSpace(body.Workbench) != "" {
+			bench, err := benches.Workbench(c.Request.Context(), token.Sub, body.Workbench)
+			if err != nil {
+				respondRepo(c, err)
+				return
+			}
+			label = bench.Label()
+		}
+
+		session, err := engine.MoveSession(
+			c.Request.Context(), token.Sub, c.Param("id"), body.Workbench, label)
+		if err != nil {
+			respondChatError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, session)
 	}
 }
 

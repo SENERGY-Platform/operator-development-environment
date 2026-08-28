@@ -27,6 +27,10 @@ import (
 )
 
 type detectionInput struct {
+	// source is what the reads were addressed to, and is what every profile's
+	// SeriesRef is built from. device and service are the ontology context beside
+	// it and are zero for an export.
+	source    seriesSource
 	device    models.ExtendedDevice
 	service   models.Service
 	variables []Variable
@@ -143,11 +147,7 @@ type variableContext struct {
 
 func (p *Profiler) profileVariable(input detectionInput, variable Variable, ctx variableContext) computedProfile {
 	prov := Provenance{}
-	ref := SeriesRef{
-		DeviceID:     input.device.Id,
-		ServiceID:    input.service.Id,
-		VariablePath: variable.Path,
-	}
+	ref := input.source.ref(variable.Path)
 	cacheKey := CacheKey(ref, input.analysis, input.cacheRaw, DetectorVersion)
 
 	own := ctx.series[variable.Path]

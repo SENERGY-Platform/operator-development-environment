@@ -194,7 +194,7 @@ if __name__ == "__main__":
         Operator(),
         name="<<.Repository>>",
         # Written by the Dockerfile from the build's commit, so a running operator
-        # can say which source it is (SPEC §5.11 item 7).
+        # can say which source it is (§5.11 item 7).
         git_info_file="git_commit",
     )
 `,
@@ -385,7 +385,7 @@ version = "0.1.0"
 requires-python = ">=<<.PythonVersion>>"
 dependencies = [
   "ray[client,train]",
-  # Pinned at scaffold time (SPEC D15). Operator Lib tracks latest and makes no
+  # Pinned at scaffold time (D15). Operator Lib tracks latest and makes no
   # stability promise, so this pin is what keeps a rebuild reproducible — and
   # moving it is a deliberate edit, not a side effect of building again.
   "operator-lib @ git+https://github.com/<<.OperatorLib>>.git@<<.OperatorLibRef>>",
@@ -424,7 +424,7 @@ COPY . .
 
 # Which commit this image is, read at startup by Operator Lib and reported in the
 # operator's own log. It is also what makes an experiment's MLflow tag and a
-# running operator comparable (SPEC §5.11 item 7).
+# running operator comparable (§5.11 item 7).
 ARG GIT_COMMIT=unknown
 RUN printf 'commit=%s\n' "${GIT_COMMIT}" > git_commit
 
@@ -433,7 +433,7 @@ CMD ["uv", "run", "--no-dev", "main.py"]
 
 	".github/workflows/build.yml": `# Builds the operator image and pushes it to the GitHub container registry.
 #
-# The registry is ghcr.io and this file is where that is written down (SPEC §5.11
+# The registry is ghcr.io and this file is where that is written down (§5.11
 # item 4) — ODE does not hold it as configuration. To publish somewhere else,
 # change the login step and the tags below; nothing outside this file needs to know.
 #
@@ -484,7 +484,7 @@ jobs:
           cache-to: type=gha,mode=max
 `,
 
-	"operator.yaml": `# The operator as the analytics stack registers it (SPEC §5.14).
+	"operator.yaml": `# The operator as the analytics stack registers it (§5.14).
 #
 # ODE offers registration as an explicit action and never performs it on its own,
 # so this file is the payload that action sends. Edit it here; it is the source of
@@ -518,7 +518,7 @@ config_values:
 	"evaluation.yaml": `# The evaluation criteria for this operator.
 #
 # Yours. ODE has no tool that writes this file and the assistant is not permitted
-# to change it (SPEC §5.8) — an operator that grades itself against criteria an
+# to change it (§5.8) — an operator that grades itself against criteria an
 # assistant relaxed has not been evaluated. ODE reads it to say whether a run met
 # what you asked for, and stops there.
 

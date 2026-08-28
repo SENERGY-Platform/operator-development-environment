@@ -28,7 +28,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
 )
 
-// selectionBody is the M2 surface: resolve_semantic_selection (SPEC §5.2).
+// selectionBody is the M2 surface: resolve_semantic_selection (§5.2).
 //
 // A POST rather than a GET, matching the platform's own
 // POST /v2/query/device-type-selectables: the request carries three id lists and

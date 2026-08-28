@@ -19,11 +19,13 @@ package selection
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
+	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
 	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 
@@ -53,6 +55,13 @@ type fakeImports struct {
 
 	history      imports.History
 	historyCalls int
+
+	// The catalogue half. types is what import-repository answers for a matching
+	// criterion; typeCriteria records what it was asked, which is where the aspect
+	// subtree expansion is asserted.
+	types        []dsmodel.ImportType
+	typeErr      error
+	typeCriteria []imports.TypeCriterion
 }
 
 func (f *fakeImports) QueryImports(_ context.Context, _ string, criteria []drmodel.FilterCriteria) ([]imports.Selectable, error) {
@@ -71,6 +80,24 @@ func (f *fakeImports) QueryImports(_ context.Context, _ string, criteria []drmod
 		}
 	}
 	return []imports.Selectable{}, nil
+}
+
+func (f *fakeImports) ListTypes(_ context.Context, _ string, opts imports.TypeListOptions) (imports.TypeListResult, error) {
+	f.mutex.Lock()
+	f.typeCriteria = append(f.typeCriteria, opts.Criteria...)
+	f.mutex.Unlock()
+	if f.typeErr != nil {
+		return imports.TypeListResult{}, f.typeErr
+	}
+	// Answers for the function the fixtures describe, like QueryImports, so a
+	// resolution sending several criteria cannot hide a merge bug behind the same
+	// rows arriving twice.
+	for _, criterion := range opts.Criteria {
+		if criterion.FunctionID == "fn-temperature" || criterion.FunctionID == "" {
+			return imports.TypeListResult{Types: f.types, Total: int64(len(f.types))}, nil
+		}
+	}
+	return imports.TypeListResult{Types: []dsmodel.ImportType{}}, nil
 }
 
 func (f *fakeImports) List(_ context.Context, _ string, opts imports.InstanceListOptions) (imports.ListResult, error) {
@@ -429,5 +456,239 @@ func TestTheShortlistIsAskedAboutOnce(t *testing.T) {
 	}
 	if result.Reads.ImportExports != 1 || result.Reads.ImportInstances != 1 {
 		t.Errorf("reads = %+v, want one of each", result.Reads)
+	}
+}
+
+// --- the catalogue half: what could be deployed ---
+
+// deployableType is an import type nobody has an instance of, described against
+// the aspect below the one a resolution asks for.
+func deployableType(id, name string) dsmodel.ImportType {
+	return dsmodel.ImportType{
+		Id:   id,
+		Name: name,
+		Configs: []dsmodel.ImportTypeConfig{
+			{Name: "lat", Type: models.Float, DefaultValue: 51.34},
+			{Name: "station", Type: models.String},
+		},
+		Output: dsmodel.ImportContentVariable{
+			Name: "root", Type: models.Structure,
+			SubContentVariables: []dsmodel.ImportContentVariable{
+				{Name: "import_id", Type: models.String},
+				{Name: "time", Type: models.String},
+				{Name: "value", Type: models.Structure, SubContentVariables: []dsmodel.ImportContentVariable{
+					{Name: "temperature_2m", Type: models.Float, CharacteristicId: "ch-celsius",
+						FunctionId: "fn-temperature", AspectId: "kitchen"},
+				}},
+			},
+		},
+	}
+}
+
+// The case the whole catalogue half exists for: the platform describes the
+// wanted signal and nobody has deployed an import for it, which is
+// indistinguishable from "this platform has nothing of the kind" in an empty
+// selectables answer.
+func TestATypeWithNoInstanceIsReportedAsDeployable(t *testing.T) {
+	imp := &fakeImports{types: []dsmodel.ImportType{deployableType(weatherTypeID, "Open-Meteo history")}}
+	h := newImportHarness(t, imp)
+
+	result := resolve(t, h, Request{
+		Intent: "temperature kitchen", FunctionIDs: []string{"fn-temperature"}, AspectIDs: []string{"kitchen"},
+	})
+
+	if len(result.ImportCandidates) != 0 {
+		t.Fatalf("import_candidates = %d, want none: nothing is deployed", len(result.ImportCandidates))
+	}
+	if len(result.DeployableImportTypes) != 1 {
+		t.Fatalf("deployable_import_types = %+v, want the matching type", result.DeployableImportTypes)
+	}
+	deployable := result.DeployableImportTypes[0]
+	if deployable.ImportTypeID != weatherTypeID {
+		t.Errorf("import_type_id = %q, want %q", deployable.ImportTypeID, weatherTypeID)
+	}
+	if !deployable.Deployable {
+		t.Errorf("a type with no credential config deploys from a chat: %+v", deployable)
+	}
+	if len(deployable.MatchingVariables) != 1 ||
+		deployable.MatchingVariables[0].Path != "value.temperature_2m" {
+		t.Errorf("matching_variables = %+v, want the payload leaf that carries the criteria",
+			deployable.MatchingVariables)
+	}
+	// The same two profiler functions the device and import selectables use, so a
+	// unit means one thing across all three lists.
+	if deployable.MatchingVariables[0].Unit != "°C" {
+		t.Errorf("unit = %q, want the characteristic's", deployable.MatchingVariables[0].Unit)
+	}
+	if len(deployable.RequiredConfigs) != 1 || deployable.RequiredConfigs[0] != "station" {
+		t.Errorf("required_configs = %v, want the config with no default", deployable.RequiredConfigs)
+	}
+	// The note is the point: an empty import half now says which of its two causes
+	// this is.
+	if !hasNoteContaining(result.Notes, "deployable_import_types") {
+		t.Errorf("notes should send the reader to the list: %v", result.Notes)
+	}
+	if result.Reads.ImportTypes == 0 {
+		t.Error("the catalogue read is a cost of the answer and belongs in reads")
+	}
+}
+
+func TestATypeThatIsAlreadyDeployedIsNotOfferedForDeployment(t *testing.T) {
+	// It is in import_candidates, where it carries a topic and a running status.
+	// Repeating it here would invite a second container for data the platform
+	// already pulls.
+	imp := fullImports()
+	imp.types = []dsmodel.ImportType{deployableType(weatherTypeID, "Open-Meteo history")}
+	h := newImportHarness(t, imp)
+
+	result := resolve(t, h, Request{Intent: "temperature kitchen", FunctionIDs: []string{"fn-temperature"}})
+
+	if len(result.ImportCandidates) != 1 {
+		t.Fatalf("import_candidates = %+v, want the running import", result.ImportCandidates)
+	}
+	if len(result.DeployableImportTypes) != 0 {
+		t.Errorf("deployable_import_types = %+v, want none: this type is already deployed",
+			result.DeployableImportTypes)
+	}
+}
+
+func TestAnUndeployableTypeSaysWhyRatherThanBeingDropped(t *testing.T) {
+	withCredential := deployableType(weatherTypeID, "Open-Meteo history")
+	withCredential.Configs = append(withCredential.Configs,
+		dsmodel.ImportTypeConfig{Name: "api_key", Type: models.String})
+	imp := &fakeImports{types: []dsmodel.ImportType{withCredential}}
+	h := newImportHarness(t, imp)
+
+	result := resolve(t, h, Request{Intent: "temperature kitchen", FunctionIDs: []string{"fn-temperature"}})
+
+	if len(result.DeployableImportTypes) != 1 {
+		t.Fatalf("deployable_import_types = %+v, want the type reported", result.DeployableImportTypes)
+	}
+	deployable := result.DeployableImportTypes[0]
+	if deployable.Deployable {
+		t.Error("a credential config with no default cannot be deployed from a chat")
+	}
+	if len(deployable.BlockingCredentials) != 1 || deployable.BlockingCredentials[0] != "api_key" {
+		t.Errorf("blocking_credentials = %v, want [api_key]", deployable.BlockingCredentials)
+	}
+	// Dropping it would tell a developer the platform cannot do this at all, when
+	// what it needs is one step in the platform's own import dialog.
+	if !strings.Contains(deployable.Note, "import dialog") {
+		t.Errorf("note should name the route that works: %q", deployable.Note)
+	}
+}
+
+func TestTheCatalogueIsAskedWithTheAspectSubtree(t *testing.T) {
+	// import-repository matches aspect ids literally, unlike the device
+	// repository. Sending only `pv` misses every import type described against
+	// `inverter`, with no error anywhere.
+	imp := &fakeImports{}
+	h := newImportHarness(t, imp)
+
+	resolve(t, h, Request{
+		Intent: "power generation", FunctionIDs: []string{"fn-temperature"}, AspectIDs: []string{"pv"},
+	})
+
+	imp.mutex.Lock()
+	defer imp.mutex.Unlock()
+	if len(imp.typeCriteria) == 0 {
+		t.Fatal("the catalogue was not asked at all")
+	}
+	for _, criterion := range imp.typeCriteria {
+		found := map[string]bool{}
+		for _, id := range criterion.AspectIDs {
+			found[id] = true
+		}
+		if !found["pv"] || !found["inverter"] {
+			t.Errorf("aspect_ids = %v, want the node and its descendant", criterion.AspectIDs)
+		}
+	}
+}
+
+func TestADeviceClassCriterionIsNotSentToTheCatalogue(t *testing.T) {
+	// An import type has no device class, so the criterion cannot be expressed;
+	// sending it with the field dropped would widen the query instead.
+	imp := &fakeImports{}
+	h := newImportHarness(t, imp)
+
+	resolve(t, h, Request{
+		Intent:         "temperature kitchen",
+		FunctionIDs:    []string{"fn-temperature"},
+		DeviceClassIDs: []string{"dc-meter"},
+	})
+
+	imp.mutex.Lock()
+	defer imp.mutex.Unlock()
+	if len(imp.typeCriteria) != 0 {
+		t.Errorf("sent %+v to the catalogue, want nothing", imp.typeCriteria)
+	}
+}
+
+func TestAnEmptyCatalogueSaysThereIsNothingToDeploy(t *testing.T) {
+	// The distinction the note exists for: this platform describes nothing of the
+	// kind, which is a different answer from "nothing is running".
+	imp := &fakeImports{}
+	h := newImportHarness(t, imp)
+
+	result := resolve(t, h, Request{Intent: "temperature kitchen", FunctionIDs: []string{"fn-temperature"}})
+
+	if !hasNoteContaining(result.Notes, "nothing to deploy") {
+		t.Errorf("notes should state that the catalogue was read and was empty: %v", result.Notes)
+	}
+}
+
+func TestAnUnreadableCatalogueDegradesRatherThanFailingTheResolution(t *testing.T) {
+	// Unlike the selectables half. That one is the answer; this one says what
+	// could additionally be deployed, and an answer without it is still complete
+	// about what exists — as long as it says so.
+	imp := fullImports()
+	imp.typeErr = errors.New("import-repository unreachable")
+	h := newImportHarness(t, imp)
+
+	result := resolve(t, h, Request{Intent: "temperature kitchen", FunctionIDs: []string{"fn-temperature"}})
+
+	if len(result.ImportCandidates) != 1 {
+		t.Errorf("the import half should be unaffected: %+v", result.ImportCandidates)
+	}
+	if len(result.DeployableImportTypes) != 0 {
+		t.Errorf("deployable_import_types = %+v, want none", result.DeployableImportTypes)
+	}
+	if !hasNoteContaining(result.Notes, "could not be read") {
+		t.Errorf("a failed catalogue read must not read as an empty catalogue: %v", result.Notes)
+	}
+}
+
+func TestTheCatalogueIsNotAskedWhenTheImportHalfIsSkipped(t *testing.T) {
+	imp := fullImports()
+	imp.types = []dsmodel.ImportType{deployableType("type-2", "Another")}
+	h := newImportHarness(t, imp)
+
+	result := resolve(t, h, Request{Intent: "temperature kitchen", SkipImports: true})
+
+	imp.mutex.Lock()
+	defer imp.mutex.Unlock()
+	if len(imp.typeCriteria) != 0 {
+		t.Errorf("asked the catalogue despite skip_imports: %+v", imp.typeCriteria)
+	}
+	if len(result.DeployableImportTypes) != 0 {
+		t.Errorf("deployable_import_types = %+v, want none", result.DeployableImportTypes)
+	}
+}
+
+func TestADeploymentWithoutAnImportRepositorySaysTheTwoCausesAreIndistinguishable(t *testing.T) {
+	// pkg/imports refuses the catalogue read with ErrInvalidRequest when no
+	// import-repository is configured. That is a permanent property of the
+	// deployment rather than a service that did not answer, and quoting it as an
+	// outage would send somebody to check a service that was never called.
+	imp := &fakeImports{typeErr: fmt.Errorf("%w: no import-repository is configured", imports.ErrInvalidRequest)}
+	h := newImportHarness(t, imp)
+
+	result := resolve(t, h, Request{Intent: "temperature kitchen", FunctionIDs: []string{"fn-temperature"}})
+
+	if hasNoteContaining(result.Notes, "could not be read") {
+		t.Errorf("a missing configuration must not read as an unreachable service: %v", result.Notes)
+	}
+	if !hasNoteContaining(result.Notes, "import_repo_url") {
+		t.Errorf("the note should name the configuration that is missing: %v", result.Notes)
 	}
 }

@@ -79,6 +79,15 @@ func (f *fakeTimeseries) DeviceUsage(_ context.Context, token string, deviceIDs 
 	return out, nil
 }
 
+func (f *fakeTimeseries) ExportUsage(_ context.Context, token string, exportIDs []string) ([]timeseries.Usage, error) {
+	f.gotToken = token
+	out := []timeseries.Usage{}
+	for _, id := range exportIDs {
+		out = append(out, timeseries.Usage{ExportId: id, Bytes: 1 << 20, BytesPerDay: 8640})
+	}
+	return out, nil
+}
+
 func (f *fakeTimeseries) Query(_ context.Context, token string, _ []timeseries.QueryElement, _ timeseries.QueryOptions) ([]timeseries.QueryResult, error) {
 	f.gotToken = token
 	f.queries++

@@ -2,21 +2,67 @@
 
 Everything a developer writes lives on their own JupyterHub pod, not on ODE.
 That is why git runs in the pod, why a file read can answer 409 during a training
-run, and why ODE starts pods and never stops them.
+run in the same workbench, and why ODE starts pods and never stops them.
 
 ## Applies when
 
 Working on `pkg/kernel` or `pkg/repo`, or diagnosing why a file a developer
-wrote is gone after a cull.
+wrote is gone after a cull, or why a request was refused for naming no workbench.
 
 **Not this if**: the question is what the *deployed* Hub does differently from
 what §5.6 assumes. The username claim and the PVC mount point are properties of
 that Hub rather than of ODE and are documented on the platform side;
 `jupyterhub_username_claim` and `jupyterhub_workspace_path` are the two settings
-that exist because of them, and are all ODE needs to know.
+that exist because of them, and are all ODE needs to know. Nor this if the
+question is why running the operator's code in a cell is not an experiment — the
+environment a kernel does *not* get, and the three loops that follow from it, are
+in [experiments.md](experiments.md).
 
 `geltung`: `allgemein` for the one-cell-at-a-time consequence and the pod
-lifecycle; the rest follows from SPEC §5.6 and §5.11.
+lifecycle; the rest follows from §5.6 and §5.11.
+
+### A workbench is one checkout and one kernel, and a developer has several
+
+The unit everything below hangs off is the **workbench**: one repository checkout
+on the PVC, and one kernel running in it. It exists because a developer works on
+more than one operator. Before it, the selected repository was keyed by the
+developer alone, so two chat sessions shared one working copy — selecting a
+repository in one changed where the other's `write_file` landed, and a training run
+in either made a file read in both answer 409.
+
+Two rules hold it together, and both are enforced rather than assumed. A workbench
+holds at most one repository, and a repository is open in at most one of a
+developer's workbenches — the checkout is at `{owner}/{name}` under the workspace,
+so a second workbench on the same repository would put two kernels and two streams
+of git commands in one working tree, which is a corrupted index and a lost diff.
+The unique index on `ode_workbenches (user_sub, full_name)` is what makes that true
+even against a second ODE talking to the same database.
+
+A developer who selected a repository before workbenches existed has a row in
+`ode_repo_links` and no workbench. That row is adopted into their first workbench
+lazily, on the next request that reads the list, so the checkout already on their
+PVC stays the one they are working in. Two things make the adoption survive
+reality. It is stamped `adopted_at` once it has happened, because the trigger is an
+empty workbench list and closing the last workbench would otherwise hand the old
+link straight back as a new one. And a request that loses the race to adopt — one
+page load sends several that name no workbench, they all find the list empty, and
+the unique index lets exactly one write — reads the list again instead of reporting
+the conflict. Reporting it is what produced a 409 saying a repository was open in
+another workbench, naming the workbench the developer's own page had made a
+millisecond earlier.
+
+A request that names no workbench means *the developer's only one*. That is what
+keeps every client written before workbenches existed correct, and it is refused
+once there are two rather than guessed: choosing between two working copies on the
+developer's behalf is the failure the whole arrangement exists to prevent.
+
+A chat session names the workbench it acts in, and that naming can be changed after
+the fact — the conversation is often what tells the developer which operator it is
+really about. `PUT /chat/sessions/{id}/workbench` does it, checking the workbench
+against the caller before the session is written, and leaving a note in the
+conversation because the file and cell results above it describe the checkout it has
+left. `docs/chat-and-streaming.md` has the rest, including why the move is refused
+while a turn is running.
 
 ### The repository working copy is on the developer's PVC, so git runs in their pod
 
@@ -29,8 +75,55 @@ follow that are easy to miss. The file operations deliberately do *not* use
 jupyter_server's contents API, because `allow_hidden` is false by default and D14
 requires `.github/workflows/build.yml` to be as editable as any other file. And a
 kernel runs one cell at a time, so a file read during a long training run answers
-409 rather than queueing — a second ODE-owned kernel would fix that and has not
-been built.
+409 once its bounded wait for an idle kernel runs out — bounded by the *workbench*
+now rather than by the developer, because every other workbench has its own kernel.
+
+### One pod, several kernels — and no JupyterHub configuration for it
+
+A singleuser server runs any number of kernels, each with its own working
+directory: `POST /api/kernels` takes a `path` and `jupyter_server` derives the
+cwd from it. So N workbenches are N kernel processes in the pod the developer
+already has. Nothing about the Hub changes — the same spawn, the same per-user
+token, the same activity keep-alive, and `kernel.RequiredScopes` is untouched.
+
+What that costs is on the deployment side rather than in ODE's configuration, and
+it is worth stating because both failures are silent:
+
+  - **Pod memory.** Each kernel is a full Python process. The ODE KubeSpawner
+    profile has to carry as many as `repo_max_workbenches` allows, or a developer's
+    second workbench OOM-kills their first one's training run.
+  - **The singleuser server's own kernel culler.**
+    `MappingKernelManager.cull_idle_timeout` has to be off or long. ODE's keep-alive
+    addresses the *Hub's* culler and says nothing to this one, which would kill
+    whichever workbench the developer is not currently typing in.
+
+*Rejected*: a pod per workbench through `c.JupyterHub.allow_named_servers`. It buys
+real resource isolation, and costs Hub configuration, a rewrite of every
+`/users/{name}/server` path in `hub.go`, a cold start per workbench — and it does
+not work at all where the per-user PVC is `ReadWriteOnce`, because two pods cannot
+both mount the volume the checkouts live on.
+
+### The pod state and the kernel state are split, and the lock order is one-way
+
+`pkg/kernel` holds a `pod` per developer and a `bench` per workbench. Anything the
+Hub knows about — server URL, minted token, the keep-alive — is on the pod and
+shared, so a second workbench costs no second spawn and no second keep-alive loop.
+Anything a kernel has — its id, its socket, the pushed platform token, the
+one-cell-at-a-time hold — is on the bench.
+
+A bench's mutex may be held while taking its pod's, and never the other way round.
+Everything that walks the benches of a pod snapshots under the service mutex and
+lets it go before touching one. The two places this bites are worth knowing: a pod
+that turns out to be gone bumps a **generation** counter rather than reaching into
+its sibling benches, so each one drops its dead kernel on its own next use under
+its own lock; and `kernelCount` is passed the bench its caller already holds, so
+reporting a status does not deadlock on the bench being reported.
+
+The keep-alive is refcounted — it starts with the first bench to hold the pod and
+stops with the last to let go. An off-by-one in either direction is a pod culled
+with a training run in it, or one held alive after the developer went home, which
+is why the count only ever moves through `holdLocked` and `releaseHoldLocked` and
+has its own test.
 
 ### ODE spawns pods and never stops them
 
@@ -41,7 +134,7 @@ pod is the developer's, their files and their running processes are on it, and a
 respawn costs them a cold start. Reclaiming it is the cluster's idle culling —
 which ODE stops holding off precisely so that it can.
 
-### The kernel connection is persistent per developer, and that is not only an optimisation
+### The kernel connection is persistent per workbench, and that is not only an optimisation
 
 `jupyter_server` bridges the kernel's ZeroMQ sockets onto the
 WebSocket when the connection opens, and a request sent before that bridge exists
@@ -66,10 +159,30 @@ no opinion about dotfiles, and it means one mechanism serves both the files and
 git.
 
 The cost, stated rather than hidden: a kernel runs one cell at a time, so a file
-read while a training cell is running answers **409** with `needs: idle_kernel`
-rather than queueing behind it. A second, ODE-owned kernel per developer would
-decouple the two; that is a real cost per developer and the case for it should come
-from use.
+read while a training cell is running in **the same workbench** answers **409**
+with `needs: idle_kernel` rather than waiting it out. Another workbench is
+unaffected, which is what makes two operators at once workable. Within one
+workbench the trade stands, because the alternative is a second kernel per
+workbench — doubling the pod's memory for a case the developer can already answer
+by opening another workbench.
+
+What that cost is *not* is these operations refusing each other. They are cells of
+a few milliseconds and a page load asks for three of them at once — the repository
+status, the file tree and the open file — so refusing the second and third made the
+Code pane come up with an error where the tree and the editor should be. Two
+changes, at the two places that know something the other cannot. A workspace
+operation now claims the kernel with a bounded wait
+(`kernel.Options.WorkspaceWait`, 10s) and queues among its own kind; the 409 is
+what a wait that expires reports, because past that bound the kernel is held by
+something that is not a repository operation. And the SPA sends its repository
+requests through one queue in `api.ts`, since it is the only place that knows the
+requests it issued itself — they wait in the browser rather than each holding a
+request open on the way to the same kernel. A developer's own cell still waits for
+nothing: `Run` claims with no wait at all, because "busy" is the answer the pane
+can act on, and the action is the interrupt. The SPA's queue is one *per
+workbench*, for the same reason the kernels are: a single queue would put a file
+read in one operator behind a clone in another, invisibly, because the backend
+would see a request that never arrived rather than one it refused.
 
 `.git` is the one exception to "every file", and deliberately: it is git's own
 storage rather than source, the tree excludes it, and a write into it is refused.

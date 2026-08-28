@@ -96,7 +96,7 @@ func TestLiveAFileWrittenInOneSessionIsPresentInTheNext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 
-	status, err := service.Ensure(ctx, bearer)
+	status, err := service.Ensure(ctx, ref(bearer))
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestLiveAFileWrittenInOneSessionIsPresentInTheNext(t *testing.T) {
 
 	// A restart is the strong form of the acceptance criterion: the kernel that
 	// wrote the file is gone, and only the PVC could be carrying it.
-	if _, err := service.Restart(ctx, bearer); err != nil {
+	if _, err := service.Restart(ctx, ref(bearer)); err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestLiveAFileWrittenInOneSessionIsPresentInTheNext(t *testing.T) {
 		t.Fatalf("after a restart the marker read back as %q, want %q", out, marker)
 	}
 
-	files, err := service.Files(ctx, bearer, "")
+	files, err := service.Files(ctx, ref(bearer), "")
 	if err != nil {
 		t.Fatalf("Files: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestLiveThePlatformTokenIsReadableInsideTheKernel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
-	if _, err := service.Ensure(ctx, bearer); err != nil {
+	if _, err := service.Ensure(ctx, ref(bearer)); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 	out := runLive(t, ctx, service, bearer,
@@ -156,7 +156,7 @@ func TestLiveAnExceptionComesBackAsAnError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
-	events, err := service.Run(ctx, bearer, "raise ValueError('deliberate')")
+	events, err := service.Run(ctx, ref(bearer), "raise ValueError('deliberate')")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestLiveAnExceptionComesBackAsAnError(t *testing.T) {
 // runLive executes and returns everything the cell printed.
 func runLive(t *testing.T, ctx context.Context, service *kernel.Service, bearer, code string) string {
 	t.Helper()
-	events, err := service.Run(ctx, bearer, code)
+	events, err := service.Run(ctx, ref(bearer), code)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

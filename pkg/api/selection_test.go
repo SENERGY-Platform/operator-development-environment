@@ -245,8 +245,8 @@ func TestSelectionIsServedWithoutAProfiler(t *testing.T) {
 	}
 }
 
-// Explicit ids are how M3's LLM will call this once it has read the ontology
-// itself, so they have to work with no intent at all.
+// Explicit ids are how the LLM calls this once it has read the ontology itself, so
+// they have to work with no intent at all.
 func TestSelectionAcceptsExplicitIdsWithoutAnIntent(t *testing.T) {
 	h := newProfileHarness(t)
 	w := h.do(t, http.MethodPost, "/selection",

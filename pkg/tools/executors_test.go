@@ -70,8 +70,9 @@ type fakeTimeseries struct {
 	mux      sync.Mutex
 	elements []timeseries.QueryElement
 	// points is how many rows Query answers with.
-	points int
-	usage  []timeseries.Usage
+	points      int
+	usage       []timeseries.Usage
+	exportUsage []timeseries.Usage
 	// availability is what /data-availability answers with. Nil means the
 	// platform knows no window for the service, which is what most of these tests
 	// want; the tools that read data need one.
@@ -107,6 +108,17 @@ func (f *fakeTimeseries) DeviceUsage(_ context.Context, _ string, ids []string) 
 	out := make([]timeseries.Usage, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, timeseries.Usage{DeviceId: id, Bytes: 1_000_000, BytesPerDay: 100_000})
+	}
+	return out, nil
+}
+
+func (f *fakeTimeseries) ExportUsage(_ context.Context, _ string, ids []string) ([]timeseries.Usage, error) {
+	if f.exportUsage != nil {
+		return f.exportUsage, nil
+	}
+	out := make([]timeseries.Usage, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, timeseries.Usage{ExportId: id, Bytes: 1_000_000, BytesPerDay: 100_000})
 	}
 	return out, nil
 }
@@ -871,4 +883,168 @@ func (f *fakeSelection) Resolve(
 		MatchElided: f.matchElided,
 		Notes:       []string{},
 	}, nil
+}
+
+// --- the export half (§5.3) ---
+
+type fakeExportSource struct {
+	definition profiler.ExportDefinition
+	asked      []string
+}
+
+func (f *fakeExportSource) ExportDefinition(
+	_ context.Context, _ string, exportID string,
+) (profiler.ExportDefinition, error) {
+	f.asked = append(f.asked, exportID)
+	definition := f.definition
+	if definition.ExportID == "" {
+		definition.ExportID = exportID
+	}
+	return definition, nil
+}
+
+func exportDefinition() profiler.ExportDefinition {
+	characteristic := "char-watt"
+	return profiler.ExportDefinition{
+		ExportID: "export-1",
+		Name:     "weather history",
+		Source:   "import_id",
+		SourceID: "import-1",
+		Columns: []profiler.ExportColumn{{
+			Column: "power", Type: "float", VariablePath: "value.power",
+			CharacteristicID: &characteristic,
+		}},
+	}
+}
+
+func exportProfiler(t *testing.T, ts *fakeTimeseries, exports profiler.ExportSource) *profiler.Profiler {
+	t.Helper()
+	prof, err := profiler.New(ts, &fakeOntologySource{}, profiler.NewMemoryStore(),
+		profiler.Options{Exports: exports})
+	if err != nil {
+		t.Fatalf("profiler.New: %v", err)
+	}
+	return prof
+}
+
+// The tier claim is the point of this tool, and it is checkable from the answer:
+// what it asks the platform for is counts.
+func TestProbeExportDataIsAvailableAtL0AndReportsNoValueRead(t *testing.T) {
+	prof := exportProfiler(t, &fakeTimeseries{points: 10}, &fakeExportSource{definition: exportDefinition()})
+	_, dispatcher := executorFor(t, Deps{Profiler: prof}, "probe_export_data")
+
+	decoded := dispatchJSON(t, dispatcher, L0, "probe_export_data", `{"export_id":"export-1"}`)
+
+	export, ok := decoded["export"].(map[string]any)
+	if !ok {
+		t.Fatalf("export = %v", decoded["export"])
+	}
+	if export["state"] != string(profiler.ExportFilled) {
+		t.Errorf("state = %v, want filled", export["state"])
+	}
+	if export["reason"] == "" {
+		t.Error("every state has to say why")
+	}
+	reads, ok := decoded["reads"].(map[string]any)
+	if !ok || reads["values"] != float64(0) {
+		t.Errorf("reads = %v, want values: 0 stated in the answer", decoded["reads"])
+	}
+	if reads["counts"] != float64(1) {
+		t.Errorf("counts = %v, want the one counting query", reads["counts"])
+	}
+	if note, _ := decoded["note"].(string); !strings.Contains(note, "partly_filled") {
+		t.Errorf("note = %v, want it to distinguish the states", decoded["note"])
+	}
+}
+
+func TestProbeExportDataIsUnavailableWithoutAnalyticsServing(t *testing.T) {
+	registry, err := NewSurface(Deps{Timeseries: &fakeTimeseries{}})
+	if err != nil {
+		t.Fatalf("NewSurface: %v", err)
+	}
+	definition, found := registry.Lookup("probe_export_data")
+	if !found {
+		t.Fatal("probe_export_data is not declared")
+	}
+	if !strings.Contains(definition.Unavailable, "analytics_serving_url") {
+		t.Errorf("reason = %q, want it to name the missing setting", definition.Unavailable)
+	}
+}
+
+func TestProfileSeriesProfilesAnExportUnderAnExportSeriesRef(t *testing.T) {
+	prof := exportProfiler(t, &fakeTimeseries{points: 10}, &fakeExportSource{definition: exportDefinition()})
+	_, dispatcher := executorFor(t, Deps{Devices: &fakeDevices{}, Profiler: prof, ProfileMaxProfiles: 5},
+		"profile_series")
+
+	decoded := dispatchJSON(t, dispatcher, L1, "profile_series", `{"export_id":"export-1"}`)
+
+	profiles, ok := decoded["profiles"].([]any)
+	if !ok || len(profiles) != 1 {
+		t.Fatalf("profiles = %v, want one per readable column", decoded["profiles"])
+	}
+	ref := profiles[0].(map[string]any)["series_ref"].(map[string]any)
+	if ref["export_id"] != "export-1" || ref["variable_path"] != "power" {
+		t.Errorf("series_ref = %v, want the export and its column", ref)
+	}
+	if _, present := ref["device_id"]; present {
+		t.Errorf("series_ref = %v, want no device id on an export profile", ref)
+	}
+}
+
+// One table or the other. An input naming both is a mistake rather than a
+// narrower request, and answering it would have to pick one silently.
+func TestProfileSeriesRefusesAnExportAndADeviceInOneCall(t *testing.T) {
+	prof := exportProfiler(t, &fakeTimeseries{points: 10}, &fakeExportSource{definition: exportDefinition()})
+	_, dispatcher := executorFor(t, Deps{Devices: &fakeDevices{device: testDevice()}, Profiler: prof},
+		"profile_series")
+
+	result := dispatcher.Dispatch(context.Background(),
+		Request{Token: "Bearer t", UserSub: "sub-1", SessionID: "sess-1", Tier: L1},
+		Call{ID: "c1", Name: "profile_series", Input: json.RawMessage(
+			`{"export_id":"export-1","device_id":"device-1","service_id":"svc-1"}`)})
+
+	if result.Outcome == OutcomeOK {
+		t.Fatal("a call naming both an export and a device was answered rather than refused")
+	}
+}
+
+func TestPreviewSeriesAddressesAnExportByItsColumn(t *testing.T) {
+	ts := &fakeTimeseries{points: 5}
+	_, dispatcher := executorFor(t, Deps{Timeseries: ts, PreviewMaxPoints: 100}, "preview_series")
+
+	decoded := dispatchJSON(t, dispatcher, L2, "preview_series",
+		`{"export_id":"export-1","variable_path":"power"}`)
+
+	ref := decoded["series_ref"].(map[string]any)
+	if ref["export_id"] != "export-1" {
+		t.Errorf("series_ref = %v, want the export", ref)
+	}
+	element := ts.lastElement(t)
+	if element.ExportId == nil || *element.ExportId != "export-1" {
+		t.Errorf("element = %+v, want it addressed at the export", element)
+	}
+	if element.DeviceId != nil || element.ServiceId != nil {
+		t.Errorf("element = %+v, want no device beside the export", element)
+	}
+}
+
+// estimate_read_cost takes both halves of the platform, and the export half has
+// one absence that must not read as a zero.
+func TestEstimateReadCostTakesExportsAndSaysWhenTheAccountingHasNoRow(t *testing.T) {
+	ts := &fakeTimeseries{exportUsage: []timeseries.Usage{}}
+	_, dispatcher := executorFor(t, Deps{Timeseries: ts, DeviceLimit: 10}, "estimate_read_cost")
+
+	decoded := dispatchJSON(t, dispatcher, L0, "estimate_read_cost", `{"export_ids":["export-1"]}`)
+
+	missing, ok := decoded["exports_not_accounted"].([]any)
+	if !ok || len(missing) != 1 || missing[0] != "export-1" {
+		t.Fatalf("exports_not_accounted = %v, want the export with no usage row", decoded["exports_not_accounted"])
+	}
+	note, _ := decoded["exports_not_accounted_note"].(string)
+	if !strings.Contains(note, "not evidence") {
+		t.Errorf("note = %q, want it to say an absent row proves nothing", note)
+	}
+	if !strings.Contains(note, "probe_export_data") {
+		t.Errorf("note = %q, want it to name the tool that answers the question", note)
+	}
 }

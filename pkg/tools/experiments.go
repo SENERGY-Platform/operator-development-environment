@@ -77,9 +77,10 @@ func (s *surface) launchExperiment(ctx context.Context, req Request) (any, error
 	req.Progress("experiments", "packaging the committed repository state")
 	result, err := s.deps.Experiments.Launch(ctx, experiments.LaunchRequest{
 		Request: experiments.Request{
-			Bearer:    req.Token,
-			UserSub:   req.UserSub,
-			SessionID: req.SessionID,
+			Bearer:      req.Token,
+			UserSub:     req.UserSub,
+			SessionID:   req.SessionID,
+			WorkbenchID: req.WorkbenchID,
 		},
 		Entrypoint: in.Entrypoint,
 		EnvVars:    in.EnvVars,

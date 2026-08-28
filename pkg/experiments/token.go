@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-// The scoped job credential (SPEC §3.1 item 6, and the risk register's
+// The scoped job credential (§3.1 item 6, and the risk register's
 // "token expiry vs. long Ray jobs" row).
 //
 // A Ray job reads its training data directly from timescale-wrapper with its own
@@ -102,7 +102,7 @@ func (s *Service) jobToken(ctx context.Context, bearer string) (jobCredential, [
 			Note: "this job carries the developer's interactive session token: a run that " +
 				"outlives the session will lose its access to the platform partway through. " +
 				"Configure keycloak_url, keycloak_realm, keycloak_client_id and " +
-				"keycloak_client_secret to mint a token scoped to the job instead (§3.1 item 6)",
+				"keycloak_client_secret to mint a token scoped to the job instead",
 		},
 	}
 	if !s.exchangeConfigured() {
@@ -127,7 +127,7 @@ func (s *Service) jobToken(ctx context.Context, bearer string) (jobCredential, [
 			ExpiresIn:          expiresIn,
 			ExpiresWithSession: false,
 			Note: "this job carries a token minted for it, on behalf of the developer " +
-				"(§3.1 item 6); it is not tied to the interactive session",
+				"it is not tied to the interactive session",
 		},
 	}
 

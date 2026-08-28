@@ -79,6 +79,7 @@ type Hub struct {
 	// methods rather than fields: a test goroutine writing a field a handler
 	// goroutine reads is a data race, whichever way the test is written.
 	nextKernelID    string
+	kernelSeq       int
 	deadKernels     map[string]bool
 	issuedKernels   []string
 	stopped         bool
@@ -104,10 +105,10 @@ type CreatedKernel struct {
 func NewHub(t testing.TB) *Hub {
 	t.Helper()
 	hub := &Hub{
-		Ready:        true,
-		Kind:         "service",
-		Scopes:       []string{"servers", "tokens", "access:servers", "users:activity", "read:users"},
-		nextKernelID: "kernel-1",
+		Ready:  true,
+		Kind:   "service",
+		Scopes: []string{"servers", "tokens", "access:servers", "users:activity", "read:users"},
+
 		streamChunks: 1,
 		deadKernels:  map[string]bool{},
 	}
@@ -417,7 +418,18 @@ func (f *Hub) handleKernels(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mux.Lock()
 		f.CreatedKernels = append(f.CreatedKernels, CreatedKernel{User: user, Name: body.Name, Path: body.Path})
+		// Numbered, because a singleuser server really does run several kernels at
+		// once — one per workbench — and a double that gave them all one id could not
+		// represent the thing it exists to stand in for. SetNextKernelID overrides
+		// the next one and is consumed by it, which is how a test names the kernel a
+		// restart lands on.
 		id := f.nextKernelID
+		if id == "" {
+			f.kernelSeq++
+			id = fmt.Sprintf("kernel-%d", f.kernelSeq)
+		} else {
+			f.nextKernelID = ""
+		}
 		f.issuedKernels = append(f.issuedKernels, id)
 		// A kernel that is handed out now is alive, whatever became of the one that
 		// carried this id before a StopServer.

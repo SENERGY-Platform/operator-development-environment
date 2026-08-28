@@ -29,7 +29,7 @@ import (
 	"time"
 )
 
-// The Ray Job Submission API, spoken directly (SPEC §5.12).
+// The Ray Job Submission API, spoken directly (§5.12).
 //
 // Plain JSON over HTTP against the dashboard's `/api/jobs` and `/api/packages`
 // routes, for the reason pkg/timeseries gives for not using timescale-wrapper's

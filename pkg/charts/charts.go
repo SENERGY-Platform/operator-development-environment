@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// Package charts is the backend half of the exploration pane (SPEC §5.9, §5.10,
+// Package charts is the backend half of the exploration pane (§5.9, §5.10,
 // M5).
 //
 // Three things it is built around, and each is a decision rather than a detail.
@@ -230,7 +230,7 @@ func parseTransform(raw string) (transform, error) {
 		target := strings.TrimSpace(strings.TrimPrefix(value, prefixConvert))
 		if target == "" {
 			return transform{}, fmt.Errorf(
-				"%w: convert: needs a target characteristic id — a unit string cannot be converted (SPEC D29)",
+				"%w: convert: needs a target characteristic id — a unit string cannot be converted",
 				ErrInvalidSpec)
 		}
 		return transform{Kind: transformConvert, Target: target}, nil

@@ -33,12 +33,12 @@ type ConfigStruct struct {
 	ApiPort string `json:"api_port"`
 	Debug   bool   `json:"debug"`
 
-	// RequiredRealmRole gates every authenticated route (SPEC D5, §3.1).
+	// RequiredRealmRole gates every authenticated route (D5, §3.1).
 	// Token signature, expiry and audience are validated by the platform API
 	// gateway, not here.
 	RequiredRealmRole string `json:"required_realm_role"`
 
-	// Platform services. Read on behalf of the calling user (SPEC §3.1 step 3).
+	// Platform services. Read on behalf of the calling user (§3.1 step 3).
 	DeviceRepoUrl         string `json:"device_repo_url"`
 	TimescaleWrapperUrl   string `json:"timescale_wrapper_url"`
 	OntologyCacheTtl      string `json:"ontology_cache_ttl"`
@@ -74,6 +74,30 @@ type ConfigStruct struct {
 	ImportRepoUrl       string `json:"import_repo_url"`
 	AnalyticsServingUrl string `json:"analytics_serving_url"`
 
+	// The four fields of an export that belong to a deployment rather than to the
+	// import being exported (§5.8's create_export). None is derivable: the export
+	// database is created per deployment by analytics-serving's own migration and
+	// carries whatever id that migration was given, and the timestamp format is
+	// whatever this platform's export worker parses. ODE guessing either produces an
+	// export that is accepted, deploys, and stores nothing.
+	//
+	// ExportOffset is where the export worker starts reading — "smallest" replays
+	// what the Kafka topic still retains, "largest" starts at the next message. The
+	// model may choose between them per export; this is what it gets when it does
+	// not.
+	//
+	// ExportTimePath is where the timestamp sits in an import message. This one has
+	// a real default, because every import message carries `time` beside its `value`
+	// payload.
+	//
+	// ExportTimestampFormat and ExportDatabaseID empty are not defaults: they mean
+	// "copy it from an export this platform already has", and creating an export
+	// refuses rather than inventing one when there is nothing to copy.
+	ExportOffset          string `json:"export_offset"`
+	ExportTimePath        string `json:"export_time_path"`
+	ExportTimestampFormat string `json:"export_timestamp_format"`
+	ExportDatabaseID      string `json:"export_database_id"`
+
 	// ImportRequestTimeout bounds a single request to any of the four services
 	// above. Held separately from TimeseriesRequestTimeout because these are
 	// metadata reads: generous by timescale standards would be a hang here.
@@ -84,7 +108,7 @@ type ConfigStruct struct {
 	// platform, so this is generous by design.
 	TimeseriesRequestTimeout string `json:"timeseries_request_timeout"`
 
-	// Profiler windows (SPEC D25). The raw pass reads the smaller of these two
+	// Profiler windows (D25). The raw pass reads the smaller of these two
 	// bounds, anchored at the most recent data.
 	//
 	// int64 rather than int deliberately: HandleEnvironmentVars only knows how to
@@ -180,6 +204,15 @@ type ConfigStruct struct {
 	// ceiling of its own: without one, a wedged provider or a hung platform read
 	// would hold a session's turn slot and a goroutine indefinitely.
 	ChatExchangeTimeout string `json:"chat_exchange_timeout"`
+
+	// ChatConfirmationTimeout bounds how long a tool call held open on an
+	// out-of-band transport waits for the developer's decision (D11).
+	//
+	// A separate ceiling from the one above, because it bounds something different:
+	// not the turn, but one call inside it that has stopped to ask a question. It
+	// has to stay well under the provider's own turn timeout — a turn that dies
+	// underneath the card leaves the developer approving a call that has gone.
+	ChatConfirmationTimeout string `json:"chat_confirmation_timeout"`
 
 	// JupyterHub (§5.6, M4). Empty jupyterhub_url leaves the kernel routes
 	// unserved, in the same way an absent timescale-wrapper leaves the profiler
@@ -302,10 +335,16 @@ type ConfigStruct struct {
 	// the slow one. RepoMaxFileBytes bounds a file the Code pane reads or writes; a
 	// larger figure makes both the editor and the `write_file` tool able to move more
 	// in one request, and neither wants a repository of model binaries.
+	// RepoMaxWorkbenches caps how many working contexts one developer may hold open
+	// at once. Each is a kernel process in their pod, so this figure and the memory
+	// on the KubeSpawner profile belong together: raising it without raising the
+	// profile's limit is how a developer's training run is OOM-killed by their own
+	// second workbench.
 	RepoCommandTimeout        string `json:"repo_command_timeout"`
 	RepoMaxFileBytes          int64  `json:"repo_max_file_bytes"`
 	RepoMaxTreeEntries        int64  `json:"repo_max_tree_entries"`
 	RepoMaxCommandOutputBytes int64  `json:"repo_max_command_output_bytes"`
+	RepoMaxWorkbenches        int64  `json:"repo_max_workbenches"`
 
 	// The library the scaffold pins (D15). OperatorLibRef empty resolves the newest
 	// tag at scaffold time, which is what "track latest, pin per repo" means; setting
@@ -530,6 +569,9 @@ func applyDefaults(config Config) {
 	if config.ChatExchangeTimeout == "" {
 		config.ChatExchangeTimeout = "30m"
 	}
+	if config.ChatConfirmationTimeout == "" {
+		config.ChatConfirmationTimeout = "5m"
+	}
 	if config.CompatibleName == "" {
 		config.CompatibleName = "openai-compatible"
 	}
@@ -625,6 +667,9 @@ func applyDefaults(config Config) {
 	}
 	if config.RepoMaxCommandOutputBytes <= 0 {
 		config.RepoMaxCommandOutputBytes = 1048576
+	}
+	if config.RepoMaxWorkbenches <= 0 {
+		config.RepoMaxWorkbenches = 3
 	}
 	if config.OperatorLibRepo == "" {
 		config.OperatorLibRepo = "SENERGY-Platform/analytics-operator-lib-python"

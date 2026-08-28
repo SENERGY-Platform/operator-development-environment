@@ -54,7 +54,7 @@ func injectedMessage(summary experiments.Summary, record experiments.Experiment)
 	builder := &strings.Builder{}
 	fmt.Fprintf(builder,
 		"A training run you launched from this conversation has finished.\n\n"+
-			"This is ODE's structured summary of it (SPEC §5.13). It is the whole of what "+
+			"This is ODE's structured summary of it (§5.13). It is the whole of what "+
 			"you get about this run: params, metrics, tags, the comparison against the "+
 			"previous run and the developer's own evaluation criteria. There are no logs "+
 			"and there is no tool that would fetch them.\n\n"+

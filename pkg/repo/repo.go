@@ -15,7 +15,7 @@
  */
 
 // Package repo is ODE's GitHub integration and the Code pane's backend
-// (SPEC §5.11, D9, D14, D15).
+// (§5.11, D9, D14, D15).
 //
 // Four properties shape everything in here.
 //
@@ -58,17 +58,17 @@ import (
 // whole flow against a directory, and so that the dependency reads one way: repo
 // operations happen in a workspace, and the workspace knows nothing about repos.
 type Workspace interface {
-	Command(ctx context.Context, bearer string, cmd kernel.Command) (kernel.CommandResult, error)
+	Command(ctx context.Context, ref kernel.Ref, cmd kernel.Command) (kernel.CommandResult, error)
 	// CommandBatch runs a sequence under one claim on the kernel. Needed because a
 	// sequence run as separate commands can be refused between two of them, and
 	// `git reset --hard` followed by a refused `git clean` is a working copy half
 	// destroyed under an answer that says nothing happened (§5.11 item 6).
-	CommandBatch(ctx context.Context, bearer string, cmds []kernel.Command) ([]kernel.CommandResult, error)
-	Tree(ctx context.Context, bearer string, req kernel.TreeRequest) (kernel.Node, error)
-	ReadFile(ctx context.Context, bearer, path string, maxBytes int) (kernel.FileContent, error)
-	WriteFile(ctx context.Context, bearer, path string, content []byte) (kernel.Node, error)
-	MakeDir(ctx context.Context, bearer, path string) (kernel.Node, error)
-	Remove(ctx context.Context, bearer, path string, recursive bool) error
+	CommandBatch(ctx context.Context, ref kernel.Ref, cmds []kernel.Command) ([]kernel.CommandResult, error)
+	Tree(ctx context.Context, ref kernel.Ref, req kernel.TreeRequest) (kernel.Node, error)
+	ReadFile(ctx context.Context, ref kernel.Ref, path string, maxBytes int) (kernel.FileContent, error)
+	WriteFile(ctx context.Context, ref kernel.Ref, path string, content []byte) (kernel.Node, error)
+	MakeDir(ctx context.Context, ref kernel.Ref, path string) (kernel.Node, error)
+	Remove(ctx context.Context, ref kernel.Ref, path string, recursive bool) error
 	// Workspace is the configured workspace path, reported so a developer can see
 	// where on the PVC their checkout actually is.
 	Workspace() string
@@ -127,7 +127,12 @@ type Repository struct {
 // checkout on the PVC, which is what makes switching back a reuse rather than a
 // re-clone (§5.11 item 5).
 type Link struct {
-	UserSub       string `json:"-"`
+	UserSub string `json:"-"`
+	// WorkbenchID is the working context this link belongs to. Carried on the link
+	// as well as on the workbench because every operation below takes a link and
+	// then has to say which kernel to run in, and threading it separately through
+	// twenty call sites is how one of them ends up running in the wrong checkout.
+	WorkbenchID   string `json:"workbench_id"`
 	FullName      string `json:"full_name"`
 	Name          string `json:"name"`
 	Owner         string `json:"owner"`

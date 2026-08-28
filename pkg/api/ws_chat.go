@@ -209,6 +209,50 @@ func (s *wsSession) relay(ctx context.Context, id string, exchange *chat.Exchang
 	}
 }
 
+// decideConfirmation answers a confirmation held open by a provider's own tool
+// call.
+//
+// It answers once rather than streaming, because there is nothing here to stream:
+// the turn holding the call never paused, so its result arrives on the relay the
+// developer already has open. Answering it is a decision, not a new turn.
+func (s *wsSession) decideConfirmation(ctx context.Context, message wsInbound) {
+	if s.chat == nil {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID,
+			Error: "chat is not configured on this deployment", Status: http.StatusNotFound,
+		})
+		return
+	}
+
+	var body chatConfirmBody
+	if err := decodePayload(message.Payload, &body); err != nil {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID, Error: err.Error(), Status: http.StatusBadRequest,
+		})
+		return
+	}
+	if body.Approve == nil {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID, Status: http.StatusBadRequest,
+			Error: "approve must be true or false; there is no default for a confirmation",
+		})
+		return
+	}
+
+	// Not gated on s.slots, for the reason startExchange is not: that gate bounds
+	// concurrent platform reads, and this does none — the work an approval starts
+	// runs inside the exchange that was already waiting for it.
+	if err := s.chat.Decide(ctx, s.user, body.SessionID, body.ConfirmationID, *body.Approve); err != nil {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID,
+			Error: err.Error(), Status: statusForChatError(err),
+		})
+		return
+	}
+	s.send(wsOutbound{Type: msgResult, ID: message.ID,
+		Payload: map[string]any{"decided": true, "approved": *body.Approve}})
+}
+
 // cancelExchange abandons the turn running on a session.
 //
 // Distinct from msgCancel, which detaches a view: this stops the work. The
@@ -241,6 +285,98 @@ func (s *wsSession) cancelExchange(ctx context.Context, message wsInbound) {
 	s.send(wsOutbound{Type: msgCancelled, ID: message.ID})
 }
 
+// watchActivity reports what every one of this developer's conversations is
+// doing, until the client detaches.
+//
+// It exists because the SPA shows one conversation at a time while the backend
+// runs any number of them. A developer who starts a long turn, switches to another
+// session and keeps working has left the first one with nothing watching it — the
+// relay above belongs to a view that no longer exists — so the answer arrives
+// unannounced. This is the one subscription that outlives switching sessions.
+//
+// One frame per state change, no content: which conversation, and what it is doing.
+// Reading the reply is still chat_attach's job.
+func (s *wsSession) watchActivity(ctx context.Context, message wsInbound) {
+	if message.ID == "" {
+		s.send(wsOutbound{
+			Type: msgError, Error: "every request needs an id, so it can be cancelled",
+			Status: http.StatusBadRequest,
+		})
+		return
+	}
+	if s.chat == nil {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID,
+			Error: "chat is not configured on this deployment", Status: http.StatusNotFound,
+		})
+		return
+	}
+
+	watchCtx, cancel := context.WithCancel(ctx)
+
+	s.mux.Lock()
+	if _, exists := s.running[message.ID]; exists {
+		s.mux.Unlock()
+		cancel()
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID,
+			Error: "a request with this id is already running", Status: http.StatusConflict,
+		})
+		return
+	}
+	s.running[message.ID] = cancel
+	s.mux.Unlock()
+
+	// Subscribed before the snapshot is read, so a turn that starts between the two
+	// arrives as an event rather than falling into the gap between them. The cost is
+	// that it may be reported twice; the states are absolute rather than
+	// incremental, so a repeat says the same thing.
+	states, stop := s.chat.Watch(s.user)
+
+	s.work.Add(1)
+	go func() {
+		defer s.work.Done()
+		defer func() {
+			stop()
+			cancel()
+			s.mux.Lock()
+			delete(s.running, message.ID)
+			s.mux.Unlock()
+		}()
+
+		s.send(wsOutbound{Type: msgAccepted, ID: message.ID})
+
+		for _, activity := range s.chat.Activities(s.user) {
+			if !s.sendStream(watchCtx, wsOutbound{Type: msgEvent, ID: message.ID, Payload: activity}) {
+				return
+			}
+		}
+
+		for {
+			select {
+			case activity, open := <-states:
+				if !open {
+					// The watcher fell behind and was dropped. Reported as an ordinary
+					// end so the client re-subscribes and takes a fresh snapshot, which
+					// is the whole recovery — the states are in memory, not a log.
+					s.send(wsOutbound{Type: msgDone, ID: message.ID,
+						Payload: map[string]any{"watching": false}})
+					return
+				}
+				if !s.sendStream(watchCtx, wsOutbound{
+					Type: msgEvent, ID: message.ID, Payload: activity,
+				}) {
+					return
+				}
+
+			case <-watchCtx.Done():
+				s.send(wsOutbound{Type: msgCancelled, ID: message.ID})
+				return
+			}
+		}
+	}()
+}
+
 // statusForChatError maps the chat domain errors onto the status codes the SPA
 // already switches on, so the WebSocket and the REST routes agree.
 func statusForChatError(err error) int {
@@ -251,7 +387,12 @@ func statusForChatError(err error) int {
 	switch {
 	case errors.Is(err, chat.ErrNoSuchSession), errors.Is(err, chat.ErrNoSuchConfirmation):
 		return http.StatusNotFound
-	case errors.Is(err, chat.ErrAlreadyResolved):
+	// Gone rather than Not Found: the confirmation exists, but the call that was
+	// waiting for it does not any more — it timed out, or its turn ended. The SPA
+	// distinguishes the two, because only one of them means "reload the session".
+	case errors.Is(err, chat.ErrNotHeld):
+		return http.StatusGone
+	case errors.Is(err, chat.ErrAlreadyResolved), errors.Is(err, chat.ErrHeldOutOfBand):
 		return http.StatusConflict
 	case errors.Is(err, chat.ErrInvalidRequest):
 		return http.StatusBadRequest

@@ -95,11 +95,35 @@ type Instances interface {
 	ReadInstance(ctx context.Context, token string, id string) (idmodel.Instance, error)
 }
 
-// Types reads one import type in full. Discovery already returns the type
-// alongside every instance, so this exists for the direct-lookup case, where
-// there are no criteria to send.
+// Types is import-repository: one type in full, and the type catalogue.
+//
+// The catalogue is the half discovery cannot stand in for. device-selection
+// joins every matching type to its instances and reports one selectable per
+// instance, so a type with no instance is invisible there — which is precisely
+// the type somebody is about to deploy the first instance of.
 type Types interface {
 	ReadImportType(ctx context.Context, token string, id string) (dsmodel.ImportType, error)
+	ListImportTypes(ctx context.Context, token string, opts TypeListOptions) ([]dsmodel.ImportType, int64, error)
+}
+
+// Deployer is the write half of import-deploy.
+//
+// Separate from Instances rather than folded into it, because the read path is
+// the one every other package here depends on and it has no business carrying a
+// method that deploys a container. A deployment can wire reads without writes;
+// the reverse is refused, since nothing can be created without first reading the
+// type it is created from.
+type Deployer interface {
+	CreateInstance(ctx context.Context, token string, instance idmodel.Instance) (idmodel.Instance, error)
+	DeleteInstance(ctx context.Context, token string, id string) error
+}
+
+// ExportWriter is the write half of analytics-serving, plus the export database
+// listing that a creation needs and a history lookup does not.
+type ExportWriter interface {
+	CreateExport(ctx context.Context, token string, request ServingRequest) (Export, error)
+	DeleteExport(ctx context.Context, token string, id string) error
+	ListDatabases(ctx context.Context, token string) ([]ExportDatabase, error)
 }
 
 type InstanceListOptions struct {
@@ -118,11 +142,60 @@ type InstanceListOptions struct {
 	ExcludeGenerated bool
 }
 
+// TypeCriterion is import-repository's filter shape, which is narrower than the
+// device repository's in two ways that both matter.
+//
+// There is no device class and no interaction: an import type has neither, so a
+// resolution narrowing by device class cannot include imports at all, and an
+// interaction filter is either trivially satisfied or unsatisfiable, since every
+// import path is an event.
+//
+// AspectIDs is a list rather than an id because upstream expands nothing. The
+// device repository covers an aspect's whole subtree from the node alone; here
+// the node and its descendants are the caller's to send, and sending only the
+// node quietly excludes every type described against a child aspect.
+type TypeCriterion struct {
+	FunctionID string   `json:"function_id"`
+	AspectIDs  []string `json:"aspect_ids,omitempty"`
+}
+
+type TypeListOptions struct {
+	// Search matches the type name only, upstream, as the instance search matches
+	// the instance name only.
+	Search string
+	// IDs restricts the listing, with the same rule InstanceListOptions.IDs has:
+	// nil means no restriction, and an empty non-nil slice is refused rather than
+	// sent, because upstream reads `ids=` as match-nothing.
+	IDs []string
+	// Criteria are ANDed by upstream. One criterion per request is the caller's
+	// job; see Service.ListTypes.
+	Criteria []TypeCriterion
+	Limit    int64
+	Offset   int64
+	// SortBy is import-repository's `sort`. Empty means name ascending.
+	SortBy string
+}
+
+// TypeListResult mirrors ListResult, so the two listings project the same way.
+type TypeListResult struct {
+	Types []dsmodel.ImportType `json:"types"`
+	// Total is -1 when X-Total-Count did not arrive or did not parse. Unknown is
+	// its own answer: a caller cannot otherwise tell a short page from an
+	// exhausted one.
+	Total  int64 `json:"total"`
+	Limit  int64 `json:"limit"`
+	Offset int64 `json:"offset"`
+}
+
 type Service struct {
 	selectables Selectables
 	instances   Instances
 	types       Types
 	exports     Exports
+
+	deployer       Deployer
+	exportWriter   ExportWriter
+	exportDefaults ExportDefaults
 }
 
 // Deps are the services this package reads through. selectables and instances
@@ -141,17 +214,46 @@ type Deps struct {
 	// Exports is analytics-serving. Without it every history lookup answers
 	// HistoryUnknown, which is the honest state rather than a degraded one.
 	Exports Exports
+
+	// Deployer and ExportWriter are the write half (see create.go). Both are
+	// optional: without them ODE reads the platform and changes nothing, which is
+	// what it did before M12 and what a deployment that wants it to keep doing
+	// gets by leaving these nil.
+	//
+	// Neither is usable without Types. Creating an instance validates its configs
+	// against the import type and creating an export types its columns from it, and
+	// both refuse rather than send an unchecked request — so a deployment with a
+	// writer and no import-repository has the tools declared and refusing, not
+	// silently guessing.
+	Deployer     Deployer
+	ExportWriter ExportWriter
+
+	// ExportDefaults are the deployment-specific fields of an export. See the type.
+	ExportDefaults ExportDefaults
 }
 
 func New(deps Deps) (*Service, error) {
 	if deps.Selectables == nil || deps.Instances == nil {
 		return nil, errors.New("imports: a selectables client and an instance client are required")
 	}
+	if deps.ExportWriter != nil && deps.Exports == nil {
+		// CreateExport reads the existing exports to copy a timestamp format and to
+		// report what it created; a writer without the reader would be a service that
+		// can create an export and cannot tell whether one exists.
+		return nil, errors.New("imports: an export writer requires the export listing")
+	}
+	if deps.ExportDefaults.Offset != "" && !validOffset(deps.ExportDefaults.Offset) {
+		return nil, fmt.Errorf("imports: export offset %q is not one of %v",
+			deps.ExportDefaults.Offset, OffsetValues())
+	}
 	return &Service{
-		selectables: deps.Selectables,
-		instances:   deps.Instances,
-		types:       deps.Types,
-		exports:     deps.Exports,
+		selectables:    deps.Selectables,
+		instances:      deps.Instances,
+		types:          deps.Types,
+		exports:        deps.Exports,
+		deployer:       deps.Deployer,
+		exportWriter:   deps.ExportWriter,
+		exportDefaults: deps.ExportDefaults,
 	}, nil
 }
 
@@ -290,6 +392,43 @@ func (s *Service) GetType(ctx context.Context, token string, id string) (dsmodel
 		return dsmodel.ImportType{}, fmt.Errorf("%w: an import type id is required", ErrInvalidRequest)
 	}
 	return s.types.ReadImportType(ctx, token, id)
+}
+
+// ListTypes reads the import type catalogue: what could be deployed, as opposed
+// to what is deployed.
+//
+// One criterion per call, for the reason QueryImports takes one: upstream ANDs
+// the criteria list, so [{function A}, {function B}] asks for a type carrying
+// both. Alternatives are separate calls, unioned by the caller.
+//
+// Nothing here filters by what is already running. That join is the caller's,
+// because the two questions have different answers: a type with a running
+// instance this account cannot read is deployable to this account and invisible
+// to its discovery.
+func (s *Service) ListTypes(ctx context.Context, token string, opts TypeListOptions) (TypeListResult, error) {
+	if s.types == nil {
+		return TypeListResult{}, fmt.Errorf(
+			"%w: no import-repository is configured, so the import type catalogue cannot be "+
+				"read; semantic selection returns the type alongside every instance, but only "+
+				"for a type that already has one", ErrInvalidRequest)
+	}
+	if opts.IDs != nil && len(opts.IDs) == 0 {
+		return TypeListResult{}, fmt.Errorf("%w: an empty id list matches nothing upstream", ErrInvalidRequest)
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = DefaultLimit
+	}
+	if opts.Limit > MaxLimit {
+		return TypeListResult{}, fmt.Errorf("%w: limit must not exceed %d, got %d", ErrInvalidRequest, MaxLimit, opts.Limit)
+	}
+	found, total, err := s.types.ListImportTypes(ctx, token, opts)
+	if err != nil {
+		return TypeListResult{}, err
+	}
+	if found == nil {
+		found = []dsmodel.ImportType{}
+	}
+	return TypeListResult{Types: found, Total: total, Limit: opts.Limit, Offset: opts.Offset}, nil
 }
 
 // InstancesOfTypes is the type-to-instance join, done client-side because

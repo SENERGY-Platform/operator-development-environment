@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,7 +55,7 @@ func TestWorkspaceWritesAndReadsAFileTheContentsAPICouldNot(t *testing.T) {
 
 	// A dotted directory on purpose: this is the path jupyter_server's contents API
 	// refuses with allow_hidden false, and D14 says every file.
-	if _, err := service.WriteFile(context.Background(), bearer,
+	if _, err := service.WriteFile(context.Background(), ref(bearer),
 		".github/workflows/build.yml", []byte("name: build\n")); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestWorkspaceWritesAndReadsAFileTheContentsAPICouldNot(t *testing.T) {
 		t.Errorf("on disk = %q", onDisk)
 	}
 
-	content, err := service.ReadFile(context.Background(), bearer,
+	content, err := service.ReadFile(context.Background(), ref(bearer),
 		".github/workflows/build.yml", 1<<20)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -86,7 +87,7 @@ func TestWorkspaceReadReportsBinaryAndTruncationRatherThanCorruptingEither(t *te
 		[]byte{0x00, 0x01, 0x02, 0xff}, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	binary, err := service.ReadFile(context.Background(), bearer, "model.bin", 1<<20)
+	binary, err := service.ReadFile(context.Background(), ref(bearer), "model.bin", 1<<20)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestWorkspaceReadReportsBinaryAndTruncationRatherThanCorruptingEither(t *te
 		[]byte(strings.Repeat("a", 100)), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	short, err := service.ReadFile(context.Background(), bearer, "long.txt", 10)
+	short, err := service.ReadFile(context.Background(), ref(bearer), "long.txt", 10)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestWorkspaceRefusesToLeaveTheWorkspace(t *testing.T) {
 	service, bearer, _ := workspaceService(t)
 
 	for _, path := range []string{"../escape.txt", "a/../../escape.txt", "a/./../../x"} {
-		if _, err := service.ReadFile(context.Background(), bearer, path, 1024); err == nil {
+		if _, err := service.ReadFile(context.Background(), ref(bearer), path, 1024); err == nil {
 			t.Errorf("reading %q was allowed", path)
 		} else if !errors.Is(err, kernel.ErrInvalidRequest) {
 			t.Errorf("reading %q: error = %v, want ErrInvalidRequest", path, err)
@@ -122,7 +123,7 @@ func TestWorkspaceRefusesToLeaveTheWorkspace(t *testing.T) {
 	// what cleanWorkspacePath has always done for the listing route. What matters is
 	// that it cannot name a file outside: /etc/passwd exists on the host and must
 	// still come back as missing.
-	if content, err := service.ReadFile(context.Background(), bearer, "/etc/passwd", 1024); err == nil {
+	if content, err := service.ReadFile(context.Background(), ref(bearer), "/etc/passwd", 1024); err == nil {
 		t.Errorf("an absolute path was resolved outside the workspace: %+v", content)
 	} else if !errors.Is(err, kernel.ErrNotFound) {
 		t.Errorf("error = %v, want ErrNotFound", err)
@@ -142,7 +143,7 @@ func TestWorkspaceRefusesASymlinkOutOfTheWorkspace(t *testing.T) {
 		t.Skipf("symlinks are not available here: %v", err)
 	}
 
-	if content, err := service.ReadFile(context.Background(), bearer, "link.txt", 1024); err == nil {
+	if content, err := service.ReadFile(context.Background(), ref(bearer), "link.txt", 1024); err == nil {
 		t.Fatalf("the symlink was followed out of the workspace: %+v", content)
 	}
 }
@@ -160,7 +161,7 @@ func TestWorkspaceTreeWalksRecursivelyAndExcludesWhatItIsTold(t *testing.T) {
 		}
 	}
 
-	tree, err := service.Tree(context.Background(), bearer, kernel.TreeRequest{
+	tree, err := service.Tree(context.Background(), ref(bearer), kernel.TreeRequest{
 		Path: "repo", Recursive: true, Exclude: []string{".git"},
 	})
 	if err != nil {
@@ -194,7 +195,7 @@ func TestWorkspaceTreeReportsWhatTheBudgetElided(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 	}
-	tree, err := service.Tree(context.Background(), bearer, kernel.TreeRequest{MaxEntries: 2})
+	tree, err := service.Tree(context.Background(), ref(bearer), kernel.TreeRequest{MaxEntries: 2})
 	if err != nil {
 		t.Fatalf("Tree: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestWorkspaceCommandRunsWithoutAShellAndReportsTheExitCode(t *testing.T) {
 
 	// The argument is a shell metacharacter salad. Run through a shell it would
 	// create a file; run as argv it can only be echoed.
-	result, err := service.Command(context.Background(), bearer, kernel.Command{
+	result, err := service.Command(context.Background(), ref(bearer), kernel.Command{
 		Argv: []string{"python3", "-c", "import sys; print(sys.argv[1])", "; touch pwned"},
 	})
 	if err != nil {
@@ -229,7 +230,7 @@ func TestWorkspaceCommandCarriesTheEnvironmentAndTheWorkingDirectory(t *testing.
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	result, err := service.Command(context.Background(), bearer, kernel.Command{
+	result, err := service.Command(context.Background(), ref(bearer), kernel.Command{
 		Argv: []string{"python3", "-c", "import os; print(os.environ['ODE_TEST']); print(os.getcwd())"},
 		Dir:  "repo",
 		Env:  map[string]string{"ODE_TEST": "carried"},
@@ -246,7 +247,7 @@ func TestWorkspaceCommandCarriesTheEnvironmentAndTheWorkingDirectory(t *testing.
 func TestWorkspaceCommandReportsAFailureRatherThanRaising(t *testing.T) {
 	service, bearer, _ := workspaceService(t)
 
-	result, err := service.Command(context.Background(), bearer, kernel.Command{
+	result, err := service.Command(context.Background(), ref(bearer), kernel.Command{
 		Argv: []string{"python3", "-c", "import sys; sys.stderr.write('nope\\n'); sys.exit(3)"},
 	})
 	if err != nil {
@@ -260,7 +261,7 @@ func TestWorkspaceCommandReportsAFailureRatherThanRaising(t *testing.T) {
 func TestWorkspaceCommandStopsAProgramThatWillNotFinish(t *testing.T) {
 	service, bearer, _ := workspaceService(t)
 
-	result, err := service.Command(context.Background(), bearer, kernel.Command{
+	result, err := service.Command(context.Background(), ref(bearer), kernel.Command{
 		Argv:    []string{"python3", "-c", "import time; time.sleep(30)"},
 		Timeout: time.Second,
 	})
@@ -278,10 +279,10 @@ func TestWorkspaceRemoveNeedsRecursiveForADirectory(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	if err := service.Remove(context.Background(), bearer, "cache", false); err == nil {
+	if err := service.Remove(context.Background(), ref(bearer), "cache", false); err == nil {
 		t.Fatal("a directory was removed without the recursive flag")
 	}
-	if err := service.Remove(context.Background(), bearer, "cache", true); err != nil {
+	if err := service.Remove(context.Background(), ref(bearer), "cache", true); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(workspace, "cache")); !os.IsNotExist(err) {
@@ -292,7 +293,7 @@ func TestWorkspaceRemoveNeedsRecursiveForADirectory(t *testing.T) {
 func TestWorkspaceReadReportsAMissingFileAsMissing(t *testing.T) {
 	service, bearer, _ := workspaceService(t)
 
-	_, err := service.ReadFile(context.Background(), bearer, "nothing/here.py", 1024)
+	_, err := service.ReadFile(context.Background(), ref(bearer), "nothing/here.py", 1024)
 	if !errors.Is(err, kernel.ErrNotFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
 	}
@@ -305,7 +306,7 @@ func TestWorkspaceReadReportsAMissingFileAsMissing(t *testing.T) {
 func TestACommandBatchRunsTheWholeSequenceInOneExecution(t *testing.T) {
 	service, bearer, workspace := workspaceService(t)
 
-	results, err := service.CommandBatch(context.Background(), bearer, []kernel.Command{
+	results, err := service.CommandBatch(context.Background(), ref(bearer), []kernel.Command{
 		{Argv: []string{"python3", "-c", "open('first.txt', 'w').write('1')"}},
 		{Argv: []string{"python3", "-c", "open('second.txt', 'w').write('2')"}},
 	})
@@ -329,7 +330,7 @@ func TestACommandBatchRunsTheWholeSequenceInOneExecution(t *testing.T) {
 func TestACommandBatchStopsAtTheFirstFailureAndReportsHowFarItGot(t *testing.T) {
 	service, bearer, workspace := workspaceService(t)
 
-	results, err := service.CommandBatch(context.Background(), bearer, []kernel.Command{
+	results, err := service.CommandBatch(context.Background(), ref(bearer), []kernel.Command{
 		{Argv: []string{"python3", "-c", "open('before.txt', 'w').write('1')"}},
 		{Argv: []string{"python3", "-c", "import sys; sys.stderr.write('nope\\n'); sys.exit(3)"}},
 		{Argv: []string{"python3", "-c", "open('after.txt', 'w').write('3')"}},
@@ -354,7 +355,7 @@ func TestACommandBatchStopsAtTheFirstFailureAndReportsHowFarItGot(t *testing.T) 
 func TestACommandBatchNeverPassesAnArgumentThroughAShell(t *testing.T) {
 	service, bearer, workspace := workspaceService(t)
 
-	results, err := service.CommandBatch(context.Background(), bearer, []kernel.Command{
+	results, err := service.CommandBatch(context.Background(), ref(bearer), []kernel.Command{
 		{Argv: []string{"python3", "-c", "import sys; print(sys.argv[1])", "; touch pwned"}},
 		{Argv: []string{"python3", "-c", "import sys; print(sys.argv[1])", "$(touch pwned-too)"}},
 	})
@@ -381,7 +382,7 @@ func TestACommandBatchCarriesEachCommandsOwnDirectoryAndEnvironment(t *testing.T
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	results, err := service.CommandBatch(context.Background(), bearer, []kernel.Command{
+	results, err := service.CommandBatch(context.Background(), ref(bearer), []kernel.Command{
 		{
 			Argv: []string{"python3", "-c", "import os; print(os.environ['ODE_TEST']); print(os.getcwd())"},
 			Dir:  "repo",
@@ -399,5 +400,106 @@ func TestACommandBatchCarriesEachCommandsOwnDirectoryAndEnvironment(t *testing.T
 	if strings.HasSuffix(strings.TrimSpace(results[1].Stdout), "repo") {
 		t.Errorf("second result = %+v, want the workspace root rather than the first "+
 			"command's directory", results[1])
+	}
+}
+
+// The reload case, which is the one that made the wait in claim necessary. The
+// Code pane asks for the repository status, the file tree and the open file at
+// once, and each of those is a cell; before the wait, two of the three answered
+// 409 and the pane came up with the tree and the editor both showing an error.
+func TestConcurrentWorkspaceOperationsAllAnswerRatherThanRefusingEachOther(t *testing.T) {
+	service, bearer, workspace := workspaceService(t)
+	if err := os.WriteFile(filepath.Join(workspace, "op.py"), []byte("print('op')\n"), 0o644); err != nil {
+		t.Fatalf("seed the workspace: %v", err)
+	}
+
+	// Brought up first so that the pod spawn is not what the three below are timed
+	// against: the bring-up is serialised by the session mutex, and the property
+	// under test is about the claim after it.
+	if _, err := service.Tree(context.Background(), ref(bearer), kernel.TreeRequest{}); err != nil {
+		t.Fatalf("the bring-up read failed: %v", err)
+	}
+
+	operations := map[string]func() error{
+		"tree": func() error {
+			_, err := service.Tree(context.Background(), ref(bearer),
+				kernel.TreeRequest{Recursive: true})
+			return err
+		},
+		"file": func() error {
+			_, err := service.ReadFile(context.Background(), ref(bearer), "op.py", 1<<20)
+			return err
+		},
+		"status": func() error {
+			_, err := service.Command(context.Background(), ref(bearer),
+				kernel.Command{Argv: []string{"python3", "-c", "print('status')"}})
+			return err
+		},
+	}
+
+	start := make(chan struct{})
+	failures := make(chan string, len(operations))
+	var running sync.WaitGroup
+	for name, operation := range operations {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			<-start
+			if err := operation(); err != nil {
+				failures <- name + ": " + err.Error()
+			}
+		}()
+	}
+	close(start)
+	running.Wait()
+	close(failures)
+
+	for failure := range failures {
+		t.Errorf("a concurrent workspace operation failed — %s", failure)
+	}
+}
+
+// The other half of the same decision: the wait absorbs ODE's own collisions and
+// nothing more. A kernel held by a cell of unknown length is still reported as
+// busy, because that is the answer a developer can act on.
+func TestAWorkspaceOperationStillReportsAKernelHeldByARunningCell(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, func(opts *kernel.Options) {
+		opts.WorkspaceWait = 100 * time.Millisecond
+	})
+	bearer := unsignedToken("devuser")
+
+	// Brought up first, so the hang below lands on the developer's cell rather than
+	// on the hidden environment push that precedes it.
+	if _, err := service.Ensure(context.Background(), ref(bearer)); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	release := make(chan struct{})
+	hub.Hang(release)
+
+	cell, err := service.Run(context.Background(), ref(bearer), "train()")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	started := time.Now()
+	_, err = service.ReadFile(context.Background(), ref(bearer), "op.py", 1<<20)
+	waited := time.Since(started)
+	if !errors.Is(err, kernel.ErrBusy) {
+		t.Errorf("ReadFile behind a running cell = %v, want ErrBusy", err)
+	}
+	if waited < 100*time.Millisecond {
+		t.Errorf("waited %v, want at least the configured wait before giving up", waited)
+	}
+
+	close(release)
+	hub.Hang(nil)
+	collect(t, cell)
+
+	// And the refusal is not a state the session stays in: the next read reaches
+	// the kernel. What it finds there is this fake's canned output rather than a
+	// workspace answer, so only the refusal is asserted against.
+	if _, err := service.ReadFile(context.Background(), ref(bearer), "op.py", 1<<20); errors.Is(err, kernel.ErrBusy) {
+		t.Error("ReadFile after the cell finished = ErrBusy, so the release did not wake the claim")
 	}
 }

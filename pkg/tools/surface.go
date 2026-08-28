@@ -19,6 +19,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
 	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
@@ -54,12 +55,22 @@ type (
 	Timeseries interface {
 		DataAvailability(ctx context.Context, token string, deviceID string) ([]timeseries.Availability, error)
 		DeviceUsage(ctx context.Context, token string, deviceIDs []string) ([]timeseries.Usage, error)
+		// ExportUsage is the export half of the cost estimate. There is no
+		// availability endpoint to go with it — that one is device-scoped — which is
+		// why probe_export_data exists beside probe_availability rather than as a
+		// parameter on it.
+		ExportUsage(ctx context.Context, token string, exportIDs []string) ([]timeseries.Usage, error)
 		Query(ctx context.Context, token string, elements []timeseries.QueryElement, opts timeseries.QueryOptions) ([]timeseries.QueryResult, error)
 	}
 
 	Profiler interface {
 		QuickProfiles(ctx context.Context, token string, req profiler.QuickRequest) (profiler.QuickResult, error)
 		ProfileService(ctx context.Context, token string, req profiler.ProfileRequest) (profiler.ProfileResult, error)
+		// The export half. ExportFill is the L0 question — is anything in there —
+		// and ProfileExport is the same profile pass a device service gets, over an
+		// export's columns.
+		ExportFill(ctx context.Context, token string, req profiler.ExportFillRequest) (profiler.ExportFill, error)
+		ProfileExport(ctx context.Context, token string, req profiler.ExportProfileRequest) (profiler.ProfileResult, error)
 		Profile(profileID string) (profiler.ResolvedProfile, bool)
 		Store() profiler.Store
 	}
@@ -77,11 +88,41 @@ type (
 		List(ctx context.Context, token string, opts imports.InstanceListOptions) (imports.ListResult, error)
 		Get(ctx context.Context, token string, id string) (idmodel.Instance, error)
 		GetType(ctx context.Context, token string, id string) (dsmodel.ImportType, error)
+		// ListTypes is the type catalogue: what could be deployed, as opposed to what
+		// is. Discovery cannot stand in for it — it reports one row per instance, so a
+		// type nobody has deployed is absent from it entirely.
+		ListTypes(ctx context.Context, token string, opts imports.TypeListOptions) (imports.TypeListResult, error)
 		History(ctx context.Context, token string, instanceID string) imports.History
 		// Histories is the batch form, for a listing. analytics-serving cannot filter
 		// by import, so asking per instance would re-read the whole export listing once
 		// per row.
 		Histories(ctx context.Context, token string, instanceIDs []string) map[string]imports.History
+
+		// The write half. These four are the only methods on this interface that
+		// change the platform, and every tool reaching them is a confirmed one.
+		CreateInstance(ctx context.Context, token string, req imports.CreateInstanceRequest) (imports.CreatedInstance, error)
+		DeleteInstance(ctx context.Context, token string, id string) error
+		CreateExport(ctx context.Context, token string, req imports.CreateExportRequest) (imports.CreatedExport, error)
+		DeleteExport(ctx context.Context, token string, id string) error
+		ExportDefaults() imports.ExportDefaults
+	}
+
+	// Creations records what a session created on the platform, and is what makes
+	// the two delete tools safe enough to exist (§5.8).
+	//
+	// §5.8 denies delete_platform_data outright, and deleting an export drops its
+	// timescale table while deleting an import deletes its Kafka topic — so a
+	// general delete tool would be that denied capability under another name. What
+	// is permitted instead is strictly narrower: a session may remove what that same
+	// session created, minutes earlier, with the developer confirming again. Every
+	// other id is refused, and the refusal is not a policy check the model can argue
+	// with — the id is simply not in the session's list.
+	//
+	// Implemented by the chat store, for the reason SelectionSink is: this is
+	// session state, and it has to survive the process that wrote it.
+	Creations interface {
+		RecordCreation(ctx context.Context, sessionID string, created Creation) error
+		Creations(ctx context.Context, sessionID string) ([]Creation, error)
 	}
 
 	// SelectionSink is where propose_data_selection writes. Implemented by the
@@ -113,7 +154,7 @@ type (
 	// methods run_code needs: the token identifies the developer, so nothing here
 	// takes a user.
 	Kernel interface {
-		Run(ctx context.Context, bearer, code string) (<-chan kernel.ExecutionEvent, error)
+		Run(ctx context.Context, ref kernel.Ref, code string) (<-chan kernel.ExecutionEvent, error)
 		Workspace() string
 	}
 
@@ -142,10 +183,37 @@ type (
 // deployment without a timescale-wrapper has no profiler, and the tools that
 // need one are then declared without an executor rather than registered and
 // broken. That is the same degradation the M1 routes already do.
+// CreationKind is what a session created. Two kinds, because two things can be
+// created and each is deleted through a different service.
+type CreationKind string
+
+const (
+	CreatedImportInstance CreationKind = "import_instance"
+	CreatedExport         CreationKind = "export"
+)
+
+// Creation is one platform object a session created.
+//
+// Name and Tool are recorded beside the id so that a refusal can say what the
+// session did create — "you created the export weather-history, not the one you
+// just named" is an answer a model can act on, where a bare refusal invites it to
+// try the id again.
+type Creation struct {
+	Kind CreationKind `json:"kind"`
+	ID   string       `json:"id"`
+	Name string       `json:"name"`
+	Tool string       `json:"tool"`
+	At   time.Time    `json:"at"`
+}
+
 type Deps struct {
-	Ontology      Ontology
-	Devices       Devices
-	Imports       Imports
+	Ontology Ontology
+	Devices  Devices
+	Imports  Imports
+	// Creations is where the two create tools record what they made and the two
+	// delete tools look before removing anything. Absent, the deletes are not
+	// advertised at all — there is no memory for them to check.
+	Creations     Creations
 	Timeseries    Timeseries
 	Profiler      Profiler
 	Selection     Selection
@@ -203,7 +271,8 @@ const (
 
 // NewSurface builds the registry of §5.8 against the services that are present.
 //
-// Every one of the eighteen tools is declared. A tool whose dependency is absent,
+// Every tool of §5.8 is declared, and so are the nine beyond it (see the package
+// comment). A tool whose dependency is absent,
 // or whose backend belongs to a later milestone, is declared without an executor
 // and names the milestone: it appears in the published table, is never advertised
 // to a model, and answers a direct call with a structured refusal rather than a
@@ -255,7 +324,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  },
 			  "required": ["query"]
 			}`),
-			Unavailable: "M0 — requires device_repo_url",
+			Unavailable: "requires device_repo_url",
 			executor:    ifPresent(s.searchOntology, deps.Ontology),
 		},
 		Definition{
@@ -279,7 +348,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  },
 			  "required": ["intent"]
 			}`),
-			Unavailable: "M2 — requires device_repo_url",
+			Unavailable: "requires device_repo_url",
 			executor:    ifPresent(s.resolveSemanticSelection, deps.Selection),
 		},
 		Definition{
@@ -296,7 +365,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			    "limit": {"type": "integer"}
 			  }
 			}`),
-			Unavailable: "M0 — requires device_repo_url",
+			Unavailable: "requires device_repo_url",
 			executor:    ifPresent(s.listDevices, deps.Devices),
 		},
 		Definition{
@@ -310,7 +379,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  "properties": {"device_id": {"type": "string"}},
 			  "required": ["device_id"]
 			}`),
-			Unavailable: "M0 — requires device_repo_url",
+			Unavailable: "requires device_repo_url",
 			executor:    ifPresent(s.getDeviceMetadata, deps.Devices),
 		},
 		Definition{
@@ -357,6 +426,36 @@ func NewSurface(deps Deps) (*Registry, error) {
 			executor:    ifPresent(s.getImportTypeMetadata, deps.Imports),
 		},
 		Definition{
+			Name: "list_import_types",
+			Description: "Search the import type catalogue: the adapters this platform could " +
+				"deploy an import from. A type is a blueprint — it is not running, carries no " +
+				"data and has no Kafka topic; an instance created from it does.\n\n" +
+				"This is the only way to reach a type that has no instance yet, which is exactly " +
+				"the type create_import_instance is for. resolve_semantic_selection reports " +
+				"imports that exist, so a type nobody has deployed never appears there — it " +
+				"names the matching ones in deployable_import_types instead.\n\n" +
+				"Use it when a resolution found nothing and the developer needs the signal " +
+				"anyway, or when they name an adapter directly. It is not a way to find data: " +
+				"for that, resolve_semantic_selection finds devices and imports together.\n\n" +
+				"Before deploying, check list_import_instances with import_type_ids — an " +
+				"instance of the type may already exist, and a second one costs a container and " +
+				"a topic for data the platform already pulls.",
+			Effect:  "read",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "search": {"type": "string", "description": "Matches the import type name only, upstream."},
+			    "function_id": {"type": "string", "description": "Keep only types carrying this measuring function. From search_ontology."},
+			    "aspect_id": {"type": "string", "description": "Keep only types carrying this aspect. Its descendants are included."},
+			    "import_type_ids": {"type": "array", "items": {"type": "string"}, "description": "Read these types by id. Ignores search and the criteria upstream."},
+			    "limit": {"type": "integer"}
+			  }
+			}`),
+			Unavailable: "requires device_selection_url, import_deploy_url and import_repo_url",
+			executor:    ifPresent(s.listImportTypes, deps.Imports),
+		},
+		Definition{
 			Name: "probe_availability",
 			Description: "Report the time range for which a device has stored data, per service, " +
 				"with the pre-computed aggregate tables available. Reads no values.",
@@ -367,26 +466,58 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  "properties": {"device_id": {"type": "string"}},
 			  "required": ["device_id"]
 			}`),
-			Unavailable: "M1a — requires timescale_wrapper_url",
+			Unavailable: "requires timescale_wrapper_url",
 			executor:    ifPresent(s.probeAvailability, deps.Timeseries),
+		},
+		Definition{
+			Name: "probe_export_data",
+			Description: "Report whether an export's timescale table actually holds rows, per column, " +
+				"and over what span. Use it before trusting an export as a data source, and " +
+				"immediately after creating one: an export exists in the platform whether or not a " +
+				"single row was ever written to it, and the export listing cannot tell the two apart. " +
+				"Reads no values — it asks for row counts.\n\n" +
+				"The states are not interchangeable. `filled` means rows exist and every readable " +
+				"column carries values. `partly_filled` means rows exist and a named column is null in " +
+				"every one of them, which is the export worker finding the timestamp and not the " +
+				"values — report the column rather than reporting the export as working. `empty` means " +
+				"nothing was written in the window. `unknown` means the question could not be answered " +
+				"and must never be reported as `empty`: one sends a developer to fix their export, the " +
+				"other does not.",
+			Effect:  "read /usage/exports and one bucketed row count",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "export_id": {"type": "string", "description": "The export's id, as list_import_instances reports it under history.export_id and as create_export returns it."},
+			    "from": {"type": "string", "description": "RFC3339. Empty means a multi-year lookback, which is deliberate: an export that stopped receiving rows a year ago must not be reported as empty."},
+			    "to": {"type": "string", "description": "RFC3339."}
+			  },
+			  "required": ["export_id"]
+			}`),
+			Unavailable: "requires timescale_wrapper_url and analytics_serving_url",
+			executor:    ifPresent(s.probeExportData, deps.Profiler),
 		},
 		Definition{
 			Name: "estimate_read_cost",
 			Description: "Estimate what reading a series would cost before reading it: stored bytes, " +
 				"bytes per day, an order-of-magnitude sampling interval and an estimated point " +
-				"count for a window. Use this to warn about an expensive selection while still at L0.",
-			Effect:  "read /usage/devices",
+				"count for a window. Takes devices, exports, or both. Use this to warn about an " +
+				"expensive selection while still at L0.\n\n" +
+				"For an export, an absent entry is not an empty export — the accounting is filled by a " +
+				"collector and a young export is not in it yet. probe_export_data is what answers " +
+				"whether anything is stored.",
+			Effect:  "read /usage/devices and /usage/exports",
 			MinTier: L0,
 			Schema: json.RawMessage(`{
 			  "type": "object",
 			  "properties": {
 			    "device_ids": {"type": "array", "items": {"type": "string"}},
+			    "export_ids": {"type": "array", "items": {"type": "string"}, "description": "Export ids, for the import half of the platform. Give these, device_ids, or both."},
 			    "from": {"type": "string", "description": "RFC3339. The window to estimate for, together with \"to\"."},
 			    "to": {"type": "string", "description": "RFC3339."}
-			  },
-			  "required": ["device_ids"]
+			  }
 			}`),
-			Unavailable: "M1a — requires timescale_wrapper_url",
+			Unavailable: "requires timescale_wrapper_url",
 			executor:    ifPresent(s.estimateReadCost, deps.Timeseries),
 		},
 		Definition{
@@ -408,7 +539,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			    "include_unqueryable": {"type": "boolean", "description": "Keep variables that exist but cannot be read as a series, ranked last."}
 			  }
 			}`),
-			Unavailable: "M1a — requires timescale_wrapper_url",
+			Unavailable: "requires timescale_wrapper_url",
 			executor:    ifPresent(s.quickProfile, deps.Profiler, deps.Devices),
 		},
 
@@ -455,29 +586,35 @@ func NewSurface(deps Deps) (*Registry, error) {
 		Definition{
 			Name: "profile_series",
 			Description: "Compute the full deterministic SeriesProfile for every variable of one " +
-				"service: coverage and gaps, sampling regularity, counter-versus-instantaneous " +
-				"classification, units, distribution, periodicity, trend, activity sessions and " +
-				"quality flags. You read the profile; you never compute statistics yourself. " +
-				"Fields that could not be computed say so explicitly — an absent field means " +
-				"\"could not determine\", never \"zero\" or \"none\".",
-			Effect:  "compute SeriesProfile (service-scoped batch read)",
+				"service, or every column of one export: coverage and gaps, sampling regularity, " +
+				"counter-versus-instantaneous classification, units, distribution, periodicity, " +
+				"trend, activity sessions and quality flags. You read the profile; you never compute " +
+				"statistics yourself. Fields that could not be computed say so explicitly — an absent " +
+				"field means \"could not determine\", never \"zero\" or \"none\".\n\n" +
+				"For an export, two things differ and both are reported rather than smoothed over: " +
+				"the window comes from counting rows, because the platform has no availability " +
+				"endpoint for an export, and a column carries units only where the import type " +
+				"behind the export still declares them. An export with no rows is refused rather " +
+				"than profiled into a body of \"not_computed\" — call probe_export_data first if you " +
+				"want that answer without the refusal.",
+			Effect:  "compute SeriesProfile (source-scoped batch read)",
 			MinTier: L1,
 			Schema: json.RawMessage(`{
 			  "type": "object",
 			  "properties": {
 			    "device_id": {"type": "string"},
 			    "service_id": {"type": "string"},
+			    "export_id": {"type": "string", "description": "Profile an export's own table instead. Exclusive with device_id and service_id, and the variable paths are then the export's column names."},
 			    "from": {"type": "string", "description": "RFC3339 start of the analysis window."},
 			    "to": {"type": "string", "description": "RFC3339 end of the analysis window."},
 			    "group_time": {"type": "string", "description": "Aggregation bucket, e.g. \"15m\". Empty means derived from the detected sampling interval, which is the better answer unless you mean to override it. At least 1s, and coarse enough that the analysis window divides into at most 500000 buckets; a bucket below that is refused and the refusal names the finest one the window allows."},
 			    "variable_paths": {
 			      "type": "array", "items": {"type": "string"},
-			      "description": "Restrict the response to these variable paths. The service is read once for all of its variables either way, so this narrows what you read back, not what it costs. Omit it and the response carries the first few profiles and names the variables it left out."
+			      "description": "Restrict the response to these variable paths — for an export, its column names. The source is read once for all of its variables either way, so this narrows what you read back, not what it costs. Omit it and the response carries the first few profiles and names the variables it left out."
 			    }
-			  },
-			  "required": ["device_id", "service_id"]
+			  }
 			}`),
-			Unavailable: "M1b — requires timescale_wrapper_url",
+			Unavailable: "requires timescale_wrapper_url",
 			executor:    ifPresent(s.profileSeries, deps.Profiler, deps.Devices),
 		},
 		Definition{
@@ -495,7 +632,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  },
 			  "required": ["profile_id"]
 			}`),
-			Unavailable: "M1b — requires timescale_wrapper_url",
+			Unavailable: "requires timescale_wrapper_url",
 			executor:    ifPresent(s.getSessions, deps.Profiler),
 		},
 
@@ -546,9 +683,10 @@ func NewSurface(deps Deps) (*Registry, error) {
 		// ---- L2: actual values. ----
 		Definition{
 			Name: "preview_series",
-			Description: "Read a downsampled preview of actual values for one series, to reason " +
-				"about its shape. Heavily aggregated and point-capped: this is for seeing the " +
-				"form of a signal, not for computing statistics from it.",
+			Description: "Read a downsampled preview of actual values for one series — a device's " +
+				"variable or an export's column — to reason about its shape. Heavily aggregated and " +
+				"point-capped: this is for seeing the form of a signal, not for computing statistics " +
+				"from it.",
 			Effect:  "read values",
 			MinTier: L2,
 			Schema: json.RawMessage(`{
@@ -556,16 +694,17 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  "properties": {
 			    "device_id": {"type": "string"},
 			    "service_id": {"type": "string"},
-			    "variable_path": {"type": "string"},
+			    "export_id": {"type": "string", "description": "Preview an export's column instead. Exclusive with device_id and service_id."},
+			    "variable_path": {"type": "string", "description": "The variable path, or for an export the column name."},
 			    "from": {"type": "string", "description": "RFC3339."},
 			    "to": {"type": "string", "description": "RFC3339."},
 			    "group_time": {"type": "string", "description": "Aggregation bucket, e.g. \"1h\"."},
 			    "group_type": {"type": "string", "description": "mean, min, max, sum, first, last, median, difference-mean, difference-sum, difference-last, time-weighted-mean-linear."},
 			    "max_points": {"type": "integer"}
 			  },
-			  "required": ["device_id", "service_id", "variable_path"]
+			  "required": ["variable_path"]
 			}`),
-			Unavailable: "M1a — requires timescale_wrapper_url",
+			Unavailable: "requires timescale_wrapper_url",
 			executor:    ifPresent(s.previewSeries, deps.Timeseries),
 		},
 
@@ -599,7 +738,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  },
 			  "required": ["series", "rationale"]
 			}`),
-			Unavailable: "M3 — requires a chat store",
+			Unavailable: "requires a chat store",
 			executor:    ifPresent(s.proposeDataSelection, deps.SelectionSink),
 		},
 
@@ -640,6 +779,156 @@ func NewSurface(deps Deps) (*Registry, error) {
 			}`),
 			Unavailable: "requires device_selection_url and import_deploy_url",
 			executor:    ifPresent(s.proposeOperatorInput, deps.Imports),
+		},
+
+		Definition{
+			Name: "create_import_instance",
+			Description: "Deploy an import instance from an import type, so the platform starts " +
+				"pulling that data in. This is the only way to obtain a signal the platform does " +
+				"not carry yet — where resolve_semantic_selection found nothing and an import type " +
+				"describes what is wanted.\n\n" +
+				"The developer must confirm, and they see the exact configuration first. Read the " +
+				"import type with get_import_type_metadata before proposing: every config you set " +
+				"must be one the type declares, and a config you leave out takes the type's own " +
+				"default rather than nothing.\n\n" +
+				"You cannot set a config that is a credential — an api key, a password, a token. " +
+				"Those are entered by the developer in the platform's import dialog, and this tool " +
+				"refuses an import type that needs one. Say so rather than inventing a value.\n\n" +
+				"A new instance starts empty: it has no past, and no history until an export exists " +
+				"for it (see create_export).",
+			Effect:  "deploy an import container on the platform",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "import_type_id": {"type": "string", "description": "The import type to deploy, as get_import_type_metadata reports it."},
+			    "name": {"type": "string", "description": "What the developer will find this import under. Say what it imports, not that it is an import."},
+			    "rationale": {"type": "string", "description": "Why this import type, and why deploying a new instance rather than using one that exists."},
+			    "configs": {
+			      "type": "array",
+			      "description": "Configuration values. Omit a config to take the import type's declared default.",
+			      "items": {
+			        "type": "object",
+			        "properties": {
+			          "name": {"type": "string", "description": "Exactly as the import type declares it."},
+			          "value": {"description": "A string, number, boolean, list or object, matching the type the config declares."}
+			        },
+			        "required": ["name", "value"]
+			      }
+			    },
+			    "restart": {"type": "boolean", "description": "Whether the container restarts on failure. Omit to take the import type's default."}
+			  },
+			  "required": ["import_type_id", "name", "rationale"]
+			}`),
+			Unavailable: "requires device_selection_url, import_deploy_url and import_repo_url",
+			executor:    ifPresent(s.createImportInstance, deps.Imports),
+		},
+
+		Definition{
+			Name: "create_export",
+			Description: "Create an export of an import instance, so its values are stored in " +
+				"timescale and can be profiled, charted and trained on. Use it when an import's " +
+				"history reads live_only and the developer needs its past rather than only what " +
+				"arrives from now on.\n\n" +
+				"The developer must confirm. Name only variables you found through " +
+				"resolve_semantic_selection or get_import_type_metadata, and only the ones that are " +
+				"actually needed: an export stores the columns it was created with, and adding one " +
+				"later means creating a second export.\n\n" +
+				"An export is not retroactive. It stores what the topic still retains from the " +
+				"offset you choose onward, which is Kafka's retention window and not the import's " +
+				"whole past — say that to the developer rather than promising history that does not " +
+				"exist.\n\n" +
+				"An export is timestamped with the moment the import wrote the message, which is " +
+				"what an import that polls a live source wants. An import that carries the time its " +
+				"values describe — a backfill of past weather, a forecast — needs `time_path` set " +
+				"to that variable instead, or a replay of years lands inside the minutes the replay " +
+				"took and reads as no history at all. Ask the developer for the format that " +
+				"variable is written in; do not guess one.",
+			Effect:  "create an export and the timescale table behind it",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "instance_id": {"type": "string", "description": "The import instance to export."},
+			    "name": {"type": "string", "description": "What the developer will find this export under."},
+			    "description": {"type": "string"},
+			    "rationale": {"type": "string", "description": "Why this import needs storing, and why these variables."},
+			    "offset": {
+			      "type": "string",
+			      "enum": ["smallest", "largest"],
+			      "description": "Where the export starts reading. \"smallest\" takes what the topic still retains, \"largest\" only what arrives from now on. Omit for the deployment's default."
+			    },
+			    "time_path": {
+			      "type": "string",
+			      "description": "The variable the export takes its timestamps from. Omit for the message's own arrival time, which is right for an import polling a live source. Set it to the variable that carries the described time — as get_import_type_metadata reports it — when the import backfills the past or forecasts the future."
+			    },
+			    "timestamp_format": {
+			      "type": "string",
+			      "description": "How the export worker parses the timestamp, in this platform's own format vocabulary. Omit unless the developer gave you one: it belongs with time_path, because a different variable is usually written differently, and a format that does not parse stores no rows at all. Never invent one."
+			    },
+			    "values": {
+			      "type": "array",
+			      "description": "The variables to store, each becoming one column.",
+			      "items": {
+			        "type": "object",
+			        "properties": {
+			          "variable_path": {"type": "string", "description": "The import variable, as resolve_semantic_selection reported it."},
+			          "column": {"type": "string", "description": "The column name. Omit to take the variable's own last path element."},
+			          "tag": {"type": "boolean", "description": "True for a label to group by rather than a measured value."}
+			        },
+			        "required": ["variable_path"]
+			      }
+			    }
+			  },
+			  "required": ["instance_id", "name", "values", "rationale"]
+			}`),
+			Unavailable: "requires analytics_serving_url and import_repo_url",
+			executor:    ifPresent(s.createExport, deps.Imports),
+		},
+
+		Definition{
+			Name: "delete_import_instance",
+			Description: "Remove an import instance **that this session created**. Any other id is " +
+				"refused: deleting an import is not yours to propose for something that was already " +
+				"there.\n\n" +
+				"The developer must confirm. This deletes the instance's Kafka topic with it, so " +
+				"every message it still held is gone and anything consuming that topic stops " +
+				"receiving — it is an undo of a deployment you just made, not a cleanup tool.",
+			Effect:  "remove an import instance this session created, and its kafka topic",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "instance_id": {"type": "string", "description": "The instance, which must be one this session created."},
+			    "rationale": {"type": "string", "description": "Why it should be removed."}
+			  },
+			  "required": ["instance_id", "rationale"]
+			}`),
+			Unavailable: "requires import_deploy_url and a chat store",
+			executor:    ifPresent(s.deleteImportInstance, deps.Imports, deps.Creations),
+		},
+
+		Definition{
+			Name: "delete_export",
+			Description: "Remove an export **that this session created**. Any other id is refused.\n\n" +
+				"The developer must confirm. This drops the export's timescale table, so everything " +
+				"it had stored is gone and the import goes back to having no history at all.",
+			Effect:  "remove an export this session created, and its stored table",
+			MinTier: L0,
+			Confirm: true,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "export_id": {"type": "string", "description": "The export, which must be one this session created."},
+			    "rationale": {"type": "string", "description": "Why it should be removed."}
+			  },
+			  "required": ["export_id", "rationale"]
+			}`),
+			Unavailable: "requires analytics_serving_url and a chat store",
+			executor:    ifPresent(s.deleteExport, deps.Imports, deps.Creations),
 		},
 
 		Definition{
@@ -732,7 +1021,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  },
 			  "required": ["series"]
 			}`),
-			Unavailable: "M5 — requires timescale_wrapper_url",
+			Unavailable: "requires timescale_wrapper_url",
 			executor:    ifPresent(s.renderChart, deps.Charts),
 		},
 		Definition{
@@ -754,7 +1043,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  },
 			  "required": ["path", "content"]
 			}`),
-			Unavailable: "M7 — requires github_client_id and a Hub",
+			Unavailable: "requires github_client_id and a Hub",
 			executor:    ifPresent(s.writeFile, deps.Repo),
 		},
 		Definition{
@@ -766,7 +1055,14 @@ func NewSurface(deps Deps) (*Registry, error) {
 				"storage — a file written there is still there in a later session. The " +
 				"developer's platform access token is in the SENERGY_TOKEN environment variable. " +
 				"Output is capped: print what you need rather than everything, and write large " +
-				"results to a file in the workspace instead of to stdout.",
+				"results to a file in the workspace instead of to stdout.\n\n" +
+				"The kernel is not wired to MLflow or to the Ray cluster: it carries " +
+				"SENERGY_TOKEN, ODE_WORKSPACE and the two platform URLs, and nothing else. " +
+				"Operator code that logs through Operator Lib therefore records nothing anyone " +
+				"can find again, and `ray.init()` here starts a Ray inside the pod rather than " +
+				"reaching the cluster. So this is the right loop for finding out whether " +
+				"something works and the wrong one for a result meant to be kept — never " +
+				"describe a cell as a tracked run.",
 			Effect:  "execute in kernel",
 			MinTier: L0,
 			Confirm: true,
@@ -777,7 +1073,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  },
 			  "required": ["code"]
 			}`),
-			Unavailable: "M4 — requires jupyterhub_url",
+			Unavailable: "requires jupyterhub_url",
 			executor:    ifPresent(s.runCode, deps.Kernel),
 		},
 		Definition{
@@ -794,7 +1090,13 @@ func NewSurface(deps Deps) (*Registry, error) {
 				"The job reads its training data from the platform directly with its own " +
 				"credential, so it does not stream through this conversation and you will " +
 				"not see its output. Read the credential block in the answer: when it says " +
-				"the token expires with the session, say so before proposing a long run.",
+				"the token expires with the session, say so before proposing a long run.\n\n" +
+				"Before proposing a launch, ask whether a recorded run is what the developer " +
+				"needs. Trying an idea out is cheaper in run_code: the same code, in their pod, " +
+				"against the same data, with no commit and no cluster time. A launch is for a " +
+				"result that will be held against another result later, which is what the commit " +
+				"SHA and the MLflow run buy. When the question is only whether the fit does what " +
+				"they think, say that a cell answers it sooner.",
 			Effect:  "submit Ray job",
 			MinTier: L0,
 			Confirm: true,
@@ -816,7 +1118,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			    }
 			  }
 			}`),
-			Unavailable: "M8 — requires ray_url and mlflow_url",
+			Unavailable: "requires ray_url and mlflow_url",
 			executor:    ifPresent(s.launchExperiment, deps.Experiments),
 		},
 		Definition{
@@ -845,7 +1147,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			    }
 			  }
 			}`),
-			Unavailable: "M8 — requires ray_url and mlflow_url",
+			Unavailable: "requires ray_url and mlflow_url",
 			executor:    ifPresent(s.getExperimentResults, deps.Experiments),
 		},
 	)

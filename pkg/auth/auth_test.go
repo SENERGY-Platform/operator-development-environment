@@ -141,7 +141,7 @@ func TestAnEmptyRequiredRoleAdmitsAnyAuthenticatedCaller(t *testing.T) {
 	}
 }
 
-// SPEC §3.1 step 3: the caller's token is forwarded verbatim to the platform,
+// §3.1 step 3: the caller's token is forwarded verbatim to the platform,
 // so it has to survive parsing intact.
 func TestBearerReturnsTheTokenAsPresented(t *testing.T) {
 	raw := mintToken(developerClaims())

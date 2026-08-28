@@ -68,7 +68,10 @@ type CLIOptions struct {
 }
 
 const (
-	defaultCLITimeout      = 10 * time.Minute
+	// DefaultCLITimeout bounds one CLI turn. Exported because it is the ceiling a
+	// held tool call has to fit inside: nothing waiting on a developer's decision
+	// may outlast the turn that is holding the call open.
+	DefaultCLITimeout      = 10 * time.Minute
 	defaultCLIProbeTimeout = 15 * time.Second
 )
 
@@ -80,7 +83,7 @@ func NewAnthropicCLIProvider(name string, opts CLIOptions, pricing *Pricing) *An
 		opts.Binary = "claude"
 	}
 	if opts.Timeout <= 0 {
-		opts.Timeout = defaultCLITimeout
+		opts.Timeout = DefaultCLITimeout
 	}
 	if opts.ProbeTimeout <= 0 {
 		opts.ProbeTimeout = defaultCLIProbeTimeout
@@ -542,14 +545,26 @@ func mcpConfig(endpoint *ToolEndpoint) (string, error) {
 		Type    string            `json:"type"`
 		URL     string            `json:"url"`
 		Headers map[string]string `json:"headers,omitempty"`
+		// Timeout is the CLI's per-server tool-call timeout, in milliseconds. Written
+		// rather than left to the client's own default so that MCP_TOOL_TIMEOUT in
+		// ODE's environment — which is the CLI's fallback and applies to every server
+		// it talks to — cannot silently cut a confirmed tool call short while ODE is
+		// still waiting for the developer to answer it (D11).
+		Timeout int64 `json:"timeout,omitempty"`
 	}
 	headers := map[string]string{"Authorization": "Bearer " + strings.TrimPrefix(endpoint.Token, "Bearer ")}
 	if endpoint.SessionID != "" {
 		headers[SessionHeader] = endpoint.SessionID
 	}
+	// The CLI ignores anything under a second and would fall back to its default,
+	// which is the one case this is here to rule out.
+	timeout := int64(0)
+	if endpoint.CallTimeout >= time.Second {
+		timeout = endpoint.CallTimeout.Milliseconds()
+	}
 	config := map[string]any{
 		"mcpServers": map[string]server{
-			MCPServerName: {Type: "http", URL: endpoint.URL, Headers: headers},
+			MCPServerName: {Type: "http", URL: endpoint.URL, Headers: headers, Timeout: timeout},
 		},
 	}
 	encoded, err := json.Marshal(config)

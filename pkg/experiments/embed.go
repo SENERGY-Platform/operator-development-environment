@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-// The embed probe (D6, SPEC §5.12, and the risk register's "Ray/MLflow refuse
+// The embed probe (D6, §5.12, and the risk register's "Ray/MLflow refuse
 // framing" row).
 //
 // D6 says the embedding is probed at runtime and falls back to a link on framing

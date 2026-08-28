@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -29,7 +30,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 )
 
-// The experiment surface (SPEC §5.12, M8).
+// The experiment surface (§5.12, M8).
 //
 // Every route resolves the developer from their own token, exactly as the kernel
 // and repo routes do: ODE holds a Ray and an MLflow service account, and the only
@@ -57,6 +58,9 @@ func experimentRequest(c *gin.Context) experiments.Request {
 		// The chat session a launch came from, when the SPA says. One of §5.12's four
 		// metadata keys, and optional: a launch from the Experiments pane has none.
 		SessionID: c.Query("session_id"),
+		// Which working copy the commit comes from. Absent means the developer's only
+		// workbench, as on every other route that takes one.
+		WorkbenchID: strings.TrimSpace(c.Query("workbench")),
 		Author: repo.Author{
 			Name: token.Username, Email: token.Email, Sub: token.Sub,
 		},
@@ -324,7 +328,7 @@ func respondExperiments(c *gin.Context, err error) {
 			"error": dirty.Error(),
 			"needs": "commit",
 			"hint": "commit the working copy and launch again; an experiment is submitted " +
-				"from a commit so that its MLflow run is reproducible from one (§5.11 item 7)",
+				"from a commit so that its MLflow run is reproducible from one",
 			"repository": dirty.Repository,
 			"unborn":     dirty.Unborn,
 		}

@@ -449,9 +449,10 @@ func TestASummaryBuiltWithoutADeveloperSaysTheCriteriaWereNotRead(t *testing.T) 
 	if status.Reason != experiments.ReasonNoDeveloperCredential {
 		t.Errorf("reason = %q, want no_developer_credential", status.Reason)
 	}
-	if !strings.Contains(status.Detail, "3.1 item 3") {
-		t.Errorf("detail = %q, want it to name why a background summary has no token",
-			status.Detail)
+	if !strings.Contains(status.Detail, "on their behalf") ||
+		!strings.Contains(status.Detail, "next connected") {
+		t.Errorf("detail = %q, want it to say why a background summary has no token: the "+
+			"file is read on the developer's behalf, so it waits for them", status.Detail)
 	}
 	// The rest of §5.13's summary is complete: only the criteria waited.
 	if summary.Metrics["rmse"] != 0.31 || !summary.Finished {

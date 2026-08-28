@@ -98,7 +98,7 @@ func testSurface(t *testing.T, tracker *ran) (*Registry, *Dispatcher, *recording
 		Definition{Name: "confirmed_tool", Description: "d", MinTier: L0, Confirm: true,
 			Schema: json.RawMessage(emptySchema), executor: tracker.executor("confirmed_tool")},
 		Definition{Name: "future_tool", Description: "d", MinTier: L0,
-			Schema: json.RawMessage(emptySchema), Unavailable: "M9"},
+			Schema: json.RawMessage(emptySchema), Unavailable: "requires a thing this deployment has not got"},
 	)
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
@@ -327,7 +327,7 @@ func TestAvailableExcludesHigherTiersAndUnbuiltTools(t *testing.T) {
 	}
 }
 
-func TestUnimplementedToolRefusesWithMilestone(t *testing.T) {
+func TestUnimplementedToolRefusesWithItsReason(t *testing.T) {
 	tracker := &ran{}
 	_, dispatcher, _ := testSurface(t, tracker)
 
@@ -340,9 +340,9 @@ func TestUnimplementedToolRefusesWithMilestone(t *testing.T) {
 	if !ok {
 		t.Fatalf("content is %T, want NotImplemented", result.Content)
 	}
-	if refusal.Reason != "M9" {
-		t.Errorf("reason = %q, want M9 — the refusal has to say why it cannot be called",
-			refusal.Reason)
+	if refusal.Reason != "requires a thing this deployment has not got" {
+		t.Errorf("reason = %q, want the definition's own — the refusal has to say why it "+
+			"cannot be called", refusal.Reason)
 	}
 }
 
@@ -403,20 +403,35 @@ func TestSurfaceDeclaresTheWholeAllowList(t *testing.T) {
 		"get_device_metadata":        {L0, false},
 		"list_import_instances":      {L0, false},
 		"get_import_type_metadata":   {L0, false},
-		"probe_availability":         {L0, false},
-		"estimate_read_cost":         {L0, false},
-		"quick_profile":              {L0, false},
-		"profile_series":             {L1, false},
-		"get_sessions":               {L1, false},
-		"propose_related_sets":       {L0, false},
-		"relate_series":              {L1, false},
-		"preview_series":             {L2, false},
-		"render_chart":               {L1, false},
-		"propose_data_selection":     {L0, true},
+		// The catalogue, which is a read of what could be deployed rather than a
+		// second way to search for data — see §5.8 and the file comment in imports.go.
+		"list_import_types":  {L0, false},
+		"probe_availability": {L0, false},
+		// The export-side probe. §5.8 lists probe_availability for a device, and
+		// there is no availability endpoint for an export — so the same question
+		// about an export is a second tool rather than a parameter, and it is at L0
+		// on the same footing: it counts rows and reads no value.
+		"probe_export_data":      {L0, false},
+		"estimate_read_cost":     {L0, false},
+		"quick_profile":          {L0, false},
+		"profile_series":         {L1, false},
+		"get_sessions":           {L1, false},
+		"propose_related_sets":   {L0, false},
+		"relate_series":          {L1, false},
+		"preview_series":         {L2, false},
+		"render_chart":           {L1, false},
+		"propose_data_selection": {L0, true},
 		// Confirmed for the reason propose_data_selection is: it produces something
 		// the developer deploys, and a wiring nobody agreed to is a pipeline nobody
 		// asked for.
 		"propose_operator_input": {L0, true},
+		// The four that change the platform. Confirmed for the same reason and one
+		// more: they are the only tools in ODE whose effect outlives the session, so
+		// the developer agreeing to them is the whole of the control.
+		"create_import_instance": {L0, true},
+		"create_export":          {L0, true},
+		"delete_import_instance": {L0, true},
+		"delete_export":          {L0, true},
 		"write_file":             {L0, false},
 		"run_code":               {L0, true},
 		"launch_experiment":      {L0, true},
@@ -425,12 +440,12 @@ func TestSurfaceDeclaresTheWholeAllowList(t *testing.T) {
 
 	declared := registry.Definitions()
 	if len(declared) != len(expected) {
-		t.Errorf("declared %d tools, §5.8 lists %d", len(declared), len(expected))
+		t.Errorf("declared %d tools, the allow-list holds %d", len(declared), len(expected))
 	}
 	for _, definition := range declared {
 		want, listed := expected[definition.Name]
 		if !listed {
-			t.Errorf("%q is declared but is not in §5.8", definition.Name)
+			t.Errorf("%q is declared but is not in the allow-list", definition.Name)
 			continue
 		}
 		if definition.MinTier != want.tier {

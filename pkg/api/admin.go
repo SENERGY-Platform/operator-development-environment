@@ -52,8 +52,8 @@ func requireAdmin() gin.HandlerFunc {
 //
 // @Summary		Every limits record
 // @Description	Returns the stored policies, the built-in defaults, which fields
-// @Description	this build enforces versus merely stores for a later milestone, and
-// @Description	the model pricing a cost cap is computed from (SPEC §3.3).
+// @Description	this build enforces versus merely stores, with the reason, and the
+// @Description	model pricing a cost cap is computed from (§3.3).
 // @Tags			admin
 // @Produce		json
 // @Security		Bearer
@@ -73,9 +73,9 @@ func handleGetLimits(service *admin.Service) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{
 			"limits":   records,
 			"defaults": admin.Defaults(),
-			// Which fields this build acts on, and which are stored for a later
-			// milestone. An admin setting a kernel cap should know it is not yet
-			// enforced rather than assume it is.
+			// Which fields this build acts on, and which it only stores, each with
+			// the reason. An admin setting a kernel cap should know it does not bind
+			// rather than assume it does.
 			"enforced": admin.EnforcedFields(),
 			"declared": admin.DeclaredFields(),
 			// A cost cap can only bind on a model ODE has a price for.

@@ -21,7 +21,7 @@ import (
 	"fmt"
 )
 
-// Tier is a data exposure tier (SPEC §3.2, D4).
+// Tier is a data exposure tier (§3.2, D4).
 //
 // The ordering is the whole point, so it is an integer rather than a string: a
 // tool is permitted when the session's tier is at least the tool's minimum, and

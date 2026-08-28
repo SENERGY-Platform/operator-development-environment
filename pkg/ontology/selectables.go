@@ -44,7 +44,7 @@ type SelectableOptions struct {
 	ServicesMustMatchAllCriteria bool
 }
 
-// DeviceTypeSelectables is the primary semantic selection endpoint (SPEC §5.2):
+// DeviceTypeSelectables is the primary semantic selection endpoint (§5.2):
 // filter criteria in, matching services with resolved variable paths out.
 //
 // It is deliberately not cached, unlike the snapshot. This is a query over

@@ -29,7 +29,7 @@ import (
 	"time"
 )
 
-// MLflow's REST API, spoken directly (SPEC §5.12, D17).
+// MLflow's REST API, spoken directly (§5.12, D17).
 //
 // Five endpoints: find or create the per-user experiment, create the run, read it
 // back, and search the experiment for the previous one. All of them are

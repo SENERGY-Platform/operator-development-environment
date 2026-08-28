@@ -109,11 +109,21 @@ type Options struct {
 	// longer dies with its connection, so without a ceiling a wedged provider or a
 	// hung platform read would leave a goroutine and a session lock forever.
 	ExchangeTimeout time.Duration
+	// ConfirmationTimeout bounds how long a tool call held open on an out-of-band
+	// transport waits for the developer's decision (see hold.go). It is not the
+	// same ceiling as ExchangeTimeout and must be well under the provider's own
+	// turn timeout, or the turn dies underneath the card the developer is reading.
+	ConfirmationTimeout time.Duration
 }
 
 const (
 	defaultMaxIterations = 12
 	defaultTitleWords    = 8
+	// maxTitleRunes bounds a title the developer sets themselves. The column is
+	// TEXT and takes anything; a session list is what has a width. Generous enough
+	// that no sentence a developer would name a conversation with reaches it, and
+	// small enough that a script cannot put a megabyte in a row of the panel.
+	maxTitleRunes = 200
 	// defaultExchangeTimeout is generous because a single exchange may run several
 	// profiler passes, each of which can take minutes on a real series.
 	defaultExchangeTimeout = 30 * time.Minute
@@ -139,6 +149,22 @@ type Engine struct {
 	// message history.
 	exchangeMux sync.Mutex
 	live        map[string]*Exchange
+
+	// watchers is who is being told what these conversations are doing, keyed by
+	// subscription rather than by developer: one developer may have the panel open
+	// in two tabs. See activity.go for why the signal is per developer.
+	activityMux sync.Mutex
+	watchers    map[int]*watcher
+	nextWatcher int
+
+	// holds is the confirmed tool calls a transport is keeping open right now,
+	// keyed by confirmation id — see hold.go. Not one per session: an out-of-band
+	// provider runs its own loop and may have several calls in flight at once.
+	//
+	// In memory on purpose. It records that something is waiting for an answer,
+	// which nothing outlives a restart to keep waiting for.
+	holdMux sync.Mutex
+	holds   map[string]*hold
 }
 
 func New(
@@ -178,12 +204,17 @@ func New(
 	if opts.ExchangeTimeout <= 0 {
 		opts.ExchangeTimeout = defaultExchangeTimeout
 	}
+	if opts.ConfirmationTimeout <= 0 {
+		opts.ConfirmationTimeout = defaultConfirmationTimeout
+	}
 	return &Engine{
 		providers: providers, dispatcher: dispatcher, store: store,
 		limits: limits, ids: ids, opts: opts,
-		now:  func() time.Time { return time.Now().UTC() },
-		root: root,
-		live: map[string]*Exchange{},
+		now:      func() time.Time { return time.Now().UTC() },
+		root:     root,
+		live:     map[string]*Exchange{},
+		holds:    map[string]*hold{},
+		watchers: map[int]*watcher{},
 	}, nil
 }
 
@@ -197,6 +228,10 @@ type CreateRequest struct {
 	Model    string
 	// Tier is the starting tier. Zero means L0, which §3.2 makes the default.
 	Tier tools.Tier
+	// WorkbenchID is the working context the conversation acts in. Empty means the
+	// developer's only one — which is what a client that has not been taught about
+	// workbenches sends, and the right answer for a developer who has one.
+	WorkbenchID string
 }
 
 func (e *Engine) CreateSession(ctx context.Context, sub string, req CreateRequest) (Session, error) {
@@ -224,14 +259,15 @@ func (e *Engine) CreateSession(ctx context.Context, sub string, req CreateReques
 	}
 
 	session := Session{
-		ID:        e.ids.NewID(),
-		UserSub:   sub,
-		Title:     req.Title,
-		Provider:  provider.Name(),
-		Model:     model,
-		Tier:      req.Tier,
-		CreatedAt: e.now(),
-		UpdatedAt: e.now(),
+		ID:          e.ids.NewID(),
+		UserSub:     sub,
+		Title:       req.Title,
+		Provider:    provider.Name(),
+		Model:       model,
+		Tier:        req.Tier,
+		WorkbenchID: strings.TrimSpace(req.WorkbenchID),
+		CreatedAt:   e.now(),
+		UpdatedAt:   e.now(),
 	}
 	if err := e.store.CreateSession(ctx, session); err != nil {
 		return Session{}, err
@@ -312,6 +348,189 @@ func (e *Engine) DeleteSession(ctx context.Context, sub, id string) error {
 	return e.store.DeleteSession(ctx, id)
 }
 
+// RenameSession sets the developer's own name for a conversation.
+//
+// Until they do, the title is ODE's guess: the first few words of the opening
+// message, which labels a question well and a conversation that has since moved on
+// badly. An empty title clears the name and hands the guess back — the next message
+// titles the session again, because start only derives one when there is nothing
+// there. That is deliberate: clearing is how a developer says "call it whatever it
+// turns out to be about", and the alternative — an empty row in the list until they
+// think of something — helps nobody.
+//
+// Unlike SetTier there is no audit record and no ceiling. A title is a label in the
+// developer's own list; it decides nothing about what the assistant may see.
+func (e *Engine) RenameSession(ctx context.Context, sub, id, name string) (Session, error) {
+	trimmed := strings.TrimSpace(name)
+	if len([]rune(trimmed)) > maxTitleRunes {
+		return Session{}, fmt.Errorf("%w: a title of %d characters is longer than the %d a session keeps",
+			ErrInvalidRequest, len([]rune(trimmed)), maxTitleRunes)
+	}
+
+	// From the store rather than through Session, for the reason SetTier reads
+	// unclamped: Session reports the *effective* tier, and writing that back would
+	// persist the admin clamp — silently lowering the developer's stored tier
+	// because they renamed a conversation. Only the title is theirs to change here.
+	stored, found, err := e.store.Session(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if !found || stored.UserSub != sub {
+		// Not-found rather than forbidden, as everywhere else: whether a session id
+		// exists is itself information about another user.
+		return Session{}, ErrNoSuchSession
+	}
+
+	if stored.Title != trimmed {
+		stored.Title = trimmed
+		stored.UpdatedAt = e.now()
+		if err := e.store.UpdateSession(ctx, stored); err != nil {
+			return Session{}, err
+		}
+	}
+
+	// Answered the way every other read of a session answers, so the SPA can store
+	// this in place of the one it listed.
+	stored.Tier = e.effectiveTier(ctx, sub, stored.Tier)
+	return stored, nil
+}
+
+// MoveSession changes the workbench a conversation acts in.
+//
+// The working context is chosen when a session is created, and choosing it wrong is
+// ordinary: a developer opens a conversation, works out what it is actually about,
+// and finds it is about the other operator. Before this, that conversation was
+// stuck there — write_file landed in the checkout it named at creation and nothing
+// could re-point it — so the way out was a new session, which threw away the
+// history that had got them that far.
+//
+// An empty id clears the assignment rather than being refused. That is a state
+// sessions genuinely have: one written before workbenches existed, and one whose
+// workbench has since been closed. Both read as "my only workbench" everywhere
+// else, so clearing is how a developer says "wherever I am working".
+//
+// Refused while an exchange is running. A turn reads the session once, at its
+// start, and carries that workbench through every tool call it makes — so a move
+// underneath it would have one turn writing into two checkouts while reasoning
+// about the first. A turn is seconds, and the refusal says to wait for it.
+//
+// One narrow window stays open: start() reads the session before it registers its
+// exchange, and writes it back when it titles an untitled one, so a move landing
+// between those two costs the developer a second move on the very first message of
+// a fresh conversation. Closing it properly needs a session-level write lock the
+// rest of the engine does not have, which is a larger change than this.
+//
+// Like a rename and unlike a tier change, there is no audit trail. Which checkout a
+// conversation acts in decides nothing about what the assistant may see, and §3.2's
+// trail is about exposure.
+//
+// Whether the workbench exists and is this developer's is checked before this is
+// reached, by the route: workbenches live in pkg/repo, and a chat engine that had to
+// know about them would couple the conversation surface to the repository surface
+// for one lookup. label is that workbench's own name and is used only in the note
+// the move leaves behind.
+func (e *Engine) MoveSession(
+	ctx context.Context, sub, id, workbenchID, label string,
+) (Session, error) {
+	target := strings.TrimSpace(workbenchID)
+
+	// From the store rather than through Session, for the reason RenameSession reads
+	// unclamped: Session reports the *effective* tier, and writing that back would
+	// persist the admin clamp — silently lowering the developer's stored tier because
+	// they moved a conversation to another operator.
+	stored, found, err := e.store.Session(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if !found || stored.UserSub != sub {
+		// Not-found rather than forbidden, as everywhere else: whether a session id
+		// exists is itself information about another user.
+		return Session{}, ErrNoSuchSession
+	}
+
+	if stored.WorkbenchID == target {
+		// Nothing moved, so nothing is written and nothing is said in the conversation:
+		// a note about a move that did not happen would be a false entry in the
+		// history, and this is the shape a double-click sends.
+		stored.Tier = e.effectiveTier(ctx, sub, stored.Tier)
+		return stored, nil
+	}
+
+	if _, running := e.Attach(id); running {
+		return Session{}, fmt.Errorf("%w: an exchange is already running on this session, "+
+			"and it is acting in the workbench this would move away from", ErrInvalidRequest)
+	}
+
+	previous := stored.WorkbenchID
+	stored.WorkbenchID = target
+	stored.UpdatedAt = e.now()
+	if err := e.store.UpdateSession(ctx, stored); err != nil {
+		return Session{}, err
+	}
+
+	// The note goes *into* the conversation rather than beside it, because the history
+	// is what the next turn reads. Everything above it — every file read, every path
+	// written, every cell run — happened in another checkout, and a model handed that
+	// history with no marker goes on believing the files it wrote are still there.
+	//
+	// Appended rather than sent through SendInjected: a move is not a question, and
+	// starting a turn to have it answered would spend the developer's §3.3 budget on
+	// the word "understood". The next turn reads it as its first input instead.
+	notice := moveNotice(target, label)
+	notice.SessionID = id
+	if err := e.store.AppendMessages(ctx, id, notice); err != nil {
+		// The move is applied and is what the developer asked for, so this does not
+		// fail the request. At error rather than warn: the conversation now has a code
+		// context its own history contradicts, and nothing downstream repairs that.
+		slog.ErrorContext(ctx, "a session changed workbench without a note in its history",
+			"session", id, "from", previous, "to", target, "error", err)
+	}
+
+	slog.InfoContext(ctx, "session moved to another workbench",
+		"session", id, "user", sub, "from", previous, "to", target)
+
+	// Answered the way every other read of a session answers, so the SPA can store
+	// this in place of the one it listed.
+	stored.Tier = e.effectiveTier(ctx, sub, stored.Tier)
+	return stored, nil
+}
+
+// moveSubjectPrefix marks a move note's subject.
+//
+// Prefixed rather than the bare workbench id, because a bare id in this field is
+// read as an experiment's elsewhere — pkg/interpret finds the summary belonging to
+// one run by comparing Subject with an experiment id — and both ids are minted from
+// the same space.
+const moveSubjectPrefix = "workbench:"
+
+// moveNotice is what a move leaves in the conversation.
+//
+// Prose rather than the JSON block §5.13's summary carries: there is no data in it,
+// only a fact about the history above it, and the developer reads the same words the
+// model does.
+func moveNotice(workbenchID, label string) StoredMessage {
+	named := strings.TrimSpace(label)
+	if named == "" {
+		named = workbenchID
+	}
+	text := "ODE moved this conversation to another code workspace: " + named + "."
+	if workbenchID == "" {
+		text = "ODE cleared this conversation's code workspace, so it now acts in " +
+			"whichever single workbench the developer has open."
+	}
+	text += " Every file read, file write and cell run earlier in this conversation" +
+		" happened in the previous one. Nothing above describes the checkout you are in" +
+		" now, so re-read whatever you are about to rely on rather than assuming a path" +
+		" or a result is still there."
+
+	return StoredMessage{
+		Role:    llm.RoleUser,
+		Content: []llm.Content{{Type: llm.ContentText, Text: text}},
+		Origin:  OriginODE,
+		Subject: moveSubjectPrefix + workbenchID,
+	}
+}
+
 // SetTier changes a session's exposure tier.
 //
 // The developer's control from §3.2, bounded by the admin ceiling from §3.3, and
@@ -379,7 +598,17 @@ func (e *Engine) PendingConfirmations(ctx context.Context, sub, id string) ([]Co
 	if _, err := e.Session(ctx, sub, id); err != nil {
 		return nil, err
 	}
-	return e.store.PendingConfirmations(ctx, id)
+	pending, err := e.store.PendingConfirmations(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	// Marked from the live registry rather than read from the row, because being
+	// held is a fact about now — see Confirmation.OutOfBand. This is what lets a
+	// developer who reloaded the page mid-turn still answer a held call in place.
+	for i := range pending {
+		pending[i].OutOfBand = e.heldOutOfBand(pending[i].ID)
+	}
+	return pending, nil
 }
 
 // TokenSource yields the bearer token to present to the platform for this
@@ -552,7 +781,7 @@ func (e *Engine) start(
 		}
 	}
 
-	exchange := e.begin(sessionID)
+	exchange := e.begin(sub, sessionID)
 	go func() {
 		defer e.finish(exchange)
 		if len(verdict.Warnings) > 0 {
@@ -564,7 +793,11 @@ func (e *Engine) start(
 }
 
 // begin registers a detached exchange for a session.
-func (e *Engine) begin(sessionID string) *Exchange {
+//
+// The owner is carried on the exchange rather than looked up later, because the
+// two readers of it — the activity watchers, and anything asking what this
+// developer has running — run after the request that knew who asked has gone.
+func (e *Engine) begin(sub, sessionID string) *Exchange {
 	// WithoutCancel so the request's cancellation does not reach the work, plus a
 	// ceiling so nothing runs forever. Rooted at the process, so shutdown stops it.
 	ctx, cancel := context.WithTimeout(
@@ -572,10 +805,13 @@ func (e *Engine) begin(sessionID string) *Exchange {
 
 	exchange := newExchange(sessionID, cancel)
 	exchange.ctx = ctx
+	exchange.UserSub = sub
 
 	e.exchangeMux.Lock()
 	e.live[sessionID] = exchange
 	e.exchangeMux.Unlock()
+
+	e.publishActivity(sub, sessionID, ActivityRunning)
 	return exchange
 }
 
@@ -589,6 +825,10 @@ func (e *Engine) finish(exchange *Exchange) {
 
 	exchange.Cancel()
 	exchange.close()
+
+	// After close, not before: the panel's mark means "there is something here for
+	// you", and the last events of the turn are what put it there.
+	e.publishActivity(exchange.UserSub, exchange.SessionID, e.endedState(exchange.SessionID))
 }
 
 // Attach returns the exchange running on a session, if there is one.
@@ -640,12 +880,17 @@ func (e *Engine) Confirm(
 	if !confirmation.Pending() {
 		return nil, ErrAlreadyResolved
 	}
+	// A held call is answered where it waits. Running it from here would dispatch
+	// the tool a second time and then start a turn beside the one still streaming.
+	if e.heldOutOfBand(confirmationID) {
+		return nil, ErrHeldOutOfBand
+	}
 	if _, running := e.Attach(sessionID); running {
 		return nil, fmt.Errorf("%w: an exchange is already running on this session",
 			ErrInvalidRequest)
 	}
 
-	exchange := e.begin(sessionID)
+	exchange := e.begin(sub, sessionID)
 	go func() {
 		defer e.finish(exchange)
 		ctx := exchange.ctx
@@ -664,6 +909,7 @@ func (e *Engine) Confirm(
 			// session's tier *now* rather than the one recorded when the model asked.
 			result = e.dispatcher.Confirm(ctx, tools.Request{
 				Token: token.bearer(), UserSub: sub, SessionID: sessionID, Tier: session.Tier,
+				WorkbenchID: session.WorkbenchID,
 				Report: func(progress tools.Progress) {
 					exchange.publish(Event{Type: EventProgress, Progress: &progress})
 				},
@@ -769,6 +1015,10 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 				Token:        token.bearer(),
 				SessionID:    session.ID,
 				AllowedTools: names(offered),
+				// Longer than the hold, so the wait ends here rather than at the
+				// provider: ODE knows why a confirmation went unanswered and can say so,
+				// whereas a client-side timeout is an opaque failed tool call.
+				CallTimeout: e.opts.ConfirmationTimeout + confirmationCallMargin,
 			}
 		}
 
@@ -977,7 +1227,10 @@ func (e *Engine) dispatch(
 			Token:     token.bearer(),
 			UserSub:   session.UserSub,
 			SessionID: session.ID,
-			Tier:      session.Tier,
+			// The session's own workbench, so a model working on one operator writes
+			// into that operator's checkout and runs in that operator's kernel.
+			WorkbenchID: session.WorkbenchID,
+			Tier:        session.Tier,
 			// Published as it happens, so a long tool is visibly working. publish never
 			// blocks, which is what makes this safe to call from inside a platform read.
 			Report: func(progress tools.Progress) {
@@ -1212,7 +1465,7 @@ func conversation(messages []StoredMessage) []llm.Message {
 	for _, message := range messages {
 		out = append(out, message.Message())
 	}
-	return repairUnansweredToolCalls(out)
+	return coalesceUserTurns(repairUnansweredToolCalls(out))
 }
 
 // orphanedToolResult is what an unanswered tool call is answered with. It says
@@ -1302,6 +1555,41 @@ func repairUnansweredToolCalls(messages []llm.Message) []llm.Message {
 	return out
 }
 
+// coalesceUserTurns merges consecutive user messages into one.
+//
+// The history acquires that shape when ODE appends something without starting a turn
+// — a move note (MoveSession) sitting in front of whatever the developer types next
+// — and consecutive same-role messages are a shape not every provider accepts, which
+// is the same reason repairUnansweredToolCalls merges into the following turn rather
+// than inserting a second user message before it.
+//
+// So the merge happens on the way out, over the stored record rather than in it: the
+// two messages are two things that happened, one of them not the developer's, and the
+// history keeps saying so.
+//
+// Chronological order is kept, which is what keeps a tool_result first in the turn
+// that answers a call: a results turn followed by a note merges to [results…, note]
+// and never the other way round.
+func coalesceUserTurns(messages []llm.Message) []llm.Message {
+	out := make([]llm.Message, 0, len(messages))
+	for _, message := range messages {
+		last := len(out) - 1
+		if last >= 0 && message.Role == llm.RoleUser && out[last].Role == llm.RoleUser {
+			// Into a fresh slice: the content underneath belongs to the caller's stored
+			// messages, and appending in place would grow into whatever shares its array.
+			merged := out[last]
+			content := make([]llm.Content, 0, len(merged.Content)+len(message.Content))
+			content = append(content, merged.Content...)
+			content = append(content, message.Content...)
+			merged.Content = content
+			out[last] = merged
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
 func toolDefinitions(definitions []tools.Definition) []llm.ToolDefinition {
 	out := make([]llm.ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
@@ -1347,6 +1635,28 @@ func (e *Engine) TierFor(ctx context.Context, userSub, sessionID string) (tools.
 		return tools.DefaultTier, err
 	}
 	return session.Tier, nil
+}
+
+// RecordCreation and Creations implement tools.Creations, so the confirmed create
+// tools can record what they made and the confirmed delete tools can check it.
+//
+// The session is not re-authorised here. Both are reached only from an executor,
+// which runs behind Dispatch, which is reached only from a turn this engine
+// started for an authenticated user in a session it already resolved — so a check
+// here would be re-deriving something two layers up already established. What it
+// does refuse is an unknown session, because writing a creation into one that does
+// not exist means the object could never be deleted again.
+func (e *Engine) RecordCreation(ctx context.Context, sessionID string, created tools.Creation) error {
+	if _, found, err := e.store.Session(ctx, sessionID); err != nil {
+		return err
+	} else if !found {
+		return ErrNoSuchSession
+	}
+	return e.store.RecordCreation(ctx, sessionID, created)
+}
+
+func (e *Engine) Creations(ctx context.Context, sessionID string) ([]tools.Creation, error) {
+	return e.store.Creations(ctx, sessionID)
 }
 
 // PutProposedSelection implements tools.SelectionSink, so the confirmed

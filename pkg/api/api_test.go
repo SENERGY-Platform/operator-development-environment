@@ -364,7 +364,7 @@ func TestOntologyRoutesRejectAnAnonymousCaller(t *testing.T) {
 	}
 }
 
-// SPEC D5: the developer realm role is what separates a platform user from
+// D5: the developer realm role is what separates a platform user from
 // someone allowed to use ODE.
 func TestRoutesRejectATokenWithoutTheDeveloperRole(t *testing.T) {
 	h := newHarness(t)
@@ -540,7 +540,7 @@ func TestSessionReportsTheAuthenticatedUserAndDefaultTier(t *testing.T) {
 	if body["user_id"] != "user-123" {
 		t.Errorf("user_id = %v, want user-123", body["user_id"])
 	}
-	// SPEC §3.2: L0 is the default and must be visible to the SPA.
+	// §3.2: L0 is the default and must be visible to the SPA.
 	if body["exposure_tier"] != "L0" {
 		t.Errorf("exposure_tier = %v, want L0", body["exposure_tier"])
 	}

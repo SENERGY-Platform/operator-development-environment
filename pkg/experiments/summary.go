@@ -281,8 +281,8 @@ func (d CriteriaDocument) ApplyTo(
 	problem *NotComputed,
 ) (Criterion, []Criterion) {
 	if d.Primary != nil {
-		source := fmt.Sprintf("%s at %s, which is the developer's own (SPEC §5.8: no "+
-			"tool may modify it)", EvaluationCriteriaPath, shortSHA(commitSHA))
+		source := fmt.Sprintf("%s at %s, which is the developer's own (no tool may "+
+			"modify it)", EvaluationCriteriaPath, shortSHA(commitSHA))
 		primary := grade(*d.Primary, metrics, source)
 		secondary := make([]Criterion, 0, len(d.Secondary))
 		for _, spec := range d.Secondary {

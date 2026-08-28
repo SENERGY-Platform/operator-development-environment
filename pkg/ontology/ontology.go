@@ -15,7 +15,7 @@
  */
 
 // Package ontology is a caching, ODE-shaped facade over
-// device-repository/lib/client (SPEC §5.1). It does not implement an HTTP
+// device-repository/lib/client (§5.1). It does not implement an HTTP
 // client: the platform already ships one, and reimplementing it would be a
 // second thing to keep in step with the device repository.
 //
@@ -141,7 +141,7 @@ func New(newClient ClientFactory, opts Options) *Repository {
 //
 // token is the caller's access token. It is used only for the
 // /last-update-timestamps probe: ODE holds no service account for platform
-// reads (SPEC D5), so invalidation rides along on user requests rather than on
+// reads (D5), so invalidation rides along on user requests rather than on
 // a background loop.
 func (r *Repository) Snapshot(ctx context.Context, token string) (*Snapshot, error) {
 	current := r.cached()

@@ -134,3 +134,79 @@ func TestAspectTreeKeepsSiblingSubtreesSeparate(t *testing.T) {
 		t.Errorf("Kitchen should have one child, got %+v", kitchen.Children)
 	}
 }
+
+func TestAspectSubtreeIDsCarriesEveryLevelBelowTheNode(t *testing.T) {
+	// import-repository matches aspect ids literally, so what this returns is
+	// exactly what a criterion covers. A missing grandchild is an import type that
+	// silently does not match.
+	ids := AspectSubtreeIDs([]models.AspectNode{
+		node("house", "House", ""),
+		node("kitchen", "Kitchen", "house"),
+		node("sink", "Sink", "kitchen"),
+		node("bath", "Bath", "house"),
+	}, "kitchen")
+
+	want := []string{"kitchen", "sink"}
+	if len(ids) != len(want) {
+		t.Fatalf("got %v, want %v", ids, want)
+	}
+	for i, id := range want {
+		if ids[i] != id {
+			t.Fatalf("got %v, want %v", ids, want)
+		}
+	}
+}
+
+func TestAspectSubtreeIDsExcludesSiblingsAndAncestors(t *testing.T) {
+	ids := AspectSubtreeIDs([]models.AspectNode{
+		node("house", "House", ""),
+		node("kitchen", "Kitchen", "house"),
+		node("bath", "Bath", "house"),
+	}, "kitchen")
+
+	for _, id := range ids {
+		if id == "house" || id == "bath" {
+			t.Fatalf("subtree of kitchen contains %q: %v", id, ids)
+		}
+	}
+}
+
+func TestAspectSubtreeIDsOfAnUnknownNodeIsNil(t *testing.T) {
+	// Distinguishable from a leaf, which answers with itself. The caller decides
+	// what to do about an aspect the snapshot does not carry; it must not silently
+	// become "no aspect filter at all", which matches every import type.
+	if ids := AspectSubtreeIDs([]models.AspectNode{node("house", "House", "")}, "kitchen"); ids != nil {
+		t.Fatalf("got %v, want nil", ids)
+	}
+	if ids := AspectSubtreeIDs(nil, ""); ids != nil {
+		t.Fatalf("got %v, want nil", ids)
+	}
+}
+
+func TestAspectSubtreeIDsOfALeafIsTheLeaf(t *testing.T) {
+	ids := AspectSubtreeIDs([]models.AspectNode{
+		node("house", "House", ""),
+		node("kitchen", "Kitchen", "house"),
+	}, "kitchen")
+
+	if len(ids) != 1 || ids[0] != "kitchen" {
+		t.Fatalf("got %v, want [kitchen]", ids)
+	}
+}
+
+func TestAspectSubtreeIDsTerminatesOnACycle(t *testing.T) {
+	// a -> b -> a. Each is the other's parent, so an unguarded walk would not
+	// return. What matters is that it does, with each id once.
+	ids := AspectSubtreeIDs([]models.AspectNode{
+		node("a", "A", "b"),
+		node("b", "B", "a"),
+	}, "a")
+
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("id %q repeated: %v", id, ids)
+		}
+		seen[id] = true
+	}
+}

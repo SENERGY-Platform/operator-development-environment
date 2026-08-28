@@ -151,6 +151,7 @@ func TestEveryToolOfSection58IsImplementedWithItsServicesPresent(t *testing.T) {
 		Profiler:      newTestProfiler(t),
 		Selection:     &fakeSelection{},
 		SelectionSink: &fakeSelectionSink{},
+		Creations:     newFakeCreations(),
 		Kernel:        &fakeKernel{},
 		Charts:        &fakeCharts{},
 		Relations:     &fakeRelations{},
@@ -168,12 +169,15 @@ func TestEveryToolOfSection58IsImplementedWithItsServicesPresent(t *testing.T) {
 		}
 	}
 	if len(unimplemented) != 0 {
-		t.Errorf("after M8 these tools still have no executor: %v", unimplemented)
+		t.Errorf("these declared tools have no executor: %v", unimplemented)
 	}
-	// Eighteen in §5.8 plus the three the import surface adds: two lookups and one
-	// confirmed wiring proposal.
-	if got := len(registry.Definitions()); got != 21 {
-		t.Errorf("declared %d tools, want 21", got)
+	// Eighteen in §5.8, plus the eight the import surface adds — two lookups, the
+	// type catalogue, one confirmed wiring proposal and the four that change the
+	// platform — plus probe_export_data, which is the export half of
+	// probe_availability and has to be its own tool because the platform's
+	// availability endpoint is device-scoped.
+	if got := len(registry.Definitions()); got != 27 {
+		t.Errorf("declared %d tools, want 27", got)
 	}
 }
 

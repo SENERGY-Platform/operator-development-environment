@@ -29,7 +29,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 )
 
-// The relational surface (SPEC §5.5, M6).
+// The relational surface (§5.5, M6).
 //
 // The split across the two transports is the same one the profiler makes, for the
 // same reason. Proposing candidate sets reads the ontology, a device list and a
@@ -43,7 +43,7 @@ import (
 // confirm the rules it proposed would be grading its own work.
 
 // @Summary		Propose related device sets from an aspect
-// @Description	Turns an aspect node into candidate device sets (SPEC §5.5). The aspect
+// @Description	Turns an aspect node into candidate device sets (§5.5). The aspect
 // @Description	hierarchy is what solves candidate selection: the devices under "Kitchen"
 // @Description	yield the oven and the lights without the developer naming either.
 // @Description
@@ -149,7 +149,7 @@ func (b relationBody) toInput() (RelationInput, error) {
 // @Summary		Compute a relational profile
 // @Description	Profiles every participating service, aligns the members onto one grid with
 // @Description	a single batched query, derives idle and active from each activity_pattern,
-// @Description	and proposes candidate rules with their exception windows (SPEC §5.5).
+// @Description	and proposes candidate rules with their exception windows (§5.5).
 // @Description
 // @Description	Values are read, so this is tier L1 for an LLM — but nothing that comes
 // @Description	back carries one: the document is contingency counts, ratios and bucket
@@ -224,7 +224,7 @@ type decisionBody struct {
 }
 
 // @Summary		Confirm, correct or reject a candidate rule
-// @Description	Records a developer's verdict on one candidate rule (SPEC §5.10, D21). The
+// @Description	Records a developer's verdict on one candidate rule (§5.10, D21). The
 // @Description	log is append-only and keyed by a fingerprint of what the rule *says*, so
 // @Description	a verdict survives the rule being recomputed over a different window by a
 // @Description	later detector — and a developer who changes their mind adds a record

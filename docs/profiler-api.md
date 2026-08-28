@@ -81,15 +81,16 @@ fixtures. All of them sit behind the `developer` role gate.
 | --- | --- |
 | `GET /timeseries/availability?device_id=` | Per-service availability window and materialised aggregates |
 | `GET /timeseries/usage?device_ids=a,b` | Bytes and bytes per day, for cost estimation at tier L0 |
+| `GET /timeseries/export-data?export_id=` | Whether an export's table holds rows, per column, and over what span. The export-side counterpart of `/availability`, and a different kind of answer because the platform's availability endpoint is device-scoped — the rows are counted. Optional `from`, `to`; empty means a multi-year lookback, so an export that stopped a year ago is not reported empty. Reads no value |
 | `GET /quick-profiles` | Candidate series ranked from metadata alone. `limit` is **devices**, default 10; plus `search`, `from`, `to`, `include_unqueryable`. Reports its own read counts, and `reads.values` is always 0 |
 | `POST /selection` | Semantic selection (§5.2), documented above. Also `reads.values` 0 |
-| `POST /profiles` | Computes a full profile per variable of one service. Body: `device_id`, `service_id`, optional `analysis_window`, `raw_window`, `group_time`, `session_params` |
+| `POST /profiles` | Computes a full profile per variable of one service, or per column of one export. Body: `device_id` with `service_id`, **or** `export_id` — not both; optional `analysis_window`, `raw_window`, `group_time`, `session_params`. An export's window comes from counting rows, and an export with none is refused rather than profiled into a body of `not_computed` |
 | `GET /profiles/{id}` | The stored profile with its override overlay resolved |
 | `GET /profiles/{id}/projection?token_budget=` | The one model-facing view: arrays collapsed, provenance dropped, elisions recorded |
 | `GET /profiles/{id}/sessions?from&to&limit&cursor` | The paginated session resource |
 | `POST /profiles/{id}/overrides` | Appends a developer confirmation. Body: `field_path`, `action`, `computed_value`, `confirmed_value`, `note` |
 
-The override route is a **developer** action. SPEC §5.8 lists writing a
-`ProfileOverride` among the operations with no LLM tool at all, and that has to
-stay true when the tool surface lands in M3: a model that can confirm its own
-inferred unit has confirmed nothing.
+The override route is a **developer** action. §5.8 lists writing a
+`ProfileOverride` among the operations with no LLM tool at all, and the tool
+surface has none: a model that can confirm its own inferred unit has confirmed
+nothing.

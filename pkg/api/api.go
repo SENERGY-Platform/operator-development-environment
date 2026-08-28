@@ -16,7 +16,7 @@
 
 // Package api exposes ODE's REST surface. Every route except /health and /doc
 // sits behind auth.Middleware, so a handler can assume a validated token carrying
-// the required realm role (SPEC §3.1).
+// the required realm role (§3.1).
 package api
 
 import (
@@ -113,11 +113,11 @@ type Deps struct {
 //	@description	the series behind a device, resolves a semantic intent to concrete
 //	@description	series, and runs code in the developer's own kernel — with an LLM
 //	@description	assistant whose reach over platform data is bounded by an exposure
-//	@description	tier (SPEC §3.2).
+//	@description	tier (§3.2).
 //	@description
 //	@description	Every route except /health and /doc requires a bearer token carrying
 //	@description	the configured realm role. The platform API gateway validates the
-//	@description	token; ODE authorises on it (SPEC §3.1, D5). Routes appear only when
+//	@description	token; ODE authorises on it (§3.1, D5). Routes appear only when
 //	@description	the capability behind them is configured, so a deployment without a
 //	@description	timescale-wrapper answers 404 on the profiler rather than 500.
 //	@version		1.0
@@ -194,6 +194,13 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		ts := secured.Group("/timeseries")
 		ts.GET("/availability", handleAvailability(deps.Timeseries))
 		ts.GET("/usage", handleUsage(deps.Timeseries))
+		if deps.Profiler != nil {
+			// The export half sits here rather than under /profiles because it answers
+			// the same question /availability does — where is there data — and it needs
+			// the profiler rather than the bare client: the count has to be addressed
+			// by column name, and those come from the export definition.
+			ts.GET("/export-data", handleExportData(deps.Profiler))
+		}
 	}
 	// The WebSocket is ODE's streaming surface: the profiler operations below, the
 	// relational pass of §5.5, the chat exchange of §5.7, and kernel execution (§5.6). Registered whenever any of
@@ -267,6 +274,16 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		sessions.GET("", handleListChatSessions(deps.Chat))
 		sessions.GET("/:id", handleGetChatSession(deps.Chat))
 		sessions.DELETE("/:id", handleDeleteChatSession(deps.Chat))
+		// The developer's own name for a conversation. Its own sub-resource for the
+		// same reason the tier is: a PUT of the whole session would be a second way
+		// to move a tier, and that one would not audit it.
+		sessions.PUT("/:id/title", handleRenameChatSession(deps.Chat))
+		// Which working context the conversation acts in, changed after the fact. Only
+		// with a repository surface: without one there are no workbenches to move
+		// between, and the route would answer 404 to every id there is.
+		if deps.Repo != nil {
+			sessions.PUT("/:id/workbench", handleMoveChatSession(deps.Chat, deps.Repo))
+		}
 		// Sending a message and resolving a confirmation are on the WebSocket, not
 		// here: both stream, and an exchange outlives any one request (see ws_chat.go).
 		//
@@ -295,6 +312,15 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 	// SPA, which posts the code here with its own platform token, so every route in
 	// this group sits behind the same realm-role gate as the rest of ODE.
 	if deps.Repo != nil {
+		// The working contexts themselves. Everything that acts *in* one names it
+		// with a `workbench` query parameter on the routes below, which is what keeps
+		// those routes static and lets a request that names none mean "my only one".
+		benches := secured.Group("/workbenches")
+		benches.GET("", handleListWorkbenches(deps.Repo))
+		benches.POST("", handleCreateWorkbench(deps.Repo))
+		benches.PUT("/:id", handleRenameWorkbench(deps.Repo))
+		benches.DELETE("/:id", handleDeleteWorkbench(deps.Repo))
+
 		repoRoutes := secured.Group("/repo")
 		repoRoutes.GET("", handleRepoStatus(deps.Repo))
 		repoRoutes.GET("/connection", handleRepoConnection(deps.Repo))
@@ -401,7 +427,7 @@ func handleHealth() gin.HandlerFunc {
 //	@Summary		Who am I, and what can this deployment do
 //	@Description	Identity from the token, the realm roles behind it, which capabilities
 //	@Description	this deployment serves, and — when an admin service is configured —
-//	@Description	the caller's limits and spend so far (SPEC §3.3).
+//	@Description	the caller's limits and spend so far (§3.3).
 //	@Tags			meta
 //	@Produce		json
 //	@Security		Bearer
@@ -521,8 +547,7 @@ func handleAspectNodes(repo *ontology.Repository) gin.HandlerFunc {
 // SPA needs first; ?rdf_type=controlling asks for the other.
 //
 //	@Summary		Functions, measuring by default
-//	@Description	Semantic selection resolves an intent to a measuring function (SPEC
-//	@Description	§5.2), so that is the default list.
+//	@Description	Semantic selection resolves an intent to a measuring function (§5.2), so that is the default list.
 //	@Tags			ontology
 //	@Produce		json
 //	@Security		Bearer
@@ -613,7 +638,7 @@ func handleDeviceClasses(repo *ontology.Repository) gin.HandlerFunc {
 }
 
 // @Summary		List the caller's devices
-// @Description	Read on behalf of the caller, never as a service account (SPEC D5), so
+// @Description	Read on behalf of the caller, never as a service account (D5), so
 // @Description	this returns exactly what that user may see.
 // @Tags			devices
 // @Produce		json

@@ -1,6 +1,6 @@
 # Design decisions
 
-The purpose, the non-goals, the thirty locked decisions D1 to D30, the
+The purpose, the non-goals, the thirty-one locked decisions D1 to D31, the
 architecture, the identity and exposure model, and the one design rule everything
 else follows from. This is the source of truth for *why*.
 
@@ -74,6 +74,8 @@ by being replaced, not by being disproved.
 | D28 | `recommendations` are **strictly advisory** — binding only on explicit developer promotion. |
 | D29 | **`characteristic_id` is canonical**; the unit string is derived. Never fabricate a characteristic ID. |
 | D30 | **Backend is Go**, matching the rest of the platform. Ontology and timeseries clients reuse `device-repository/lib/client` and `models/go`. The profiler's statistical detectors are implemented in Go against `gonum`; the one detector without a library implementation (ADF) is specified in §5.4.14. |
+| D31 | ODE **creates an import or an export on the developer's confirmation**, and deletes only what the same chat session created. The four tools are in §5.8; the reasoning, the upstream contracts and the rejected alternatives are in [imports-as-operator-inputs.md](imports-as-operator-inputs.md). |
+| D32 | A developer's working context is a **workbench**: one repository checkout and one kernel, and they may hold several. Each chat session names the one it acts in. Several kernels live in **one** singleuser pod, which needs no JupyterHub configuration but does need the profile's memory raised; a pod per workbench through named servers is rejected in [kernel-and-repository.md](kernel-and-repository.md), not least because a `ReadWriteOnce` PVC cannot be mounted twice. |
 
 ### 1.1 Why not a JupyterLab extension — and why JupyterHub is still used
 
@@ -141,7 +143,7 @@ Enforced in `ToolDispatcher` **before** any tool executes. Never client-side. Se
 
 | Tier | Exposed to the LLM | Notes |
 |---|---|---|
-| **L0** (default) | Ontology (aspects, functions, characteristics, device classes), device names and types, availability windows, volume and rate estimates, connection state, **`QuickProfile`** (§5.4.2) | No values whatsoever. Semantic selection *and* candidate triage complete entirely here |
+| **L0** (default) | Ontology (aspects, functions, characteristics, device classes), device names and types, availability windows, volume and rate estimates — including **row counts per export column**, which is how "is this export populated" is answered where the platform has no availability endpoint — connection state, **`QuickProfile`** (§5.4.2) | No values whatsoever. Semantic selection *and* candidate triage complete entirely here |
 | **L1** | L0 + `SeriesProfile` and `RelationProfile` (statistics, detected periods, session stats, quality flags) | Aggregates are still data — a deliberate step |
 | **L2** | L1 + downsampled series previews (actual values) | Required for the LLM to reason about shape |
 

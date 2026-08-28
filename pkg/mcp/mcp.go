@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-// Package mcp exposes ODE's tool surface as an MCP server (SPEC §5.7, the
+// Package mcp exposes ODE's tool surface as an MCP server (§5.7, the
 // `mcp/` component of §2).
 //
 // It exists for the CLI provider: rather than fighting the `claude` CLI's own
@@ -34,6 +34,11 @@
 // the chat session id, which is exactly what the dispatcher needs, so there is no
 // server-side session to keep — and no way for a stale MCP session to hold a tier
 // that the developer has since lowered.
+//
+// One request does *not* answer promptly, and it is the exception worth stating
+// next to the sentence above: a tool needing the developer's confirmation (D11)
+// blocks while they decide. That is still no server state here — the hold lives on
+// the chat engine, keyed by confirmation id, and this package only waits on it.
 package mcp
 
 import (
@@ -51,10 +56,19 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
 
-// Sessions is the slice of the chat store this package needs: which tier a
-// session is at, and who owns it.
+// Sessions is the slice of the chat engine this package needs: which tier a
+// session is at and who owns it, and somewhere to park a call that needs the
+// developer's agreement.
 type Sessions interface {
 	TierFor(ctx context.Context, userSub, sessionID string) (tools.Tier, error)
+
+	// Hold dispatches a call needing confirmation (D11) and waits for the
+	// developer to decide, returning the outcome as an ordinary tool result.
+	//
+	// The bool reports whether it was held at all. False means nobody would ever
+	// have been asked — no turn is in flight to show the request on, or it could
+	// not be recorded — and this package refuses rather than waits.
+	Hold(ctx context.Context, req tools.Request, call tools.Call) (tools.Result, bool, error)
 }
 
 // Server builds an MCP server per request.
@@ -175,63 +189,80 @@ func (s *Server) addTool(server *sdk.Server, definition tools.Definition, who ca
 	}
 
 	server.AddTool(tool, func(ctx context.Context, request *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-		// A tool needing developer confirmation is published but refused here.
-		//
-		// Publishing it means the model can see it exists and suggest the developer
-		// run it from the ODE interface. Dispatching it would produce a pending
-		// confirmation that nobody on this transport can answer — the CLI has no way
-		// to surface a decision and wait for it — so the call would hang or, worse,
-		// look accepted. Auto-approving is the other alternative and would defeat
-		// what a confirmed tool is for (D11).
-		if definition.Confirm {
-			return errorResult(confirmationUnavailable(definition.Name))
-		}
-
 		var input json.RawMessage
 		if request.Params != nil && len(request.Params.Arguments) > 0 {
 			input = json.RawMessage(request.Params.Arguments)
 		}
 
-		result := s.dispatcher.Dispatch(ctx, tools.Request{
+		toolRequest := tools.Request{
 			Token:     who.token,
 			UserSub:   who.userSub,
 			SessionID: who.sessionID,
 			Tier:      who.tier,
-		}, tools.Call{
+		}
+		call := tools.Call{
 			ID:    request.Params.Name + ":mcp",
 			Name:  definition.Name,
 			Input: input,
-		})
-
-		encoded, err := json.Marshal(result.Content)
-		if err != nil {
-			return nil, fmt.Errorf("mcp: encoding the result of %s: %w", definition.Name, err)
 		}
 
-		return &sdk.CallToolResult{
-			Content: []sdk.Content{&sdk.TextContent{Text: string(encoded)}},
-			// IsError carries the tier refusal through as an error result, which is
-			// what makes the CLI relay it rather than treat it as an answer.
-			IsError: result.IsError,
-		}, nil
+		// A tool needing the developer's confirmation is held open here rather than
+		// dispatched, so this call is what waits for them (D11).
+		//
+		// The client is not asked to surface a decision; it sees one slow tool call.
+		// ODE waits, because ODE has the developer's session in front of them. The
+		// alternatives are both worse than the wait: auto-approving defeats what a
+		// confirmed tool is for, and refusing — which this used to do — makes every
+		// confirmed tool permanently unreachable on this transport.
+		if definition.Confirm {
+			result, held, err := s.sessions.Hold(ctx, toolRequest, call)
+			if err != nil && !held {
+				slog.WarnContext(ctx, "a confirmed tool could not be held",
+					"tool", definition.Name, "session", who.sessionID, "error", err)
+			}
+			if !held {
+				return errorResult(confirmationUnavailable(definition.Name))
+			}
+			return toolResult(definition.Name, result)
+		}
+
+		result := s.dispatcher.Dispatch(ctx, toolRequest, call)
+
+		return toolResult(definition.Name, result)
 	})
 
 	slog.Debug("mcp tool published", "tool", definition.Name, "tier", who.tier.String())
 }
 
-// A confirmed tool over MCP is refused rather than held.
+// toolResult renders a dispatched call in MCP's own shape.
+func toolResult(name string, result tools.Result) (*sdk.CallToolResult, error) {
+	encoded, err := json.Marshal(result.Content)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: encoding the result of %s: %w", name, err)
+	}
+	return &sdk.CallToolResult{
+		Content: []sdk.Content{&sdk.TextContent{Text: string(encoded)}},
+		// IsError carries the tier refusal through as an error result, which is
+		// what makes the CLI relay it rather than treat it as an answer.
+		IsError: result.IsError,
+	}, nil
+}
+
+// A confirmed tool is refused when there is nobody to ask.
 //
-// Confirmation (D11) needs a developer sitting in front of the ODE UI to answer,
-// and an MCP call has no way to reach them and wait — the CLI would block on a
-// decision it cannot surface. So the tools that need confirmation are not
-// published on this transport at all, and the refusal says why. The alternative
-// would be to auto-approve, which would defeat the point of a confirmed tool.
+// Confirmation (D11) needs the developer in front of the ODE UI, and the request
+// is shown to them on the exchange their turn is streaming on. Without one — no
+// turn in flight, or a confirmation the store would not take — the wait could
+// never end, so the call is refused and says so rather than hanging. Ordinarily
+// there is a turn: this transport exists for a provider whose tool loop runs
+// inside one.
 func confirmationUnavailable(name string) map[string]any {
 	return map[string]any{
 		"error": "confirmation_unavailable",
 		"tool":  name,
-		"hint": "this tool needs the developer's explicit confirmation, which cannot be " +
-			"collected over this transport. Ask them to run it from the ODE interface.",
+		"hint": "this tool needs the developer's explicit confirmation, and there is no " +
+			"exchange in flight to ask them on. Tell them what you were about to do and " +
+			"let them ask again.",
 	}
 }
 

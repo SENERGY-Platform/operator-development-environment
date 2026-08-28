@@ -36,7 +36,7 @@ type GraphOptions struct {
 // ListGraphs reads the caller's device relationship graphs.
 //
 // A graph is the platform's record of how devices are *wired*, not merely which
-// belong together: SPEC §5.1's table calls it a device relationship graph with
+// belong together: §5.1's table calls it a device relationship graph with
 // weighted edges, and models.Graph.Valid pins down what that means — a directed
 // acyclic flow graph whose outgoing edge weights sum to 100 per node and which has
 // exactly one node with no outputs, and that sink may not be a device. In practice

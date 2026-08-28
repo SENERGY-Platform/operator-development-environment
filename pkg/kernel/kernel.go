@@ -15,7 +15,7 @@
  */
 
 // Package kernel runs developer code in the developer's own JupyterHub pod
-// (SPEC §5.6, D2 revised).
+// (§5.6, D2 revised).
 //
 // The design decision this package implements is mostly a decision not to build
 // something. The cluster's existing JupyterHub already provides per-user isolated
@@ -94,7 +94,7 @@ type KernelHandle struct {
 	Name      string    `json:"kernel_name"`
 }
 
-// Backend is the interface SPEC §5.6 specifies. *Service implements it.
+// Backend is the interface §5.6 specifies. *Service implements it.
 type Backend interface {
 	EnsureServer(ctx context.Context, user User) (ServerURL, error)
 	MintToken(ctx context.Context, user User) (HubToken, error)
@@ -155,6 +155,14 @@ type Options struct {
 	TokenTTL time.Duration
 	// MaxOutputBytes bounds what one execution may stream to the developer.
 	MaxOutputBytes int
+	// WorkspaceWait is how long one of ODE's own workspace operations waits for a
+	// kernel that is running something else before it answers ErrBusy. It absorbs
+	// the collisions ODE causes itself — a page reload asks for the repository
+	// status, the file tree and one file at once, and each of those is a cell — while
+	// leaving the refusal in place for a kernel held by something longer than any of
+	// them. Zero takes the default; negative disables the wait, which is the old
+	// behaviour of refusing the second caller outright.
+	WorkspaceWait time.Duration
 
 	// Environment is pushed into the kernel alongside the platform token, so code
 	// in the pod can reach the same platform this ODE is configured against
@@ -176,6 +184,14 @@ const (
 	defaultIdleTimeout       = 2 * time.Hour
 	defaultTokenTTL          = 12 * time.Hour
 	defaultMaxOutputBytes    = 1 << 20
+	// defaultWorkspaceWait covers the operations these calls queue behind each
+	// other for. Most are milliseconds; the slow ones are network-bound — a clone, a
+	// fetch, a push — and a few seconds covers those. It is deliberately not longer:
+	// past that the kernel is held by something that is not a repository operation,
+	// and a developer is better served by the 409 than by a pane that sits there.
+	// A bring-up needs no allowance here, because it happens under the session
+	// mutex rather than under a run, so a second caller waits on the mutex.
+	defaultWorkspaceWait = 10 * time.Second
 	// tokenRenewBefore re-mints a per-user token this long before it expires, so
 	// an execution never starts on a credential that dies mid-cell.
 	tokenRenewBefore = 15 * time.Minute
@@ -203,8 +219,19 @@ type Service struct {
 	root context.Context
 	stop context.CancelFunc
 
-	mux      sync.Mutex
-	sessions map[string]*userSession
+	// mux guards the two maps and the workbench resolver. It is a leaf: nothing
+	// takes it while holding a pod or bench mutex, which is what keeps the
+	// bench-then-pod ordering in session.go the only ordering there is.
+	mux sync.Mutex
+	// pods is one record per developer — the spawn, the token, the keep-alive.
+	pods map[string]*pod
+	// benches is one record per workbench: the kernel it runs, keyed by developer
+	// and workbench together.
+	benches map[string]*bench
+	// workbenches resolves a workbench to the directory its kernel runs in. Nil
+	// until the repository surface is built on top of this one, and in a deployment
+	// that has none — see UseWorkbenches.
+	workbenches Workbenches
 }
 
 func New(opts Options) (*Service, error) {
@@ -252,6 +279,9 @@ func New(opts Options) (*Service, error) {
 	if opts.MaxOutputBytes <= 0 {
 		opts.MaxOutputBytes = defaultMaxOutputBytes
 	}
+	if opts.WorkspaceWait == 0 {
+		opts.WorkspaceWait = defaultWorkspaceWait
+	}
 
 	base, err := url.Parse(strings.TrimRight(opts.BaseURL, "/"))
 	if err != nil || base.Scheme == "" || base.Host == "" {
@@ -261,11 +291,12 @@ func New(opts Options) (*Service, error) {
 
 	root, stop := context.WithCancel(context.Background())
 	return &Service{
-		hub:      newHub(opts.BaseURL, opts.Token, opts.HTTPClient, opts.RequestTimeout),
-		opts:     opts,
-		root:     root,
-		stop:     stop,
-		sessions: map[string]*userSession{},
+		hub:     newHub(opts.BaseURL, opts.Token, opts.HTTPClient, opts.RequestTimeout),
+		opts:    opts,
+		root:    root,
+		stop:    stop,
+		pods:    map[string]*pod{},
+		benches: map[string]*bench{},
 	}, nil
 }
 
@@ -457,18 +488,24 @@ func (s *Service) Execute(
 	return out, nil
 }
 
-// liveConnection returns the developer's open connection when it is this kernel's.
+// liveConnection returns the open connection ODE holds for this kernel, if it has
+// one.
+//
+// Found by kernel id across the developer's benches rather than by workbench,
+// because a handle carries no workbench: it is what §5.6 hands around, and the
+// question here is only whether the socket ODE already has is the one this handle
+// names.
 func (s *Service) liveConnection(handle KernelHandle) (*connection, bool) {
-	session, found := s.lookup(handle.User.Name)
-	if !found {
-		return nil, false
+	for _, target := range s.benchesOf(handle.User) {
+		target.mux.Lock()
+		conn := target.conn
+		matches := conn != nil && !conn.isClosed() && target.kernelID == handle.KernelID
+		target.mux.Unlock()
+		if matches {
+			return conn, true
+		}
 	}
-	session.mux.Lock()
-	defer session.mux.Unlock()
-	if session.conn == nil || session.conn.isClosed() || session.kernelID != handle.KernelID {
-		return nil, false
-	}
-	return session.conn, true
+	return nil, false
 }
 
 // Interrupt stops whatever the kernel is running, without losing its state.
