@@ -32,12 +32,17 @@ const maxDeviceTypeIDs = 200
 // DeviceTypesByID reads whole device types, with the services and — the reason
 // this exists — the **attributes** on them.
 //
-// Every other route ODE has to a device type gives a projection that drops them.
-// A selectable carries what a semantic query matched; MOSES's own `/device-types`
-// carries id, name, direction, characteristic and value path. Neither carries
-// `senergy/time_path`, which is what decides whether a channel published through
-// that service can ever hold a historical timestamp — so the question "can this
-// be backfilled" has no answer anywhere but here.
+// It is a lookup by id, and that is the gap it fills. Both selectable types —
+// device-repository's DeviceTypeSelectable and device-selection's Selectable —
+// do carry the attributes, because both hold the full models.Service; what
+// neither is, is keyed by id. They answer a semantic query and return the
+// services that matched a function and aspect criterion. A caller holding a list
+// of device type ids has nothing to ask them.
+//
+// The other route a caller might reach for, a simulator's own device type
+// catalogue, is a projection that drops the attributes outright. So for
+// `senergy/time_path` — which decides whether a channel published through a
+// service can ever hold a historical timestamp — this is the only answer.
 //
 // One call for the whole set rather than one per type: the endpoint ignores
 // limit and offset when ids are given, so a caller that already knows which

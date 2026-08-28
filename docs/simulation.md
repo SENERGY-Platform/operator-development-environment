@@ -422,14 +422,25 @@ changing it from a simulator would change how their data is ingested. ODE
 inherits that position, so the honest answer is a modelling change by somebody
 else rather than another attempt from here.
 
-### Only the device repository carries it
+### Why the attribute has to be fetched separately
 
-Every other route ODE has to a device type gives a projection that drops the
-attributes. A selectable carries what a semantic query matched; MOSES's own
-`/device-types` carries id, name, direction, characteristic and value path.
-Neither carries `senergy/time_path` — so `ontology.DeviceTypesByID` exists for
-exactly this, reading whole device types in one request keyed by the ids MOSES
-said are simulatable.
+**MOSES's own `/device-types` drops it.** That catalogue is a projection —
+`lib/devices/catalog.go` defines a five-field `Service` (id, name, direction,
+characteristic, value path) described as "reduced to what building an asset from
+it needs". Attributes are not part of building an asset, so they are not in it.
+The projection is deliberate and, for its purpose, right; the sting is that the
+one attribute it drops is the one that decides whether the asset can do the thing
+MOSES's own backfill exists for.
+
+**The device repository does carry it, but not through an endpoint keyed by id.**
+Both selectable types — `model.DeviceTypeSelectable` from the device repository
+and `pkg/model.Selectable` from device-selection — hold `[]models.Service`, the
+full type, attributes included. What they are not is a lookup: both answer a
+*semantic* query and return the services that matched given function and aspect
+criteria. MOSES hands over device type *ids*, which is the wrong shape for either.
+
+So `ontology.DeviceTypesByID` exists to close that gap: whole device types, in one
+request, keyed by the ids MOSES said are simulatable.
 
 ### Three states, not a boolean
 
