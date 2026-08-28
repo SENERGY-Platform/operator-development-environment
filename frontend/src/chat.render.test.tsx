@@ -54,6 +54,10 @@ let reloads = 0;
 let cancelled: string[] = [];
 /** Resolves the in-flight chat_send, standing in for the turn ending. */
 let finishSend: (() => void) | null = null;
+/** Rejects the live stream the way a dropped socket does. */
+let dropStream: (() => void) | undefined;
+/** The live stream's event sink, so a test can stream a partial answer. */
+let emit: ((event: unknown) => void) | undefined;
 /** Whether a turn is running server-side, which is what chat_attach answers with. */
 let live = false;
 /** What the developer has sent, which the backend stores before the turn starts. */
@@ -130,7 +134,7 @@ vi.mock("./ws", () => ({
     stream(
       type: string,
       payload: unknown,
-      handlers: { signal?: AbortSignal },
+      handlers: { signal?: AbortSignal; onEvent?: (event: unknown) => void },
     ): Promise<{ attached: boolean }> {
       streamed.push(type);
       if (type === "chat_send") {
@@ -148,10 +152,20 @@ vi.mock("./ws", () => ({
         // An attach that finds nothing running answers at once; anything watching a
         // live turn is held until the test says that turn ended.
         if (type === "chat_attach" && !live) resolve({ attached: false });
-        else finishSend = () => {
-          live = false;
-          resolve({ attached: true });
-        };
+        else {
+          emit = handlers.onEvent;
+          finishSend = () => {
+            live = false;
+            resolve({ attached: true });
+          };
+          // A transport failure, as distinct from finishSend: the socket goes and
+          // the exchange keeps running server-side. Not a FakeCancelled, which is
+          // what an abort raises and means the view was detached on purpose.
+          dropStream = () => {
+            emit = undefined;
+            reject(new Error("the socket closed"));
+          };
+        }
       });
     },
     watchSessions(handlers: {
@@ -491,6 +505,43 @@ it("puts the developer's turn on the right and the assistant's on the left", asy
   // in a bubble, so it stays at the start and carries no alignment override.
   const replay = host.querySelector(".turn.assistant");
   expect(replay?.getAttribute("data-align") ?? "start").toBe("start");
+});
+
+/**
+ * A dropped socket must not take the answer off the screen.
+ *
+ * The turn is detached server-side, so losing the stream says nothing about it —
+ * it carries on, and the exchange keeps every event it published so the reattach
+ * can replay them. What the *store* holds meanwhile is only what was complete
+ * before the turn began: the developer's messages and nothing else.
+ *
+ * So re-reading the store when the stream dies replaces a conversation in progress
+ * with one that looks emptied — every answer gone, only the questions left, and no
+ * indication why. It came back on the next reattach, which is what made it read as
+ * a glitch rather than as a loss.
+ */
+it("keeps a streamed answer on screen when the socket drops mid-turn", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  // A partial answer, streamed. This exists nowhere but on screen: the store has
+  // the question and will not have the reply until the turn ends.
+  await act(async () => emit?.({ type: "text_delta", text: "the oven draws" }));
+  await settle(2);
+  expect(host.textContent).toContain("the oven draws");
+
+  await act(async () => dropStream?.());
+  await settle(5);
+
+  // Still there. The turn is still running; nothing has happened that says the
+  // answer is not coming.
+  expect(host.textContent, "a dropped socket emptied the conversation").toContain(
+    "the oven draws",
+  );
+  // And the developer's own message is not the only thing left, which is what the
+  // failure looked like from the outside.
+  expect(host.querySelectorAll(".turn.assistant").length).toBeGreaterThan(0);
 });
 
 it("stopping a turn leaves the backend alone", async () => {

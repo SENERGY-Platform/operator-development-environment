@@ -1004,6 +1004,13 @@ function Conversation({
       // How the turn ended, for the alert in the finally. Null means there was
       // nothing to wait for — see the two cases below.
       let ending: "answered" | "failed" | null = null;
+      // Whether the stream ran to its end, as opposed to being cut off.
+      //
+      // This is what decides whether the stored history may replace what is on
+      // screen. A stream that threw says nothing about the turn: the socket drops,
+      // the exchange keeps running server-side, and the store still holds only the
+      // messages that were complete before it started.
+      let completed = false;
       try {
         const outcome = await odeSocket.stream(kind, { session_id: session.id, ...payload }, {
           signal: current.signal,
@@ -1011,6 +1018,7 @@ function Conversation({
         });
         // An attach that found nothing running is the common case on every socket
         // open. No turn ended, so there is nothing to announce.
+        completed = true;
         ending = kind === "chat_attach" && !outcome.attached ? null : "answered";
       } catch (e: unknown) {
         if (e instanceof Cancelled) {
@@ -1052,7 +1060,18 @@ function Conversation({
           let waiting = false;
           try {
             const detail = await api.chatSession(session.id);
-            setTurns(replay(detail.messages));
+            // The stored history replaces the streamed view only when the stream
+            // reached its end. Cut off, it must not: the exchange is detached and
+            // still running, so the store holds the developer's messages and none of
+            // the answer — replacing with it wipes the turn off the screen and leaves
+            // the conversation looking as though it had been cleared. It came back on
+            // the next reattach, which replays the exchange from its own buffer, so
+            // the loss was always temporary and always visible.
+            //
+            // Nothing is missed by waiting: a turn that ended while this client was
+            // away is picked up by that same reattach, which finds no exchange
+            // running and comes through here with `completed` set.
+            if (completed) setTurns(replay(detail.messages));
             setPending(detail.pending_confirmations);
             onSessionChange(detail.session);
             waiting = detail.pending_confirmations.length > 0;
