@@ -106,6 +106,22 @@ class FakeCancelled extends Error {
   }
 }
 
+/** What ws.ts fails an in-flight stream with. `describe` tests for it by identity,
+ *  so the mock has to carry it or every error path throws on the missing export. */
+class FakeWsError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WsError";
+  }
+
+  get isForbidden(): boolean {
+    return this.status === 403;
+  }
+}
+
 /** open drives the socket to a state, replaying it to every listener as ws.ts does. */
 function openSocket() {
   socketState = "open";
@@ -117,6 +133,7 @@ let connectRequests = 0;
 
 vi.mock("./ws", () => ({
   Cancelled: FakeCancelled,
+  WsError: FakeWsError,
   odeSocket: {
     ensureConnected() {
       // The real one connects and the state follows. Counted as well as acted on,
@@ -165,7 +182,8 @@ vi.mock("./ws", () => ({
           // what an abort raises and means the view was detached on purpose.
           dropStream = () => {
             emit = undefined;
-            reject(new Error("the socket closed"));
+            // Status 0, as onClosed raises it: a dead connection, not a refusal.
+            reject(new FakeWsError(0, "the socket closed"));
           };
         }
       });
