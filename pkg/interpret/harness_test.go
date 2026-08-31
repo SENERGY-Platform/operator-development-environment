@@ -137,7 +137,8 @@ func newHarness(t *testing.T, replies ...string) *harness {
 		IDs:       newSequentialIDs("exp"),
 		Options: experiments.Options{
 			RayURL: ray.URL(), MLflowURL: mlflow.URL(),
-			RayClientURL: "auto", DefaultEntrypoint: "python train.py",
+			RayClientURL: "auto", DefaultEntrypoint: "uv run python train.py",
+			PyExecutable:   "uv run",
 			TsConn:         "postgresql://ode:secret@timescale.example.org/postgres",
 			CommandTimeout: 120 * time.Second, RequestTimeout: 30 * time.Second,
 		},

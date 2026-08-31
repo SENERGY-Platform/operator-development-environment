@@ -80,8 +80,11 @@ type Job struct {
 	Entrypoint   string            `json:"entrypoint"`
 	Metadata     map[string]string `json:"metadata"`
 	RuntimeEnv   struct {
-		WorkingDir string            `json:"working_dir"`
-		EnvVars    map[string]string `json:"env_vars"`
+		WorkingDir string `json:"working_dir"`
+		// How Ray starts worker processes, which has to match how the entrypoint
+		// starts the driver. Asserted on, so the double has to carry it.
+		PyExecutable string            `json:"py_executable"`
+		EnvVars      map[string]string `json:"env_vars"`
 	} `json:"runtime_env"`
 	Status    string
 	StartTime int64

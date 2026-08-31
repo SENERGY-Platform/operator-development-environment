@@ -88,27 +88,31 @@ func modelID(pipelineID, operatorID string) string {
 // pipelineID and operatorID are what a *deployed* operator gets from the flow
 // engine. A run being developed has no deployment, so ODE synthesises both.
 //
-// The pipeline is stable per developer, so their runs are recognisable in a
-// tracking server they share with the platform. The operator is the ODE
-// experiment id, which makes the pair unique per launch, and that is load
-// bearing in two ways:
+// Both are stable: the pipeline per developer, the operator per repository. That
+// makes Operator Lib's `model_id` stable too, so a repository's model versions
+// accumulate under one registry key and the "production" alias moves between
+// them — which is what a deployed operator does, and the whole point of running
+// the real path.
 //
-//   - MLOperator.init() trains only when no model is registered under the pair.
-//     A pair unique per launch misses by construction, so every experiment
-//     trains. A pair stable per repository would train on the first launch and
-//     silently record nothing on the second.
-//   - register_model and the "production" alias are scoped to the pair, so a run
-//     started here can never move the alias of a deployed operator, whose pair is
-//     a flow-engine pipeline id and a real operator id.
+// It used to be the ODE experiment id, unique per launch, for one reason:
+// MLOperator.init() trains only when no model is registered under the pair, so a
+// stable pair would have trained on the first launch and silently recorded
+// nothing on the second. Operator Lib v1.4.0's train_once() removed that
+// constraint by making the training pass something a caller can ask for, and
+// train.py asks. The per-launch pair also left one empty MLflow experiment behind
+// per launch, from init()'s own set_experiment(model_id); one per repository is
+// the remainder.
 //
-// The MLflow *experiment* is not per launch and must not become so: Store.Previous
-// scopes the comparison of §5.13 to one experiment, so a per-launch experiment
-// would report every run as a first run.
+// The pair still cannot collide with a deployed operator's, whose ids are a
+// flow-engine pipeline id and a real operator id, so no run started here can move
+// a deployed operator's alias.
 func (s *Service) pipelineID(req Request) string {
 	return sanitiseSegment(s.opts.ExperimentPrefix + "-" + usernameOf(req))
 }
 
-func operatorID(experimentID string) string { return sanitiseSegment(experimentID) }
+// operatorID is the repository the run trains, so two repositories of one
+// developer keep separate model histories.
+func operatorID(repository string) string { return sanitiseSegment(repository) }
 
 // deploymentEnvironment builds the variables Operator Lib reads.
 //

@@ -379,7 +379,10 @@ type ConfigStruct struct {
 	RepoMaxCommandOutputBytes int64  `json:"repo_max_command_output_bytes"`
 	RepoMaxWorkbenches        int64  `json:"repo_max_workbenches"`
 
-	// The library the scaffold pins (D15). OperatorLibRef empty resolves the newest
+	// The library the scaffold pins (D15). v1.4.0 is the floor: the scaffold's
+	// train.py calls MLOperator.train_once(), which that release made public, and an
+	// older pin fails with AttributeError at the end of a run rather than at import.
+	// OperatorLibRef empty resolves the newest
 	// tag at scaffold time, which is what "track latest, pin per repo" means; setting
 	// it fixes every new repository to one ref, which is what a deployment reproducing
 	// an evaluation write-up wants.
@@ -441,6 +444,11 @@ type ConfigStruct struct {
 	// so "auto" attaches to the cluster it is running in rather than opening a
 	// client connection back into it.
 	ExperimentRayClientUrl string `json:"experiment_ray_client_url"`
+	// ExperimentPyExecutable is what Ray starts worker processes with. It has to
+	// match what the entrypoint launches the driver with, or a Ray task starts on the
+	// cluster image's interpreter and fails on the first import the lock file
+	// provides. Empty omits the field and leaves Ray's own uv detection to it.
+	ExperimentPyExecutable string `json:"experiment_py_executable"`
 
 	// ExperimentMaxPackageBytes bounds the job archive. Exceeding it is reported
 	// rather than truncated: a job that ran against a partial repository fails in a
@@ -749,10 +757,21 @@ func applyDefaults(config Config) {
 		// sequence, stopped before the kafka loop that main.py would enter and never
 		// leave. It is a committed file rather than something ODE injects, so the
 		// package stays exactly the commit it claims to be (§5.11 item 7).
-		config.ExperimentDefaultEntrypoint = "python train.py"
+		//
+		// `uv run` rather than `python` is what makes the cluster image irrelevant to
+		// the operator's dependencies: uv builds the environment from the repository's
+		// own pyproject.toml and uv.lock, both of which travel in the package, and
+		// caches it per node so the second run on a node pays almost nothing. The
+		// alternative was baking Operator Lib into the Ray image, which cannot work —
+		// an operator's own dependencies are its own, and torch is not predictable
+		// from a shared image.
+		config.ExperimentDefaultEntrypoint = "uv run python train.py"
 	}
 	if config.ExperimentRayClientUrl == "" {
 		config.ExperimentRayClientUrl = "auto"
+	}
+	if config.ExperimentPyExecutable == "" {
+		config.ExperimentPyExecutable = "uv run"
 	}
 	if config.ExperimentPollInterval == "" {
 		config.ExperimentPollInterval = "30s"

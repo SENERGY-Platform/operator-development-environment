@@ -83,6 +83,13 @@ type Options struct {
 	// shared with the rest of the platform.
 	ExperimentPrefix string
 
+	// PyExecutable is what Ray starts worker processes with, matching whatever the
+	// entrypoint launches the driver with. "uv run" is the default and the reason
+	// the cluster image needs no operator dependencies of its own: uv builds the
+	// environment from the repository's own pyproject.toml and uv.lock. Empty omits
+	// the field, leaving Ray's own detection to it.
+	PyExecutable string
+
 	// RayClientURL is what a run's deployment config names as ray_url — what
 	// Operator Lib hands to ray.init(). Not RayURL, which is the dashboard's HTTP
 	// API. "auto" attaches to the cluster the driver is already running in.
@@ -443,11 +450,11 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 	// metrics land in the run ODE created and tagged.
 	//
 	// The pipeline and operator ids are therefore only the registry key, which is a
-	// separate namespace from the experiment. Unique per launch, for the two reasons
-	// deployment.go gives: every launch trains, and no launch can move a deployed
-	// operator's "production" alias.
+	// separate namespace from the experiment. Stable per developer and repository,
+	// so model versions accumulate the way a deployed operator's do — see
+	// deployment.go for why that needed Operator Lib v1.4.0.
 	pipelineID := s.pipelineID(req.Request)
-	operatorIdentifier := operatorID(experimentID)
+	operatorIdentifier := operatorID(status.Link.FullName)
 	mlflowExperimentName := s.experimentName(req.Request, status.Link)
 	mlflowExperimentID, err := s.mlflow.ensureExperiment(ctx, mlflowExperimentName, []mlflowTag{
 		{Key: TagUserSub, Value: req.UserSub},
@@ -512,6 +519,8 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 		RuntimeEnv: jobRuntimeEnv{
 			WorkingDir: uri,
 			EnvVars:    environment,
+			// The workers' interpreter, matching the driver's. See jobRuntimeEnv.
+			PyExecutable: s.opts.PyExecutable,
 		},
 		// The four keys §5.12 names, and nothing else: Ray's metadata is visible to
 		// anyone who can read the cluster's job list, so it carries identifiers rather

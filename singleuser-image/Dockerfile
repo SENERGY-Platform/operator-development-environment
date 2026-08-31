@@ -57,7 +57,12 @@ USER ${NB_UID}
 # The workflow resolves this to a commit SHA before building, so an image can be
 # traced back to the exact Operator Lib it contains. A branch name still works
 # for a hand build.
-ARG OPERATOR_LIB_REF=master
+#
+# v1.4.0 is the floor rather than a preference: it is the release that made
+# MLOperator.train_once() public, and the scaffold's train.py calls it. An image
+# built against an older ref imports fine and fails at the end of a run with
+# AttributeError, which is the worst place to find out.
+ARG OPERATOR_LIB_REF=v1.4.0
 
 RUN pip install --no-cache-dir \
       "git+https://github.com/SENERGY-Platform/analytics-operator-lib-python@${OPERATOR_LIB_REF}"

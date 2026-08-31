@@ -133,7 +133,8 @@ func newHarness(t *testing.T, apply ...options) *harness {
 			RayURL:            ray.URL(),
 			RayToken:          "ray-service-token",
 			MLflowURL:         mlflow.URL(),
-			DefaultEntrypoint: "python train.py",
+			DefaultEntrypoint: "uv run python train.py",
+			PyExecutable:      "uv run",
 			// The deployment config a run carries. RayClientURL is what Operator Lib
 			// hands to ray.init() and is not RayURL, which is the dashboard's HTTP API.
 			RayClientURL:      "auto",

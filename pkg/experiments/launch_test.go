@@ -328,8 +328,13 @@ func TestTheJobIsPointedAtTheUploadedPackageAndTheRunItShouldLogTo(t *testing.T)
 	if got := job.RuntimeEnv.EnvVars["SENERGY_TIMESCALE_URL"]; got == "" {
 		t.Error("the job was not told where the timeseries store is")
 	}
-	if job.Entrypoint != "python train.py" {
+	if job.Entrypoint != "uv run python train.py" {
 		t.Errorf("entrypoint = %q, want the deployment default", job.Entrypoint)
+	}
+	// The workers' interpreter has to match the driver's, or a Ray task starts on
+	// the cluster image's python and fails on the first import uv.lock provides.
+	if got := job.RuntimeEnv.PyExecutable; got != "uv run" {
+		t.Errorf("py_executable = %q, want it to match how the entrypoint starts the driver", got)
 	}
 }
 

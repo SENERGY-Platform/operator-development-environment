@@ -72,9 +72,22 @@ type jobSubmission struct {
 // jobRuntimeEnv is the subset of Ray's runtime environment ODE sets. Everything
 // else — pip, conda, resources — belongs to the repository's own code, which is
 // the point of shipping the repository rather than a command line.
+//
+// PyExecutable is how the *workers* get the same environment as the driver. The
+// entrypoint runs `uv run`, so the driver has the repository's locked
+// dependencies; a Ray task would otherwise start on the cluster image's own
+// interpreter and fail on the first import the lock file provides. Ray propagates
+// working_dir — pyproject.toml and uv.lock with it — so uv resolves the same
+// environment on every worker, from the same two files, out of its own cache.
+//
+// Ray sets this itself when it detects a uv-launched driver, and ODE sets it
+// anyway: the detection is a hook whose behaviour has moved between releases, and
+// a silently different interpreter on the workers is the failure it is worst at
+// diagnosing.
 type jobRuntimeEnv struct {
-	WorkingDir string            `json:"working_dir"`
-	EnvVars    map[string]string `json:"env_vars,omitempty"`
+	WorkingDir   string            `json:"working_dir"`
+	EnvVars      map[string]string `json:"env_vars,omitempty"`
+	PyExecutable string            `json:"py_executable,omitempty"`
 }
 
 // jobDetails is GET /api/jobs/{submission_id}.

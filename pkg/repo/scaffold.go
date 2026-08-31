@@ -213,18 +213,36 @@ what sets the tracking URI, connects to Ray, calls train() and registers the
 result, so a run started here does what the deployed operator does when it first
 comes up. ODE adds only the commit tag on the run.
 
-ODE runs this file. It is yours to change, but keep operator.init() the last thing
-that happens: everything a run records happens inside it.
+ODE runs this file. It is yours to change, but keep the init()/train_once() pair
+at the end: everything a run records happens inside one of the two.
+
+Needs Operator Lib v1.4.0 or newer for train_once(), which pyproject.toml pins.
 """
 
 import json
 import sys
 
 import confluent_kafka
+import mlflow
+from mlflow import MlflowClient
 
 import operator_lib.util as util
 
 from op import Operator
+
+
+def _already_registered(model_id: str) -> bool:
+    """Whether a model is registered under this key.
+
+    This is the same question MLOperator.init() asks before it trains, and it is
+    asked here because init() does not report the answer. Getting it wrong costs a
+    duplicate training pass, not a wrong result.
+    """
+    try:
+        MlflowClient().get_model_version_by_alias(model_id, "production")
+        return True
+    except Exception:
+        return False
 
 
 def main() -> int:
@@ -259,10 +277,18 @@ def main() -> int:
 
     typed_config = operator.configType(config_json.get("config", {}))
 
-    # The run happens in here. MLOperator.init() finds no model registered under
-    # this pipeline and operator — ODE gives every experiment its own pair, so the
-    # lookup misses by construction — opens the MLflow run, connects to Ray and
-    # calls train(). Returning from it means the run is recorded.
+    # An experiment trains every time, and init() trains only when it finds no
+    # model registered under this pipeline and operator. ODE keeps that pair stable
+    # per developer and repository — so model versions accumulate under one key and
+    # the "production" alias moves, as they do for a deployed operator — which means
+    # the first run trains inside init() and every run after it does not.
+    #
+    # So the answer is taken first and the pass asked for when init() will not make
+    # one. Asking unconditionally would train twice on the first run.
+    mlflow.set_tracking_uri(opr_config.config.mlflow_url)
+    model_id = f"pipeline-{dep_config.pipeline_id}_operator-{dep_config.operator_id}"
+    trains_inside_init = not _already_registered(model_id)
+
     operator.init(
         kafka_consumer=kafka_consumer,
         kafka_producer=kafka_producer,
@@ -273,6 +299,11 @@ def main() -> int:
         config=typed_config,
         result_error_handler=None,
     )
+
+    if not trains_inside_init:
+        # Operator Lib v1.4.0 and newer. On an older pin this raises
+        # AttributeError, and the pin is in pyproject.toml.
+        operator.train_once()
     return 0
 
 
@@ -463,7 +494,12 @@ def train_model(logger: TrainMlflowLogger) -> typing.Optional[PythonModel]:
 	"pyproject.toml": `[project]
 name = "<<.Name>>"
 version = "0.1.0"
-requires-python = ">=<<.PythonVersion>>"
+# The minor series is pinned rather than left as a floor. uv resolves the driver's
+# environment on the Ray head and each worker's on its own node, and a floor lets
+# those land on different minor versions — which surfaces as a Ray "version
+# mismatch" between driver and worker rather than as anything about Python. The
+# patch level is deliberately left open: it is the minor that has to agree.
+requires-python = "==<<.PythonVersion>>.*"
 dependencies = [
   "ray[client,train]",
   # Pinned at scaffold time (D15). Operator Lib tracks latest and makes no
@@ -715,11 +751,26 @@ Development Environment. Every file here is yours to change, including this one.
 | "op.py" | The operator: "infer", "train", "need_retraining", and its config. |
 | "training.py" | The Ray training pass and the model MLflow registers. |
 | "pyproject.toml" | Dependencies, with Operator Lib pinned at "<<.OperatorLibRef>>". |
+| "uv.lock" | Not scaffolded — run "uv lock" and commit it. See below. |
 | "Dockerfile" | The image. Built by CI; buildable by hand. |
 | ".github/workflows/build.yml" | Builds and pushes "<<.Image>>". Change the registry here. |
 | "operator.yaml" | What the analytics stack registers: inputs, outputs, config. |
 | "evaluation.yaml" | Your criteria for whether a run is good. ODE never writes this. |
 | "tests/test_op.py" | Tests for the three methods that are yours. |
+
+## Lock the dependencies before the first experiment
+
+    uv lock
+
+Commit the "uv.lock" it writes. An experiment runs "uv run python train.py" on the
+cluster, and uv builds the environment from "pyproject.toml" and this file — on the
+Ray head for the driver and on each worker node for the tasks, out of its own cache.
+
+Without a lock file uv resolves at run time, which works and is worse in one
+specific way: the run records a commit SHA as the code that produced it, and two
+runs of the same commit can then resolve different dependency versions. The lock
+file is what makes the recorded SHA describe the whole run rather than only its
+source.
 
 ## Running the tests
 

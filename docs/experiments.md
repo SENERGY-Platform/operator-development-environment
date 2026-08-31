@@ -223,19 +223,30 @@ problem.
 ## The pipeline and operator ids ODE invents
 
 A deployed operator gets its pipeline and operator ids from the flow engine. A run
-being developed has no deployment, so ODE synthesises the pair: the pipeline is
-stable per developer, the operator is the ODE experiment id. The pair is what
-Operator Lib builds `model_id` from — `pipeline-{pipeline}_operator-{operator}` —
-and it is load bearing twice.
+being developed has no deployment, so ODE synthesises the pair: the pipeline per
+developer, the operator per repository. The pair is what Operator Lib builds
+`model_id` from — `pipeline-{pipeline}_operator-{operator}` — and both halves are
+stable, so a repository's model versions accumulate under one registry key and the
+`production` alias moves between them. That is what a deployed operator does, and
+running the real path is the point.
 
-- **Every launch trains.** `MLOperator.init()` trains only when no model is
-  registered under the pair. A pair unique per launch misses by construction. A
-  pair stable per repository would train on the first launch and record nothing on
-  the second, which is the silent failure worth designing out.
-- **No launch can move a deployed operator's alias.** `register_model` and the
-  `production` alias are scoped to the pair, and a deployed operator's pair is a
-  real flow-engine pipeline id and a real operator id. A development run cannot
-  collide with one.
+The pair still cannot collide with a deployed operator's, whose ids are a real
+flow-engine pipeline id and a real operator id, so no run started here can move a
+deployed operator's alias.
+
+**It was per-launch until Operator Lib v1.4.0.** `MLOperator.init()` trains only
+when no model is registered under the pair, so a stable pair would have trained on
+the first launch and silently recorded nothing on the second. The pair was made
+unique per launch to miss by construction. v1.4.0 made `train_once()` public — a
+training pass a caller can ask for — and `train.py` asks, so the pair no longer
+has to carry that job. The per-launch pair also left one empty MLflow experiment
+behind per launch, from `init()`'s own `set_experiment(model_id)`; one per
+repository is the remainder.
+
+`train.py` asks the alias question itself before calling `init()`, because `init()`
+does not report whether it trained. Getting that wrong costs a duplicate training
+pass rather than a wrong result, which is why it is a cheap `get_model_version_by_alias`
+rather than anything more careful.
 
 ## A run with no inputs is refused
 
@@ -273,6 +284,42 @@ A repository scaffolded before `train.py` existed does not have it. `ScaffoldSta
 reports it as missing, the way it reports any other absent file of the compliance
 set; a launch against such a repository runs the deployment default and fails on
 `python: can't open file 'train.py'`.
+
+`train.py` needs Operator Lib **v1.4.0 or newer** for `train_once()`. That is the
+floor for `operator_lib_ref` and for the singleuser image's `OPERATOR_LIB_REF` — an
+older one imports fine and fails at the end of a run with `AttributeError`. It is
+*not* a requirement on the Ray image, for the reason the next section gives.
+
+## `uv run`, and why the cluster image carries none of this
+
+The entrypoint is `uv run python train.py`, not `python train.py`, and the job's
+runtime environment sets `py_executable` to `uv run` to match.
+
+The problem it solves is that a Ray cluster image cannot carry an operator's
+dependencies. Operator Lib could be baked in; `torch` could not, and neither could
+whatever the next operator needs. The package Ray receives already contains
+`pyproject.toml` and `uv.lock`, so the environment is described in the repository
+that is being trained — uv builds it there, on the head for the driver and on each
+worker node for the tasks, out of a per-node cache that makes the second run cheap.
+`rayproject/ray` has shipped uv since 2.45, so nothing has to be added to it.
+
+`py_executable` is set explicitly rather than left to Ray's uv hook
+(`RAY_RUNTIME_ENV_HOOK`), which detects a uv-launched driver and propagates the
+executable itself. The hook works; it has also moved between releases, and the
+failure when it does not fire is a worker silently starting on the cluster image's
+interpreter and dying on the first import the lock file was supposed to provide.
+Setting the field costs one line and removes the question.
+
+Two consequences for a scaffolded repository, both in its README:
+
+- **`uv.lock` is not scaffolded.** It is generated — `uv lock` — and it is the
+  developer's to commit. Without it uv resolves at run time, which works, and
+  weakens the claim the commit SHA makes: two runs of one commit could resolve
+  different versions.
+- **`requires-python` pins the minor series** (`==3.10.*`) rather than a floor.
+  uv resolves driver and workers separately, and a floor lets them land on
+  different minors — which Ray reports as a version mismatch between driver and
+  worker, naming nothing about Python.
 
 ## The job's own credential, and what it costs when there is none
 

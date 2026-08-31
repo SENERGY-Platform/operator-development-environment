@@ -853,6 +853,7 @@ func startM8(
 			// dashboard's HTTP API; TsConn is the shared timescale credential a run
 			// reads history through, tracked as SNRGY-4637.
 			RayClientURL:      config.ExperimentRayClientUrl,
+			PyExecutable:      config.ExperimentPyExecutable,
 			TsConn:            config.ExperimentTsConn.Value(),
 			KafkaBootstrap:    config.ExperimentKafkaBootstrap,
 			MaxPackageBytes:   config.ExperimentMaxPackageBytes,

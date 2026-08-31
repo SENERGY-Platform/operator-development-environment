@@ -187,7 +187,10 @@ func TestTheImageAndTheProjectAgreeOnThePythonVersion(t *testing.T) {
 	if !strings.Contains(rendered["Dockerfile"], "FROM python:3.10-slim") {
 		t.Errorf("Dockerfile:\n%s", rendered["Dockerfile"])
 	}
-	if !strings.Contains(rendered["pyproject.toml"], `requires-python = ">=3.10"`) {
+	// The minor series, not a floor: uv resolves driver and workers separately, and
+	// a floor lets them land on different minors — a Ray version mismatch that reads
+	// as anything but a Python problem.
+	if !strings.Contains(rendered["pyproject.toml"], `requires-python = "==3.10.*"`) {
 		t.Errorf("pyproject.toml:\n%s", rendered["pyproject.toml"])
 	}
 	if !strings.Contains(rendered["Dockerfile"], "GIT_COMMIT") {

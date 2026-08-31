@@ -129,7 +129,8 @@ func newExperimentHarness(t *testing.T) *experimentHarness {
 			MLflowURL:         mlflow.URL(),
 			RayClientURL:      "auto",
 			TsConn:            "postgresql://ode:secret@timescale.example.org/postgres",
-			DefaultEntrypoint: "python train.py",
+			DefaultEntrypoint: "uv run python train.py",
+			PyExecutable:      "uv run",
 			CommandTimeout:    120 * time.Second,
 			RequestTimeout:    30 * time.Second,
 			EmbedProbeTimeout: 2 * time.Second,
@@ -804,7 +805,7 @@ func TestALaunchWithOnlyItsInputsRunsTheDefaultEntrypoint(t *testing.T) {
 	h.commit(t, "Scaffold the operator")
 
 	result := h.launch(t, nil)
-	if result.Entrypoint != "python train.py" {
+	if result.Entrypoint != "uv run python train.py" {
 		t.Errorf("entrypoint = %q, want the deployment default", result.Entrypoint)
 	}
 }
