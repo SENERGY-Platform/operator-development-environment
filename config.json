@@ -147,7 +147,12 @@
   "mlflow_token": "",
   "mlflow_ui_url": "",
   "mlflow_experiment_prefix": "ode",
-  "experiment_default_entrypoint": "python training.py",
+  "experiment_default_entrypoint": "python train.py",
+
+  "//experiment_deployment_config": "A run takes the operator's own training path: ODE hands the job Operator Lib's deployment config, and MLOperator opens the MLflow run, connects to Ray, calls train() and registers the model. These three are what that config carries. experiment_ray_client_url is what Operator Lib passes to ray.init() and is NOT ray_url, which is the dashboard ODE submits jobs to over HTTP -- 'auto' attaches to the cluster the driver already runs in, while a deployed operator names the cluster's client endpoint because it connects from outside. experiment_ts_conn is the timescale DSN provide_historic_data reads history through; it is a shared database credential rather than the caller's token, it reaches every series, and which series a run reads is decided by its input topics rather than by who launched it -- acceptable while every developer is team-internal with platform administration rights, and tracked as SNRGY-4637. experiment_kafka_bootstrap is only needed for an input topic replayed from Kafka rather than read from timescale; empty leaves a run able to train from timescale-backed topics only.",
+  "experiment_ray_client_url": "auto",
+  "experiment_ts_conn": "",
+  "experiment_kafka_bootstrap": "",
 
   "//experiment_bounds": "experiment_max_package_bytes bounds the job archive, and exceeding it is *reported rather than truncated*: a job that ran against a partial repository fails in a way nobody could diagnose from the run. It also bounds ODE's own memory, because the archive is held whole and travels back from the pod base64-encoded, which costs a third more again. 16 MiB is three orders of magnitude more than a source repository needs; what it actually catches is a checked-in model file or a data directory. The two env bounds matter because a launch arrives from an HTTP body or from an LLM tool call, and neither is trusted input. experiment_max_log_bytes bounds the developer's own log route — logs never reach a model (§5.13).",
   "experiment_max_package_bytes": 16777216,

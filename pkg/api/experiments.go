@@ -74,6 +74,9 @@ type launchBody struct {
 	// boundary: bounded in count and size, and unable to override what ODE sets.
 	EnvVars map[string]string `json:"env_vars"`
 	RunName string            `json:"run_name"`
+	// InputTopics are the operator's inputs. They decide what history the run reads,
+	// so a launch without them is refused rather than run against nothing.
+	InputTopics []experiments.InputTopic `json:"input_topics"`
 	// SessionID ties the run to a chat session, so §5.13's summary can be injected
 	// back into the conversation it came from.
 	SessionID string `json:"session_id"`
@@ -87,6 +90,12 @@ type launchBody struct {
 // @Description	A working copy with uncommitted changes is refused with 409 and the
 // @Description	paths that made it dirty: the run records a commit SHA and is only
 // @Description	reproducible from it if the code that ran is that commit.
+// @Description
+// @Description	The job runs the operator's own training path: ODE hands it Operator
+// @Description	Lib's deployment config, and `MLOperator` opens the run, connects to
+// @Description	Ray, calls `train()` and registers the model. A launch with no
+// @Description	`input_topics` is refused with 400, because a run with no inputs reads
+// @Description	no history and fails inside `train()`.
 // @Tags			experiments
 // @Accept			json
 // @Produce		json
@@ -122,10 +131,11 @@ func handleLaunchExperiment(svc *experiments.Service) gin.HandlerFunc {
 		}
 
 		result, err := svc.Launch(c.Request.Context(), experiments.LaunchRequest{
-			Request:    request,
-			Entrypoint: body.Entrypoint,
-			EnvVars:    body.EnvVars,
-			RunName:    body.RunName,
+			Request:     request,
+			Entrypoint:  body.Entrypoint,
+			EnvVars:     body.EnvVars,
+			RunName:     body.RunName,
+			InputTopics: body.InputTopics,
 		})
 		if err != nil {
 			respondExperiments(c, err)

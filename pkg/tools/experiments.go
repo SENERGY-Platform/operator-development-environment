@@ -43,9 +43,10 @@ import (
 // make that a matter of discipline rather than of design.
 
 type launchExperimentInput struct {
-	Entrypoint string            `json:"entrypoint"`
-	EnvVars    map[string]string `json:"env_vars"`
-	RunName    string            `json:"run_name"`
+	Entrypoint  string                   `json:"entrypoint"`
+	EnvVars     map[string]string        `json:"env_vars"`
+	RunName     string                   `json:"run_name"`
+	InputTopics []experiments.InputTopic `json:"input_topics"`
 }
 
 // LaunchExperimentResult is what the model reads back after a launch.
@@ -82,9 +83,10 @@ func (s *surface) launchExperiment(ctx context.Context, req Request) (any, error
 			SessionID:   req.SessionID,
 			WorkbenchID: req.WorkbenchID,
 		},
-		Entrypoint: in.Entrypoint,
-		EnvVars:    in.EnvVars,
-		RunName:    in.RunName,
+		Entrypoint:  in.Entrypoint,
+		EnvVars:     in.EnvVars,
+		RunName:     in.RunName,
+		InputTopics: in.InputTopics,
 	})
 	if err != nil {
 		return nil, err

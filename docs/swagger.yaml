@@ -197,6 +197,13 @@ definitions:
           EnvVars are extra environment variables for the job, validated at the service
           boundary: bounded in count and size, and unable to override what ODE sets.
         type: object
+      input_topics:
+        description: |-
+          InputTopics are the operator's inputs. They decide what history the run reads,
+          so a launch without them is refused rather than run against nothing.
+        items:
+          $ref: '#/definitions/experiments.InputTopic'
+        type: array
       run_name:
         type: string
       session_id:
@@ -996,6 +1003,21 @@ definitions:
           developer's only one by then.
         type: string
     type: object
+  experiments.InputTopic:
+    properties:
+      filterType:
+        description: FilterType is "DeviceId" or "OperatorId"; FilterValue the id
+          it matches.
+        type: string
+      filterValue:
+        type: string
+      mappings:
+        items:
+          $ref: '#/definitions/experiments.TopicMapping'
+        type: array
+      name:
+        type: string
+    type: object
   experiments.LaunchResult:
     properties:
       branch:
@@ -1219,6 +1241,13 @@ definitions:
         additionalProperties:
           type: string
         type: object
+    type: object
+  experiments.TopicMapping:
+    properties:
+      dest:
+        type: string
+      source:
+        type: string
     type: object
   experiments.Verdict:
     type: object
@@ -4431,6 +4460,12 @@ paths:
         A working copy with uncommitted changes is refused with 409 and the
         paths that made it dirty: the run records a commit SHA and is only
         reproducible from it if the code that ran is that commit.
+
+        The job runs the operator's own training path: ODE hands it Operator
+        Lib's deployment config, and `MLOperator` opens the run, connects to
+        Ray, calls `train()` and registers the model. A launch with no
+        `input_topics` is refused with 400, because a run with no inputs reads
+        no history and fails inside `train()`.
       parameters:
       - description: the entrypoint, environment and run name
         in: body

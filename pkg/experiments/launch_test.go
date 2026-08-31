@@ -20,6 +20,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -36,7 +37,7 @@ func TestALaunchIsRefusedWhileTheWorkingCopyHasUncommittedChanges(t *testing.T) 
 	h.createRepository()
 
 	_, err := h.service.Launch(context.Background(),
-		experiments.LaunchRequest{Request: h.request()})
+		experiments.LaunchRequest{Request: h.request(), InputTopics: testInputTopics()})
 	if err == nil {
 		t.Fatal("the launch was accepted from a working copy with no commit")
 	}
@@ -63,7 +64,7 @@ func TestARefusedLaunchNamesTheUncommittedPaths(t *testing.T) {
 	h.write("notes.md", "scratch\n")
 
 	_, err := h.service.Launch(context.Background(),
-		experiments.LaunchRequest{Request: h.request()})
+		experiments.LaunchRequest{Request: h.request(), InputTopics: testInputTopics()})
 
 	var dirty *experiments.DirtyError
 	if !errors.As(err, &dirty) {
@@ -88,7 +89,7 @@ func TestALaunchWithoutARepositorySaysWhatIsMissing(t *testing.T) {
 	// Connected to GitHub, but nothing selected.
 
 	_, err := h.service.Launch(context.Background(),
-		experiments.LaunchRequest{Request: h.request()})
+		experiments.LaunchRequest{Request: h.request(), InputTopics: testInputTopics()})
 	if !errors.Is(err, repo.ErrNoRepository) {
 		t.Fatalf("error = %v, want the repo service's own 'no repository' refusal", err)
 	}
@@ -207,7 +208,7 @@ func TestAPackageOverTheConfiguredBoundIsRefusedRatherThanTruncated(t *testing.T
 	h.ready()
 
 	_, err := h.service.Launch(context.Background(),
-		experiments.LaunchRequest{Request: h.request()})
+		experiments.LaunchRequest{Request: h.request(), InputTopics: testInputTopics()})
 
 	var tooLarge *experiments.PackageTooLargeError
 	if !errors.As(err, &tooLarge) {
@@ -269,18 +270,65 @@ func TestTheJobIsPointedAtTheUploadedPackageAndTheRunItShouldLogTo(t *testing.T)
 	if got := job.RuntimeEnv.EnvVars["MLFLOW_RUN_ID"]; got != result.RunID {
 		t.Errorf("MLFLOW_RUN_ID = %q, want %q", got, result.RunID)
 	}
-	if got := job.RuntimeEnv.EnvVars["MLFLOW_EXPERIMENT_ID"]; got != result.MLflowExperimentID {
-		t.Errorf("MLFLOW_EXPERIMENT_ID = %q, want %q", got, result.MLflowExperimentID)
+	// MLFLOW_TRACKING_URI and MLFLOW_EXPERIMENT_ID are deliberately absent. ODE no
+	// longer tells the job where MLflow is, because Operator Lib reads that from its
+	// own deployment config — setting both was the duplication this replaced, and a
+	// TrainMlflowLogger calls set_tracking_uri from the config anyway, so ODE's
+	// variable would have been overridden rather than honoured.
+	for _, absent := range []string{"MLFLOW_TRACKING_URI", "MLFLOW_EXPERIMENT_ID"} {
+		if got, ok := job.RuntimeEnv.EnvVars[absent]; ok {
+			t.Errorf("%s = %q, want it unset: the deployment config carries it", absent, got)
+		}
 	}
-	if got := job.RuntimeEnv.EnvVars["MLFLOW_TRACKING_URI"]; got != h.mlflow.URL() {
-		t.Errorf("MLFLOW_TRACKING_URI = %q, want the tracking server", got)
+
+	// What Operator Lib actually reads.
+	var config struct {
+		Config struct {
+			MLflowURL string `json:"mlflow_url"`
+			RayURL    string `json:"ray_url"`
+			TsConn    string `json:"ts_conn"`
+		} `json:"config"`
+		InputTopics []struct {
+			Name     string `json:"name"`
+			Mappings []struct {
+				Dest   string `json:"dest"`
+				Source string `json:"source"`
+			} `json:"mappings"`
+		} `json:"inputTopics"`
 	}
+	raw, ok := job.RuntimeEnv.EnvVars["CONFIG"]
+	if !ok {
+		t.Fatal("the job carries no CONFIG, so Operator Lib has no deployment config to read")
+	}
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		t.Fatalf("CONFIG is not the JSON Operator Lib parses: %v", err)
+	}
+	if config.Config.MLflowURL != h.mlflow.URL() {
+		t.Errorf("config.mlflow_url = %q, want the tracking server", config.Config.MLflowURL)
+	}
+	if config.Config.RayURL == "" || config.Config.TsConn == "" {
+		t.Errorf("config = %+v, want ray_url and ts_conn set: Operator Lib's own defaults "+
+			"are compiled-in cluster names and would silently point elsewhere", config.Config)
+	}
+	if len(config.InputTopics) != 1 || len(config.InputTopics[0].Mappings) != 1 {
+		t.Fatalf("inputTopics = %+v, want the one topic the launch named", config.InputTopics)
+	}
+	if got := config.InputTopics[0].Mappings[0].Dest; got != "value" {
+		t.Errorf("mapping dest = %q, want the name infer() sees", got)
+	}
+
+	// The pair that decides the registry key, and so decides that this run trains
+	// rather than finding a model already registered.
+	if job.RuntimeEnv.EnvVars["PIPELINE_ID"] == "" || job.RuntimeEnv.EnvVars["OPERATOR_ID"] == "" {
+		t.Error("the job carries no pipeline/operator pair, so MLOperator has no model id")
+	}
+
 	// The platform URLs a job reads its training data from (§5.3.4), so a developer
 	// does not restate them in the repository.
 	if got := job.RuntimeEnv.EnvVars["SENERGY_TIMESCALE_URL"]; got == "" {
 		t.Error("the job was not told where the timeseries store is")
 	}
-	if job.Entrypoint != "python training.py" {
+	if job.Entrypoint != "python train.py" {
 		t.Errorf("entrypoint = %q, want the deployment default", job.Entrypoint)
 	}
 }
@@ -317,7 +365,7 @@ func TestTheLaunchRefusesEnvironmentItWouldHaveToOverride(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := h.service.Launch(context.Background(), experiments.LaunchRequest{
-				Request: h.request(), EnvVars: tc.env,
+				Request: h.request(), InputTopics: testInputTopics(), EnvVars: tc.env,
 			})
 			if !errors.Is(err, experiments.ErrInvalidRequest) {
 				t.Fatalf("error = %v, want an invalid request", err)

@@ -67,11 +67,10 @@ produces a different thing at the end.
 
 What ODE installs in a kernel is four variables (§5.6 item 4) — `SENERGY_TOKEN`,
 `ODE_WORKSPACE`, `SENERGY_DEVICE_REPO_URL`, `SENERGY_TIMESCALE_URL`. That is
-`kernelEnvironment` in `pkg/pkg.go`, and it is the whole list: no
-`MLFLOW_TRACKING_URI`, no `RAY_ADDRESS`. The MLflow trio is set at submission
-time only, and it could not be earlier — ODE creates the run before the job
-exists, so `MLFLOW_RUN_ID` has no value to carry until then. Those same three
-names sit in `reservedEnv`, so a caller's `env_vars` cannot supply them either.
+`kernelEnvironment` in `pkg/pkg.go`, and it is the whole list: no `CONFIG`, no
+`RAY_ADDRESS`. A kernel is not a deployment, so it has no deployment config, and
+without one Operator Lib has nothing to connect with — `provide_historic_data`
+reads `DeploymentConfig.config` and raises on its absence.
 
 Both client libraries are in the pod regardless: the singleuser image installs
 Operator Lib, which brings `ray` and `mlflow` with it. The imports work, which is
@@ -88,14 +87,6 @@ why the two gaps are worth naming rather than assuming.
   `source=ode`. The Experiments pane lists by those tags and the interpretation
   turn reads them, so the run is invisible to both.
 
-The second gap is where the two MLflow uses part company, and they are genuinely
-two. Operator Lib's is the **registry** path in production: `MLOperator` loads the
-model registered under this pipeline and operator, and `train()` — handed a
-`TrainMlflowLogger` by the library itself — registers the next one. It is keyed by
-the deployment. ODE's is **tracking for comparison**, keyed by the commit. Both
-are MLflow; they answer different questions, and neither substitutes for the
-other.
-
 So there are three loops rather than two, and the middle one is not a lesser
 version of the third:
 
@@ -108,7 +99,8 @@ version of the third:
    for "does this do what I think it does", and it needs no commit.
 3. **`launch_experiment`**, when the result is one to hold against another result
    weeks later. That is the loop the commit rule belongs to, because the
-   comparison rests on knowing which code produced which number.
+   comparison rests on knowing which code produced which number. It is also the
+   only one of the three that runs what the deployed operator runs.
 
 The assistant is told the same thing, in the two tool descriptions rather than in
 the system prompt: `run_code`'s says the kernel is wired to neither MLflow nor the
@@ -163,42 +155,136 @@ A new commit produces a new name and a new upload. Nothing caches on ODE's side;
 the cluster's own package store is the cache, which is the only one that can be
 right after a restart.
 
-## ODE creates the MLflow run, not the job
+## The run is Operator Lib's; the commit is ODE's
 
-The order matters and it is the reason "run tagged with commit SHA" holds:
+ODE used to do the machine-learning integration itself: submit the job, create the
+MLflow run, and set `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_ID` and
+`MLFLOW_RUN_ID` so the developer's code could log. That was a second
+implementation of what Operator Lib already does, and the two never met. Operator
+Lib reads `CONFIG`, `PIPELINE_ID` and `OPERATOR_ID`; it connects to Ray and MLflow
+from `Config.ray_url` and `Config.mlflow_url`; and `provide_historic_data` reads
+`DeploymentConfig.config`. None of those is a name ODE set, so a packaged operator
+could not read a row of history — `json.loads(None)` raised before it tried. A
+`TrainMlflowLogger` calls `set_tracking_uri` from the config as well, so even the
+one variable that looked load-bearing was being overridden rather than honoured.
+
+So the job is given what Operator Lib actually reads, and the ML integration is
+Operator Lib's:
 
 1. the working copy is checked and the launch refused if it is dirty;
-2. the package is built from that commit and uploaded;
-3. the per-user experiment is found or created (D17);
-4. **the run is created, with its tags in the same request**;
-5. only then is the job submitted, with the run id already in its metadata.
+2. the launch is refused if it names no input topics — see below;
+3. the package is built from that commit and uploaded;
+4. the per-user experiment is found or created (D17);
+5. **the run is created, with its tags in the same request**;
+6. the job is submitted with the deployment config, and `MLOperator` sets the
+   tracking URI, opens the run, connects to Ray, calls `train()` and registers the
+   model — the same sequence a deployed operator performs when it first comes up.
 
-Step 4 is a `runs/create` carrying `commit_sha`, `session_id`, `user_sub`,
+Step 5 is a `runs/create` carrying `commit_sha`, `session_id`, `user_sub`,
 `ode_experiment_id`, the repository, the branch, the entrypoint and the Ray
 submission id — not a create followed by five `set-tag` calls. The difference is
 that there is no window in which the run exists without the tag the whole claim
 rests on; a crash between two round trips would otherwise leave a run permanently
 unreproducible and looking fine.
 
-It is also what lets `mlflow_run_id` be one of the four metadata keys §5.12 names
-at submission time. A job that minted its own run could not be, and the tag would
-then depend on the developer's own code remembering to write it.
+**The job adopts that run rather than opening its own.** `MLOperator` calls
+`mlflow.start_run(run_name=...)` without a run id, and MLflow's fluent API resumes
+the run `MLFLOW_RUN_ID` names when none is passed. Without that one variable there
+would be two runs per experiment — ODE's, carrying the commit tag and no metrics,
+and the job's, carrying the metrics and no commit — and `get_experiment_results`
+reads ODE's.
 
-The experiment name is deterministic per developer and repository (D17):
-`ode/{hub username}/{owner}-{repo}`. The username is used because that string is
-what a human reads in MLflow's own UI, and the Keycloak subject — which is what
-actually identifies the developer and cannot change — is an experiment tag, so the
-mapping survives a rename.
+The experiment stays D17's, one per developer and repository
+(`ode/{hub username}/{owner}-{repo}`), because `Store.Previous` scopes §5.13's
+comparison to it and a per-run experiment would make every run a first run.
+`MLOperator` also calls `set_experiment(model_id)`, but that does not move the
+run: `start_run` resumes by id whatever experiment is selected. What it leaves
+behind is one empty MLflow experiment per launch, which is litter rather than a
+problem.
 
-Steps 2 to 5 also mean a failed submission leaves a created run behind. It is
-marked failed rather than deleted: a run that existed and failed to launch is a
-fact about the developer's day, and deleting a run is theirs to do.
+## The pipeline and operator ids ODE invents
+
+A deployed operator gets its pipeline and operator ids from the flow engine. A run
+being developed has no deployment, so ODE synthesises the pair: the pipeline is
+stable per developer, the operator is the ODE experiment id. The pair is what
+Operator Lib builds `model_id` from — `pipeline-{pipeline}_operator-{operator}` —
+and it is load bearing twice.
+
+- **Every launch trains.** `MLOperator.init()` trains only when no model is
+  registered under the pair. A pair unique per launch misses by construction. A
+  pair stable per repository would train on the first launch and record nothing on
+  the second, which is the silent failure worth designing out.
+- **No launch can move a deployed operator's alias.** `register_model` and the
+  `production` alias are scoped to the pair, and a deployed operator's pair is a
+  real flow-engine pipeline id and a real operator id. A development run cannot
+  collide with one.
+
+## A run with no inputs is refused
+
+`inputTopics` is what decides which history a run reads, so a launch that names
+none is refused with 400 rather than submitted:
+
+```text
+POST /experiments
+400 {"error":"this experiment has no input topics, so a run would read no history
+      and fail inside train(); choose the operator's inputs first
+      (propose_data_selection for a device, propose_operator_input for an import)"}
+```
+
+The alternative is not a smaller experiment. `provide_historic_data` returns an
+empty list, the scaffold's `train()` returns `None` on it or raises, and what the
+developer gets is cluster time spent on a failed run and a Python traceback in a
+log they have to go and find. The refusal names the tool that fixes it, the way
+the uncommitted-changes refusal names the commit.
+
+## `train.py`, and why the entrypoint is not `main.py`
+
+`main.py` is the deployed operator's entrypoint and is the wrong one here.
+`OperatorLib.__init__` builds the Kafka clients, calls `operator.init(...)` — which
+is where `MLOperator` trains — and then calls `operator.start()` and
+`watchdog.join()`. An experiment would train correctly and then consume Kafka
+forever.
+
+So the scaffold carries `train.py`: Operator Lib's own init sequence, stopped
+exactly where `main.py` would enter the loop. It is a committed file rather than
+something ODE injects into the archive, because the package has to stay exactly
+the commit it claims to be (§5.11 item 7). It is also the developer's to read and
+change, which a file materialising inside a job would not be.
+
+A repository scaffolded before `train.py` existed does not have it. `ScaffoldState`
+reports it as missing, the way it reports any other absent file of the compliance
+set; a launch against such a repository runs the deployment default and fails on
+`python: can't open file 'train.py'`.
 
 ## The job's own credential, and what it costs when there is none
 
-A Ray job reads its training data from timescale-wrapper **directly** with its own
-token (§5.3.4) — never streamed through ODE. An interactive access token is
-minutes to an hour; a training run is hours. Handing the job the session token
+A Ray job reads its training data **directly**, never streamed through ODE
+(§5.3.4). What it reads *with* changed when the run moved onto Operator Lib's
+path, and the change is worth stating plainly rather than leaving to be
+discovered.
+
+`provide_historic_data` reads timescale over a direct Postgres connection from
+`Config.ts_conn`. That is a shared database credential: it reaches every series,
+and which series a run reads is decided by the topics in its deployment config
+rather than by who launched it. ODE previously read timescale through
+timescale-wrapper with the developer's own token, so the authorisation was theirs
+and nothing more — this is a step down from that, taken deliberately so that an
+experiment does what a deployed operator does.
+
+It is not a live risk while every developer is team-internal with platform
+administration rights: the DSN gives them nothing they could not reach anyway. It
+becomes one the day developer access is given to anyone outside the team, and it
+has to be solved before then. Tracked as
+[SNRGY-4637](https://bitnify.atlassian.net/browse/SNRGY-4637).
+
+ODE names the DSN in its own configuration as `experiment_ts_conn` rather than
+letting Operator Lib's compiled-in default apply, so that the credential is
+visible where it is handed out and swappable without a library release.
+
+The token below is a separate question and still worth its section: a job also
+carries `SENERGY_TOKEN` for the developer's own code and for the platform helpers
+in the singleuser image. An interactive access token is minutes to an hour; a
+training run is hours. Handing the job the session token
 means a run that dies partway through having already spent the cluster time, which
 is the risk register's "token expiry vs. long Ray jobs" row.
 

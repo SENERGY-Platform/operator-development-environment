@@ -21,6 +21,11 @@ const docTemplate = `{
     "paths": {
         "/admin/limits": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Returns the stored policies, the built-in defaults, which fields\nthis build enforces versus merely stores, with the reason, and the\nmodel pricing a cost cap is computed from (§3.3).",
                 "produces": [
                     "application/json"
@@ -64,14 +69,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "put": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "put": {
+                ],
                 "description": "Serves both /admin/limits, which writes the global record, and\n/admin/limits/{sub}, which writes one user's. The two paths exist so\nthat \"global\" is explicit rather than an omitted path segment. The\nresponse carries the resulting effective policy, which for a subject\nis the per-user record layered over the global one.",
                 "consumes": [
                     "application/json"
@@ -138,16 +143,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/admin/limits/{sub}": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The effective policy is the per-user record layered over the global\none; the spend is what that subject has used in the current period.",
                 "produces": [
                     "application/json"
@@ -200,14 +205,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "put": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "put": {
+                ],
                 "description": "Serves both /admin/limits, which writes the global record, and\n/admin/limits/{sub}, which writes one user's. The two paths exist so\nthat \"global\" is explicit rather than an omitted path segment. The\nresponse carries the resulting effective policy, which for a subject\nis the per-user record layered over the global one.",
                 "consumes": [
                     "application/json"
@@ -280,16 +285,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/admin/tool-calls": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Every tool the assistant reached for, refusals included. This is what\nmakes the exposure-tier argument of §3.2 checkable after the fact.",
                 "produces": [
                     "application/json"
@@ -354,16 +359,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/admin/usage": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -427,16 +432,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/charts": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Newest first, optionally narrowed to one chat session — which is how the\npane lists what the assistant proposed in the conversation being read.",
                 "produces": [
                     "application/json"
@@ -476,14 +481,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "post": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "post": {
+                ],
                 "description": "Validates a declarative chart specification (§5.9), resolves every\nseries against the device type and the ontology, and stores it. No values\nare read: this answers with the resolved units, the axis and the chart id,\nand GET /charts/{id}/data is what reads the data behind it.\n\nThe resolution happens now rather than at first render so that a\n` + "`" + `convert:` + "`" + ` naming an unreachable characteristic is refused while the author\ncan still fix it — and because the device read it takes is the same\npermission check the value read will need.",
                 "consumes": [
                     "application/json"
@@ -549,16 +554,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/charts/{id}": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -600,14 +605,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "delete": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "delete": {
+                ],
                 "tags": [
                     "charts"
                 ],
@@ -643,16 +648,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/charts/{id}/confirmations": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Appends a developer confirmation, correction or rejection to the profiler's\noverride overlay (D21) from the exploration pane — an inferred unit, a\nsession boundary, a gap classification, an advised range (§5.10). It is the\nsame overlay the profiler view writes to and the same one every later\nprofile is resolved against, keyed by series rather than by profile, so a\nconfirmation survives recomputation and applies to a series that has never\nbeen profiled at all.\n\nA developer action only. §5.8 lists writing a ProfileOverride among the\noperations with no LLM tool: a model that can confirm its own inferred unit\nhas confirmed nothing.",
                 "consumes": [
                     "application/json"
@@ -716,16 +721,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/charts/{id}/data": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Reads the series a specification names, on behalf of the caller, and\nreturns them with the profiler-derived annotations of §5.10: detected\nsessions, gaps, advised exclusions and usable range, and counter-reset\nmarkers. Every transform is evaluated by the platform (§5.3.1) — the\nbucket, the counter differencing and the unit conversion are all fields of\nPOST /queries/v2, not arithmetic done here.\n\nThis is the only route in ODE that hands series values to a client, and it\nhands them to the developer. The exposure tier bounds what an LLM sees; it\ndoes not stand between a developer and their own data.",
                 "produces": [
                     "application/json"
@@ -813,16 +818,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/chat/sessions": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -860,14 +865,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "post": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "post": {
+                ],
                 "description": "An absent exposure_tier means L0, which §3.2 makes the default rather\nthan a choice the caller has to remember. A tier above the admin\nceiling for this user is refused, not silently clamped.",
                 "consumes": [
                     "application/json"
@@ -944,16 +949,16 @@ const docTemplate = `{
                             "additionalProperties": true
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/chat/sessions/{id}": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -996,14 +1001,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "delete": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "delete": {
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -1042,16 +1047,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/chat/sessions/{id}/auto-run": {
             "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Auto mode runs a ` + "`" + `run_code` + "`" + ` call without asking when its code is\nrecognised as an inspection of data already in the kernel — see\npkg/plaincode for what that means and, importantly, what it does not.\nIt is relief from repeated prompting, **not** a security boundary:\nthe boundary is unchanged and is the developer's own pod and token.\nAnything unrecognised is still confirmed, and no other confirmed\ntool is affected. No LLM tool exists for this.",
                 "consumes": [
                     "application/json"
@@ -1120,16 +1125,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/chat/sessions/{id}/tier": {
             "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The developer's control from §3.2. No LLM tool exists for this\n(tools.Denied), so this route is the only way a tier changes. Every\nchange is written to the session's audit trail.",
                 "consumes": [
                     "application/json"
@@ -1207,16 +1212,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/chat/sessions/{id}/tier-changes": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "§3.2 requires every tier change to be logged. This is that record.",
                 "produces": [
                     "application/json"
@@ -1260,16 +1265,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/chat/sessions/{id}/title": {
             "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Sets the developer's own name for a conversation, in place of the\nfirst few words of its opening message. An empty title clears the\nname, and the next message titles the session again.\n\nIts own sub-resource rather than a PUT of the whole session, so that\nnothing changes a tier through a route that does not write §3.2's\naudit trail.",
                 "consumes": [
                     "application/json"
@@ -1338,16 +1343,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/chat/sessions/{id}/workbench": {
             "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Changes the working context an existing conversation acts in: which\ncheckout its file tools write into, and which kernel its cells run in.\nAn empty workbench_id clears the assignment, which everything below\nreads as \"my only workbench\".\n\nThe move leaves a note in the conversation. Every file read, file write\nand cell run above it happened in the previous checkout, and a model\nhanded that history with no marker goes on believing the files it wrote\nare still there.\n\nRefused with 400 while a turn is running on the session: that turn is\nacting in the workbench the move would take it away from.",
                 "consumes": [
                     "application/json"
@@ -1416,16 +1421,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/devices": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Read on behalf of the caller, never as a service account (D5), so\nthis returns exactly what that user may see.",
                 "produces": [
                     "application/json"
@@ -1489,16 +1494,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/devices/{id}": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -1558,12 +1563,7 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/doc": {
@@ -1598,6 +1598,11 @@ const docTemplate = `{
         },
         "/experiments": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Newest first. Statuses are refreshed from Ray for the runs that have\nnot finished, and only those — a listing of finished runs costs no\ncluster calls. Resolved from the caller's own token: no route here takes\na user parameter.",
                 "produces": [
                     "application/json"
@@ -1631,15 +1636,15 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "post": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "post": {
-                "description": "Packages the developer's **committed** repository state with\n` + "`" + `git archive` + "`" + `, uploads it to Ray, creates the MLflow run and tags it with\nthe commit SHA, then submits the job (§5.12, §5.11 item 7).\n\nA working copy with uncommitted changes is refused with 409 and the\npaths that made it dirty: the run records a commit SHA and is only\nreproducible from it if the code that ran is that commit.",
+                ],
+                "description": "Packages the developer's **committed** repository state with\n` + "`" + `git archive` + "`" + `, uploads it to Ray, creates the MLflow run and tags it with\nthe commit SHA, then submits the job (§5.12, §5.11 item 7).\n\nA working copy with uncommitted changes is refused with 409 and the\npaths that made it dirty: the run records a commit SHA and is only\nreproducible from it if the code that ran is that commit.\n\nThe job runs the operator's own training path: ODE hands it Operator\nLib's deployment config, and ` + "`" + `MLOperator` + "`" + ` opens the run, connects to\nRay, calls ` + "`" + `train()` + "`" + ` and registers the model. A launch with no\n` + "`" + `input_topics` + "`" + ` is refused with 400, because a run with no inputs reads\nno history and fails inside ` + "`" + `train()` + "`" + `.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1701,16 +1706,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/experiments/embed": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The backend half of D6: each configured service is asked for its\nX-Frame-Options and Content-Security-Policy frame-ancestors, and the\nverdict is cached with a TTL. ` + "`" + `embeddable` + "`" + ` is \"yes\", \"no\" or \"unknown\",\nand **\"unknown\" is a real answer** — ODE is inside the cluster and the\nbrowser is not, so a service ODE cannot reach may still frame perfectly.\nThe pane should still load a hidden iframe with a timeout and fall back\nto a link-only card, which is the half only a browser can decide.",
                 "produces": [
                     "application/json"
@@ -1743,16 +1748,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/experiments/{id}": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The record plus its status, refreshed from Ray unless the job has\nalready finished. Another developer's experiment answers 404 rather than\n403: nothing here reveals that one exists.",
                 "produces": [
                     "application/json"
@@ -1804,16 +1809,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/experiments/{id}/interpretation": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "§5.13's summary, the assistant's reading of it, the concrete next\nadjustment it proposed, and the developer's decision on that proposal\nif they have given one.\n\nRecomputed rather than stored: the summary comes from MLflow, the\ninterpretation from the conversation the assistant wrote it in, and only\nthe decisions come from a table — the split §5.4.3 makes between a\nrecomputable artifact and a record of human judgement.\n\n` + "`" + `proposal` + "`" + ` carries an explicit ` + "`" + `status: not_computed` + "`" + ` where there is no\nproposal: a run whose developer has not been connected since it finished\nhas not been interpreted yet, and that is a different fact from an\nassistant that proposed nothing.",
                 "produces": [
                     "application/json"
@@ -1865,16 +1870,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/experiments/{id}/interpretation/decision": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "§5.13's last sentence, recorded. Append-only and keyed by the\nproposal's own fingerprint, so a rejected proposal stays rejected when the\nsame run is interpreted again, and a developer who changes their mind adds\na record rather than replacing one.\n\n**Nothing here is binding (D28).** Accepting records agreement and\nlaunches nothing; promoting a value into ` + "`" + `evaluation.yaml` + "`" + ` or the operator\nconfig is a separate action the developer takes themselves, and §5.8 has no\ntool for either. There is no LLM tool for this route: a model that could\naccept its own proposal would be grading its own work.",
                 "consumes": [
                     "application/json"
@@ -1947,16 +1952,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/experiments/{id}/logs": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The developer's own view of what the job printed, tail-capped. This is\ndeliberately not available to the assistant: §5.13 builds a structured\nsummary and says raw logs never enter the model's context.",
                 "produces": [
                     "application/json"
@@ -2008,16 +2013,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/experiments/{id}/results": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "§5.13's compact structured summary: status, params, the latest value\nof each metric, the run's tags, resource usage and the comparison against\nthe previous run of the same experiment. **Never logs** — those are a\nroute of their own, and no LLM tool reaches them.",
                 "produces": [
                     "application/json"
@@ -2078,16 +2083,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/experiments/{id}/stop": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Asks Ray to stop it and reads the status back rather than assuming it:\nRay stops asynchronously, and a record claiming STOPPED while the job was\nstill winding down would disagree with the dashboard beside it. A job that\nhas already finished is answered with its record, not an error.",
                 "produces": [
                     "application/json"
@@ -2139,12 +2144,7 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/health": {
@@ -2172,6 +2172,11 @@ const docTemplate = `{
         },
         "/kernel": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Resolved from the caller's own token: no route here takes a user\nparameter, which is what makes \"your pod\" mean yours (§5.6).",
                 "produces": [
                     "application/json"
@@ -2213,14 +2218,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "post": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "post": {
+                ],
                 "description": "The pre-warm of §5.6: spawn the pod, start a kernel, install the\nplatform token. Called when the developer opens the pane so that a cold\nstart of up to a minute happens while they are still reading.",
                 "produces": [
                     "application/json"
@@ -2263,14 +2268,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "delete": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "delete": {
+                ],
                 "description": "Ends the kernel but not the pod: the pod is the developer's, their\nfiles are on it, and the cluster's idle culling is what reclaims it.",
                 "produces": [
                     "application/json"
@@ -2307,16 +2312,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/kernel/files": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Read-only, one directory at a time. This is the visible half of M4's\nacceptance criterion — that a file written in one session is present in\nthe next — not the Code pane of §5.11, which is M7.",
                 "produces": [
                     "application/json"
@@ -2359,16 +2364,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/kernel/interrupt": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Interrupts rather than abandons, so the kernel stays usable and its\nstate survives.",
                 "produces": [
                     "application/json"
@@ -2405,16 +2410,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/kernel/restart": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Discards the kernel's state. The pod and the workspace survive.",
                 "produces": [
                     "application/json"
@@ -2457,16 +2462,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/llm/providers": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Each provider with its models and capabilities, including any that came\nup degraded (§5.7), plus which one is the default.",
                 "produces": [
                     "application/json"
@@ -2492,16 +2497,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/llm/tools": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Every declared tool with its minimum tier and confirmation\nrequirement, which of them this deployment can actually run, what each\ntier exposes, and the capabilities that deliberately have no tool.\nReadable by any developer: knowing what the assistant may do is not\nprivileged information.",
                 "produces": [
                     "application/json"
@@ -2527,16 +2532,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/ontology/aspect-nodes": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -2575,16 +2580,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/ontology/aspect-tree": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -2618,16 +2623,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/ontology/characteristics": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -2661,16 +2666,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/ontology/concepts": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -2709,16 +2714,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/ontology/device-classes": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -2757,16 +2762,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/ontology/functions": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Semantic selection resolves an intent to a measuring function (§5.2), so that is the default list.",
                 "produces": [
                     "application/json"
@@ -2824,16 +2829,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/profiles": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The batched unit of work of D19: one request profiles all variables of\na service rather than one variable at a time. The raw pass reads the\nsmaller of the configured window bounds, anchored at the most recent\ndata (D25).\n\nGive export_id instead of device_id and service_id to profile an\nexport. Its window comes from counting rows rather than from\n/data-availability, which the platform offers for devices only.",
                 "consumes": [
                     "application/json"
@@ -2909,16 +2914,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/profiles/{id}": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -2960,16 +2965,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/profiles/{id}/overrides": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Appends a developer confirmation to the override overlay (D21), which\n§5.4.3 calls an empirical record. A developer action only: §5.8 lists\nwriting an override among the operations with no LLM tool at all,\nbecause a model that can confirm its own inferred unit has confirmed\nnothing.",
                 "consumes": [
                     "application/json"
@@ -3033,16 +3038,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/profiles/{id}/projection": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The one projection an LLM is ever given (D26), exposed over HTTP so the\nSPA can show the developer exactly what the model will see.",
                 "produces": [
                     "application/json"
@@ -3101,16 +3106,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/profiles/{id}/sessions": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The paginated resource of D27. A profile carries session statistics and\na handful of exemplars; the full list is here, because two years of\nwashing-machine cycles is thousands of entries.",
                 "produces": [
                     "application/json"
@@ -3186,16 +3191,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/quick-profiles": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The M1a surface (§5.2, §5.4.2): every candidate series behind the\nmatching devices, ranked without reading a single value. The response\ncarries the read counts, so \"no value was read\" is verifiable from the\nanswer rather than a claim about the code.",
                 "produces": [
                     "application/json"
@@ -3272,16 +3277,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/relations": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Profiles every participating service, aligns the members onto one grid with\na single batched query, derives idle and active from each activity_pattern,\nand proposes candidate rules with their exception windows (§5.5).\n\nValues are read, so this is tier L1 for an LLM — but nothing that comes\nback carries one: the document is contingency counts, ratios and bucket\ndurations.\n\nAlso available over the WebSocket as ` + "`" + `relate` + "`" + `, which is the better route for\na wide window: the pass reads two passes per service plus the aligned read,\nand the socket can cancel it.",
                 "consumes": [
                     "application/json"
@@ -3347,16 +3352,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/relations/candidate-sets": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Turns an aspect node into candidate device sets (§5.5). The aspect\nhierarchy is what solves candidate selection: the devices under \"Kitchen\"\nyield the oven and the lights without the developer naming either.\n\nThree kinds of set come back, in order of how much the grouping is worth\ntrusting: an existing platform device group, then one set per aspect node,\nthen the whole subtree. Every set names at least two devices, because a\nsingle-device set has no conditional pattern in it.\n\nReads no values. The reads block says so, which is what makes the tier-L0\nclaim checkable from the answer.",
                 "produces": [
                     "application/json"
@@ -3426,16 +3431,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/relations/rule-decisions": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Every verdict recorded against a rule fingerprint, oldest first. The log is\nappend-only, so this is where \"the detector said 0.91, the developer\nconfirmed it, then narrowed it a week later\" is readable.",
                 "produces": [
                     "application/json"
@@ -3479,16 +3484,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/relations/{id}": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Serves a computed relation with the decision log as it stands now, so a rule\nconfirmed after the pass ran arrives carrying that verdict.",
                 "produces": [
                     "application/json"
@@ -3531,16 +3536,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/relations/{id}/rule-decisions": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Records a developer's verdict on one candidate rule (§5.10, D21). The\nlog is append-only and keyed by a fingerprint of what the rule *says*, so\na verdict survives the rule being recomputed over a different window by a\nlater detector — and a developer who changes their mind adds a record\nrather than replacing one.\n\nDeveloper action only. No LLM tool exists for it, for the reason §5.8 gives\nabout writing a ProfileOverride: a model confirming its own findings is\ngrading its own work.",
                 "consumes": [
                     "application/json"
@@ -3604,16 +3609,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Which repository, which branch, how far ahead and behind the remote,\nwhat is uncommitted, and which of the compliance files are present.\n` + "`" + `fetch=true` + "`" + ` contacts the remote first, which is what makes the\ndivergence current rather than remembered (§5.11 item 5).",
                 "produces": [
                     "application/json"
@@ -3655,16 +3660,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/commit": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "An explicit developer action. No other route in ODE commits, and no LLM\ntool exists that does (§5.11 item 5, §5.8).",
                 "consumes": [
                     "application/json"
@@ -3721,16 +3726,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/commit/message": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Asks the configured LLM provider for a commit message for the uncommitted\nwork: the recent subjects of this repository as style, the diff against the\nlast commit, and the content of files git does not track yet.\n\nIt changes nothing. The working copy, the index and the remote are untouched,\nthe answer is text the developer edits or discards, and committing is still\nthe separate explicit action of §5.11 item 5.",
                 "consumes": [
                     "application/json"
@@ -3795,16 +3800,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/connection": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Whether this developer has connected a GitHub account, which account,\nand whether the grant actually carries the scopes §5.11 item 1 needs.\nNever the credential itself.\n\n` + "`" + `?verify=true` + "`" + ` additionally asks GitHub whether the stored credential\nstill works, and reports what it said: the status, GitHub's own message,\nthe scopes it reports for the token, and the token's *kind* — its public\nprefix, which is what tells an OAuth app's non-expiring token from a\nGitHub App's user token that expires in hours. Never any part of the\ncredential's value. Off by default because the pane polls this route and\na GitHub round trip per poll is not free.",
                 "produces": [
                     "application/json"
@@ -3838,14 +3843,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "post": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "post": {
+                ],
                 "description": "Exchanges the code for a token, reads which account it belongs to and\nstores it encrypted (§5.11 item 1). The state has to be the one this\ndeveloper was issued, and it is single-use.",
                 "consumes": [
                     "application/json"
@@ -3902,14 +3907,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "delete": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "delete": {
+                ],
                 "description": "Forgets the credential. The working copy on the developer's PVC is left\nexactly where it is — it is their work (§5.11 item 6).",
                 "produces": [
                     "application/json"
@@ -3937,16 +3942,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/connection/authorize": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Returns the authorize URL and the single-use state bound to this\ndeveloper. The SPA opens the URL; GitHub returns the browser to the\nSPA, which posts the code back to POST /repo/connection.",
                 "produces": [
                     "application/json"
@@ -3980,16 +3985,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/discard": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The destructive answer of the three, so it requires ` + "`" + `confirm: true` + "`" + ` and\nthe service refuses without it. Resets tracked files to HEAD and removes\nuntracked ones.",
                 "consumes": [
                     "application/json"
@@ -4046,16 +4051,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/fetch": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -4088,16 +4093,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/files": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Every file of the repository, with nothing hidden and nothing reserved\n(D14) — the workflow file and the gitignore are editable like any other.\nOnly ` + "`" + `.git` + "`" + ` is excluded, because it is git's storage rather than source.",
                 "produces": [
                     "application/json"
@@ -4131,16 +4136,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/files/content": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "A file that is not UTF-8 comes back marked binary with no text rather\nthan as mangled content, and one longer than the limit comes back\ntruncated and says so.",
                 "produces": [
                     "application/json"
@@ -4192,14 +4197,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "put": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "put": {
+                ],
                 "description": "Writes the file and nothing else: no staging, no commit. The same\noperation the ` + "`" + `write_file` + "`" + ` tool performs, through the same service —\na second path would be a second, laxer one.",
                 "consumes": [
                     "application/json"
@@ -4247,14 +4252,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "delete": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "delete": {
+                ],
                 "description": "From the working copy, not from history: the deletion is an uncommitted\nchange like any other and reaches GitHub when the developer commits it.",
                 "produces": [
                     "application/json"
@@ -4306,16 +4311,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/files/directory": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "git does not track an empty directory, which is why this exists: a\ndeveloper laying out a package needs the directory before the file.",
                 "consumes": [
                     "application/json"
@@ -4357,16 +4362,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/link": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Links the repository and makes sure its working copy is on the PVC:\nclone if it is not there, reuse it if it is — including its uncommitted\nchanges, which the answer reports (§5.11 items 5 and 6).",
                 "consumes": [
                     "application/json"
@@ -4423,14 +4428,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "delete": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "delete": {
+                ],
                 "description": "Forgets the link. The checkout stays on the PVC, so selecting the\nrepository again is a reuse rather than a clone.",
                 "produces": [
                     "application/json"
@@ -4449,16 +4454,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/push": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Pushes the current branch under the developer's own GitHub credential.\ngit's own reporting comes back, because the useful part of a push is\nwhat the remote said.",
                 "consumes": [
                     "application/json"
@@ -4505,16 +4510,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/repositories": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Read under the developer's own GitHub token. A repository they cannot\npush to is listed and says so, rather than being filtered out and\nfailing later.",
                 "produces": [
                     "application/json"
@@ -4563,14 +4568,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "post": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "post": {
+                ],
                 "description": "Creates an *empty* repository on GitHub, clones it, and writes the\noperator template of §5.11 item 3 into the working copy — pinning\nOperator Lib at the newest ref at scaffold time (D15). Nothing is\ncommitted: the developer's own commit is the repository's first.",
                 "consumes": [
                     "application/json"
@@ -4627,16 +4632,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/scaffold": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Never overwrites: a file that is there belongs to the developer, and the\nanswer says what was written and what was left alone. Nothing is\ncommitted.",
                 "produces": [
                     "application/json"
@@ -4670,16 +4675,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/repo/stash": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The reversible of the three answers §5.11 item 6 requires for\nuncommitted work found on reopen. Includes untracked files.",
                 "consumes": [
                     "application/json"
@@ -4726,16 +4731,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/selection": {
             "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The M2 surface (§5.2). A free-text intent is matched lexically against\nthe ontology; explicit id lists bypass the matcher, which is how a\ncaller that has already read the ontology asks for exactly what it\nmeans. Candidates are ranked by QuickProfile unless rank is false, and\nranking needs a timescale-wrapper — without one the resolution still\nreturns series, just unordered.",
                 "consumes": [
                     "application/json"
@@ -4793,16 +4798,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/session": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Identity from the token, the realm roles behind it, which capabilities\nthis deployment serves, and — when an admin service is configured —\nthe caller's limits and spend so far (§3.3).",
                 "produces": [
                     "application/json"
@@ -4828,16 +4833,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/timeseries/availability": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "A thin passthrough to the timescale-wrapper, read as the caller.",
                 "produces": [
                     "application/json"
@@ -4890,16 +4895,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/timeseries/export-data": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "The export-side counterpart of /timeseries/availability, and a\ndifferent kind of answer because the platform has no availability\nendpoint for an export: the rows are counted per column, so the reply\nsays whether anything is stored and which columns are null throughout.\nNo value is read.",
                 "produces": [
                     "application/json"
@@ -4972,16 +4977,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/timeseries/usage": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -5038,16 +5043,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/workbenches": {
             "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "One working context each: a repository checkout and the kernel that\nruns in it. Oldest first, so a picker does not reorder itself while\nthe developer is aiming at an entry.",
                 "produces": [
                     "application/json"
@@ -5073,14 +5078,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "post": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "post": {
+                ],
                 "description": "Creates an empty one. Nothing is cloned and no pod is touched: the\nrepository is chosen afterwards with POST /repo/link, naming this\nworkbench.",
                 "consumes": [
                     "application/json"
@@ -5118,16 +5123,16 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/workbenches/{id}": {
             "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
                 "description": "Sets the developer's own name for it. An empty title clears it, which\nputs the label back to the repository.",
                 "consumes": [
                     "application/json"
@@ -5173,14 +5178,14 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
+                }
+            },
+            "delete": {
                 "security": [
                     {
                         "Bearer": []
                     }
-                ]
-            },
-            "delete": {
+                ],
                 "description": "Forgets it. The checkout stays on the PVC — it is the developer's work\nand may hold uncommitted changes (§5.11 item 6) — and the kernel is\nleft running rather than killed, because something may still be in it.\nOpening a workbench on the same repository again reuses the directory.",
                 "produces": [
                     "application/json"
@@ -5217,12 +5222,7 @@ const docTemplate = `{
                             }
                         }
                     }
-                },
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ]
+                }
             }
         },
         "/ws": {
@@ -5486,6 +5486,13 @@ const docTemplate = `{
                     "type": "object",
                     "additionalProperties": {
                         "type": "string"
+                    }
+                },
+                "input_topics": {
+                    "description": "InputTopics are the operator's inputs. They decide what history the run reads,\nso a launch without them is refused rather than run against nothing.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/experiments.InputTopic"
                     }
                 },
                 "run_name": {
@@ -6442,6 +6449,27 @@ const docTemplate = `{
                 }
             }
         },
+        "experiments.InputTopic": {
+            "type": "object",
+            "properties": {
+                "filterType": {
+                    "description": "FilterType is \"DeviceId\" or \"OperatorId\"; FilterValue the id it matches.",
+                    "type": "string"
+                },
+                "filterValue": {
+                    "type": "string"
+                },
+                "mappings": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/experiments.TopicMapping"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
         "experiments.LaunchResult": {
             "type": "object",
             "properties": {
@@ -6673,6 +6701,17 @@ const docTemplate = `{
                     "additionalProperties": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "experiments.TopicMapping": {
+            "type": "object",
+            "properties": {
+                "dest": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
                 }
             }
         },

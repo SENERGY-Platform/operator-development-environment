@@ -104,6 +104,7 @@ type ScaffoldResult struct {
 // themselves can be compared against the template without rendering it.
 var scaffoldPaths = []string{
 	"main.py",
+	"train.py",
 	"op.py",
 	"training.py",
 	"pyproject.toml",
@@ -197,6 +198,86 @@ if __name__ == "__main__":
         # can say which source it is (§5.11 item 7).
         git_info_file="git_commit",
     )
+`,
+
+	"train.py": `"""Entry point of an experiment: train once, record the run, exit.
+
+The deployed operator starts at main.py, where Operator Lib takes the process,
+trains if no model is registered yet, and then consumes Kafka until it is stopped.
+An experiment wants the first half of that and not the second, so this file runs
+Operator Lib's own init sequence and stops exactly where main.py would enter the
+loop it never leaves.
+
+It is deliberately the same path rather than a smaller one. MLOperator.init() is
+what sets the tracking URI, connects to Ray, calls train() and registers the
+result, so a run started here does what the deployed operator does when it first
+comes up. ODE adds only the commit tag on the run.
+
+ODE runs this file. It is yours to change, but keep operator.init() the last thing
+that happens: everything a run records happens inside it.
+"""
+
+import json
+import sys
+
+import confluent_kafka
+
+import operator_lib.util as util
+
+from op import Operator
+
+
+def main() -> int:
+    dep_config = util.DeploymentConfig()
+    config_json = json.loads(dep_config.config)
+    opr_config = util.OperatorConfig(config_json)
+    util.init_logger(opr_config.config.logger_level, "<<.Repository>>")
+
+    operator = Operator()
+
+    # Built because init() takes them, never polled: this process stops before
+    # operator.start(), and start() is the call that would subscribe. Constructing
+    # a consumer does not open a connection, so an experiment needs no reachable
+    # broker unless one of its input topics is replayed from Kafka rather than
+    # read from timescale.
+    kafka_consumer = confluent_kafka.Consumer(
+        {
+            "bootstrap.servers": dep_config.config_bootstrap_servers or "",
+            "group.id": dep_config.config_application_id,
+            "auto.offset.reset": dep_config.consumer_auto_offset_reset_config,
+        },
+        logger=util.logger,
+    )
+    kafka_producer = confluent_kafka.Producer(
+        {"bootstrap.servers": dep_config.config_bootstrap_servers or ""},
+        logger=util.logger,
+    )
+
+    filter_handler = util.create_filter_handler(
+        opr_config.inputTopics, dep_config.pipeline_id, operator.selectors
+    )
+
+    typed_config = operator.configType(config_json.get("config", {}))
+
+    # The run happens in here. MLOperator.init() finds no model registered under
+    # this pipeline and operator — ODE gives every experiment its own pair, so the
+    # lookup misses by construction — opens the MLflow run, connects to Ray and
+    # calls train(). Returning from it means the run is recorded.
+    operator.init(
+        kafka_consumer=kafka_consumer,
+        kafka_producer=kafka_producer,
+        filter_handler=filter_handler,
+        output_topic=dep_config.output,
+        pipeline_id=dep_config.pipeline_id,
+        operator_id=dep_config.operator_id,
+        config=typed_config,
+        result_error_handler=None,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 `,
 
 	"op.py": `"""The operator: what it infers per message, and when it retrains.
@@ -629,7 +710,8 @@ Development Environment. Every file here is yours to change, including this one.
 
 | File | What it is |
 |---|---|
-| "main.py" | Entry point. Hands the process to Operator Lib. |
+| "main.py" | Entry point of the deployed operator. Hands the process to Operator Lib. |
+| "train.py" | Entry point of an experiment. Trains through Operator Lib, then exits. |
 | "op.py" | The operator: "infer", "train", "need_retraining", and its config. |
 | "training.py" | The Ray training pass and the model MLflow registers. |
 | "pyproject.toml" | Dependencies, with Operator Lib pinned at "<<.OperatorLibRef>>". |

@@ -133,6 +133,11 @@ func newHarness(t *testing.T, apply ...options) *harness {
 			RayURL:            ray.URL(),
 			RayToken:          "ray-service-token",
 			MLflowURL:         mlflow.URL(),
+			DefaultEntrypoint: "python train.py",
+			// The deployment config a run carries. RayClientURL is what Operator Lib
+			// hands to ray.init() and is not RayURL, which is the dashboard's HTTP API.
+			RayClientURL:      "auto",
+			TsConn:            "postgresql://ode:secret@timescale.example.org/postgres",
 			CommandTimeout:    120 * time.Second,
 			RequestTimeout:    30 * time.Second,
 			EmbedProbeTimeout: 2 * time.Second,
@@ -225,9 +230,23 @@ func (h *harness) request() experiments.Request {
 	}
 }
 
+// testInputTopics is the one input every launch in these tests trains from.
+//
+// A launch carries input topics or it is refused, because an experiment with none
+// reads no history and fails inside train(). The tests that are about the refusal
+// itself override this with nil.
+func testInputTopics() []experiments.InputTopic {
+	return []experiments.InputTopic{{
+		Name:        "urn_infai_ses_service_9ba92218-37d8-4c80-ad3d-bb3eb5c8457d",
+		FilterType:  "DeviceId",
+		FilterValue: "urn:infai:ses:device:2ac5436e-5538-4eb3-a448-2d77de68e915",
+		Mappings:    []experiments.TopicMapping{{Dest: "value", Source: "value.power.value"}},
+	}}
+}
+
 func (h *harness) launch(extra ...func(*experiments.LaunchRequest)) experiments.LaunchResult {
 	h.t.Helper()
-	req := experiments.LaunchRequest{Request: h.request()}
+	req := experiments.LaunchRequest{Request: h.request(), InputTopics: testInputTopics()}
 	for _, change := range extra {
 		change(&req)
 	}

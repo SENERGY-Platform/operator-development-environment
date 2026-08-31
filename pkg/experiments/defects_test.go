@@ -203,8 +203,9 @@ func TestNoJobCredentialReachesARefusalFromTheCluster(t *testing.T) {
 	// today hides it only until the body is shorter or the token is longer.
 	const canary = "AAA_CANARY_VALUE_NOT_FOR_A_RESPONSE"
 	_, err := h.service.Launch(t.Context(), experiments.LaunchRequest{
-		Request: h.request(),
-		EnvVars: map[string]string{"AAA_CANARY": canary},
+		Request:     h.request(),
+		InputTopics: testInputTopics(),
+		EnvVars:     map[string]string{"AAA_CANARY": canary},
 	})
 	if err == nil {
 		t.Fatal("the launch succeeded; the double was told to refuse it")
@@ -249,7 +250,7 @@ func TestARefusedSubmissionClosesTheMLflowRunItOpened(t *testing.T) {
 	h.ready()
 
 	h.ray.FailNext("/api/jobs/", http.StatusServiceUnavailable)
-	_, err := h.service.Launch(t.Context(), experiments.LaunchRequest{Request: h.request()})
+	_, err := h.service.Launch(t.Context(), experiments.LaunchRequest{Request: h.request(), InputTopics: testInputTopics()})
 	if err == nil {
 		t.Fatal("the launch succeeded; the double was told to refuse it")
 	}

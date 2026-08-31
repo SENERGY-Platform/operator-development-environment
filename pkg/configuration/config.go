@@ -404,6 +404,37 @@ type ConfigStruct struct {
 	MlflowExperimentPrefix      string       `json:"mlflow_experiment_prefix"`
 	ExperimentDefaultEntrypoint string       `json:"experiment_default_entrypoint"`
 
+	// ExperimentTsConn is the timescale DSN a training run reads history through.
+	//
+	// It exists because a run now takes Operator Lib's own path: provide_historic_data
+	// reads timescale by direct Postgres connection from Config.ts_conn, not through
+	// timescale-wrapper with the caller's token. That is a shared credential, so it is
+	// named here rather than left to Operator Lib's built-in default — a credential
+	// ODE hands out should be visible in ODE's configuration and swappable without a
+	// library release.
+	//
+	// It is also the one place where a run is *less* isolated than the rest of ODE:
+	// the DSN reaches every series, and which series a run reads is decided by the
+	// topics in its deployment config rather than by who launched it. Acceptable while
+	// every developer is team-internal with platform administration rights; it is not
+	// acceptable once developer access is given to anyone outside the team. Tracked as
+	// SNRGY-4637.
+	ExperimentTsConn types.Secret `json:"experiment_ts_conn"`
+	// ExperimentKafkaBootstrap is the broker list a training run's deployment config
+	// carries. A run reads history from timescale for a device topic and replays kafka
+	// for everything else (an import's topic, §5.3.4), which is the case that needs it.
+	// Empty leaves the run able to train from timescale-backed topics only.
+	ExperimentKafkaBootstrap string `json:"experiment_kafka_bootstrap"`
+	// ExperimentRayClientUrl is what a run's deployment config names as ray_url.
+	//
+	// Not the same string as ray_url above: that one is the dashboard ODE submits
+	// jobs to over HTTP, while this is what Operator Lib passes to ray.init(). A
+	// deployed operator names the cluster's client endpoint (ray://host:10001)
+	// because it connects from outside; a run's driver is already on the cluster,
+	// so "auto" attaches to the cluster it is running in rather than opening a
+	// client connection back into it.
+	ExperimentRayClientUrl string `json:"experiment_ray_client_url"`
+
 	// ExperimentMaxPackageBytes bounds the job archive. Exceeding it is reported
 	// rather than truncated: a job that ran against a partial repository fails in a
 	// way nobody could diagnose from the run. It also bounds ODE's own memory — the
@@ -704,9 +735,14 @@ func applyDefaults(config Config) {
 		config.MlflowExperimentPrefix = "ode"
 	}
 	if config.ExperimentDefaultEntrypoint == "" {
-		// The scaffold of §5.11 item 3 puts the Ray task in training.py, so the
-		// default points at what a scaffolded repository actually has.
-		config.ExperimentDefaultEntrypoint = "python training.py"
+		// train.py is the scaffold's training-only entrypoint: Operator Lib's own init
+		// sequence, stopped before the kafka loop that main.py would enter and never
+		// leave. It is a committed file rather than something ODE injects, so the
+		// package stays exactly the commit it claims to be (§5.11 item 7).
+		config.ExperimentDefaultEntrypoint = "python train.py"
+	}
+	if config.ExperimentRayClientUrl == "" {
+		config.ExperimentRayClientUrl = "auto"
 	}
 	if config.ExperimentPollInterval == "" {
 		config.ExperimentPollInterval = "30s"

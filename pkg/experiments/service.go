@@ -83,6 +83,20 @@ type Options struct {
 	// shared with the rest of the platform.
 	ExperimentPrefix string
 
+	// RayClientURL is what a run's deployment config names as ray_url — what
+	// Operator Lib hands to ray.init(). Not RayURL, which is the dashboard's HTTP
+	// API. "auto" attaches to the cluster the driver is already running in.
+	RayClientURL string
+	// TsConn is the timescale DSN Operator Lib's provide_historic_data reads history
+	// through. A shared database credential rather than the caller's token: it
+	// reaches every series, and which series a run reads is decided by its input
+	// topics rather than by who launched it. Tracked as SNRGY-4637.
+	TsConn string
+	// KafkaBootstrap is the broker list a run's deployment config carries, for an
+	// input topic replayed from Kafka rather than read from timescale. Empty leaves
+	// a run able to train from timescale-backed topics only.
+	KafkaBootstrap string
+
 	// DefaultEntrypoint is what a launch that names no command runs. The scaffold
 	// of §5.11 item 3 puts the Ray task in training.py, so that is what it points at.
 	DefaultEntrypoint string
@@ -337,21 +351,10 @@ type LaunchRequest struct {
 	EnvVars map[string]string
 	// RunName is what the MLflow run is called. Empty derives one from the commit.
 	RunName string
-}
-
-// reservedEnv are the variables ODE sets on every job. A launch may not set them:
-// overriding MLFLOW_RUN_ID would point the job's own logging at another run, and
-// overriding the platform token would be a way to hand a job a credential ODE did
-// not mint.
-var reservedEnv = map[string]bool{
-	"MLFLOW_TRACKING_URI":     true,
-	"MLFLOW_EXPERIMENT_ID":    true,
-	"MLFLOW_RUN_ID":           true,
-	"SENERGY_TOKEN":           true,
-	"ODE_COMMIT_SHA":          true,
-	"ODE_EXPERIMENT_ID":       true,
-	"SENERGY_DEVICE_REPO_URL": true,
-	"SENERGY_TIMESCALE_URL":   true,
+	// InputTopics are the operator's inputs, which decide what history the run
+	// reads. They travel in the deployment config rather than as loose variables,
+	// because that is where Operator Lib looks for them.
+	InputTopics []InputTopic
 }
 
 // envNamePattern is what a variable name may look like. Stricter than POSIX
@@ -397,6 +400,15 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 	if err != nil {
 		return LaunchResult{}, err
 	}
+	// After the caller's own variables and before the package is built, for the
+	// reason the dirty working copy check comes first: everything past this point
+	// spends something.
+	if err := validateTopics(req.InputTopics); err != nil {
+		return LaunchResult{}, err
+	}
+	if err := requireInputTopics(req.InputTopics); err != nil {
+		return LaunchResult{}, err
+	}
 
 	experimentID := s.ids.NewID()
 	submissionID := s.ids.NewID()
@@ -423,6 +435,19 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 		}
 	}
 
+	// The experiment stays D17's, one per developer per repository: Store.Previous
+	// scopes the comparison to it, so a per-run experiment would make every run a
+	// first run. Operator Lib's own set_experiment(model_id) does not move the run
+	// away from it — MLOperator opens the run with start_run(), which resumes the
+	// one MLFLOW_RUN_ID names regardless of which experiment is selected, so the
+	// metrics land in the run ODE created and tagged.
+	//
+	// The pipeline and operator ids are therefore only the registry key, which is a
+	// separate namespace from the experiment. Unique per launch, for the two reasons
+	// deployment.go gives: every launch trains, and no launch can move a deployed
+	// operator's "production" alias.
+	pipelineID := s.pipelineID(req.Request)
+	operatorIdentifier := operatorID(experimentID)
 	mlflowExperimentName := s.experimentName(req.Request, status.Link)
 	mlflowExperimentID, err := s.mlflow.ensureExperiment(ctx, mlflowExperimentName, []mlflowTag{
 		{Key: TagUserSub, Value: req.UserSub},
@@ -468,11 +493,14 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 	credential, warnings := s.jobToken(ctx, req.Bearer)
 	record.ScopedCredential = credential.Source == credentialExchanged
 
-	environment["MLFLOW_TRACKING_URI"] = s.opts.MLflowURL
-	environment["MLFLOW_EXPERIMENT_ID"] = mlflowExperimentID
-	environment["MLFLOW_RUN_ID"] = runID
-	environment["ODE_COMMIT_SHA"] = commitSHA
-	environment["ODE_EXPERIMENT_ID"] = experimentID
+	deployment, err := s.deploymentEnvironment(
+		record, pipelineID, operatorIdentifier, req.InputTopics, runID)
+	if err != nil {
+		return LaunchResult{}, err
+	}
+	for key, value := range deployment {
+		environment[key] = value
+	}
 	// The developer's own authorisation, never ODE's (§3.1 step 3). Where a token
 	// exchange is configured this is a token minted for the job on their behalf;
 	// where it is not, it is their session token and Credential says so.

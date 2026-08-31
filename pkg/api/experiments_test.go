@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,6 +127,9 @@ func newExperimentHarness(t *testing.T) *experimentHarness {
 		Options: experiments.Options{
 			RayURL:            ray.URL(),
 			MLflowURL:         mlflow.URL(),
+			RayClientURL:      "auto",
+			TsConn:            "postgresql://ode:secret@timescale.example.org/postgres",
+			DefaultEntrypoint: "python train.py",
 			CommandTimeout:    120 * time.Second,
 			RequestTimeout:    30 * time.Second,
 			EmbedProbeTimeout: 2 * time.Second,
@@ -264,8 +268,24 @@ func (h *experimentHarness) commit(t *testing.T, message string) {
 	}
 }
 
+// testInputTopics is the one input every launch in these tests trains from. A
+// launch carries input topics or it is refused, because a run with none reads no
+// history and fails inside train().
+func testInputTopics() []experiments.InputTopic {
+	return []experiments.InputTopic{{
+		Name:        "urn_infai_ses_service_9ba92218-37d8-4c80-ad3d-bb3eb5c8457d",
+		FilterType:  "DeviceId",
+		FilterValue: "urn:infai:ses:device:2ac5436e-5538-4eb3-a448-2d77de68e915",
+		Mappings:    []experiments.TopicMapping{{Dest: "value", Source: "value.power.value"}},
+	}}
+}
+
+// launch posts a launch body, supplying the input topics when the caller's body
+// does not name any. A test about the launch route is not about the topics, and
+// every one of them would otherwise repeat the same block.
 func (h *experimentHarness) launch(t *testing.T, body any) experiments.LaunchResult {
 	t.Helper()
+	body = withInputTopics(t, body)
 	response := h.call(t, http.MethodPost, "/experiments", body, "developer")
 	if response.StatusCode != http.StatusCreated {
 		raw, _ := io.ReadAll(response.Body)
@@ -732,9 +752,10 @@ func TestALaunchBodySentChunkedIsNotDiscarded(t *testing.T) {
 	h.commit(t, "Scaffold the operator")
 
 	encoded, err := json.Marshal(map[string]any{
-		"entrypoint": "python training.py --folds 10",
-		"run_name":   "chunked",
-		"session_id": "sess-chunked",
+		"entrypoint":   "python training.py --folds 10",
+		"run_name":     "chunked",
+		"session_id":   "sess-chunked",
+		"input_topics": testInputTopics(),
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -771,16 +792,38 @@ func TestALaunchBodySentChunkedIsNotDiscarded(t *testing.T) {
 	}
 }
 
-// A launch with no body at all stays legitimate: it means "run the default
-// entrypoint against what is committed", which is the common case.
-func TestALaunchWithNoBodyStillRunsTheDefaultEntrypoint(t *testing.T) {
+// A launch that names only its inputs still runs the deployment default, which is
+// the common case: "train what is committed, on these topics".
+//
+// It used to be a launch with no body at all. Input topics ended that — a run with
+// none reads no history and fails inside train() — so the body is no longer
+// optional, and the part worth keeping is that everything *else* in it still is.
+func TestALaunchWithOnlyItsInputsRunsTheDefaultEntrypoint(t *testing.T) {
 	h := newExperimentHarness(t)
 	h.prepare(t)
 	h.commit(t, "Scaffold the operator")
 
 	result := h.launch(t, nil)
-	if result.Entrypoint != "python training.py" {
+	if result.Entrypoint != "python train.py" {
 		t.Errorf("entrypoint = %q, want the deployment default", result.Entrypoint)
+	}
+}
+
+// The refusal itself: no inputs, no run.
+func TestALaunchWithNoInputTopicsIsRefused(t *testing.T) {
+	h := newExperimentHarness(t)
+	h.prepare(t)
+	h.commit(t, "Scaffold the operator")
+
+	response := h.call(t, http.MethodPost, "/experiments",
+		map[string]any{"input_topics": []any{}}, "developer")
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("launch = %d, want 400: a run with no inputs reads no history",
+			response.StatusCode)
+	}
+	raw, _ := io.ReadAll(response.Body)
+	if !strings.Contains(string(raw), "propose_data_selection") {
+		t.Errorf("error = %s, want it to name the tool that fixes it", raw)
 	}
 }
 
@@ -806,4 +849,27 @@ func TestALaunchWithAnUnreadableBodyIsRefused(t *testing.T) {
 		t.Errorf("status = %d, want 400 for a body that could not be read",
 			response.StatusCode)
 	}
+}
+
+// withInputTopics re-encodes a launch body with input_topics added when it has
+// none. It goes through JSON rather than through a struct because the callers
+// pass maps, structs and nil interchangeably — and one of them deliberately
+// passes a raw string to test a chunked body.
+func withInputTopics(t *testing.T, body any) any {
+	t.Helper()
+	if body == nil {
+		return map[string]any{"input_topics": testInputTopics()}
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return body // not JSON-shaped: a test about malformed input, leave it alone
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return body
+	}
+	if _, named := fields["input_topics"]; !named {
+		fields["input_topics"] = testInputTopics()
+	}
+	return fields
 }

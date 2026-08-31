@@ -1179,7 +1179,12 @@ func NewSurface(deps Deps) (*Registry, error) {
 				"against the same data, with no commit and no cluster time. A launch is for a " +
 				"result that will be held against another result later, which is what the commit " +
 				"SHA and the MLflow run buy. When the question is only whether the fit does what " +
-				"they think, say that a cell answers it sooner.",
+				"they think, say that a cell answers it sooner.\n\n" +
+				"The job runs the operator's real training path — Operator Lib opens the " +
+				"MLflow run, connects to Ray, calls train() and registers the model — so what " +
+				"it does is what the deployed operator does when it first comes up. It needs " +
+				"input_topics for that: without them the run reads no history and fails inside " +
+				"train(), so the launch is refused instead.",
 			Effect:  "submit Ray job",
 			MinTier: L0,
 			Confirm: true,
@@ -1198,6 +1203,31 @@ func NewSurface(deps Deps) (*Registry, error) {
 			    "run_name": {
 			      "type": "string",
 			      "description": "What to call the run in MLflow. Omit and it is named after the commit. Use it to say what the run is trying, e.g. \"wider lookback, 5 folds\"."
+			    },
+			    "input_topics": {
+			      "type": "array",
+			      "description": "The operator's inputs, which decide what history the run trains on. Required: a launch without them is refused, because the run would read nothing and fail inside train(). Take them from the developer's confirmed data selection (propose_data_selection for a device, propose_operator_input for an import) rather than composing them yourself.",
+			      "items": {
+			        "type": "object",
+			        "properties": {
+			          "name": {"type": "string", "description": "The topic, e.g. \"urn_infai_ses_service_...\" for a device service."},
+			          "filterType": {"type": "string", "description": "\"DeviceId\" or \"OperatorId\"."},
+			          "filterValue": {"type": "string", "description": "The id the filter matches."},
+			          "mappings": {
+			            "type": "array",
+			            "description": "How a message becomes the dict infer() sees.",
+			            "items": {
+			              "type": "object",
+			              "properties": {
+			                "dest": {"type": "string", "description": "The name the operator reads, e.g. \"value\"."},
+			                "source": {"type": "string", "description": "The path in the message, e.g. \"value.power.value\"."}
+			              },
+			              "required": ["dest", "source"]
+			            }
+			          }
+			        },
+			        "required": ["name", "mappings"]
+			      }
 			    }
 			  }
 			}`),

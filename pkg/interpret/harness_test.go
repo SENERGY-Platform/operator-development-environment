@@ -137,6 +137,8 @@ func newHarness(t *testing.T, replies ...string) *harness {
 		IDs:       newSequentialIDs("exp"),
 		Options: experiments.Options{
 			RayURL: ray.URL(), MLflowURL: mlflow.URL(),
+			RayClientURL: "auto", DefaultEntrypoint: "python train.py",
+			TsConn:         "postgresql://ode:secret@timescale.example.org/postgres",
 			CommandTimeout: 120 * time.Second, RequestTimeout: 30 * time.Second,
 		},
 	})
@@ -272,10 +274,22 @@ func (h *harness) request() experiments.Request {
 }
 
 // launch submits an experiment from the chat session.
+// testInputTopics is the one input every launch in these tests trains from. A
+// launch carries input topics or it is refused, because a run with none reads no
+// history and fails inside train().
+func testInputTopics() []experiments.InputTopic {
+	return []experiments.InputTopic{{
+		Name:        "urn_infai_ses_service_9ba92218-37d8-4c80-ad3d-bb3eb5c8457d",
+		FilterType:  "DeviceId",
+		FilterValue: "urn:infai:ses:device:2ac5436e-5538-4eb3-a448-2d77de68e915",
+		Mappings:    []experiments.TopicMapping{{Dest: "value", Source: "value.power.value"}},
+	}}
+}
+
 func (h *harness) launch() experiments.LaunchResult {
 	h.t.Helper()
 	result, err := h.experiments.Launch(context.Background(),
-		experiments.LaunchRequest{Request: h.request()})
+		experiments.LaunchRequest{Request: h.request(), InputTopics: testInputTopics()})
 	if err != nil {
 		h.t.Fatalf("launch: %v", err)
 	}

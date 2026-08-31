@@ -847,6 +847,13 @@ func startM8(
 			MLflowUIURL:       config.MlflowUiUrl,
 			ExperimentPrefix:  config.MlflowExperimentPrefix,
 			DefaultEntrypoint: config.ExperimentDefaultEntrypoint,
+			// The deployment config a run carries (docs/experiments.md). RayClientURL
+			// is what Operator Lib hands to ray.init() and is not RayURL, which is the
+			// dashboard's HTTP API; TsConn is the shared timescale credential a run
+			// reads history through, tracked as SNRGY-4637.
+			RayClientURL:      config.ExperimentRayClientUrl,
+			TsConn:            config.ExperimentTsConn.Value(),
+			KafkaBootstrap:    config.ExperimentKafkaBootstrap,
 			MaxPackageBytes:   config.ExperimentMaxPackageBytes,
 			MaxEnvVars:        int(config.ExperimentMaxEnvVars),
 			MaxEnvValueBytes:  int(config.ExperimentMaxEnvValueBytes),
