@@ -50,6 +50,55 @@ func TestTheDullSubsetIsRecognised(t *testing.T) {
 }
 
 /*
+Converting a frame is reading it, and the `to_*` family is split by that.
+
+The writers are refused elsewhere in this file and stay refused — `to_csv` and
+`to_sql` put the data somewhere, which is a different act and a fair thing to be
+asked about. These produce a value and leave the object alone. They were absent
+because they share a prefix with the writers, not because anything distinguished
+them, and the first line of the cell that reaches everything else in the
+vocabulary is a `to_pandas`.
+*/
+func TestConvertingAFrameIsReadingIt(t *testing.T) {
+	for _, code := range []string{
+		"df = frame.to_pandas()",
+		"print(df.head(3).to_string())",
+		`print("nulls:", df.isna().sum().to_dict())`,
+		"df[\"power\"].to_numpy()",
+		"df[\"power\"].to_frame()",
+		"list(df.columns.to_list())",
+		// The cell this was found from, whole.
+		`df = frame.to_pandas()
+print("rows", len(df), "| columns", list(df.columns))
+print(df.head(3).to_string())
+print("nulls:", df.isna().sum().to_dict())
+print("time dtype:", df["time"].dtype, "| span", df["time"].min(), "->", df["time"].max())`,
+	} {
+		if ok, why := plaincode.Recognised(code); !ok {
+			t.Errorf("not recognised: %q\n  because: %s", code, why)
+		}
+	}
+
+	// The half that writes is not admitted by the half that does not.
+	for code, act := range map[string]string{
+		`df.to_csv("out.csv")`:     "writing a file",
+		`df.to_sql("t", conn)`:     "writing a table",
+		`df.to_parquet("out.pq")`:  "writing a file",
+		`df.to_pickle("out.pkl")`:  "writing a file",
+		`df.to_json("out.json")`:   "writing a file",
+		`df.to_feather("out.f")`:   "writing a file",
+		`df.to_excel("out.xlsx")`:  "writing a file",
+		`df.to_hdf("out.h5", "k")`: "writing a file",
+		`df.to_clipboard()`:        "leaving the pod",
+		`frame.write_parquet("p")`: "writing a file",
+	} {
+		if ok, _ := plaincode.Recognised(code); ok {
+			t.Errorf("recognised %q, which is %s", code, act)
+		}
+	}
+}
+
+/*
 Everything below has to be asked about, and the reasons differ.
 
 Some of it is dangerous, some is merely outside the vocabulary, and the package

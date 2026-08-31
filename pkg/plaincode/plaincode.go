@@ -905,6 +905,15 @@ var attributes = map[string]bool{
 	"between": true, "notna": true, "notnull": true, "isna": true, "isnull": true,
 	"dropna": true, "sort_values": true, "sort_index": true, "groupby": true,
 	"reset_index": true, "set_index": true, "astype": true, "copy": true,
+	// converting it, which is the non-writing half of the `to_*` family. `to_csv`
+	// and `to_sql` are absent from this map because they write; these produce a
+	// value and leave the object alone, and they were skipped along with their
+	// siblings rather than for a reason of their own. `to_pandas` is how a polars
+	// or arrow frame becomes the pandas one nearly every member above assumes, so
+	// its absence refused the first line of the cell that reaches everything else
+	// here. `to_list` is polars' spelling of the `tolist` already in this map.
+	"to_pandas": true, "to_string": true, "to_dict": true,
+	"to_numpy": true, "to_frame": true, "to_list": true,
 	// containers and text
 	"keys": true, "items": true, "get": true, "strip": true, "lower": true,
 	"upper": true, "split": true, "join": true, "startswith": true,
