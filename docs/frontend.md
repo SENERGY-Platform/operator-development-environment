@@ -398,3 +398,52 @@ its static handler needs the same fallback for anything that is not an API
 route, and `github_redirect_uri` in `config.json` already assumes that
 arrangement is possible.
 
+
+### Reconnecting GitHub without losing the pane
+
+The connect card starts the OAuth flow with `window.location.assign`, which is
+right for a first connection: there is no working copy yet, so the tab has nothing
+worth keeping. A credential that goes stale *mid-session* is the other case, and
+there the same navigation costs the developer the commit message they had just
+written, the panel that was open, and the memory of which action they were taking.
+
+So `github.ts` runs the same flow in a popup, and the tab stays where it is.
+
+```
+tab                                popup (…/github/callback?code=…&state=…)
+ POST /repo/connection/authorize
+ window.open(url) ───────────────►  main.tsx: relayAuthorisation() runs FIRST
+ …waits for a message              postMessage({code, state}, origin) → window.close()
+ POST /repo/connection ◄────────────┘
+ retries the action that failed
+```
+
+Four decisions in that picture:
+
+- **The popup does not boot the application.** `relayAuthorisation()` is called in
+  `main.tsx` before the theme and before Keycloak, and when it returns true nothing
+  else runs. The window exists to pass on two query parameters; loading the shell
+  would put a Keycloak round trip — possibly a visible login — inside a window that
+  lives for a quarter of a second.
+- **The tab spends the code, not the popup.** An authorisation code is single-use,
+  and the window holding the developer's work is the one that has to know whether
+  spending it worked.
+- **The check is the opener, not the path.** `…/github/callback` means two different
+  things depending on which window it loaded in: with an opener it is a relay, and
+  without one it is the full-tab flow `App` has always completed.
+- **A blocked popup takes the tab.** That is a browser setting, and refusing to
+  reconnect over it would leave no way through at all.
+
+It cannot be silent, and that is GitHub's decision. `login/oauth/authorize` answers
+with `X-Frame-Options: deny`, so there is no hidden frame to run it in, and a grant
+that was revoked means a consent screen — which is the point of one. What the popup
+does buy is that the *common* case looks silent anyway: when the authorisation still
+exists and only the token expired, GitHub redirects straight back and the window
+opens and closes faster than it can be read.
+
+**The bar keeps the action that failed.** A 409 with `needs: "github_connection"`
+stores the closure, and the notice offers "Reconnect GitHub and push" — one click for
+the reconnection *and* the thing the developer actually asked for. It is a button
+rather than something automatic for two reasons: a browser grants a popup to a
+gesture and refuses one to the catch block of a request that has already failed, and
+a consent screen nobody asked for should not open behind anyone's back.
