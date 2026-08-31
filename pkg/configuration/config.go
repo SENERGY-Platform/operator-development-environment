@@ -292,6 +292,13 @@ type ConfigStruct struct {
 	// costs: a developer's console is bounded by memory, a tool result by context.
 	ToolRunCodeMaxOutputBytes int64 `json:"tool_run_code_max_output_bytes"`
 
+	// ToolRepoMaxReadBytes bounds one read_file answer, and it is the same kind of
+	// bound as the one above rather than a limit on what may be read: pkg/repo's
+	// MaxFileBytes is a megabyte because that is a sensible size for an editor, and
+	// a model handed a megabyte of one file has spent the session on it. Over this,
+	// the answer becomes a window that names the line to continue at.
+	ToolRepoMaxReadBytes int64 `json:"tool_repo_max_read_bytes"`
+
 	// Tool surface bounds (§5.8). ToolProfileTokenBudget caps the projection handed
 	// to the model (D26); ToolPreviewMaxPoints caps a tier-L2 preview, which is what
 	// keeps "downsampled preview" from becoming a raw series read (§4).
@@ -667,6 +674,9 @@ func applyDefaults(config Config) {
 	}
 	if config.ToolRunCodeMaxOutputBytes <= 0 {
 		config.ToolRunCodeMaxOutputBytes = 8000
+	}
+	if config.ToolRepoMaxReadBytes <= 0 {
+		config.ToolRepoMaxReadBytes = 8000
 	}
 	if config.ChartMaxPoints <= 0 {
 		config.ChartMaxPoints = 2000

@@ -181,11 +181,25 @@ type (
 		Workspace() string
 	}
 
-	// Repo is the working copy (§5.11). Exactly one method, which is the point:
-	// §5.8 gives the model a tool that writes a file and no tool that commits,
-	// stages, pushes, selects a repository or discards a change. A wider interface
-	// here would be the first step towards one.
+	// Repo is the working copy (§5.11). Three methods, and where the line falls
+	// matters more than how many there are: this interface reads the working copy
+	// and writes one file of it, and it holds **no git operation at all**. Nothing
+	// here commits, stages, pushes, fetches, discards a change or selects a
+	// repository, and a method that did would be the first step towards a model that
+	// publishes — which §5.11 item 5 makes a developer's action.
+	//
+	// It was one method until the read half arrived, and the reason for the read
+	// half is worth recording. Without it the only way for a model to see the
+	// operator it is working on was `run_code`: a Python cell in the developer's pod
+	// that opens the file and prints it, confirmed every time, for an act that is
+	// strictly less than the `write_file` two lines below already permits. Measured
+	// over four days of one developer's sessions, 195 of 241 confirmations were
+	// cells that ran a subprocess, an import or a shell escape to do something the
+	// developer could have read in the pane — and every one of them cost a prompt
+	// that taught them to stop reading the prompts.
 	Repo interface {
+		Files(ctx context.Context, req repo.Request) (repo.FileTree, error)
+		ReadFile(ctx context.Context, req repo.Request, path string) (repo.File, error)
 		WriteFile(ctx context.Context, req repo.Request, path string, content []byte) (repo.WriteResult, error)
 	}
 
@@ -324,6 +338,12 @@ type Deps struct {
 	// smaller than the cap on the developer's own console: the two answer to
 	// different costs, memory there and context here.
 	RunCodeMaxOutputBytes int
+	// RepoMaxReadBytes bounds what one read_file returns. The same reasoning as
+	// above, against a different ceiling: pkg/repo lets the Code pane read a
+	// megabyte because an editor shows a megabyte, and a model that read one would
+	// spend a session's context on a single file. What the bound produces is a
+	// window and the line to continue from, never a silent cut.
+	RepoMaxReadBytes int
 }
 
 const (
@@ -333,6 +353,7 @@ const (
 	defaultPreviewMaxPoints   = 500
 	defaultDeviceLimit        = 10
 	defaultRunCodeMaxOutput   = 8000
+	defaultRepoMaxReadBytes   = 8000
 	defaultRelationBudget     = 4000
 	defaultRelationMaxRules   = 12
 )
@@ -363,6 +384,9 @@ func NewSurface(deps Deps) (*Registry, error) {
 	}
 	if deps.RunCodeMaxOutputBytes <= 0 {
 		deps.RunCodeMaxOutputBytes = defaultRunCodeMaxOutput
+	}
+	if deps.RepoMaxReadBytes <= 0 {
+		deps.RepoMaxReadBytes = defaultRepoMaxReadBytes
 	}
 	if deps.RelationTokenBudget <= 0 {
 		deps.RelationTokenBudget = defaultRelationBudget
@@ -1091,6 +1115,58 @@ func NewSurface(deps Deps) (*Registry, error) {
 			}`),
 			Unavailable: "requires timescale_wrapper_url",
 			executor:    ifPresent(s.renderChart, deps.Charts),
+		},
+		Definition{
+			Name: "list_files",
+			Description: "List every file in the developer's working copy of the operator " +
+				"repository, with its size. Paths are relative to the repository root and are " +
+				"what read_file and write_file take. git's own storage is left out; nothing " +
+				"else is, including dotfiles — the Dockerfile, .github/workflows/build.yml and " +
+				"operator.yaml are all here.\n\n" +
+				"This is the cheap way to find out what the operator consists of. Do not go " +
+				"looking through the checkout with run_code: a cell that walks the tree costs " +
+				"the developer a confirmation and tells you what this answers for nothing.",
+			Effect:      "read repo working copy",
+			MinTier:     L0,
+			Schema:      json.RawMessage(`{"type": "object", "properties": {}}`),
+			Unavailable: "requires github_client_id and a Hub",
+			executor:    ifPresent(s.listFiles, deps.Repo),
+		},
+		Definition{
+			Name: "read_file",
+			Description: "Read one file of the developer's working copy, by a path relative to " +
+				"the repository root. This is how you read the operator's own code — op.py, " +
+				"training.py, the tests, operator.yaml — and it is the tool to reach for " +
+				"before proposing any change to a file, because a write replaces the whole " +
+				"file and you cannot write one you have not read.\n\n" +
+				"Use this rather than run_code. Reading a file in a cell does the same thing, " +
+				"costs the developer a confirmation, and returns the same text through an " +
+				"execution that could have done anything else.\n\n" +
+				"The answer is a window, not always the whole file: it carries at most a few " +
+				"thousand bytes and reports total_lines and the from_line to continue at, so a " +
+				"long file is read in a few calls. What comes back is the file's own text with " +
+				"nothing added — no line numbers — so a full read can be edited and sent " +
+				"straight back to write_file.\n\n" +
+				"Two refusals worth knowing. A path whose name says its contents are a " +
+				"credential — .env, .ssh, id_rsa — is refused, because this answer is stored " +
+				"in the conversation; ask the developer if you genuinely need what is in one. " +
+				"And a read runs in the developer's pod, which runs one thing at a time, so " +
+				"while a cell of theirs is executing this reports that the kernel is busy " +
+				"rather than waiting it out. That is not an error to route around with " +
+				"run_code — it is the same kernel.",
+			Effect:  "read repo working copy",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "path": {"type": "string", "description": "Path relative to the repository root, e.g. op.py or tests/test_op.py."},
+			    "from_line": {"type": "integer", "description": "First line to return, 1-based. Omit it for the start of the file; pass the from_line a truncated answer reports to continue."},
+			    "max_lines": {"type": "integer", "description": "At most this many lines. Omit it to fill the byte budget, which is usually what you want."}
+			  },
+			  "required": ["path"]
+			}`),
+			Unavailable: "requires github_client_id and a Hub",
+			executor:    ifPresent(s.readFile, deps.Repo),
 		},
 		Definition{
 			Name: "write_file",

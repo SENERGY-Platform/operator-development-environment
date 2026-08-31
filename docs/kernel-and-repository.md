@@ -251,6 +251,52 @@ Ray client libraries and there is one cluster — see
 [operator-lib-versions.md](operator-lib-versions.md), which also holds the runbook
 for a new release and why there is no upgrade route yet.
 
+## read_file and list_files, and why they arrived after the write
+
+§5.8 gave the model a tool that writes a file and none that reads one. That is not
+a symmetry worth preserving, and what it cost is measurable. With no read tool the
+only way for a model to see the operator it was working on was `run_code` — a
+Python cell in the developer's pod that opens the file and prints it — and
+`run_code` is confirmed every time. Over four days of one developer's sessions,
+241 `run_code` cells were put to them for confirmation and they approved 232. A
+large share of those cells did nothing but read: `print(open(p).read())`, an
+`os.walk` to see what was in the checkout, a `re.search` over a file the cell had
+just read. Every one spent a confirmation, and a confirmation that arrives for a
+file read teaches the developer to stop reading confirmations — which is the
+failure that matters, because the confirmations that are worth reading arrive in
+the same dialog.
+
+Both tools sit at **L0 with no confirmation**, on the argument `write_file` already
+makes, one step weaker: the working copy is the developer's own code on their own
+storage, it carries no platform data, and reading it is strictly less than the
+write beside it already permits. The interface they were added to holds no git
+operation and still does not — nothing commits, stages, pushes, fetches, discards
+or selects.
+
+Three properties are worth knowing before reading the code:
+
+- **`read_file` answers with a window, not always a file.** `pkg/repo` reads up to
+  a megabyte because an editor shows a megabyte; a model that read one would have
+  spent the session on a single file. Over `tool_repo_max_read_bytes` the answer
+  carries whole lines, `total_lines`, and the `from_line` to continue at. The text
+  itself has nothing added to it — no line numbers — so a full read is
+  byte-identical to the file and can be edited and sent straight back to
+  `write_file`.
+- **`read_file` refuses a credential path** — `.env`, `.ssh`, `id_rsa`,
+  `/var/run/secrets` — before the service is asked, because this answer is stored
+  in the conversation and nobody was asked first. The list is `pkg/plaincode`'s,
+  shared rather than copied: it is the same decision about the same names, and the
+  same floor rather than a boundary.
+- **`list_files` refuses nothing**, which is the opposite decision on purpose. A
+  listing says a file exists, which is what the pane's own tree says (D14), and a
+  model shown an edited tree would propose changes to a repository that does not
+  exist. An incomplete listing says so rather than reading as a whole repository.
+
+A read runs through the kernel like every other file operation, so while a cell is
+executing in the same workbench it reports a busy kernel rather than waiting it
+out — the trade the section above describes, now reachable by a tool as well as by
+the pane.
+
 ## write_file, and what it cannot do
 
 `write_file` is §5.8's sixteenth implemented tool, at tier **L0** with no

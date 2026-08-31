@@ -179,9 +179,11 @@ func TestEveryToolOfSection58IsImplementedWithItsServicesPresent(t *testing.T) {
 	// availability endpoint is device-scoped, plus the fourteen of the simulation
 	// surface: five reads, a template catalogue, four that author a scenario, one
 	// that drives a running one, two for a backfill and one that uploads example
-	// data for a channel to replay.
-	if got := len(registry.Definitions()); got != 41 {
-		t.Errorf("declared %d tools, want 41", got)
+	// data for a channel to replay, plus list_files and read_file — the working
+	// copy's read half, which §5.8 left out and whose absence made run_code the only
+	// way for a model to see the operator it was working on.
+	if got := len(registry.Definitions()); got != 43 {
+		t.Errorf("declared %d tools, want 43", got)
 	}
 }
 

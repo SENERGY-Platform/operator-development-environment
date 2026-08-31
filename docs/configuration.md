@@ -212,6 +212,7 @@ carries the difference for the rest of the turn.
 | `tool_relation_token_budget` / `tool_relation_max_rules` | `4000`, `12` | The same, for a relational answer |
 | `tool_preview_max_points` | `500` | Caps a tier-L2 preview. This is what keeps "downsampled preview" from becoming a raw series read |
 | `tool_run_code_max_output_bytes` | `8000` | Far smaller than `jupyterhub_max_output_bytes`, and for a different cost: that one bounds a developer's console, this one bounds what a cell's output costs in *model context* |
+| `tool_repo_max_read_bytes` | `8000` | What one `read_file` answer may cost. The same relationship to the Code pane's megabyte that the row above has to the console: over this the answer becomes a window of whole lines that names the `from_line` to continue at, never a silent cut |
 
 ## Charts
 

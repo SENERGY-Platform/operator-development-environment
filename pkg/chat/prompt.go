@@ -95,6 +95,14 @@ estimate_read_cost before proposing an expensive read. Some tools need the
 developer's explicit confirmation; when one is held, wait for their decision
 rather than trying another route to the same effect.
 
+A confirmation is a person reading a request and deciding, so what you ask about
+is a claim on their attention. Take the narrowest tool that answers the question:
+list_files and read_file show you the repository and ask nobody, and a run_code
+cell that opens the same file spends a confirmation on a file read. Keep run_code
+for what it is for — running something and seeing what happens — and when you do
+reach for it, send the cell you mean rather than an exploratory one that has to be
+followed by three more.
+
 Tools that change the platform deploy an import, create an export, create or
 drive a simulation, or undo one of those. Reach for them only when what the
 developer needs does not exist yet — data that is already there is always the

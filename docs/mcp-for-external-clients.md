@@ -68,9 +68,10 @@ grep -c 'Confirm:\s*true' pkg/tools/surface.go   # confirmed
 grep -c '^\s*Definition{' pkg/tools/surface.go   # declared
 ```
 
-At the time of writing, fifteen of forty-one — `run_code`, `launch_experiment`,
+At the time of writing, fifteen of forty-three — `run_code`, `launch_experiment`,
 both proposals, the import and export writes, and every simulation write. What
-survives is the read surface plus `write_file` and `render_chart`.
+survives is the read surface — including `list_files` and `read_file`, which read
+the working copy and ask nobody — plus `write_file` and `render_chart`.
 
 ### Git is not on the tool surface at all
 

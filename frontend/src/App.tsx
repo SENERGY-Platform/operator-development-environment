@@ -54,8 +54,8 @@ const NO_PROVIDER =
 /** What is missing from a deployment that cannot hold a repository. */
 const NO_REPO =
   "`github_client_id` is not configured, so a developer cannot connect a repository and " +
-  "`write_file` is declared but not callable. The surface also needs a `jupyterhub_url`, " +
-  "because the working copy lives on the developer's own pod.";
+  "`list_files`, `read_file` and `write_file` are declared but not callable. The surface " +
+  "also needs a `jupyterhub_url`, because the working copy lives on the developer's own pod.";
 
 /**
  * The shell.

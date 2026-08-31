@@ -443,6 +443,12 @@ func TestSurfaceDeclaresTheWholeAllowList(t *testing.T) {
 		"create_export":          {L0, true},
 		"delete_import_instance": {L0, true},
 		"delete_export":          {L0, true},
+		// The working copy. All three at L0 with no confirmation, and the two reads
+		// are weaker than the write beside them: the developer's own code on their own
+		// storage, no platform data in it, and no git operation anywhere in the
+		// interface behind them.
+		"list_files":             {L0, false},
+		"read_file":              {L0, false},
 		"write_file":             {L0, false},
 		"run_code":               {L0, true},
 		"launch_experiment":      {L0, true},

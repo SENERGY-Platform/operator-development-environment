@@ -460,6 +460,7 @@ func startM3(
 		DeviceLimit:         config.SelectionDeviceLimit,
 
 		RunCodeMaxOutputBytes: int(config.ToolRunCodeMaxOutputBytes),
+		RepoMaxReadBytes:      int(config.ToolRepoMaxReadBytes),
 	})
 	if err != nil {
 		return err

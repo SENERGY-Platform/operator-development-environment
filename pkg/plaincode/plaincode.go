@@ -273,6 +273,35 @@ var credentialNames = map[string]bool{
 }
 
 /*
+CredentialPath reports whether a path names a file whose contents are a
+credential, and which component said so.
+
+The same knowledge as noCredentialPaths above, for a caller that has a path rather
+than a cell: `read_file` returns a file of the working copy straight into a
+conversation that is persisted, and it does it without asking anyone. A repository
+with a `.env` in it is ordinary, and so is a model that reads every file it can
+name while it works out what the operator does.
+
+It is exported here rather than copied into pkg/tools because the list is the
+decision — which names are worth refusing, and which ordinary files a substring
+match would wreck — and two copies of it would drift. Same standing as everything
+else in this package: a floor, not a boundary. It reads the path it was given, and
+a credential a repository keeps under another name walks past it.
+*/
+func CredentialPath(p string) (string, bool) {
+	lower := strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
+	if strings.Contains(lower, secretsMount) {
+		return secretsMount, true
+	}
+	for _, component := range strings.Split(lower, "/") {
+		if credentialNames[component] {
+			return component, true
+		}
+	}
+	return "", false
+}
+
+/*
 stripLiterals replaces the contents of string literals with spaces.
 
 Two reasons, and the second is the one that matters. Keywords inside a string are
