@@ -24,6 +24,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/admin"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/auth"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
@@ -431,6 +432,47 @@ func handleRepoCommit(svc *repo.Service) gin.HandlerFunc {
 	}
 }
 
+type draftBody struct {
+	Paths []string `json:"paths"`
+}
+
+// @Summary		Draft a commit message
+// @Description	Asks the configured LLM provider for a commit message for the uncommitted
+// @Description	work: the recent subjects of this repository as style, the diff against the
+// @Description	last commit, and the content of files git does not track yet.
+// @Description
+// @Description	It changes nothing. The working copy, the index and the remote are untouched,
+// @Description	the answer is text the developer edits or discards, and committing is still
+// @Description	the separate explicit action of §5.11 item 5.
+// @Tags			repo
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			body	body		draftBody	false	"which paths, if not everything uncommitted"
+// @Success		200		{object}	repo.Draft
+// @Failure		409		{object}	map[string]string	"nothing to commit, or no repository"
+// @Failure		429		{object}	map[string]string	"the developer is at a spend cap (§3.3)"
+// @Failure		502		{object}	map[string]string
+// @Failure		503		{object}	map[string]string	"no LLM provider is configured"
+// @Router			/repo/commit/message [post]
+func handleRepoCommitMessage(svc *repo.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body draftBody
+		// Optional, like push's: a draft of everything uncommitted is the common case
+		// and should not require a body.
+		_ = c.ShouldBindJSON(&body)
+		draft, err := svc.DraftCommitMessage(c.Request.Context(), repo.DraftRequest{
+			Request: repoRequest(c),
+			Paths:   body.Paths,
+		})
+		if err != nil {
+			respondRepo(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, draft)
+	}
+}
+
 type pushBody struct {
 	Branch string `json:"branch"`
 }
@@ -677,8 +719,28 @@ func handleRepoMakeDir(svc *repo.Service) gin.HandlerFunc {
 func respondRepo(c *gin.Context, err error) {
 	var gitErr *repo.GitError
 	var upstream *repo.UpstreamError
+	var limitErr *admin.LimitError
+
+	// A spend cap is answered the way the chat surface answers it, with §3.3's own
+	// payload: the commit message draft is a provider request, and a developer who
+	// has hit a cap needs to read the same "how much, and when does it reset" here
+	// as they do there.
+	if errors.As(err, &limitErr) {
+		c.JSON(http.StatusTooManyRequests, limitErr.Payload())
+		return
+	}
 
 	switch {
+	case errors.Is(err, repo.ErrDraftsUnavailable):
+		// Not an error in this deployment's terms: ODE is served without a provider
+		// on purpose, and the answer is that the developer writes the message.
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":     err.Error(),
+			"available": false,
+			"hint":      "write the commit message yourself; drafting needs a configured LLM provider",
+		})
+	case errors.Is(err, repo.ErrDraftFailed):
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 	case errors.Is(err, repo.ErrInvalidRequest):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case errors.Is(err, repo.ErrNotConnected):

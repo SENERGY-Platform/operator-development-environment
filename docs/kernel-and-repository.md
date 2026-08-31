@@ -262,6 +262,58 @@ permitted at some tier, and a tool that can write every file of a repository wou
 be a way around that — so the tool refuses that name and says why. The developer's
 own routes write it like any other file, because it is theirs.
 
+## The drafted commit message, and why it does not weaken §5.11 item 5
+
+`POST /repo/commit/message` asks the configured LLM provider for a commit message
+for the uncommitted work, and it is worth being precise about why that is
+compatible with "no path in ODE commits without a developer asking".
+
+It reads. The working copy, the index and the remote are untouched — which is
+also why the draft deliberately skips the `verifyRemote` check that `Commit` and
+`Push` make: a checkout whose origin is not the selected repository is a problem
+for a write, and refusing to describe the developer's own diff would be a refusal
+with nothing behind it. The answer is text in a box they edit or throw away, and
+its `committed: false` says so for the same reason `write_file`'s does.
+
+It is not a tool. `pkg/tools` has no method that reaches it, so no model can ask
+for a draft in the middle of a turn and no session tier grants it. The developer
+presses a button.
+
+Three things about what the model is shown, because that is what the draft is
+worth:
+
+- **The diff against `HEAD`**, not the staged and unstaged halves separately.
+  What the commit beside the draft would record is the whole difference from the
+  last commit, whether or not the developer happened to stage part of it. On an
+  unborn branch there is no `HEAD`, so `--cached` stands in.
+- **The content of untracked files**, read through the workspace rather than
+  diffed. `git diff` says nothing at all about a file git has never seen, and a
+  new package is the normal shape of starting an operator — a draft that only saw
+  tracked changes would be blind exactly where it is most needed. The tempting
+  alternative, `git add --intent-to-add`, is what the "leaves the index alone"
+  test exists to prevent: it would stage on behalf of a developer who asked for a
+  sentence.
+- **The repository's own last ten subjects**, as the style to follow. A draft that
+  ignores how a repository already writes its history is one that gets rewritten
+  by hand every time.
+
+Everything is bounded before the request goes out, not after it comes back: a
+developer who has been working for a day can have a diff larger than the context
+window, and the failure mode of discovering that at the provider is a 400 with a
+bill. When something was cut, the answer says `truncated` and the pane passes that
+on — a body written from half a diff deserves less trust, and only the developer
+can act on that.
+
+The call is metered by the same `admin.Service` as a chat turn (§3.3), including
+when it fails: the provider billed the input it read, and a second entry point
+that walked past the caps would not leave much of a cap. Usage is recorded with an
+empty session id, which the `ode_usage` column already defaults to.
+
+A deployment with no provider serves the repo routes anyway. The route answers
+`503` with `available: false`, `/session` reports
+`repo.commit_message_draft: false`, and the SPA leaves the button out — a button
+that could only ever fail is worse than no button.
+
 ## The two authentication failures, and why they read the same
 
 git reports "the credential was rejected" and "there was no credential" with the

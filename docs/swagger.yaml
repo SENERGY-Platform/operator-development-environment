@@ -177,6 +177,13 @@ definitions:
       confirm:
         type: boolean
     type: object
+  api.draftBody:
+    properties:
+      paths:
+        items:
+          type: string
+        type: array
+    type: object
   api.launchBody:
     properties:
       entrypoint:
@@ -2846,6 +2853,31 @@ definitions:
         type: string
       subject:
         type: string
+    type: object
+  repo.Draft:
+    properties:
+      committed:
+        description: |-
+          Committed is always false, and is reported for the reason WriteResult's is:
+          it is the property that matters, and a caller that assumed otherwise would
+          tell the developer their work is saved.
+        type: boolean
+      files:
+        description: Files is how many changed files the draft was written from.
+        type: integer
+      message:
+        description: 'Message is the draft: a subject line, a blank line, and a short
+          body.'
+        type: string
+      model:
+        type: string
+      provider:
+        type: string
+      truncated:
+        description: |-
+          Truncated says the diff did not fit the budget and was cut. Reported because
+          it changes how much a developer should trust the body.
+        type: boolean
     type: object
   repo.File:
     properties:
@@ -5860,6 +5892,60 @@ paths:
       security:
       - Bearer: []
       summary: Commit the working copy
+      tags:
+      - repo
+  /repo/commit/message:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Asks the configured LLM provider for a commit message for the uncommitted
+        work: the recent subjects of this repository as style, the diff against the
+        last commit, and the content of files git does not track yet.
+
+        It changes nothing. The working copy, the index and the remote are untouched,
+        the answer is text the developer edits or discards, and committing is still
+        the separate explicit action of §5.11 item 5.
+      parameters:
+      - description: which paths, if not everything uncommitted
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/api.draftBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.Draft'
+        "409":
+          description: nothing to commit, or no repository
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "429":
+          description: the developer is at a spend cap (§3.3)
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: no LLM provider is configured
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Draft a commit message
       tags:
       - repo
   /repo/connection:

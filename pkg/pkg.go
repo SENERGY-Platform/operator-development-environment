@@ -470,6 +470,12 @@ func startM3(
 	// to be registrable by the time this function runs.
 	if repoService != nil {
 		repoService.UseLimits(adminService)
+		// And the commit message draft (§5.11 item 5), for the same reason and at the
+		// same moment: the provider registry exists only now. Drafting a message is a
+		// provider request, so it is metered by the same admin service as a chat turn
+		// — a second entry point that walked past §3.3's caps would not leave much of
+		// a cap.
+		repoService.UseDrafts(repo.DraftDeps{Providers: providers, Spend: adminService})
 	}
 
 	dispatcher, err := tools.NewDispatcher(registry, adminService, ids)

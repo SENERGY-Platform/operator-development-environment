@@ -338,6 +338,9 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		// The three explicit actions of §5.11 item 5, and the two of item 6. None of
 		// them happens as a side effect of anything else.
 		repoRoutes.POST("/commit", handleRepoCommit(deps.Repo))
+		// A draft is not one of them: it reads the diff and answers with text, and
+		// the commit stays the developer's own next action.
+		repoRoutes.POST("/commit/message", handleRepoCommitMessage(deps.Repo))
 		repoRoutes.POST("/push", handleRepoPush(deps.Repo))
 		repoRoutes.POST("/stash", handleRepoStash(deps.Repo))
 		repoRoutes.POST("/discard", handleRepoDiscard(deps.Repo))
@@ -480,7 +483,13 @@ func handleSession(deps Deps) gin.HandlerFunc {
 		if deps.Repo != nil {
 			// What the GitHub consent screen will ask for, so the SPA can say it before
 			// the developer is looking at GitHub's own wording (§5.11 item 1).
-			body["repo"] = gin.H{"scopes": deps.Repo.Scopes()}
+			body["repo"] = gin.H{
+				"scopes": deps.Repo.Scopes(),
+				// Whether the commit box may offer to draft a message. A deployment
+				// with no LLM provider serves the repo routes anyway, and a button
+				// that could only ever answer 503 is worse than no button.
+				"commit_message_draft": deps.Repo.DraftsAvailable(),
+			}
 		}
 		if deps.Experiments != nil {
 			// Where a browser should open the two services, and whether ODE can mint a

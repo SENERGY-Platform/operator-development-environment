@@ -115,10 +115,13 @@ type Service struct {
 	sealer    *Sealer
 	ids       IDs
 	limits    Limits
-	now       func() time.Time
-	http      *http.Client
-	states    *stateStore
-	opts      Options
+	// drafts is the LLM side of a commit message draft (§5.11 item 5), installed by
+	// UseDrafts. A zero value means this deployment cannot draft one.
+	drafts DraftDeps
+	now    func() time.Time
+	http   *http.Client
+	states *stateStore
+	opts   Options
 }
 
 const (

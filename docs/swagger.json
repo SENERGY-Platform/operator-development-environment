@@ -3722,6 +3722,80 @@
                 ]
             }
         },
+        "/repo/commit/message": {
+            "post": {
+                "description": "Asks the configured LLM provider for a commit message for the uncommitted\nwork: the recent subjects of this repository as style, the diff against the\nlast commit, and the content of files git does not track yet.\n\nIt changes nothing. The working copy, the index and the remote are untouched,\nthe answer is text the developer edits or discards, and committing is still\nthe separate explicit action of §5.11 item 5.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repo"
+                ],
+                "summary": "Draft a commit message",
+                "parameters": [
+                    {
+                        "description": "which paths, if not everything uncommitted",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/api.draftBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/repo.Draft"
+                        }
+                    },
+                    "409": {
+                        "description": "nothing to commit, or no repository",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "the developer is at a spend cap (§3.3)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "no LLM provider is configured",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
         "/repo/connection": {
             "get": {
                 "description": "Whether this developer has connected a GitHub account, which account,\nand whether the grant actually carries the scopes §5.11 item 1 needs.\nNever the credential itself.\n\n`?verify=true` additionally asks GitHub whether the stored credential\nstill works, and reports what it said: the status, GitHub's own message,\nthe scopes it reports for the token, and the token's *kind* — its public\nprefix, which is what tells an OAuth app's non-expiring token from a\nGitHub App's user token that expires in hours. Never any part of the\ncredential's value. Off by default because the pane polls this route and\na GitHub round trip per poll is not free.",
@@ -5379,6 +5453,17 @@
             "properties": {
                 "confirm": {
                     "type": "boolean"
+                }
+            }
+        },
+        "api.draftBody": {
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -8554,6 +8639,33 @@
                 },
                 "subject": {
                     "type": "string"
+                }
+            }
+        },
+        "repo.Draft": {
+            "type": "object",
+            "properties": {
+                "committed": {
+                    "description": "Committed is always false, and is reported for the reason WriteResult's is:\nit is the property that matters, and a caller that assumed otherwise would\ntell the developer their work is saved.",
+                    "type": "boolean"
+                },
+                "files": {
+                    "description": "Files is how many changed files the draft was written from.",
+                    "type": "integer"
+                },
+                "message": {
+                    "description": "Message is the draft: a subject line, a blank line, and a short body.",
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "truncated": {
+                    "description": "Truncated says the diff did not fit the budget and was cut. Reported because\nit changes how much a developer should trust the body.",
+                    "type": "boolean"
                 }
             }
         },

@@ -160,6 +160,19 @@ func (s *Service) Check(ctx context.Context, sub string) (Verdict, error) {
 	return verdict, nil
 }
 
+// AllowSpend is Check for a caller that has no use for the verdict: the provider
+// call either may happen or it may not.
+//
+// It exists so a caller outside this package can enforce the spend caps through a
+// narrow interface of its own — repo.Spend is the one — without taking a
+// dependency on Verdict, and therefore on this package, for a value it would
+// throw away. The warnings are dropped rather than swallowed: they are shown in
+// the chat surface, which reads the verdict itself.
+func (s *Service) AllowSpend(ctx context.Context, sub string) error {
+	_, err := s.Check(ctx, sub)
+	return err
+}
+
 // CheckProviderModel enforces the allow-lists of §3.3.
 func (s *Service) CheckProviderModel(ctx context.Context, sub, provider, model string) error {
 	limits, err := s.Effective(ctx, sub)

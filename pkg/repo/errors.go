@@ -58,6 +58,17 @@ var ErrRemoteMismatch = errors.New(
 // fact rather than 500 with git's wording.
 var ErrNothingToCommit = errors.New("there is nothing to commit")
 
+// ErrDraftsUnavailable means this deployment has no LLM provider, so a commit
+// message cannot be drafted. Its own value rather than a generic failure because
+// nothing is wrong: the repository surface is served without one, and the answer
+// is "write the message yourself", which is what the SPA says.
+var ErrDraftsUnavailable = errors.New("no LLM provider is configured to draft a commit message")
+
+// ErrDraftFailed is a provider that answered with nothing usable. Distinguished
+// from a transport failure because retrying is the sensible response to one and
+// not to the other.
+var ErrDraftFailed = errors.New("the commit message draft came back empty")
+
 // ErrCredentialRejected means GitHub would not accept the credential ODE holds for
 // this developer: git could not authenticate, and the API confirmed the token is no
 // longer good.

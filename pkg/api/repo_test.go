@@ -18,6 +18,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -32,6 +33,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/api"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel/kerneltest"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo/repotest"
 )
@@ -44,8 +46,30 @@ import (
 type repoHarness struct {
 	server    *httptest.Server
 	github    *repotest.GitHub
+	service   *repo.Service
 	workspace string
 	remote    string
+}
+
+// draftStub is a provider that answers one commit message. The draft route's own
+// behaviour — what it reads, what it refuses, what it leaves alone — is tested in
+// pkg/repo against a real working copy; what is left here is the HTTP shape.
+type draftStub struct{}
+
+func (draftStub) Name() string { return "stub" }
+
+func (draftStub) Capabilities() llm.Capabilities {
+	return llm.Capabilities{Streaming: true, System: true, Models: []string{"stub-model"}}
+}
+
+func (draftStub) Stream(context.Context, llm.Request) (<-chan llm.Event, error) {
+	out := make(chan llm.Event, 2)
+	out <- llm.TextEvent("feat(operator): adjust the entry point\n\nThe forecast needs a second input.")
+	out <- llm.DoneEvent("end_turn", llm.Usage{
+		InputTokens: 700, OutputTokens: 20, Provider: "stub", Model: "stub-model",
+	})
+	close(out)
+	return out, nil
 }
 
 func newRepoHarness(t *testing.T) *repoHarness {
@@ -105,7 +129,10 @@ func newRepoHarness(t *testing.T) *repoHarness {
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
-	return &repoHarness{server: server, github: github, workspace: workspace, remote: remote}
+	return &repoHarness{
+		server: server, github: github, service: service,
+		workspace: workspace, remote: remote,
+	}
 }
 
 func (h *repoHarness) call(
@@ -143,6 +170,17 @@ func (h *repoHarness) decode(t *testing.T, response *http.Response, into any) {
 	if err := json.NewDecoder(response.Body).Decode(into); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+}
+
+// useDrafts gives the deployment an LLM provider, which is what turns the commit
+// message draft from unavailable into available.
+func (h *repoHarness) useDrafts(t *testing.T) {
+	t.Helper()
+	providers, err := llm.NewRegistry(draftStub{})
+	if err != nil {
+		t.Fatalf("llm.NewRegistry: %v", err)
+	}
+	h.service.UseDrafts(repo.DraftDeps{Providers: providers})
 }
 
 // connect completes the OAuth flow through the routes, which is also the only
@@ -479,6 +517,71 @@ func TestEveryGithubRouteAnswersAStaleCredentialTheSameWay(t *testing.T) {
 	}
 }
 
+// The draft route: an answer of text, and a working copy that is exactly as dirty
+// afterwards as it was before. §5.11 item 5 says committing is the developer's own
+// action, and a route that drafts a message is only compatible with that as long as
+// drafting is all it does.
+func TestTheCommitMessageDraftRouteAnswersTextAndCommitsNothing(t *testing.T) {
+	h := newRepoHarness(t)
+	h.connect(t)
+	h.create(t)
+	if response := h.call(t, http.MethodPost, "/repo/commit",
+		map[string]string{"message": "Scaffold the operator"}, "developer"); response.StatusCode !=
+		http.StatusOK {
+		t.Fatalf("commit = %d", response.StatusCode)
+	}
+	if response := h.call(t, http.MethodPut, "/repo/files/content",
+		map[string]string{"path": "op.py", "content": "# a second input\n"}, "developer"); response.StatusCode !=
+		http.StatusOK {
+		t.Fatalf("write = %d", response.StatusCode)
+	}
+
+	// Without a provider the deployment says so, and says it as something other than
+	// a failure: the repo routes are served without one on purpose.
+	response := h.call(t, http.MethodPost, "/repo/commit/message", nil, "developer")
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("draft without a provider = %d, want 503", response.StatusCode)
+	}
+	var unavailable struct {
+		Available bool   `json:"available"`
+		Hint      string `json:"hint"`
+	}
+	h.decode(t, response, &unavailable)
+	if unavailable.Available || unavailable.Hint == "" {
+		t.Errorf("unavailable = %+v, want a hint and available false", unavailable)
+	}
+
+	h.useDrafts(t)
+	response = h.call(t, http.MethodPost, "/repo/commit/message", nil, "developer")
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("draft = %d: %s", response.StatusCode, body)
+	}
+	var draft repo.Draft
+	h.decode(t, response, &draft)
+	if !strings.Contains(draft.Message, "feat(operator)") || draft.Files == 0 {
+		t.Errorf("draft = %+v, want the model's message and the file it saw", draft)
+	}
+	if draft.Committed {
+		t.Error("the draft claims to have committed")
+	}
+
+	// And the change is still uncommitted, on the commit it was on.
+	response = h.call(t, http.MethodGet, "/repo", nil, "developer")
+	var status repo.Status
+	h.decode(t, response, &status)
+	if !status.Dirty || status.HeadSubject != "Scaffold the operator" {
+		t.Errorf("status = dirty %v at %q, want the draft to have changed nothing",
+			status.Dirty, status.HeadSubject)
+	}
+
+	// The role gate covers it like every other repo route.
+	if response := h.call(t, http.MethodPost, "/repo/commit/message", nil); response.StatusCode !=
+		http.StatusUnauthorized {
+		t.Errorf("unauthenticated draft = %d, want 401", response.StatusCode)
+	}
+}
+
 func TestTheSessionRouteReportsTheRepoFeatureAndItsScopes(t *testing.T) {
 	h := newRepoHarness(t)
 
@@ -490,6 +593,7 @@ func TestTheSessionRouteReportsTheRepoFeatureAndItsScopes(t *testing.T) {
 		Features map[string]bool `json:"features"`
 		Repo     struct {
 			Scopes []string `json:"scopes"`
+			Draft  bool     `json:"commit_message_draft"`
 		} `json:"repo"`
 	}
 	h.decode(t, response, &session)
@@ -498,6 +602,18 @@ func TestTheSessionRouteReportsTheRepoFeatureAndItsScopes(t *testing.T) {
 	}
 	if len(session.Repo.Scopes) != 2 {
 		t.Errorf("scopes = %v, want the two the consent screen will ask for", session.Repo.Scopes)
+	}
+	// No provider in this harness, so the commit box must not offer to draft: a
+	// button that could only answer 503 is worse than no button.
+	if session.Repo.Draft {
+		t.Error("the draft is offered without a provider configured")
+	}
+
+	h.useDrafts(t)
+	response = h.call(t, http.MethodGet, "/session", nil, "developer")
+	h.decode(t, response, &session)
+	if !session.Repo.Draft {
+		t.Error("the draft is not offered with a provider configured")
 	}
 }
 
@@ -569,6 +685,30 @@ func TestWriteRepoContractFixtures(t *testing.T) {
 		http.StatusOK {
 		t.Fatalf("write = %d", response.StatusCode)
 	}
+
+	// And the draft, which needs the same change: it describes what is uncommitted,
+	// so it has to be asked before the commit below and not after.
+	h.useDrafts(t)
+	if response := h.call(t, http.MethodPost, "/repo/commit/message", nil,
+		"developer"); response.StatusCode != http.StatusOK {
+		t.Fatalf("draft = %d", response.StatusCode)
+	} else {
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		var parsed any
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("draft: %v", err)
+		}
+		encoded, _ := json.MarshalIndent(parsed, "", "  ")
+		if err := os.WriteFile(filepath.Join(dir, "repo_commit_message.json"),
+			append(encoded, '\n'), 0o644); err != nil {
+			t.Fatalf("repo_commit_message.json: %v", err)
+		}
+		t.Logf("wrote repo_commit_message.json")
+	}
+
 	response := h.call(t, http.MethodPost, "/repo/commit",
 		map[string]string{"message": "Adjust the operator"}, "developer")
 	if response.StatusCode != http.StatusOK {
