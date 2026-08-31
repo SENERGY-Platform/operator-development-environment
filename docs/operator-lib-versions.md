@@ -40,7 +40,7 @@ The distribution matters. The pin the developer can see in the Code pane
 only. The two environments they actually work in — the kernel and the Ray
 cluster — are both deployment-wide and neither consults it.
 
-As of 2026-08-31 the library is at `v1.3.6` and pins:
+As of 2026-08-31 the library is at `v1.6.0` and pins:
 
 ```text
 ray[data]==2.55.0
