@@ -20,8 +20,8 @@ root SPEC.md, and a section is never renumbered. Add, do not shuffle.
 [README.md](../README.md). And not this if the answer is a property of a platform
 service rather than of ODE. Those are documented on the platform side, not here.
 
-`geltung`: `allgemein` — these are decisions, not observations. A decision changes
-by being replaced, not by being disproved.
+These are decisions, not observations: a decision changes by being replaced, not
+by being disproved.
 
 ## 0. Purpose and non-goals
 

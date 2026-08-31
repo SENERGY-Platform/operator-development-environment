@@ -13,8 +13,6 @@ chart's axis label differs from the variable's declared unit.
 chart — that lands in the profiler's override overlay, see
 [profiler-contracts.md](profiler-contracts.md).
 
-`geltung`: `allgemein` — follows from §5.9 and §5.10.
-
 ## The transforms, and where they run
 
 Every transform of §5.9 is a field of `POST /queries/v2`. Nothing in

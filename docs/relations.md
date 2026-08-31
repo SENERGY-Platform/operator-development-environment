@@ -13,8 +13,9 @@ much its grouping is worth.
 **Not this if**: the question is how a single series behaves rather than how two
 relate — that is the profiler, see [profiler-reads.md](profiler-reads.md).
 
-`geltung`: `allgemein` for the origin ranking and the confirmation model, which
-follow from §5.5 and D11; the detector thresholds are `einzelfall`.
+The origin ranking and the confirmation model follow from §5.5 and D11. The
+detector thresholds do not — they were chosen against this platform's data, and
+a rule that looks wrong is more often a threshold than a flaw in the ranking.
 
 ## Why a graph outranks a device group
 

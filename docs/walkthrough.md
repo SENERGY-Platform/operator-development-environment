@@ -14,7 +14,9 @@ designed. Start the backend and the SPA as [README.md](../README.md) describes.
 design notes have their own document — the pointers are inline below, and the
 index is in the README.
 
-`geltung`: `einzelfall` — one build of one application.
+The expected outcomes below were recorded from one build. A step that no longer
+matches is a change to check against the pane's own design notes before it is
+read as a regression.
 
 ## Profiler
 

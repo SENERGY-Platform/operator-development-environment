@@ -16,7 +16,8 @@ environment with the platform's usual camel-case-to-`UPPER_SNAKE` mapping
 [imports-as-operator-inputs.md](imports-as-operator-inputs.md), which owns that
 decision and its degradation ladder.
 
-`geltung`: `einzelfall` — the defaults and the warnings are this codebase's.
+The defaults and the warnings below are this codebase's. Nothing here says what
+another platform service does with a setting of the same name.
 
 ## Where the values come from
 

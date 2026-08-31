@@ -44,12 +44,12 @@ Those are platform facts that hold for anything touching imports rather than ODE
 decisions, and are documented on the platform side. This document only covers
 what ODE does with them.
 
-`geltung`: `einzelfall` — one implementation, verified against the pinned
-versions above and against the platform's own callers (web-ui, device-selection),
-not against a running platform. That caveat is sharper for the write half than
-for the read half: a read that got a contract wrong returns a short or empty
-answer, and a write that gets one wrong leaves a container or an export table
-behind on a real platform. Nothing in this document has been executed against a
+This is one implementation, verified against the pinned versions above and
+against the platform's own callers (web-ui, device-selection), but not against a
+running platform. That caveat is sharper for the write half than for the read
+half: a read that got a contract wrong returns a short or empty answer, and a
+write that gets one wrong leaves a container or an export table behind on a real
+platform. Nothing in this document has been executed against a
 running import-deploy or analytics-serving.
 
 ## Which service answers what

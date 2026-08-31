@@ -18,9 +18,6 @@ question is why running the operator's code in a cell is not an experiment — t
 environment a kernel does *not* get, and the three loops that follow from it, are
 in [experiments.md](experiments.md).
 
-`geltung`: `allgemein` for the one-cell-at-a-time consequence and the pod
-lifecycle; the rest follows from §5.6 and §5.11.
-
 ### A workbench is one checkout and one kernel, and a developer has several
 
 The unit everything below hangs off is the **workbench**: one repository checkout

@@ -17,9 +17,10 @@ service; or tuning either timescale-wrapper timeout.
 guarantees — see [profiler-api.md](profiler-api.md). The detector specifications
 themselves are in [profiler-detectors.md](profiler-detectors.md).
 
-`geltung`: `allgemein` for the never-null rule and the store split, which follow
-from D24 and §5.4.3; `mehrfach` for the budget figures, which came from
-measured responses.
+The never-null rule and the store split follow from D24 and §5.4.3. The budget
+figures do not — they were measured off real responses, so they are the sizes
+this platform's data produced and a differently shaped fleet will need them
+retuned.
 
 ### Never null, never absent
 

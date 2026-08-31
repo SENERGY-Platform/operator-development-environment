@@ -17,8 +17,9 @@ contains — the two-pass read and its failure modes are in
 [profiler-reads.md](profiler-reads.md), and the guarantees callers depend on are
 in [profiler-contracts.md](profiler-contracts.md).
 
-`geltung`: `allgemein` for the schema and the numerics availability; the
-thresholds inside individual detectors are `einzelfall`.
+The schema and the numerics availability hold generally. The thresholds inside
+individual detectors do not: they were chosen against this platform's data, and
+they are the first thing to question when a detector fires on the wrong series.
 
 ## 5.4.12 `SeriesProfile` schema
 

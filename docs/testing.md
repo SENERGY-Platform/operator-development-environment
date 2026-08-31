@@ -11,8 +11,6 @@ reading before adding a field to an API response.
 **Not this if**: the question is what testing standards require in general.
 This document is only what *this* repository does.
 
-`geltung`: `einzelfall`.
-
 ```bash
 go generate ./...            # only after changing a route or an annotation
 go test -race ./...          # backend

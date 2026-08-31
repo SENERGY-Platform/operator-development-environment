@@ -18,8 +18,9 @@ two-pass read, [authorisation-and-exposure-tiers.md](authorisation-and-exposure-
 for the tier gate, [chat-and-streaming.md](chat-and-streaming.md) for a detached
 turn.
 
-`geltung`: `allgemein` for the specifications; where a section names a version or
-a deployment property, that part is `einzelfall`.
+Where a section names a version or a deployment property, that part is this
+deployment's rather than the specification's and does not survive a bump. The
+specification around it does.
 
 ## 5. Components
 

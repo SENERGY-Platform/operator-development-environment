@@ -13,8 +13,6 @@ Working on `pkg/interpret`, or on the grading of a run against the developer's
 **Not this if**: the question is how the run was launched or what the job could
 reach — see [experiments.md](experiments.md).
 
-`geltung`: `allgemein` — follows from §5.13, D28 and §3.1 item 5.
-
 ## The token, which is the whole problem
 
 An interpretation turn dispatches tools. Every platform read is on behalf of the

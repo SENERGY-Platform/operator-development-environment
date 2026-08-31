@@ -17,8 +17,10 @@ mechanics — the pod, the workspace, one cell at a time — are
 [kernel-and-repository.md](kernel-and-repository.md); what this file adds about
 them is only why a cell is not a run.
 
-`geltung`: `allgemein` for the commit rule and the credential model, which follow
-from §5.12 and §3.1 item 6; the embed probe's behaviour is `einzelfall`.
+The commit rule and the credential model follow from §5.12 and §3.1 item 6. What
+the embed probe *answers* does not: it reports the headers this deployment's Ray
+and MLflow send, so an `embeddable` verdict from one cluster says nothing about
+another.
 
 ## A run is submitted from a commit, or it is not submitted
 

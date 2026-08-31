@@ -13,7 +13,10 @@ proxy. The deployment note at the end is the one that bites first.
 asks — see [profiler-api.md](profiler-api.md) for the two profiler surfaces and
 the generated OpenAPI document at `/doc` for the routes themselves.
 
-`geltung`: `einzelfall` — one SPA, one deployment shape.
+This is one SPA and one deployment shape. Two facts below are the deployment's
+rather than the SPA's — that Keycloak serves the legacy `/auth` base path, and
+that the Go backend does not serve the bundle — and both are called out where
+they appear.
 
 ```bash
 cd frontend

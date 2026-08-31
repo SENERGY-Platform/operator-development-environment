@@ -13,8 +13,9 @@ Planning work, or judging whether a risk this project accepted still stands.
 that used to sit beside each finished milestone are gone: they are met, and a
 criterion kept after it is met stops being read.
 
-`geltung`: `einzelfall` — the state of one project at one time. The risk
-severities are judgements, not measurements.
+What follows is the state of one project at one time. The risk severities are
+judgements rather than measurements, and neither the ordering nor the accepted
+risks carry over to another project's plan.
 
 ## 6. Build order
 

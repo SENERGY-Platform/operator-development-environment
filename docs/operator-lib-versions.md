@@ -20,10 +20,11 @@ per-repository pin as a *mechanism* are
 [kernel-and-repository.md](kernel-and-repository.md); what this file adds is why
 the pin is not a choice.
 
-`geltung`: `allgemein` for the Ray argument and for the fact that an experiment
-does not use the repository's pin — both follow from the code and from Operator
-Lib's `setup.py`. The version numbers and the runbook's cluster steps are
-`einzelfall`: they are this deployment's, at this time.
+The Ray argument and the fact that an experiment does not use the repository's
+pin both follow from the code and from Operator Lib's `setup.py`. The version
+numbers and the runbook's cluster steps are this deployment's at this time —
+read them off the cluster before acting on them, because a release moves them
+and nothing here fails when they go stale.
 
 ## Four places a version lives, and which one decides what
 

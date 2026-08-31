@@ -20,9 +20,6 @@ timeout and why `Decide` is not `Confirm` are in
 a tool may run at all, which is the tier gate in
 [authorisation-and-exposure-tiers.md](authorisation-and-exposure-tiers.md).
 
-`geltung`: `allgemein` — each item below follows from the code, not from one
-observed client.
-
 ### The transport is mounted for the CLI provider, and only then
 
 `deps.MCP` is built only when `claude_cli_enabled` is set

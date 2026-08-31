@@ -15,8 +15,9 @@ them is a fault.
 **Not this if**: the question is whether a tool may run at all, which is the tier
 gate — [authorisation-and-exposure-tiers.md](authorisation-and-exposure-tiers.md).
 
-`geltung`: `allgemein` for the exchange model; the SSE comparison is a recorded
-decision rather than a general claim.
+The SSE comparison near the end is why WebSocket was chosen for *this* surface,
+not a claim that SSE could not carry it — it says in as many words that a
+heartbeat would also have worked.
 
 ### A chat exchange is detached from the connection that started it, and this is the load-bearing decision in the whole surface
 

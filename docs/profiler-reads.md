@@ -17,8 +17,9 @@ Availability and usage are bounded by a different timeout on purpose — see
 at all: a QuickProfile reads zero values by construction, which is the property
 its own response reports.
 
-`geltung`: `mehrfach` — the bounds and the retry shape came from repeated real
-responses, not from one.
+The bounds and the retry shape came from repeated real responses rather than
+from a specification. They are measurements, so another deployment's
+timescale-wrapper may not reproduce them.
 
 ## What bounds the raw pass
 

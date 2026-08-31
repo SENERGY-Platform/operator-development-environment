@@ -16,9 +16,6 @@ precondition, not a code note.
 whether it may run — the budgets and the never-null rule are in
 [profiler-contracts.md](profiler-contracts.md).
 
-`geltung`: `allgemein` — each item follows from the code and from §3, not
-from one observation.
-
 ### ODE does not validate tokens, and must therefore sit behind the gateway
 
 Signature, expiry and audience are checked centrally by the platform API

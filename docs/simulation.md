@@ -29,9 +29,7 @@ not callable, the same degradation an absent `ray_url` gives the two experiment
 tools. `upload_simulation_dataset` additionally needs `jupyterhub_url`, because
 the file it uploads is read out of the developer's own pod.
 
-`geltung`: `einzelfall` — one build of one application against one other
-service's API.
-
+Everything below is one build of ODE against the service versions in the table.
 **Re-check this document when one of these moves**, because behaviour here
 depends on each:
 

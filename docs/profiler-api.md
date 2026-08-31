@@ -16,8 +16,9 @@ field, and the token budgets of the tool surface do not apply here.
 [profiler-contracts.md](profiler-contracts.md) for why a per-item budget is not a
 bound on a response.
 
-`geltung`: `allgemein` for the protocol, which follows from the code; the
-deployment note at the end is `einzelfall`.
+The protocol below follows from the code. The only thing it assumes about a
+deployment is that the gateway has already validated the token; everything else
+here is ODE's own.
 
 ## The profiler over a WebSocket
 
