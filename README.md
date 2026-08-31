@@ -141,6 +141,9 @@ there before deriving a service's behaviour from its code again.
   connection, and everything that follows from it
 - [docs/kernel-and-repository.md](docs/kernel-and-repository.md) — why git runs in
   the developer's pod, and why ODE never stops one
+- [docs/mcp-for-external-clients.md](docs/mcp-for-external-clients.md) — why the
+  MCP transport is not a standalone surface: what the frontend writes that every
+  MCP call only reads
 - [docs/charts.md](docs/charts.md) — where a transform runs, and why a model may
   not compute a unit conversion
 - [docs/relations.md](docs/relations.md) — where a candidate set comes from, and
