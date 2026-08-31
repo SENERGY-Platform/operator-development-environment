@@ -58,6 +58,19 @@ var ErrRemoteMismatch = errors.New(
 // fact rather than 500 with git's wording.
 var ErrNothingToCommit = errors.New("there is nothing to commit")
 
+// ErrCredentialRejected means GitHub would not accept the credential ODE holds for
+// this developer: git could not authenticate, and the API confirmed the token is no
+// longer good.
+//
+// Separate from ErrNotConnected because the stored row is still there — nothing is
+// missing, something has gone stale — and separate from GitError because the repair
+// is neither "look at git" nor "retry": the developer reconnects their GitHub
+// account, and only they can do that. It is the answer a token that was revoked,
+// expired, or had its grant withdrawn produces, and until it existed all three
+// arrived as a 502 quoting git.
+var ErrCredentialRejected = errors.New(
+	"GitHub rejected the stored credential; reconnect the GitHub account")
+
 // GitError is a git command that ran and refused.
 //
 // It carries what git said because that is the only useful diagnosis: a rejected
@@ -71,6 +84,12 @@ type GitError struct {
 	Stdout   string
 	Stderr   string
 	TimedOut bool
+	// Hint is what ODE knows about this failure that git does not, added by the
+	// service where it has checked something git could not. Empty on almost every
+	// GitError; set on the one that needs it, which is an authentication failure
+	// with a credential the API says is still good — because then the fault is in
+	// the pod and nothing about git's own text says so.
+	Hint string
 }
 
 func (e *GitError) Error() string {

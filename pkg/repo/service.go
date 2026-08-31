@@ -468,7 +468,10 @@ func (s *Service) ensureCheckout(
 
 	root := s.git(req, link.WorkbenchID, "", token)
 	if err := root.clone(ctx, link.CloneURL, link.Path); err != nil {
-		return err
+		// The first operation that authenticates, and the one a developer meets on
+		// their first click: a clone refused for a stale credential has to say so
+		// rather than read as a broken repository.
+		return s.explainAuth(ctx, req, err)
 	}
 	// A clone of an empty repository leaves HEAD on the local default branch name,
 	// which is often not the one GitHub will serve. Fixed here, once, so the first
@@ -536,7 +539,7 @@ func (s *Service) statusOf(
 
 	if fetch {
 		if _, err := checkout.run(ctx, "fetch", "--prune", "origin"); err != nil {
-			return status, err
+			return status, s.explainAuth(ctx, req, err)
 		}
 		status.Fetched = true
 	}
@@ -859,7 +862,7 @@ func (s *Service) Push(ctx context.Context, req PushRequest) (PushResult, error)
 
 	result, err := checkout.run(ctx, "push", "--set-upstream", "origin", refspec)
 	if err != nil {
-		return PushResult{}, err
+		return PushResult{}, s.explainAuth(ctx, req.Request, err)
 	}
 	pushed := PushResult{
 		Branch: branch,
@@ -1155,6 +1158,78 @@ func (s *Service) putLink(ctx context.Context, link Link) error {
 	bench.LastUsedAt = s.now()
 	return s.store.PutWorkbench(ctx, bench)
 }
+
+// explainAuth turns "git could not authenticate" into an answer the developer can
+// act on, by asking GitHub the one question git cannot: is the credential ODE holds
+// still good?
+//
+// The two outcomes are different repairs, and telling them apart is the whole
+// reason this exists. A revoked or expired token is ErrCredentialRejected, which
+// the API answers as "reconnect your GitHub account" — a step the developer takes
+// themselves. A credential the API still accepts means git in the pod could not use
+// the one it was given, which is nothing the developer can fix by reconnecting, and
+// saying so would send them round a loop that cannot help. That case keeps git's
+// own text and gains a hint naming where to look.
+//
+// Anything that is not an authentication failure comes back untouched, and so does
+// an authentication failure ODE cannot get a second opinion on — a check that fails
+// must not turn a diagnosable error into a guess.
+func (s *Service) explainAuth(ctx context.Context, req Request, err error) error {
+	var gitErr *GitError
+	if !errors.As(err, &gitErr) || !gitErr.authenticationFailed() {
+		return err
+	}
+	client, clientErr := s.clientFor(ctx, req.UserSub)
+	if clientErr != nil {
+		// No stored identity at all is a better answer than anything about git.
+		if errors.Is(clientErr, ErrNotConnected) {
+			return clientErr
+		}
+		return err
+	}
+	if _, _, viewerErr := client.Viewer(ctx); viewerErr != nil {
+		var upstream *UpstreamError
+		if errors.As(viewerErr, &upstream) {
+			switch upstream.Code {
+			case http.StatusUnauthorized:
+				// The only status that means the credential itself. GitHub answers 401
+				// "Bad credentials" to a token that is revoked, expired or malformed.
+				return fmt.Errorf("%w: GitHub answered %q; git said: %s",
+					ErrCredentialRejected, upstream.Message, gitErr.Error())
+			case http.StatusForbidden:
+				// Not the credential. GitHub uses 403 for a rate limit and for a grant
+				// too narrow for the resource, and both would send a developer through a
+				// consent screen that cannot help — which is what this case existed to
+				// stop happening. GitHub's own message is the useful part.
+				explained := *gitErr
+				explained.Hint = "GitHub answered 403 to ODE's own API call with this " +
+					"credential (" + upstream.Message + "), which is a rate limit or a grant " +
+					"too narrow rather than a credential to replace. GET /repo/connection?verify=true " +
+					"reports what GitHub says about it."
+				return &explained
+			}
+		}
+		// GitHub unreachable, or anything else: ODE does not know, and git's own report
+		// is the honest answer.
+		return err
+	}
+	explained := *gitErr
+	explained.Hint = credentialAliveHint
+	return &explained
+}
+
+// credentialAliveHint is the case that used to be indistinguishable from a revoked
+// token, named.
+//
+// git only asks the askpass helper when the Authorization header it was configured
+// with was absent or refused, so a credential the API accepts and git could not use
+// means the header did not reach git: an image whose git predates the
+// GIT_CONFIG_COUNT environment configuration (2.31, March 2021), or a pod that
+// strips the environment of a command.
+const credentialAliveHint = "the GitHub credential ODE holds still works, so this is not a " +
+	"reconnect: git in the pod could not use the credential it was given. Check that the " +
+	"singleuser image has git 2.31 or newer, which is what reads GIT_CONFIG_COUNT, and see " +
+	"GET /repo/connection?verify=true for what GitHub says about the credential."
 
 func (s *Service) tokenFor(ctx context.Context, userSub string) (string, error) {
 	stored, found, err := s.store.GetIdentity(ctx, userSub)

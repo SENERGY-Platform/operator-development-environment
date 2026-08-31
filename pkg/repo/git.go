@@ -66,9 +66,21 @@ type gitContext struct {
 func (g gitContext) authEnv() map[string]string {
 	environment := map[string]string{
 		"GIT_TERMINAL_PROMPT": "0",
-		// Belt and braces: an askpass helper that answers nothing is what stops a
-		// build of git compiled with a graphical prompt from opening one.
-		"GIT_ASKPASS": "/bin/true",
+		// An askpass helper that *fails*, and the difference from one that succeeds
+		// with no output is the whole point.
+		//
+		// This was /bin/true, on the reasoning that a helper answering nothing stops
+		// a git compiled with a graphical prompt from opening one. It does — and it
+		// also turns "ODE never got a credential to git" into "GitHub rejected the
+		// credential", because git takes the empty answer as a credential and sends
+		// it. Measured against a server that logs the header: with /bin/true and no
+		// extraheader, git sends no Authorization at all and reports `fatal:
+		// Authentication failed for <url>`, which is the same sentence a revoked
+		// token produces. With /bin/false it reports `could not read Username for
+		// <url>: terminal prompts disabled`, which names the actual fault. The
+		// credential still ships either way, because the extraheader is
+		// configuration and has nothing to do with askpass.
+		"GIT_ASKPASS": "/bin/false",
 	}
 	if g.token == "" {
 		return environment
@@ -114,6 +126,34 @@ func (g gitContext) failure(args []string, result kernel.CommandResult) *GitErro
 		Stderr:   redact(result.Stderr, g.token),
 		TimedOut: result.TimedOut,
 	}
+}
+
+// authenticationFailed says whether a git failure was git failing to authenticate,
+// as opposed to anything else git can refuse to do.
+//
+// Matched on wording, which is unlovely and is the only signal there is: git exits
+// 128 for a rejected push, a missing branch and a bad refspec alike. The list is
+// git's own sentences plus GitHub's two `remote:` lines, and it deliberately does
+// not include a permission refusal — "Permission to X denied", "Write access not
+// granted" — because those mean the credential worked and the grant is too narrow,
+// which is a different repair.
+func (e *GitError) authenticationFailed() bool {
+	text := strings.ToLower(e.Stderr + "\n" + e.Stdout)
+	for _, phrase := range []string{
+		"authentication failed",
+		"could not read username",
+		"could not read password",
+		"invalid username or token",
+		"password authentication is not supported",
+		"support for password authentication was removed",
+		"terminal prompts disabled",
+		"bad credentials",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // runAll executes several git commands under one claim on the kernel, stopping

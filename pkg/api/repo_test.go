@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -384,6 +385,97 @@ func TestDiscardingNeedsAnExplicitConfirmation(t *testing.T) {
 	h.decode(t, response, &status)
 	if status.Dirty {
 		t.Errorf("status = %+v, want a clean tree", status.Changes)
+	}
+}
+
+// The connection route's two readings: what was granted, and whether it still holds.
+//
+// The default must stay the stored row — the pane polls this route, and a GitHub round
+// trip per poll is not free — and the verification has to be there for the one moment
+// it is worth paying for: a refusal that blamed the credential, where the developer's
+// next question is whether it is really the credential.
+func TestTheConnectionRouteVerifiesOnlyWhenAsked(t *testing.T) {
+	h := newRepoHarness(t)
+	h.connect(t)
+
+	var body struct {
+		Connected    bool `json:"connected"`
+		Verification *struct {
+			Valid          bool     `json:"valid"`
+			Code           int      `json:"code"`
+			Message        string   `json:"message"`
+			Login          string   `json:"login"`
+			Scopes         []string `json:"scopes"`
+			ScopesReported bool     `json:"scopes_reported"`
+			Kind           string   `json:"kind"`
+			Length         int      `json:"length"`
+		} `json:"verification"`
+	}
+
+	response := h.call(t, http.MethodGet, "/repo/connection", nil, "developer")
+	h.decode(t, response, &body)
+	if !body.Connected || body.Verification != nil {
+		t.Fatalf("the plain read verified anyway: %+v", body.Verification)
+	}
+
+	response = h.call(t, http.MethodGet, "/repo/connection?verify=true", nil, "developer")
+	body.Verification = nil
+	h.decode(t, response, &body)
+	if body.Verification == nil {
+		t.Fatal("?verify=true returned no verification")
+	}
+	if !body.Verification.Valid || body.Verification.Login != "jonah" {
+		t.Errorf("verification = %+v, want the credential accepted", body.Verification)
+	}
+	if !strings.HasPrefix(body.Verification.Kind, "gho_") || body.Verification.Length == 0 {
+		t.Errorf("verification = %+v, want the token's kind and length", body.Verification)
+	}
+	// The credential itself never crosses the wire (§5.11 item 1).
+	raw, _ := json.Marshal(body.Verification)
+	if strings.Contains(string(raw), "testtoken") {
+		t.Errorf("the verification carries the credential: %s", raw)
+	}
+}
+
+// Every route that reaches GitHub, not just the push.
+//
+// A credential GitHub has stopped accepting refuses the repository list, creating a
+// repository and linking one, and each of those used to answer with GitHub's own 401
+// — which the SPA rendered as "401: Bad credentials" beside a spinner that never
+// stopped, with no way to repair it on screen. One answer, one `needs`, one repair.
+func TestEveryGithubRouteAnswersAStaleCredentialTheSameWay(t *testing.T) {
+	h := newRepoHarness(t)
+	h.connect(t)
+	h.github.SetRevoked(true)
+
+	for _, route := range []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{http.MethodGet, "/repo/repositories", nil},
+		{http.MethodPost, "/repo/repositories", map[string]any{"name": "pv-forecast"}},
+		{http.MethodPost, "/repo/link", map[string]any{"full_name": "jonah/existing-operator"}},
+	} {
+		response := h.call(t, route.method, route.path, route.body, "developer")
+		if response.StatusCode != http.StatusConflict {
+			t.Errorf("%s %s = %d, want 409", route.method, route.path, response.StatusCode)
+			continue
+		}
+		var refusal struct {
+			Error string `json:"error"`
+			Needs string `json:"needs"`
+			Hint  string `json:"hint"`
+		}
+		h.decode(t, response, &refusal)
+		if refusal.Needs != "github_connection" || refusal.Hint == "" {
+			t.Errorf("%s %s = %+v, want the reconnect answer", route.method, route.path, refusal)
+		}
+		// GitHub's own words survive inside it, because "reconnect" without a reason is
+		// a demand rather than an explanation.
+		if !strings.Contains(refusal.Error, "Bad credentials") {
+			t.Errorf("%s %s dropped GitHub's message: %q", route.method, route.path, refusal.Error)
+		}
 	}
 }
 

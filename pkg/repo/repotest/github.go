@@ -64,6 +64,11 @@ type GitHub struct {
 	latestCommit  string
 	tokenScopes   string
 	defaultBranch string
+	// revoked answers every authenticated call with 401, whatever the credential.
+	revoked bool
+	// rateLimited answers 403, which GitHub uses for a rate limit and for a grant too
+	// narrow — neither of which means the credential should be replaced.
+	rateLimited bool
 }
 
 // NewGitHub starts the double. cloneURL is what every repository reports as its
@@ -87,6 +92,25 @@ func (f *GitHub) URL() string { return f.server.URL }
 
 // Client is an HTTP client that reaches it.
 func (f *GitHub) Client() *http.Client { return f.server.Client() }
+
+// SetRevoked makes every authenticated call answer 401, which is how a test
+// reproduces the one thing ODE cannot see from its own store: a token the developer
+// revoked on GitHub, or one whose authorisation expired. The stored row is
+// untouched and still says "connected", exactly as in the real case.
+func (f *GitHub) SetRevoked(revoked bool) {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.revoked = revoked
+}
+
+// SetRateLimited makes every authenticated call answer 403, the way GitHub answers a
+// rate limit. Distinct from SetRevoked because ODE must not read the two as the same
+// thing: one is a credential to replace, the other is a wait.
+func (f *GitHub) SetRateLimited(limited bool) {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	f.rateLimited = limited
+}
 
 // SetTokenScopes changes what the credential is reported to hold, which is how a
 // test reproduces a developer narrowing the grant on the consent screen.
@@ -145,7 +169,20 @@ func (f *GitHub) route(w http.ResponseWriter, r *http.Request) {
 	f.mux.Lock()
 	f.calls = append(f.calls, r.Method+" "+r.URL.Path)
 	scopes := f.tokenScopes
+	revoked := f.revoked
+	limited := f.rateLimited
 	f.mux.Unlock()
+
+	// A revoked credential is refused everywhere except the OAuth exchange, which
+	// is what reconnecting uses to get a working one.
+	if revoked && r.URL.Path != "/login/oauth/access_token" {
+		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+		return
+	}
+	if limited && r.URL.Path != "/login/oauth/access_token" {
+		http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+		return
+	}
 
 	switch {
 	case r.URL.Path == "/login/oauth/access_token":

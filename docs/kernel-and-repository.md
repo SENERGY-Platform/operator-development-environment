@@ -261,3 +261,76 @@ criteria" among the capabilities that are *denied* server-side rather than
 permitted at some tier, and a tool that can write every file of a repository would
 be a way around that — so the tool refuses that name and says why. The developer's
 own routes write it like any other file, because it is theirs.
+
+## The two authentication failures, and why they read the same
+
+git reports "the credential was rejected" and "there was no credential" with the
+same sentence. Both arrive as
+
+```
+remote: Invalid username or token. Password authentication is not supported for Git operations.
+fatal: Authentication failed for 'https://github.com/owner/name.git/'
+```
+
+and the repairs are opposites: reconnect the GitHub account, or look at the pod.
+Two things in `pkg/repo` exist because of that.
+
+**`GIT_ASKPASS=/bin/false`, not `/bin/true`.** git only consults the askpass helper
+when the `http.<url>.extraheader` credential was absent or refused. A helper that
+exits 0 with no output answers *successfully with nothing*, and git sends that empty
+answer as a credential — so a header that never reached git comes back as GitHub
+rejecting a token. Measured against a server that logs the header:
+
+| askpass | extraheader | what git sent | what git said |
+|---|---|---|---|
+| `/bin/true` | none | nothing | `fatal: Authentication failed for <url>` |
+| `/bin/false` | none | nothing | `could not read Username for <url>: terminal prompts disabled` |
+| either | set | `basic <base64 x-access-token:…>` | the remote's own answer |
+
+The credential ships either way — the extraheader is configuration and has nothing
+to do with askpass — so the only thing the change costs is the graphical-prompt
+belt-and-braces, which `GIT_TERMINAL_PROMPT=0` already covers.
+
+**`explainAuth`, which asks GitHub the question git cannot.** On an authentication
+failure, ODE calls `GET /user` with the credential it holds:
+
+- **401 or 403** — the token is revoked, expired, or the authorisation was
+  withdrawn. `ErrCredentialRejected`, answered as `409` with
+  `needs: "github_connection"`: the same repair as no connection at all, and a step
+  the developer takes themselves. It is not a `502`, because nothing upstream broke.
+- **200** — the credential works, so git in the pod could not use what it was given.
+  git's own text stands and gains `GitError.Hint`, which says the credential is fine
+  and names the likely cause: an image whose git predates the `GIT_CONFIG_COUNT`
+  environment configuration (2.31, March 2021), or a pod that strips a command's
+  environment.
+- **anything else** — GitHub unreachable or rate limited. ODE does not know, so
+  git's report is returned untouched. A check that fails must not turn a
+  diagnosable error into a guess.
+
+A permission refusal is deliberately *not* classified as an authentication failure.
+"Permission to X denied", "Write access to repository not granted" mean the
+credential worked and the grant is too narrow, which is a third repair —
+re-consenting to `repo` and `workflow`, which the connection surface already
+reports as `missing_scopes`.
+
+**`GET /repo/connection?verify=true`** is the same question asked deliberately, and
+the pane fetches it whenever a refusal blames the credential. It reports GitHub's
+status and message, the scopes GitHub returns for the token — and whether it sent the
+scopes header at all, which is not the same as an empty list — plus three things the
+API cannot supply:
+
+| Field | Why it is there |
+|---|---|
+| `kind` | The token's public prefix and what it means. `gho_` is an OAuth app's token: scopes, no expiry. `ghu_` is a GitHub App's user token: no scopes, expires in hours unless the app disables expiry, and reaches only repositories the app is installed on. A deployment that registered the wrong kind of app works for one afternoon and then refuses every push, and nothing else in ODE says so. |
+| `length` | A whole token from a truncated one. |
+| `age` / `stored_at` | Whether a reconnection actually happened. A credential GitHub refuses that ODE stored yesterday was never replaced — the flow was abandoned or it failed — and the repair is to finish it. One GitHub refuses that ODE stored a minute ago is a different search entirely. |
+
+`stored_login` beside GitHub's `login` catches the last one: a developer who
+reconnects in a browser signed in to a second GitHub account gets a credential that
+works and cannot see their repositories. No part of the token's value appears in any
+of it.
+
+`ErrNotConnected` still means what it did: there is no stored row at all.
+`Connection` reads that row and never asks GitHub, which is why the pane can say
+"connected" about a credential that has since been revoked — and why the answer to
+a failed push has to come from the failed push.

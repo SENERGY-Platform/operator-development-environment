@@ -3731,7 +3731,7 @@ const docTemplate = `{
         },
         "/repo/connection": {
             "get": {
-                "description": "Whether this developer has connected a GitHub account, which account,\nand whether the grant actually carries the scopes §5.11 item 1 needs.\nNever the credential itself.",
+                "description": "Whether this developer has connected a GitHub account, which account,\nand whether the grant actually carries the scopes §5.11 item 1 needs.\nNever the credential itself.\n\n` + "`" + `?verify=true` + "`" + ` additionally asks GitHub whether the stored credential\nstill works, and reports what it said: the status, GitHub's own message,\nthe scopes it reports for the token, and the token's *kind* — its public\nprefix, which is what tells an OAuth app's non-expiring token from a\nGitHub App's user token that expires in hours. Never any part of the\ncredential's value. Off by default because the pane polls this route and\na GitHub round trip per poll is not free.",
                 "produces": [
                     "application/json"
                 ],
@@ -3739,6 +3739,14 @@ const docTemplate = `{
                     "repo"
                 ],
                 "summary": "The developer's GitHub connection",
+                "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "ask GitHub whether the credential still works",
+                        "name": "verify",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",

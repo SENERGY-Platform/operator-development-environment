@@ -109,16 +109,30 @@ func (r githubRepository) toRepository() Repository {
 
 // Viewer is `GET /user`, plus the scopes GitHub reports for the token.
 func (c *githubClient) Viewer(ctx context.Context) (Identity, []string, error) {
+	identity, scopes, _, err := c.viewer(ctx)
+	return identity, scopes, err
+}
+
+// viewer is Viewer plus whether GitHub sent the scopes header at all, which is not
+// the same question as whether the list is empty.
+//
+// It tells an OAuth app's token from a GitHub App's user token, and that difference
+// decides how a deployment behaves: an OAuth app's token carries scopes and does not
+// expire, a GitHub App's user token carries no scopes — no header — expires in hours
+// unless the app is configured otherwise, and reaches only the repositories the app
+// is installed on. A missing header read as "no scopes granted" would report the
+// second as a consent screen the developer did not complete.
+func (c *githubClient) viewer(ctx context.Context) (Identity, []string, bool, error) {
 	var user githubUser
 	header, err := c.do(ctx, http.MethodGet, "/user", nil, &user)
 	if err != nil {
-		return Identity{}, nil, err
+		return Identity{}, nil, false, err
 	}
 	return Identity{
 		Login:     user.Login,
 		Name:      user.Name,
 		AvatarURL: user.AvatarURL,
-	}, splitScopes(header.Get("X-OAuth-Scopes")), nil
+	}, splitScopes(header.Get("X-OAuth-Scopes")), len(header.Values("X-OAuth-Scopes")) > 0, nil
 }
 
 // Repositories lists what the developer can work on, most recently pushed first.

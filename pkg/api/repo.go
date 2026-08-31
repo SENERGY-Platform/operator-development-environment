@@ -19,6 +19,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -67,9 +68,18 @@ func repoRequest(c *gin.Context) repo.Request {
 // @Description	Whether this developer has connected a GitHub account, which account,
 // @Description	and whether the grant actually carries the scopes §5.11 item 1 needs.
 // @Description	Never the credential itself.
+// @Description
+// @Description	`?verify=true` additionally asks GitHub whether the stored credential
+// @Description	still works, and reports what it said: the status, GitHub's own message,
+// @Description	the scopes it reports for the token, and the token's *kind* — its public
+// @Description	prefix, which is what tells an OAuth app's non-expiring token from a
+// @Description	GitHub App's user token that expires in hours. Never any part of the
+// @Description	credential's value. Off by default because the pane polls this route and
+// @Description	a GitHub round trip per poll is not free.
 // @Tags			repo
 // @Produce		json
 // @Security		Bearer
+// @Param			verify	query		bool	false	"ask GitHub whether the credential still works"
 // @Success		200	{object}	map[string]interface{}
 // @Failure		401	{object}	map[string]string
 // @Router			/repo/connection [get]
@@ -84,6 +94,14 @@ func handleRepoConnection(svc *repo.Service) gin.HandlerFunc {
 		body := gin.H{"connected": connected, "scopes_requested": svc.Scopes()}
 		if connected {
 			body["identity"] = identity
+		}
+		if connected && c.Query("verify") == "true" {
+			verification, err := svc.Verify(c.Request.Context(), token.Sub)
+			if err != nil {
+				respondRepo(c, err)
+				return
+			}
+			body["verification"] = verification
 		}
 		c.JSON(http.StatusOK, body)
 	}
@@ -669,6 +687,17 @@ func respondRepo(c *gin.Context, err error) {
 			"needs": "github_connection",
 			"hint":  "start the OAuth flow with POST /repo/connection/authorize",
 		})
+	case errors.Is(err, repo.ErrCredentialRejected):
+		// The same `needs` as no connection at all, because it is the same repair —
+		// and a 409 rather than the 502 this used to be: nothing upstream broke, the
+		// grant this deployment was given has gone, and reconnecting is a step the
+		// developer can take without help.
+		c.JSON(http.StatusConflict, gin.H{
+			"error": err.Error(),
+			"needs": "github_connection",
+			"hint": "the stored GitHub credential is no longer accepted — it was revoked, " +
+				"expired, or the authorisation was withdrawn; connect the account again",
+		})
 	case errors.Is(err, repo.ErrNoWorkbench):
 		// The same answer for "does not exist" and "belongs to somebody else", which
 		// is what the service already decided: an id in a URL must not be enough to
@@ -715,18 +744,40 @@ func respondRepo(c *gin.Context, err error) {
 				"repository the checkout points at, or move the directory aside",
 		})
 	case errors.As(err, &gitErr):
-		c.JSON(http.StatusBadGateway, gin.H{
+		body := gin.H{
 			"error":     gitErr.Error(),
 			"git":       gitErr.Args[0],
 			"exit_code": gitErr.ExitCode,
 			"timed_out": gitErr.TimedOut,
+		}
+		// What ODE checked and git could not. Only ever set where it changes what to
+		// do next — see repo.explainAuth.
+		if gitErr.Hint != "" {
+			body["hint"] = gitErr.Hint
+		}
+		c.JSON(http.StatusBadGateway, body)
+	case errors.As(err, &upstream) && upstream.Code == http.StatusUnauthorized:
+		// A 401 from GitHub's API is the credential, whatever route asked. Answered as
+		// the same refusal a rejected push produces, rather than as GitHub's own status
+		// passed through: the repair is one step the developer takes, and every surface
+		// that reaches GitHub — the repository list, creating one, linking one,
+		// resolving the Operator Lib pin — was until now rendering "401: Bad
+		// credentials" as text beside a spinner that never stopped.
+		//
+		// It also stops the SPA reading it as a platform-session problem. 401 on an
+		// ODE route means *this* request was not authenticated; the developer's session
+		// is fine, and GitHub is the one refusing.
+		c.JSON(http.StatusConflict, gin.H{
+			"error": repo.ErrCredentialRejected.Error() + ": GitHub answered " +
+				strconv.Quote(upstream.Message),
+			"needs": "github_connection",
+			"hint": "the stored GitHub credential is no longer accepted — it was revoked, " +
+				"expired, or the authorisation was withdrawn; connect the account again",
 		})
 	case errors.As(err, &upstream):
-		// GitHub's own code where it is meaningful to a client — a 401 means the
-		// stored credential is no longer good, and the SPA's answer is to reconnect
-		// rather than to retry.
+		// GitHub's own code where it is meaningful to a client.
 		switch upstream.Code {
-		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
+		case http.StatusForbidden, http.StatusNotFound,
 			http.StatusUnprocessableEntity:
 			c.JSON(upstream.Code, gin.H{"error": upstream.Error()})
 		default:
