@@ -150,6 +150,9 @@ there before deriving a service's behaviour from its code again.
   how much its grouping is worth
 - [docs/experiments.md](docs/experiments.md) — a run is submitted from a commit or
   it is not submitted, and why a cell that logs to MLflow is still not a run
+- [docs/operator-lib-versions.md](docs/operator-lib-versions.md) — why only the
+  latest Operator Lib is supported, that an experiment uses the *cluster's* copy
+  and not the repository's pin, and what has to happen when a release comes up
 - [docs/result-interpretation.md](docs/result-interpretation.md) — an unwatched
   run, and why the interpretation waits for the developer
 - [docs/imports-as-operator-inputs.md](docs/imports-as-operator-inputs.md) — how

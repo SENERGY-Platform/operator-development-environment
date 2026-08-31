@@ -155,6 +155,24 @@ A new commit produces a new name and a new upload. Nothing caches on ODE's side;
 the cluster's own package store is the cache, which is the only one that can be
 right after a restart.
 
+## The package is code, not an environment
+
+The runtime environment ODE sends carries `working_dir` and `env_vars` and nothing
+else (`jobRuntimeEnv` in `pkg/experiments/ray.go`) — no `pip`, no `conda`. So the
+upload is the developer's *source*, and every import it makes resolves against the
+**Ray cluster's own Python environment**: `operator_lib`, `mlflow`,
+`confluent_kafka` and `ray` all come from there, not from the repository's
+`pyproject.toml`.
+
+Two consequences worth knowing before diagnosing a failed run. The cluster's
+Operator Lib is an unchecked deployment prerequisite — if it is absent, every
+launch fails with an `ImportError` in the job log, at the point where it looks
+like the developer's code. And a run therefore tests the source against the
+cluster's library rather than against the pin the repository was scaffolded with,
+so a passing run does not prove the operator's own image would start.
+[operator-lib-versions.md](operator-lib-versions.md) has the rest, including why
+only the latest Operator Lib is supported at all.
+
 ## The run is Operator Lib's; the commit is ODE's
 
 ODE used to do the machine-learning integration itself: submit the job, create the

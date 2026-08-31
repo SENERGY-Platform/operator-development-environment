@@ -243,6 +243,14 @@ scaffold time, recorded against the repository, and a second scaffold of the sam
 repository reuses it. So a repository does not move to a newer library because
 someone re-ran the scaffold to recover a deleted file.
 
+What that pin governs is narrower than it looks: the operator's own container
+image, and nothing else. The kernel this developer types in has whatever the
+singleuser image was built with, and an experiment has whatever the Ray cluster
+carries. Only the latest Operator Lib is usable in practice, because it pins the
+Ray client libraries and there is one cluster — see
+[operator-lib-versions.md](operator-lib-versions.md), which also holds the runbook
+for a new release and why there is no upgrade route yet.
+
 ## write_file, and what it cannot do
 
 `write_file` is §5.8's sixteenth implemented tool, at tier **L0** with no
