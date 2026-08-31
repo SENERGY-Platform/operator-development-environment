@@ -25,6 +25,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 )
@@ -420,5 +421,56 @@ func TestAGitFailureCarriesNoFormOfTheCredential(t *testing.T) {
 		if strings.Contains(text, token) {
 			t.Errorf("the token survived into the %s: %s", label, text)
 		}
+	}
+}
+
+// The reason a failed lock reports is the only thing the developer gets: the
+// scaffold succeeded, and this sentence is what tells them a file is missing and
+// what to run. So it has to be non-empty whatever uv printed — an empty reason is
+// read by Scaffold as a lock that worked, and the developer is told nothing at all.
+func TestLockReasonIsNeverEmptyAndKeepsTheLastLine(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		result kernel.CommandResult
+		want   func(string) bool
+	}{
+		"the last line is the one that names the fault": {
+			result: kernel.CommandResult{ExitCode: 1, Stderr: strings.Repeat(
+				"  Resolved 0 packages in 12ms\n", 40) + "error: no such tag v9.9.9"},
+			want: func(reason string) bool {
+				return strings.HasSuffix(reason, "error: no such tag v9.9.9")
+			},
+		},
+		"one line longer than the bound is cut rather than dropped": {
+			result: kernel.CommandResult{ExitCode: 1, Stderr: strings.Repeat("x", 900) + "END"},
+			want: func(reason string) bool {
+				return strings.HasSuffix(reason, "END") && len(reason) <= 500
+			},
+		},
+		"a multi-byte rune is not cut in half": {
+			result: kernel.CommandResult{ExitCode: 1, Stderr: strings.Repeat("ü", 600)},
+			want: func(reason string) bool {
+				return utf8.ValidString(reason) && reason != ""
+			},
+		},
+		"nothing printed still says something": {
+			result: kernel.CommandResult{ExitCode: 2},
+			want:   func(reason string) bool { return strings.Contains(reason, "exited 2") },
+		},
+		"stdout when stderr is empty": {
+			result: kernel.CommandResult{ExitCode: 1, Stdout: "error: no interpreter found"},
+			want: func(reason string) bool {
+				return strings.Contains(reason, "no interpreter found")
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reason := lockReason(testCase.result)
+			if reason == "" {
+				t.Fatal("an empty reason reads as a lock that succeeded")
+			}
+			if !testCase.want(reason) {
+				t.Errorf("reason = %q", reason)
+			}
+		})
 	}
 }

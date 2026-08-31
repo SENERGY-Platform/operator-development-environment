@@ -378,7 +378,13 @@ type ConfigStruct struct {
 	// on the KubeSpawner profile belong together: raising it without raising the
 	// profile's limit is how a developer's training run is OOM-killed by their own
 	// second workbench.
+	//
+	// RepoLockTimeout bounds the `uv lock` a scaffold ends with, and is longer than
+	// RepoCommandTimeout because it is different work: the Operator Lib pin is a git
+	// source, so a first scaffold on a pod with a cold uv cache clones that
+	// repository and builds its metadata before it can write a line.
 	RepoCommandTimeout        string `json:"repo_command_timeout"`
+	RepoLockTimeout           string `json:"repo_lock_timeout"`
 	RepoMaxFileBytes          int64  `json:"repo_max_file_bytes"`
 	RepoMaxTreeEntries        int64  `json:"repo_max_tree_entries"`
 	RepoMaxCommandOutputBytes int64  `json:"repo_max_command_output_bytes"`
@@ -736,6 +742,9 @@ func applyDefaults(config Config) {
 	}
 	if config.RepoCommandTimeout == "" {
 		config.RepoCommandTimeout = "300s"
+	}
+	if config.RepoLockTimeout == "" {
+		config.RepoLockTimeout = "600s"
 	}
 	if config.RepoMaxFileBytes <= 0 {
 		config.RepoMaxFileBytes = 1048576

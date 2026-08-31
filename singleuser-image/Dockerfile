@@ -10,6 +10,7 @@
 #
 # Licences of what this adds:
 #   analytics-operator-lib-python  Apache-2.0
+#   uv                             MIT OR Apache-2.0
 #   ray                            Apache-2.0
 #   mlflow                         Apache-2.0
 #   confluent-kafka                Apache-2.0
@@ -47,6 +48,18 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 USER ${NB_UID}
+
+# uv, because the scaffolded repository is a uv project and the developer works on
+# it from this pod. Its README asks for two commands — `uv lock` before the first
+# experiment and `uv run --extra dev pytest` for the tests — and neither the base
+# image nor anything above ships uv, so both were instructions the pod could not
+# carry out. ODE runs `uv lock` itself at the end of a scaffold (pkg/repo), which
+# is the same binary; a developer changing a dependency afterwards runs it by hand.
+#
+# Installed before the Operator Lib layer on purpose: ARG OPERATOR_LIB_REF
+# invalidates everything below it, and this does not have to be rebuilt because the
+# library moved.
+RUN pip install --no-cache-dir uv
 
 # Operator Lib is not on PyPI, so it comes from the repository. It brings ray,
 # mlflow, confluent-kafka and the rest with it, at the versions it pins — which

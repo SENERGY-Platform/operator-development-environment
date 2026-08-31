@@ -3,6 +3,7 @@
   "operator_lib_ref": "v1.3.1",
   "skipped": [
     "main.py",
+    "train.py",
     "op.py",
     "training.py",
     "pyproject.toml",
@@ -12,7 +13,8 @@
     "evaluation.yaml",
     "tests/test_op.py",
     ".gitignore",
-    "README.md"
+    "README.md",
+    "uv.lock"
   ],
   "written": []
 }

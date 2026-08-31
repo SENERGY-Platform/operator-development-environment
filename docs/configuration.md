@@ -250,6 +250,7 @@ Where a candidate set comes from is in [relations.md](relations.md).
 | `github_scopes` | `["repo", "workflow"]` | `workflow` is not optional in practice: the scaffold writes `.github/workflows/build.yml`, and GitHub rejects a push touching a workflow file from a token without it |
 | `github_redirect_uri` | derived from `public_url` | The **SPA's** callback, which has to match the OAuth app's registered one exactly. Deriving it is right only when ODE serves the SPA itself; with neither set, startup fails |
 | `repo_command_timeout` | `300s` | Bounds one git command. Minutes, because a clone with history is the slow one |
+| `repo_lock_timeout` | `600s` | Bounds the `uv lock` a scaffold ends with. Longer than a git command for a different reason: the Operator Lib pin is a git source, so a first scaffold on a pod with a cold uv cache clones that repository before it writes a line. A lock that fails or times out is reported on the scaffold result rather than failing it |
 | `repo_max_file_bytes` | `1048576` | A file the Code pane or `write_file` may move in one request |
 | `repo_max_tree_entries` | `4000` | Entries one tree listing returns |
 | `repo_max_command_output_bytes` | `1048576` | What one git command may return |

@@ -55,6 +55,12 @@ type Options struct {
 	// CommandTimeout bounds one git command. A clone of a repository with history
 	// is the slow one, so this is minutes rather than seconds.
 	CommandTimeout time.Duration
+	// LockTimeout bounds `uv lock` at the end of a scaffold. Its own figure rather
+	// than CommandTimeout's, because it is not doing git's kind of work: resolving
+	// the Operator Lib pin means cloning that repository and building its metadata
+	// on a cold uv cache, and a bound sized for a clone would report a timeout on
+	// the first scaffold a pod ever runs.
+	LockTimeout time.Duration
 	// MaxFileBytes bounds a file the Code pane reads or writes.
 	MaxFileBytes int
 	// MaxTreeEntries bounds one file tree.
@@ -128,6 +134,7 @@ const (
 	defaultStateTTL       = 10 * time.Minute
 	defaultRequestTimeout = 30 * time.Second
 	defaultCommandTimeout = 5 * time.Minute
+	defaultLockTimeout    = 10 * time.Minute
 	defaultMaxFileBytes   = 1 << 20
 	defaultMaxTreeEntries = 4000
 	defaultMaxCommandOut  = 1 << 20
@@ -175,6 +182,9 @@ func New(deps Deps) (*Service, error) {
 	}
 	if opts.CommandTimeout <= 0 {
 		opts.CommandTimeout = defaultCommandTimeout
+	}
+	if opts.LockTimeout <= 0 {
+		opts.LockTimeout = defaultLockTimeout
 	}
 	if opts.MaxFileBytes <= 0 {
 		opts.MaxFileBytes = defaultMaxFileBytes
@@ -710,6 +720,23 @@ func (s *Service) Scaffold(ctx context.Context, req ScaffoldRequest) (ScaffoldRe
 		}
 		result.Written = append(result.Written, file.Path)
 	}
+	// The lock, which is generated rather than rendered — and the reason it is ODE's
+	// job rather than the developer's. The README used to ask them to run `uv lock`
+	// before their first experiment; the file it produces is what makes a run's
+	// recorded commit SHA describe the whole run rather than only its source, and a
+	// step that has to be remembered to keep that true is a step that will be
+	// forgotten. Here it lands as one more untracked file in the diff they are
+	// already told to read, so it joins the first commit without anyone being asked.
+	//
+	// Not overwritten when it is already there, for the same reason nothing else is.
+	if existing[LockFile] {
+		result.Skipped = append(result.Skipped, LockFile)
+	} else if reason := s.lock(ctx, req.Request, link); reason != "" {
+		result.LockError = reason
+	} else {
+		result.Written = append(result.Written, LockFile)
+	}
+
 	result.Hint = "nothing is committed yet: read the diff, then commit and push"
 
 	link.OperatorLibRef = ref
@@ -719,6 +746,73 @@ func (s *Service) Scaffold(ctx context.Context, req ScaffoldRequest) (ScaffoldRe
 		return result, err
 	}
 	return result, nil
+}
+
+// lock runs `uv lock` in the checkout and answers with why it did not, or empty.
+//
+// It is a plain kernel command rather than anything git-shaped: same pod, same
+// workbench, same mechanism the working copy is driven with. No credential goes
+// with it. The scaffold's pin is a public repository, and a resolver that clones
+// git sources and runs their build backends is not somewhere to hand a developer's
+// GitHub token without deciding to — a private pin fails here and is locked by
+// hand, which is a worse outcome than a leak.
+func (s *Service) lock(ctx context.Context, req Request, link Link) string {
+	result, err := s.workspace.Command(ctx, s.ref(req, link), kernel.Command{
+		Argv: []string{"uv", "lock"},
+		Dir:  link.Path,
+		Env: map[string]string{
+			// uv shells out to git for the Operator Lib source. Without this a git
+			// that wants credentials waits for a terminal that is not there, and the
+			// scaffold reports a timeout minutes later instead of the refusal.
+			"GIT_TERMINAL_PROMPT": "0",
+			// The reason text is read by a person in the SPA and by a model in the
+			// chat. Escape sequences help neither.
+			"NO_COLOR": "1",
+		},
+		Timeout:        s.opts.LockTimeout,
+		MaxOutputBytes: s.opts.MaxCommandOutputBytes,
+	})
+	if err != nil {
+		return err.Error()
+	}
+	if result.TimedOut {
+		return fmt.Sprintf("`uv lock` did not finish within %s", s.opts.LockTimeout)
+	}
+	if result.ExitCode != 0 {
+		return lockReason(result)
+	}
+	return ""
+}
+
+// lockReason is uv's own complaint, cut to something an error field can carry.
+//
+// The last lines rather than the first: uv reports what it was doing and then why
+// it stopped, and the second is the part that names the repair.
+func lockReason(result kernel.CommandResult) string {
+	const maxReason = 500
+	text := strings.TrimSpace(result.Stderr)
+	if text == "" {
+		text = strings.TrimSpace(result.Stdout)
+	}
+	if text == "" {
+		return fmt.Sprintf("`uv lock` exited %d without saying why", result.ExitCode)
+	}
+	// Never below one line: dropping the last one would leave an empty reason, and
+	// an empty reason is read by the caller as a lock that succeeded.
+	lines := strings.Split(text, "\n")
+	for len(lines) > 1 && len(text) > maxReason {
+		lines = lines[1:]
+		text = strings.TrimSpace(strings.Join(lines, "\n"))
+	}
+	if len(text) > maxReason {
+		// One line longer than the bound on its own. Keep its end, and drop the
+		// half rune the cut can land in the middle of.
+		text = strings.TrimSpace(strings.ToValidUTF8(text[len(text)-maxReason:], ""))
+	}
+	if text == "" {
+		return fmt.Sprintf("`uv lock` exited %d without saying why", result.ExitCode)
+	}
+	return text
 }
 
 // CommitRequest is one commit, explicitly asked for.

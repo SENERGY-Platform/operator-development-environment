@@ -476,6 +476,155 @@ func TestASecondScaffoldKeepsTheOriginalPin(t *testing.T) {
 	}
 }
 
+// The lock is the reason this changed at all. The scaffolded README used to ask the
+// developer to run `uv lock` before their first experiment, and the pod could not:
+// no image in the chain shipped uv. Even with uv installed it is a step that has to
+// be remembered to keep a run's recorded SHA meaning what it says, so ODE runs it —
+// and what this asserts is the whole point of doing so, that the lock is in the
+// developer's first commit without them having been asked for anything.
+func TestTheScaffoldLocksTheDependenciesAndTheLockReachesTheFirstCommit(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+
+	status, err := h.service.Create(context.Background(), repo.CreateRequest{
+		Request: h.request(), Name: "pv-forecast", Scaffold: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !status.Scaffold.Complete {
+		t.Fatalf("scaffold is missing %v", status.Scaffold.Missing)
+	}
+	if lock := h.read(t, "jonah/pv-forecast/"+repo.LockFile); !strings.Contains(lock, "version = 1") {
+		t.Errorf("%s is not what uv wrote:\n%s", repo.LockFile, lock)
+	}
+
+	if _, err := h.service.Commit(context.Background(), repo.CommitRequest{
+		Request: h.request(), Message: "Scaffold the operator",
+	}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	committed := repotest.Git(t, h.path("jonah", "pv-forecast"),
+		"show", "--name-only", "--pretty=format:", "HEAD")
+	if !strings.Contains(committed, repo.LockFile) {
+		t.Errorf("the first commit does not carry %s:\n%s", repo.LockFile, committed)
+	}
+}
+
+// An image built before uv was added to it. The scaffold has already written eleven
+// correct files by the time the lock runs, and the failure of the twelfth must not
+// take them down — a developer who ends up with nothing has a worse problem than
+// one who ends up with a repository and a sentence telling them to run `uv lock`.
+func TestAScaffoldWithoutUvKeepsEverythingElseAndSaysWhatIsMissing(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	repotest.WithoutUV(t)
+
+	status, err := h.service.Create(context.Background(), repo.CreateRequest{
+		Request: h.request(), Name: "pv-forecast", Scaffold: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, path := range repo.ScaffoldPaths() {
+		_, err := os.Stat(h.path("jonah", "pv-forecast", path))
+		if path == repo.LockFile {
+			if err == nil {
+				t.Errorf("%s exists although there is no uv to write it", path)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s did not reach the working copy: %v", path, err)
+		}
+	}
+	if status.Scaffold.Complete {
+		t.Error("the scaffold reports complete without a lock file")
+	}
+
+	// And it is the *reported* reason that has to name uv, because that sentence is
+	// the whole repair path: it reaches the developer in the pane and the model in
+	// the chat, and neither can act on "the scaffold half worked".
+	result, err := h.service.Scaffold(context.Background(),
+		repo.ScaffoldRequest{Request: h.request()})
+	if err != nil {
+		t.Fatalf("Scaffold: %v", err)
+	}
+	if !strings.Contains(result.LockError, "uv") {
+		t.Errorf("lock error = %q, want it to name uv", result.LockError)
+	}
+}
+
+// uv says what it was doing and then why it stopped. The second is the part that
+// names the repair, so it is the part that has to survive the cut.
+func TestAFailedLockIsReportedWithTheLineThatNamesTheFault(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	repotest.StubUV(t, repotest.FailingUV)
+
+	if _, err := h.service.Create(context.Background(), repo.CreateRequest{
+		Request: h.request(), Name: "pv-forecast", Scaffold: true,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	result, err := h.service.Scaffold(context.Background(),
+		repo.ScaffoldRequest{Request: h.request()})
+	if err != nil {
+		t.Fatalf("Scaffold: %v", err)
+	}
+	if !strings.Contains(result.LockError, "Git operation failed") {
+		t.Errorf("lock error = %q, want uv's own complaint", result.LockError)
+	}
+	for _, written := range result.Written {
+		if written == repo.LockFile {
+			t.Errorf("%s is reported written although uv refused", repo.LockFile)
+		}
+	}
+}
+
+// A lock the developer resolved themselves is theirs, exactly like a file they
+// wrote in place of one of ours. Re-running the scaffold to recover a deleted file
+// must not quietly re-resolve their dependencies.
+func TestASecondScaffoldDoesNotReplaceTheDevelopersLock(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	if _, err := h.service.Create(context.Background(), repo.CreateRequest{
+		Request: h.request(), Name: "pv-forecast", Scaffold: true,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mine := "version = 1\n# resolved by hand\n"
+	if err := os.WriteFile(h.path("jonah", "pv-forecast", repo.LockFile),
+		[]byte(mine), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	if err := os.Remove(h.path("jonah", "pv-forecast", "op.py")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	result, err := h.service.Scaffold(context.Background(),
+		repo.ScaffoldRequest{Request: h.request()})
+	if err != nil {
+		t.Fatalf("Scaffold: %v", err)
+	}
+	if got := h.read(t, "jonah/pv-forecast/"+repo.LockFile); got != mine {
+		t.Errorf("%s was rewritten:\n%s", repo.LockFile, got)
+	}
+	var skipped bool
+	for _, path := range result.Skipped {
+		if path == repo.LockFile {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Errorf("skipped = %v, want %s among them", result.Skipped, repo.LockFile)
+	}
+	if result.LockError != "" {
+		t.Errorf("lock error = %q on a scaffold that did not need to lock", result.LockError)
+	}
+}
+
 // createAndCommit is the state most tests start from: a scaffolded repository with
 // one commit and nothing pushed.
 func (h *harness) createAndCommit(t *testing.T, name, message string) {

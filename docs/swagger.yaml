@@ -3057,6 +3057,16 @@ definitions:
           Hint says what to do next, which after a scaffold is always the same thing:
           read it, then commit it.
         type: string
+      lock_error:
+        description: |-
+          LockError is why `uv.lock` is not there, empty when it is.
+
+          A field rather than an error return, because the lock is the twelfth file of
+          a scaffold that has already written eleven correct ones: no egress from the
+          pod, a pin that no longer resolves, or an image built before uv was in it are
+          all reasons to say so and leave the rest standing. The README's manual
+          paragraph is the repair, and it names the same command.
+        type: string
       operator_lib_ref:
         description: |-
           OperatorLibRef is the pin the developer now has, repeated here because it is

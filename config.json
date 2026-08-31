@@ -132,8 +132,9 @@
   "github_scopes": ["repo", "workflow"],
   "github_redirect_uri": "http://localhost:5173/github/callback",
 
-  "//repo": "repo_command_timeout bounds one git command, and is minutes because a clone of a repository with history is the slow one. repo_max_file_bytes bounds a file the Code pane or write_file may move in one request. repo_max_workbenches caps how many working contexts a developer may hold open; each one is a kernel process in their pod, so this figure and the memory on the KubeSpawner profile have to be raised together. operator_lib_ref empty resolves the newest tag at scaffold time and records it per repository, which is D15's `track latest, pin per repo`; setting it fixes every new repository to one ref.",
+  "//repo": "repo_command_timeout bounds one git command, and is minutes because a clone of a repository with history is the slow one. repo_lock_timeout bounds the `uv lock` a scaffold ends with, and is longer for a different reason: the Operator Lib pin is a git source, so a first scaffold on a pod with a cold uv cache clones that repository before it writes a line. A lock that does not finish is reported on the scaffold rather than failing it. repo_max_file_bytes bounds a file the Code pane or write_file may move in one request. repo_max_workbenches caps how many working contexts a developer may hold open; each one is a kernel process in their pod, so this figure and the memory on the KubeSpawner profile have to be raised together. operator_lib_ref empty resolves the newest tag at scaffold time and records it per repository, which is D15's `track latest, pin per repo`; setting it fixes every new repository to one ref.",
   "repo_command_timeout": "300s",
+  "repo_lock_timeout": "600s",
   "repo_max_file_bytes": 1048576,
   "repo_max_tree_entries": 4000,
   "repo_max_command_output_bytes": 1048576,

@@ -696,6 +696,11 @@ func startM7(
 		return nil, fmt.Errorf("config: repo_command_timeout: %w", err)
 	}
 
+	lockTimeout, err := time.ParseDuration(config.RepoLockTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("config: repo_lock_timeout: %w", err)
+	}
+
 	// The callback belongs to the SPA, which posts the code back to ODE with its own
 	// platform token. Derived from public_url only as a convenience for a deployment
 	// that serves both from one origin; anything else has to say it, because the
@@ -724,6 +729,7 @@ func startM7(
 			Scopes:                config.GithubScopes,
 			RedirectURI:           redirect,
 			CommandTimeout:        commandTimeout,
+			LockTimeout:           lockTimeout,
 			MaxFileBytes:          int(config.RepoMaxFileBytes),
 			MaxTreeEntries:        int(config.RepoMaxTreeEntries),
 			MaxCommandOutputBytes: int(config.RepoMaxCommandOutputBytes),

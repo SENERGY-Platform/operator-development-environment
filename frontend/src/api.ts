@@ -1991,6 +1991,13 @@ export interface RepoScaffoldResult {
   written: string[];
   skipped: string[];
   operator_lib_ref: string;
+  /**
+   * Why `uv.lock` is not there, absent when it is. The scaffold ends by running
+   * `uv lock` in the pod, and this is the one file whose failure does not fail the
+   * scaffold: the other eleven are already written, and the repair is the `uv lock`
+   * the scaffolded README names.
+   */
+  lock_error?: string;
   hint: string;
 }
 

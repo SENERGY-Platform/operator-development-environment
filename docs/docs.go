@@ -8899,6 +8899,10 @@ const docTemplate = `{
                     "description": "Hint says what to do next, which after a scaffold is always the same thing:\nread it, then commit it.",
                     "type": "string"
                 },
+                "lock_error": {
+                    "description": "LockError is why ` + "`" + `uv.lock` + "`" + ` is not there, empty when it is.\n\nA field rather than an error return, because the lock is the twelfth file of\na scaffold that has already written eleven correct ones: no egress from the\npod, a pin that no longer resolves, or an image built before uv was in it are\nall reasons to say so and leave the rest standing. The README's manual\nparagraph is the repair, and it names the same command.",
+                    "type": "string"
+                },
                 "operator_lib_ref": {
                     "description": "OperatorLibRef is the pin the developer now has, repeated here because it is\nthe one part of a scaffold that is a decision rather than a file.",
                     "type": "string"

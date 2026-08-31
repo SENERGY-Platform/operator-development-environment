@@ -322,10 +322,16 @@ Setting the field costs one line and removes the question.
 
 Two consequences for a scaffolded repository, both in its README:
 
-- **`uv.lock` is not scaffolded.** It is generated — `uv lock` — and it is the
-  developer's to commit. Without it uv resolves at run time, which works, and
-  weakens the claim the commit SHA makes: two runs of one commit could resolve
-  different versions.
+- **`uv.lock` is generated, not rendered.** The scaffold runs `uv lock` in the
+  developer's pod at the end and leaves the result in the working copy, so it
+  joins the first commit as one more file in the diff they already read. It is
+  ODE's job rather than an instruction because of what it buys: without a lock uv
+  resolves at run time, which works, and weakens the claim the commit SHA makes —
+  two runs of one commit could resolve different versions. A step that has to be
+  remembered to keep that true is a step that gets forgotten. When the lock cannot
+  be written — no egress, a pin that no longer resolves, an image built before uv
+  was in it — the scaffold reports it in `lock_error` and keeps the eleven files it
+  did write, and the README's `uv lock` is the repair.
 - **`requires-python` pins the minor series** (`==3.10.*`) rather than a floor.
   uv resolves driver and workers separately, and a floor lets them land on
   different minors — which Ray reports as a version mismatch between driver and

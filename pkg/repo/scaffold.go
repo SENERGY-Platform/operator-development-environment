@@ -94,10 +94,24 @@ type ScaffoldResult struct {
 	// OperatorLibRef is the pin the developer now has, repeated here because it is
 	// the one part of a scaffold that is a decision rather than a file.
 	OperatorLibRef string `json:"operator_lib_ref"`
+	// LockError is why `uv.lock` is not there, empty when it is.
+	//
+	// A field rather than an error return, because the lock is the twelfth file of
+	// a scaffold that has already written eleven correct ones: no egress from the
+	// pod, a pin that no longer resolves, or an image built before uv was in it are
+	// all reasons to say so and leave the rest standing. The README's manual
+	// paragraph is the repair, and it names the same command.
+	LockError string `json:"lock_error,omitempty"`
 	// Hint says what to do next, which after a scaffold is always the same thing:
 	// read it, then commit it.
 	Hint string `json:"hint"`
 }
+
+// LockFile is the one entry of the compliance set that is generated rather than
+// rendered. Named once, because Scaffold writes it, ScaffoldState reports on it
+// and the template's README tells the developer how to refresh it — and three
+// spellings of it would drift.
+const LockFile = "uv.lock"
 
 // scaffoldPaths is the compliance set, in the order a reader should meet it. It is
 // also what ScaffoldState reports on, so a repository the developer brought
@@ -108,6 +122,12 @@ var scaffoldPaths = []string{
 	"op.py",
 	"training.py",
 	"pyproject.toml",
+	// Generated rather than rendered: `uv lock` writes it from pyproject.toml, and
+	// Scaffold runs that in the pod. It is in the set because the set is what a
+	// working copy is measured against, and a repository missing its lock is
+	// missing something a run needs — a brought-your-own repository is told so, and
+	// re-running the scaffold is what recovers it.
+	LockFile,
 	"Dockerfile",
 	".github/workflows/build.yml",
 	"operator.yaml",
@@ -137,6 +157,12 @@ func RenderScaffold(values ScaffoldValues) ([]ScaffoldFile, error) {
 	}
 	files := make([]ScaffoldFile, 0, len(scaffoldPaths))
 	for _, path := range scaffoldPaths {
+		// The one member of the set with no template, and deliberately: a rendered
+		// lock file would be a fabricated resolution, every hash in it invented.
+		// Scaffold generates it by running `uv lock` in the developer's pod.
+		if path == LockFile {
+			continue
+		}
 		source, found := scaffoldTemplates[path]
 		if !found {
 			return nil, fmt.Errorf("the scaffold has no template for %s", path)
@@ -752,26 +778,33 @@ Development Environment. Every file here is yours to change, including this one.
 | "op.py" | The operator: "infer", "train", "need_retraining", and its config. |
 | "training.py" | The Ray training pass and the model MLflow registers. |
 | "pyproject.toml" | Dependencies, with Operator Lib pinned at "<<.OperatorLibRef>>". |
-| "uv.lock" | Not scaffolded — run "uv lock" and commit it. See below. |
+| "uv.lock" | The resolved dependencies. Written by the scaffold; refresh it yourself. See below. |
 | "Dockerfile" | The image. Built by CI; buildable by hand. |
 | ".github/workflows/build.yml" | Builds and pushes "<<.Image>>". Change the registry here. |
 | "operator.yaml" | What the analytics stack registers: inputs, outputs, config. |
 | "evaluation.yaml" | Your criteria for whether a run is good. ODE never writes this. |
 | "tests/test_op.py" | Tests for the three methods that are yours. |
 
-## Lock the dependencies before the first experiment
+## The lock file
+
+The scaffold ran "uv lock" for you and "uv.lock" is in this working copy, uncommitted
+like everything else here. Commit it with the rest.
+
+Refresh it whenever you change a dependency in "pyproject.toml", and commit the two
+together:
 
     uv lock
 
-Commit the "uv.lock" it writes. An experiment runs "uv run python train.py" on the
-cluster, and uv builds the environment from "pyproject.toml" and this file — on the
-Ray head for the driver and on each worker node for the tasks, out of its own cache.
+An experiment runs "uv run python train.py" on the cluster, and uv builds the
+environment from "pyproject.toml" and this file — on the Ray head for the driver and
+on each worker node for the tasks, out of its own cache.
 
 Without a lock file uv resolves at run time, which works and is worse in one
 specific way: the run records a commit SHA as the code that produced it, and two
 runs of the same commit can then resolve different dependency versions. The lock
 file is what makes the recorded SHA describe the whole run rather than only its
-source.
+source. That is why it is not left to be remembered — and if the scaffold reported
+that it could not write one, the command above is the repair.
 
 ## Running the tests
 

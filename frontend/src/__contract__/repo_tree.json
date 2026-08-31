@@ -10,107 +10,121 @@
           {
             "children": [
               {
-                "modified": "2026-08-27T07:20:47Z",
+                "modified": "2026-08-31T11:19:42Z",
                 "name": "build.yml",
                 "path": "jonah/pv-forecast/.github/workflows/build.yml",
                 "size": 1514,
                 "type": "file"
               }
             ],
-            "modified": "2026-08-27T07:20:47Z",
+            "modified": "2026-08-31T11:19:42Z",
             "name": "workflows",
             "path": "jonah/pv-forecast/.github/workflows",
             "size": 4096,
             "type": "directory"
           }
         ],
-        "modified": "2026-08-27T07:20:47Z",
+        "modified": "2026-08-31T11:19:42Z",
         "name": ".github",
         "path": "jonah/pv-forecast/.github",
         "size": 4096,
         "type": "directory"
       },
       {
-        "modified": "2026-08-27T07:20:48Z",
+        "modified": "2026-08-31T11:19:42Z",
         "name": ".gitignore",
         "path": "jonah/pv-forecast/.gitignore",
         "size": 289,
         "type": "file"
       },
       {
-        "modified": "2026-08-27T07:20:47Z",
+        "modified": "2026-08-31T11:19:42Z",
         "name": "Dockerfile",
         "path": "jonah/pv-forecast/Dockerfile",
         "size": 1135,
         "type": "file"
       },
       {
-        "modified": "2026-08-27T07:20:48Z",
+        "modified": "2026-08-31T11:19:42Z",
         "name": "README.md",
         "path": "jonah/pv-forecast/README.md",
-        "size": 1368,
+        "size": 2536,
         "type": "file"
       },
       {
-        "modified": "2026-08-27T07:20:47Z",
+        "modified": "2026-08-31T11:19:42Z",
         "name": "evaluation.yaml",
         "path": "jonah/pv-forecast/evaluation.yaml",
         "size": 1101,
         "type": "file"
       },
       {
-        "modified": "2026-08-27T07:20:47Z",
+        "modified": "2026-08-31T11:19:42Z",
         "name": "main.py",
         "path": "jonah/pv-forecast/main.py",
         "size": 601,
         "type": "file"
       },
       {
-        "modified": "2026-08-27T07:20:47Z",
+        "modified": "2026-08-31T11:19:42Z",
         "name": "op.py",
         "path": "jonah/pv-forecast/op.py",
         "size": 3851,
         "type": "file"
       },
       {
-        "modified": "2026-08-27T07:20:47Z",
+        "modified": "2026-08-31T11:19:42Z",
         "name": "operator.yaml",
         "path": "jonah/pv-forecast/operator.yaml",
         "size": 972,
         "type": "file"
       },
       {
-        "modified": "2026-08-27T07:20:47Z",
+        "modified": "2026-08-31T11:19:42Z",
         "name": "pyproject.toml",
         "path": "jonah/pv-forecast/pyproject.toml",
-        "size": 524,
+        "size": 925,
         "type": "file"
       },
       {
         "children": [
           {
-            "modified": "2026-08-27T07:20:47Z",
+            "modified": "2026-08-31T11:19:42Z",
             "name": "test_op.py",
             "path": "jonah/pv-forecast/tests/test_op.py",
             "size": 1713,
             "type": "file"
           }
         ],
-        "modified": "2026-08-27T07:20:47Z",
+        "modified": "2026-08-31T11:19:42Z",
         "name": "tests",
         "path": "jonah/pv-forecast/tests",
         "size": 4096,
         "type": "directory"
       },
       {
-        "modified": "2026-08-27T07:20:47Z",
+        "modified": "2026-08-31T11:19:42Z",
+        "name": "train.py",
+        "path": "jonah/pv-forecast/train.py",
+        "size": 4273,
+        "type": "file"
+      },
+      {
+        "modified": "2026-08-31T11:19:42Z",
         "name": "training.py",
         "path": "jonah/pv-forecast/training.py",
         "size": 2764,
         "type": "file"
+      },
+      {
+        "modified": "2026-08-31T11:19:42Z",
+        "name": "uv.lock",
+        "path": "jonah/pv-forecast/uv.lock",
+        "size": 41,
+        "type": "file"
       }
     ],
-    "modified": "2026-08-27T07:20:48Z",
+    "modified": "2026-08-31T11:19:42Z",
     "name": "pv-forecast",
     "path": "jonah/pv-forecast",
     "size": 4096,

@@ -75,6 +75,10 @@ func (draftStub) Stream(context.Context, llm.Request) (<-chan llm.Event, error) 
 func newRepoHarness(t *testing.T) *repoHarness {
 	t.Helper()
 	repotest.RequireGit(t)
+	// A scaffold ends by running `uv lock` in the pod; this harness runs commands
+	// through a real python3, so without a stub that would be the machine's real uv
+	// resolving the Operator Lib pin over the network.
+	repotest.StubUV(t, repotest.LockingUV)
 
 	home := t.TempDir()
 	workspace := filepath.Join(home, "data", "ode")

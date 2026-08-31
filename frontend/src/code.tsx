@@ -1076,10 +1076,19 @@ function RepoBar({
           onClick={() =>
             void act("scaffold", async () => {
               const result = await api.repoScaffold();
-              setNote(
+              const wrote =
                 result.written.length > 0
                   ? `Wrote ${result.written.join(", ")}. ${result.hint}`
-                  : "Everything was already there.",
+                  : "Everything was already there.";
+              // The lock is the one file the scaffold can fail to write without the
+              // scaffold failing, so its reason has nowhere else to appear. Said
+              // after what did work, with the command that repairs it: the missing
+              // lock is what makes two runs of one commit resolvable to different
+              // dependency versions, and that is not something to discover later.
+              setNote(
+                result.lock_error
+                  ? `${wrote} uv.lock was not written: ${result.lock_error} Run \`uv lock\` in your pod and commit it.`
+                  : wrote,
               );
               return api.repoStatus();
             })

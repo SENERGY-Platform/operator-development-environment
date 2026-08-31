@@ -67,6 +67,11 @@ func newHarness(t *testing.T) *harness {
 func newHarnessWith(t *testing.T, wrap func(repo.Workspace) repo.Workspace) *harness {
 	t.Helper()
 	repotest.RequireGit(t)
+	// The scaffold ends by running `uv lock` in the pod. A real uv would resolve the
+	// Operator Lib pin over the network, so these tests supply their own — the point
+	// under test is that ODE runs the lock and reports what it did, not that uv
+	// resolves. A test that wants the other half calls stubUV itself.
+	repotest.StubUV(t, repotest.LockingUV)
 
 	home := t.TempDir()
 	workspace := filepath.Join(home, "data", "ode")
