@@ -175,6 +175,69 @@ func TestReadingIsInspectionAndWritingIsNot(t *testing.T) {
 }
 
 /*
+Grepping a file that was read is still reading it.
+
+These shapes come from the confirmations one developer actually answered — 241
+run_code cells over four days, of which they approved 232. Nine were recognised.
+The ones below were refused for a member the vocabulary had not been given yet:
+`re.search` and `.group` over source the cell had just read, `joinpath` where the
+`/` operator would have passed, `np.array` and `.tolist` on values already in the
+kernel, `json.dumps` of a dict the cell built. None of them does anything the
+`.find` and `read_text` already in the list do not.
+
+The refusals are the half that had to keep holding, and they are why the widening
+is a list of members rather than a rule about lower-case names: `write_text`,
+`savez_compressed` and `rglob` are spelled exactly like the members above and are
+not in it. Enumerating a tree is kept out with them — a cell that names the file
+it reads has been told what to look at, and one that walks the pod has not.
+*/
+func TestGreppingWhatWasReadIsStillReading(t *testing.T) {
+	recognised := []string{
+		// The cell this was written for, from 2026-08-31.
+		"import pathlib, re\n" +
+			"p = pathlib.Path(WS)\n" +
+			"src = (p/\"training.py\").read_text()\n" +
+			"m = re.search(r\"def train_model\\(\", src, re.S|re.M)\n" +
+			"print(src[m.start():m.start()+400])",
+		`print(re.findall(r"log_metric\(", src))`,
+		`print([m.group(0) for m in re.finditer(r"^def ", src, re.M)])`,
+		`print(LIB.joinpath("util/op_ml.py").read_text()[:400])`,
+		`print(np.array(xs).mean(), np.array(xs).tolist())`,
+		`print(json.dumps(d["data"], indent=1)[:500])`,
+		"rows = []\nrows.append(len(src))\nrows.sort()\nprint(rows)",
+		`print(hashlib.sha256(src.encode()).hexdigest())`,
+		`print(os.path.getmtime(p), os.path.getsize(p))`,
+	}
+	for _, code := range recognised {
+		if ok, why := plaincode.Recognised(code); !ok {
+			t.Errorf("not recognised: %q\n  because: %s", code, why)
+		}
+	}
+
+	refused := map[string]string{
+		`p.write_text(src)`:                    "writing through pathlib",
+		`np.savez_compressed("out.npz", a=xs)`: "persisting an array",
+		`df.to_csv("out.csv")`:                 "persisting a frame",
+		`print(list(p.rglob("*.py")))`:         "enumerating a tree",
+		`print(list(p.glob("*.py")))`:          "enumerating a directory",
+		`print(list(p.iterdir()))`:             "listing a directory",
+		`p.unlink()`:                           "removing a file",
+		`p.mkdir()`:                            "creating a directory",
+		`print(re.sub(r"a", "b", src))`:        "a member that was not added",
+	}
+	for code, what := range refused {
+		ok, why := plaincode.Recognised(code)
+		if ok {
+			t.Errorf("recognised %s, which must be asked about: %q", what, code)
+			continue
+		}
+		if strings.TrimSpace(why) == "" {
+			t.Errorf("refused %q without saying why", code)
+		}
+	}
+}
+
+/*
 An f-string is as dull as what it interpolates.
 
 The fields are put back into the scan and the text between them stays data, so

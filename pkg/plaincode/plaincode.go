@@ -890,6 +890,50 @@ var attributes = map[string]bool{
 	"isfile": true, "isdir": true, "splitext": true, "abspath": true,
 	"stem": true, "suffix": true, "parent": true, "is_file": true,
 	"is_dir": true, "close": true, "Path": true,
+	// matching over text that is already in the kernel.
+	//
+	// A cell that reads a source file and pulls one function out of it with
+	// `re.search` is doing what the `.find` three lines above it does, and it was
+	// the largest single group of refusals among cells that did nothing but read.
+	// The flags are attributes too — `re.S|re.M` — and a name that is only ever
+	// read is the least this list can be wrong about.
+	"search": true, "match": true, "fullmatch": true, "findall": true,
+	"finditer": true, "group": true, "groups": true, "groupdict": true,
+	"span": true, "escape": true,
+	// `start` and `end` are a match's offsets, and they are the two additions here
+	// with a name generic enough to belong to something else — an object bound by an
+	// earlier cell whose `.start()` launches something rather than reporting an
+	// index. That shape is already reachable: a bare `runner.start` is spelled the
+	// way `m.start` is, the modules that hand out a startable object are refused by
+	// name, and the variable hole above admits `runner()` regardless. So these cost
+	// nothing that was being held, and a cell that finds a function in a file and
+	// prints it from that offset is the commonest read in the corpus.
+	"start": true, "end": true,
+	"S": true, "M": true, "I": true, "A": true, "X": true,
+	"DOTALL": true, "MULTILINE": true, "IGNORECASE": true, "VERBOSE": true,
+	// more of the path arithmetic. `joinpath` is the `/` operator spelled out, and
+	// it was refused more often than any other attribute in a read-only cell.
+	// `glob`, `rglob`, `iterdir` and `walk` stay absent, and stay absent on purpose:
+	// enumerating a tree is a different question from reading a file that was named.
+	"joinpath": true, "relative_to": true, "parts": true, "as_posix": true,
+	"getmtime": true, "getsize": true,
+	// arrays and frames: the members that compute a value and hand it back. Nothing
+	// here persists anything — `savez`, `savez_compressed`, `to_csv` and `to_sql`
+	// are absent, and absent is what refuses them.
+	"array": true, "ndarray": true, "arange": true, "reshape": true,
+	"flatten": true, "tolist": true, "to_datetime": true, "int64": true,
+	"float64": true, "all": true, "any": true,
+	// containers the cell built itself. Appending to a list or updating a dict
+	// writes to the kernel's own memory and reaches nothing outside it, which is
+	// the line this list draws: the writes it refuses are the ones that reach a
+	// file, a service or a store.
+	"append": true, "extend": true, "sort": true, "update": true,
+	// formatting and digesting, all pure — a string in, a string out. `dumps` and
+	// `loads` are json's and neither of them writes anywhere; the digests are how a
+	// cell says two files are the same file without printing either.
+	"strftime": true, "isoformat": true, "encode": true, "decode": true,
+	"dumps": true, "loads": true, "sha256": true, "sha1": true, "md5": true,
+	"hexdigest": true,
 	// time
 	"year": true, "month": true, "day": true, "hour": true, "minute": true,
 	"second": true, "date": true, "time": true, "total_seconds": true, "dt": true,

@@ -174,10 +174,28 @@ possible.
 
 What `pkg/plaincode` does is *recognition*, not detection. It knows a fixed
 vocabulary — reading a dataframe's shape, its columns, a column's mean, printing,
-comprehensions over those — and anything it does not positively know is
-unrecognised. The failure it produces is therefore an unnecessary prompt, which is
-the end it is deliberately wrong at. A recogniser that erred the other way would be
-the boundary it refuses to be.
+comprehensions over those, reading a file out of the checkout and matching over
+what was read — and anything it does not positively know is unrecognised. The
+failure it produces is therefore an unnecessary prompt, which is the end it is
+deliberately wrong at. A recogniser that erred the other way would be the boundary
+it refuses to be.
+
+What the vocabulary holds is decided against real confirmations rather than
+guessed. Measured over 241 `run_code` cells from four days of one developer's
+sessions, of which they approved 232: nine were recognised. Adding the members
+those cells were refused for — `re.search` and `.group` over source the cell had
+just read, `joinpath` where `/` would have passed, `np.array`, `.tolist`,
+`json.dumps` — takes it to 33. The remaining 208 are not a gap to be closed. They
+contain `subprocess`, `sys`, `importlib`, `inspect`, `urllib`, a `!` shell escape,
+an `open` in write mode, or a `def`: the subset excludes those on purpose, and a
+vocabulary widened until they passed would be the rubber stamp this is not. Two
+things follow that are worth stating plainly. Enumerating a tree stays out
+(`glob`, `rglob`, `iterdir`, `walk`) even though reading a named file is in — a
+cell told which file to read has been told what to look at, and one that walks the
+pod has not. And auto mode is a standing answer about a *class of act*, not about
+whether a cell was a good idea: four of the 33 are cells the developer rejected on
+the merits, all four read-only file dumps, and under a standing answer they would
+have run.
 
 Three properties bound it, and each has a test in `pkg/tools/dispatch_test.go`:
 
