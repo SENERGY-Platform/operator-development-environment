@@ -43,6 +43,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/mcp"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/permissions"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
@@ -833,6 +834,10 @@ func startM8(
 	service, err := experiments.New(experiments.Deps{
 		Workspace: kernelService,
 		Repo:      repoService,
+		// A launch authorizes its input topics as the developer, using the rule the
+		// flow engine applies when it deploys a pipeline. Operator Lib checks
+		// nothing itself, so this is the only refusal on the ODE path.
+		Access: permissions.New(config.PermissionsUrl),
 		// An experiment record is the one thing in M8 that is recomputable from
 		// nowhere else: Ray forgets a submission and MLflow does not know which
 		// working copy produced a run. So it goes to Postgres whenever there is one,
@@ -852,19 +857,19 @@ func startM8(
 			// is what Operator Lib hands to ray.init() and is not RayURL, which is the
 			// dashboard's HTTP API; TsConn is the shared timescale credential a run
 			// reads history through, tracked as SNRGY-4637.
-			RayClientURL:      config.ExperimentRayClientUrl,
-			PyExecutable:      config.ExperimentPyExecutable,
-			TsConn:            config.ExperimentTsConn.Value(),
-			KafkaBootstrap:    config.ExperimentKafkaBootstrap,
-			MaxPackageBytes:   config.ExperimentMaxPackageBytes,
-			MaxEnvVars:        int(config.ExperimentMaxEnvVars),
-			MaxEnvValueBytes:  int(config.ExperimentMaxEnvValueBytes),
-			MaxLogBytes:       int(config.ExperimentMaxLogBytes),
-			RequestTimeout:    requestTimeout,
-			UploadTimeout:     uploadTimeout,
-			CommandTimeout:    commandTimeout,
-			EmbedProbeTTL:     embedTTL,
-			EmbedProbeTimeout: embedTimeout,
+			RayClientURL:        config.ExperimentRayClientUrl,
+			PyExecutable:        config.ExperimentPyExecutable,
+			TimescaleWrapperURL: config.TimescaleWrapperUrl,
+			KafkaBootstrap:      config.ExperimentKafkaBootstrap,
+			MaxPackageBytes:     config.ExperimentMaxPackageBytes,
+			MaxEnvVars:          int(config.ExperimentMaxEnvVars),
+			MaxEnvValueBytes:    int(config.ExperimentMaxEnvValueBytes),
+			MaxLogBytes:         int(config.ExperimentMaxLogBytes),
+			RequestTimeout:      requestTimeout,
+			UploadTimeout:       uploadTimeout,
+			CommandTimeout:      commandTimeout,
+			EmbedProbeTTL:       embedTTL,
+			EmbedProbeTimeout:   embedTimeout,
 
 			KeycloakURL:          config.KeycloakUrl,
 			KeycloakRealm:        config.KeycloakRealm,

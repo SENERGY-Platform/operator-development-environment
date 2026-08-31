@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SENERGY-Platform/analytics-flow-engine/lib/access"
 	servicejwt "github.com/SENERGY-Platform/service-commons/pkg/jwt"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
@@ -94,11 +95,16 @@ type Options struct {
 	// Operator Lib hands to ray.init(). Not RayURL, which is the dashboard's HTTP
 	// API. "auto" attaches to the cluster the driver is already running in.
 	RayClientURL string
-	// TsConn is the timescale DSN Operator Lib's provide_historic_data reads history
-	// through. A shared database credential rather than the caller's token: it
-	// reaches every series, and which series a run reads is decided by its input
-	// topics rather than by who launched it. Tracked as SNRGY-4637.
-	TsConn string
+	// TimescaleWrapperURL is what a run reads history through, as the ts_wrapper_url
+	// of its operator config.
+	//
+	// Not a DSN. Operator Lib supports both and prefers a DSN where it has one, but
+	// a run executes the developer's own Python, so a database credential in its
+	// environment is a credential handed to code ODE did not write. The wrapper
+	// checks the developer's Execute permission on each device itself, which is the
+	// authority the pre-operator-path read had and the operator path lost
+	// (SNRGY-4637). The token it uses is the one SENERGY_TOKEN already carries.
+	TimescaleWrapperURL string
 	// KafkaBootstrap is the broker list a run's deployment config carries, for an
 	// input topic replayed from Kafka rather than read from timescale. Empty leaves
 	// a run able to train from timescale-backed topics only.
@@ -170,6 +176,10 @@ type Deps struct {
 	// HTTPClient is replaced by tests. One client for Ray, MLflow, Keycloak and the
 	// embed probe, because they differ only in the host.
 	HTTPClient *http.Client
+	// Access authorizes a launch's input topics. Required: without it a launch
+	// would read whatever series its topics name, which is the one thing in a
+	// deployment config that decides what data a run sees.
+	Access access.Checker
 	Options
 }
 
@@ -192,6 +202,7 @@ type Service struct {
 	// criteria memoises the developer's evaluation.yaml per commit. Safe because a
 	// commit's tree is immutable — see criteriaCache.
 	criteria criteriaCache
+	access   access.Checker
 	opts     Options
 }
 
@@ -243,6 +254,14 @@ func New(deps Deps) (*Service, error) {
 	}
 	if deps.IDs == nil {
 		return nil, errors.New("experiments: an id source is required")
+	}
+	if deps.Access == nil {
+		// Refused rather than skipped. A launch decides what data a run reads, and a
+		// deployment that forgot to wire this would authorize nothing while looking
+		// like it worked -- the failure this check exists to prevent.
+		return nil, errors.New(
+			"experiments: a permission checker is required: a launch authorizes its " +
+				"input topics as the developer (SNRGY-4637)")
 	}
 
 	opts := deps.Options
@@ -298,6 +317,7 @@ func New(deps Deps) (*Service, error) {
 		repo:      deps.Repo,
 		store:     deps.Store,
 		ids:       deps.IDs,
+		access:    deps.Access,
 		http:      client,
 		ray: &rayClient{
 			baseURL: opts.RayURL, token: opts.RayToken, http: client,
@@ -415,6 +435,18 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 	}
 	if err := requireInputTopics(req.InputTopics); err != nil {
 		return LaunchResult{}, err
+	}
+	// Before the package is built, for the reason above: this is the check that
+	// refuses, and everything past it spends something. Shared with the flow
+	// engine, which applies the same rule when it deploys a pipeline -- Operator
+	// Lib performs no check of its own, so whichever service wrote the topics is
+	// the only one able to refuse.
+	//
+	// An experiment is a single operator, so it has no intra-deployment operator
+	// wiring to exempt and passes no InternalOperatorIDs.
+	if err := access.CheckTopics(s.access, req.Bearer, asPipeTopics(req.InputTopics),
+		access.Options{}); err != nil {
+		return LaunchResult{}, fmt.Errorf("%w: %s", ErrInvalidRequest, err)
 	}
 
 	experimentID := s.ids.NewID()

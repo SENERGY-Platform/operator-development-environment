@@ -120,20 +120,21 @@ func newExperimentHarness(t *testing.T) *experimentHarness {
 	ray := experimentstest.NewRay(t)
 	mlflow := experimentstest.NewMLflow(t)
 	experimentService, err := experiments.New(experiments.Deps{
+		Access:    allowAllPermissions{},
 		Workspace: kernelService,
 		Repo:      repoService,
 		Store:     experiments.NewMemoryStore(),
 		IDs:       identifiers.New(),
 		Options: experiments.Options{
-			RayURL:            ray.URL(),
-			MLflowURL:         mlflow.URL(),
-			RayClientURL:      "auto",
-			TsConn:            "postgresql://ode:secret@timescale.example.org/postgres",
-			DefaultEntrypoint: "uv run python train.py",
-			PyExecutable:      "uv run",
-			CommandTimeout:    120 * time.Second,
-			RequestTimeout:    30 * time.Second,
-			EmbedProbeTimeout: 2 * time.Second,
+			RayURL:              ray.URL(),
+			MLflowURL:           mlflow.URL(),
+			RayClientURL:        "auto",
+			TimescaleWrapperURL: "https://platform.example.org/db/v3",
+			DefaultEntrypoint:   "uv run python train.py",
+			PyExecutable:        "uv run",
+			CommandTimeout:      120 * time.Second,
+			RequestTimeout:      30 * time.Second,
+			EmbedProbeTimeout:   2 * time.Second,
 		},
 	})
 	if err != nil {
@@ -873,4 +874,12 @@ func withInputTopics(t *testing.T, body any) any {
 		fields["input_topics"] = testInputTopics()
 	}
 	return fields
+}
+
+// allowAllPermissions authorizes every input topic. The refusal path has its own
+// tests; here it stands in for a developer who may read what they named.
+type allowAllPermissions struct{}
+
+func (allowAllPermissions) UserHasExecuteAccess(string, []string, string) (bool, error) {
+	return true, nil
 }

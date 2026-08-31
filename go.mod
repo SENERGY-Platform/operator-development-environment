@@ -3,7 +3,8 @@ module github.com/SENERGY-Platform/operator-development-environment
 go 1.26.5
 
 require (
-	github.com/SENERGY-Platform/analytics-flow-engine/lib v0.0.0-20251112135741-3edca6fddbc1
+	github.com/SENERGY-Platform/analytics-flow-engine/lib v0.0.0-20260831085754-370b49658c38
+	github.com/SENERGY-Platform/analytics-pipeline/lib v0.0.0-20251021095503-e4fc32dc684d
 	github.com/SENERGY-Platform/device-repository v0.2.53
 	github.com/SENERGY-Platform/device-selection v0.0.27
 	github.com/SENERGY-Platform/gin-middleware v0.14.1
@@ -11,6 +12,7 @@ require (
 	github.com/SENERGY-Platform/go-service-base/struct-logger v0.8.0
 	github.com/SENERGY-Platform/import-deploy v0.1.0
 	github.com/SENERGY-Platform/models/go v0.0.0-20260710115411-5b8e00d6e038
+	github.com/SENERGY-Platform/permissions-v2 v0.0.45
 	github.com/SENERGY-Platform/service-commons v0.0.0-20260821114734-3e4578ac2358
 	github.com/SENERGY-Platform/timescale-wrapper v0.1.2
 	github.com/anthropics/anthropic-sdk-go v1.63.1
@@ -26,11 +28,9 @@ require (
 
 require (
 	github.com/KyleBanks/depth v1.2.1 // indirect
-	github.com/SENERGY-Platform/analytics-pipeline/lib v0.0.0-20251021095503-e4fc32dc684d // indirect
 	github.com/SENERGY-Platform/developer-notifications v0.0.5 // indirect
 	github.com/SENERGY-Platform/go-env-loader v0.5.3 // indirect
 	github.com/SENERGY-Platform/mgw-cloud-proxy/cert-manager/lib v0.0.4 // indirect
-	github.com/SENERGY-Platform/permissions-v2 v0.0.45 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect

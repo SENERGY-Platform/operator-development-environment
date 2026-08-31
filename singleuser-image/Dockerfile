@@ -58,11 +58,17 @@ USER ${NB_UID}
 # traced back to the exact Operator Lib it contains. A branch name still works
 # for a hand build.
 #
-# v1.4.0 is the floor rather than a preference: it is the release that made
-# MLOperator.train_once() public, and the scaffold's train.py calls it. An image
-# built against an older ref imports fine and fails at the end of a run with
-# AttributeError, which is the worst place to find out.
-ARG OPERATOR_LIB_REF=v1.4.0
+# v1.5.0 is the floor rather than a preference, and it moved for a reason worth
+# reading. v1.4.0 made MLOperator.train_once() public, which the scaffold's
+# train.py calls; an older image fails there with AttributeError, loudly.
+#
+# v1.5.0 is the one that must not be undershot quietly. It is where Config.ts_conn
+# lost its compiled-in default and ts_wrapper_url appeared, and ODE sets the
+# wrapper rather than a DSN so that a run reads history under the developer's own
+# permission (SNRGY-4637). A v1.4.0 image does not know the field: it ignores it,
+# falls back to the built-in DSN, and reads every series in the instance without
+# anything in the run saying so.
+ARG OPERATOR_LIB_REF=v1.5.0
 
 RUN pip install --no-cache-dir \
       "git+https://github.com/SENERGY-Platform/analytics-operator-lib-python@${OPERATOR_LIB_REF}"

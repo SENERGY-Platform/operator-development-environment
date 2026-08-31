@@ -287,10 +287,18 @@ reports it as missing, the way it reports any other absent file of the complianc
 set; a launch against such a repository runs the deployment default and fails on
 `python: can't open file 'train.py'`.
 
-`train.py` needs Operator Lib **v1.4.0 or newer** for `train_once()`. That is the
-floor for `operator_lib_ref` and for the singleuser image's `OPERATOR_LIB_REF` — an
-older one imports fine and fails at the end of a run with `AttributeError`. It is
-*not* a requirement on the Ray image, for the reason the next section gives.
+`train.py` needs Operator Lib **v1.5.0 or newer**, and that floor is the one for
+`operator_lib_ref` and for the singleuser image's `OPERATOR_LIB_REF`. It is *not* a
+requirement on the Ray image, for the reason the next section gives.
+
+Two releases matter, and they fail differently. v1.4.0 made `train_once()` public;
+an image below it raises `AttributeError` at the end of a run, which is late but
+unmissable. v1.5.0 is where `Config.ts_conn` lost its compiled-in default and
+`ts_wrapper_url` appeared — ODE sets the wrapper so a run reads history under the
+developer's own permission (SNRGY-4637), and an image below it does not know the
+field, ignores it, and falls back to the built-in DSN. Nothing in the run says so.
+That is why the floor is stated as v1.5.0 rather than as the release that
+introduced the call the code makes.
 
 ## `uv run`, and why the cluster image carries none of this
 
@@ -330,23 +338,37 @@ A Ray job reads its training data **directly**, never streamed through ODE
 path, and the change is worth stating plainly rather than leaving to be
 discovered.
 
-`provide_historic_data` reads timescale over a direct Postgres connection from
-`Config.ts_conn`. That is a shared database credential: it reaches every series,
-and which series a run reads is decided by the topics in its deployment config
-rather than by who launched it. ODE previously read timescale through
-timescale-wrapper with the developer's own token, so the authorisation was theirs
-and nothing more — this is a step down from that, taken deliberately so that an
-experiment does what a deployed operator does.
+`provide_historic_data` reads history one of two ways, and which one it takes is
+decided by what its deployment config carries. Given a `ts_conn` it opens a direct
+Postgres connection; given a `ts_wrapper_url` and a platform token it reads
+through timescale-wrapper instead; given neither it refuses, naming both.
 
-It is not a live risk while every developer is team-internal with platform
-administration rights: the DSN gives them nothing they could not reach anyway. It
-becomes one the day developer access is given to anyone outside the team, and it
-has to be solved before then. Tracked as
-[SNRGY-4637](https://bitnify.atlassian.net/browse/SNRGY-4637).
+**ODE gives it a wrapper URL and no DSN.** A run executes the developer's own
+Python, so a database credential in its environment is a credential handed to code
+ODE did not write — `os.environ["CONFIG"]` is all it takes to read it back out,
+and no gate in this repository stands between a developer and that string. The
+wrapper needs no credential in the job at all: it reads with the `SENERGY_TOKEN`
+described below, and timescale-wrapper checks `Execute` on the device itself. The
+authorisation is the developer's own, which is what it was before the run moved
+onto Operator Lib's path and what it briefly stopped being when it did
+([SNRGY-4637](https://bitnify.atlassian.net/browse/SNRGY-4637)).
 
-ODE names the DSN in its own configuration as `experiment_ts_conn` rather than
-letting Operator Lib's compiled-in default apply, so that the credential is
-visible where it is handed out and swappable without a library release.
+A deployed operator is the other way round: the flow engine sets it a DSN and
+gives it no token, and its code is a reviewed image rather than a working copy.
+That asymmetry is why Operator Lib keeps both paths rather than replacing one.
+
+Two costs come with the wrapper path, both from going through the gateway rather
+than the database. It reads in time-windowed pages, because the gateway answers an
+oversized response with a 502 rather than relaying it — the same ceiling
+[profiler-reads.md](profiler-reads.md) documents, met here at training volumes. And
+it cannot shard the read across Ray workers the way `ray.data.read_sql` does with a
+shard key, so it is the slower path. That is the price of the check.
+
+A launch is separately refused if the developer may not read what its input topics
+name; see
+[authorisation-and-exposure-tiers.md](authorisation-and-exposure-tiers.md). The two
+are worth having together — the launch gate refuses early and legibly, before a
+build and a submit spend anything, and the wrapper is what enforces at read time.
 
 The token below is a separate question and still worth its section: a job also
 carries `SENERGY_TOKEN` for the developer's own code and for the platform helpers

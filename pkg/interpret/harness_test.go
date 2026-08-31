@@ -131,6 +131,7 @@ func newHarness(t *testing.T, replies ...string) *harness {
 	mlflow := experimentstest.NewMLflow(t)
 	experimentStore := experiments.NewMemoryStore()
 	experimentService, err := experiments.New(experiments.Deps{
+		Access:    allowAllPermissions{},
 		Workspace: kernelService,
 		Repo:      repoService,
 		Store:     experimentStore,
@@ -138,9 +139,9 @@ func newHarness(t *testing.T, replies ...string) *harness {
 		Options: experiments.Options{
 			RayURL: ray.URL(), MLflowURL: mlflow.URL(),
 			RayClientURL: "auto", DefaultEntrypoint: "uv run python train.py",
-			PyExecutable:   "uv run",
-			TsConn:         "postgresql://ode:secret@timescale.example.org/postgres",
-			CommandTimeout: 120 * time.Second, RequestTimeout: 30 * time.Second,
+			PyExecutable:        "uv run",
+			TimescaleWrapperURL: "https://platform.example.org/db/v3",
+			CommandTimeout:      120 * time.Second, RequestTimeout: 30 * time.Second,
 		},
 	})
 	if err != nil {
@@ -490,4 +491,12 @@ func unsignedToken() string {
 	header, _ := json.Marshal(map[string]string{"alg": "none", "typ": "JWT"})
 	encode := base64.RawURLEncoding.EncodeToString
 	return fmt.Sprintf("%s.%s.", encode(header), encode(claims))
+}
+
+// allowAllPermissions authorizes every input topic. The refusal path has its own
+// tests; here it stands in for a developer who may read what they named.
+type allowAllPermissions struct{}
+
+func (allowAllPermissions) UserHasExecuteAccess(string, []string, string) (bool, error) {
+	return true, nil
 }

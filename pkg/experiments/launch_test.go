@@ -284,9 +284,10 @@ func TestTheJobIsPointedAtTheUploadedPackageAndTheRunItShouldLogTo(t *testing.T)
 	// What Operator Lib actually reads.
 	var config struct {
 		Config struct {
-			MLflowURL string `json:"mlflow_url"`
-			RayURL    string `json:"ray_url"`
-			TsConn    string `json:"ts_conn"`
+			MLflowURL    string `json:"mlflow_url"`
+			RayURL       string `json:"ray_url"`
+			TsWrapperURL string `json:"ts_wrapper_url"`
+			TsConn       string `json:"ts_conn"`
 		} `json:"config"`
 		InputTopics []struct {
 			Name     string `json:"name"`
@@ -306,9 +307,18 @@ func TestTheJobIsPointedAtTheUploadedPackageAndTheRunItShouldLogTo(t *testing.T)
 	if config.Config.MLflowURL != h.mlflow.URL() {
 		t.Errorf("config.mlflow_url = %q, want the tracking server", config.Config.MLflowURL)
 	}
-	if config.Config.RayURL == "" || config.Config.TsConn == "" {
-		t.Errorf("config = %+v, want ray_url and ts_conn set: Operator Lib's own defaults "+
-			"are compiled-in cluster names and would silently point elsewhere", config.Config)
+	if config.Config.RayURL == "" || config.Config.TsWrapperURL == "" {
+		t.Errorf("config = %+v, want ray_url and ts_wrapper_url set: Operator Lib's own "+
+			"ray default is a compiled-in cluster name and would silently point "+
+			"elsewhere, and without a wrapper url a run has no way to read history "+
+			"at all", config.Config)
+	}
+	// The regression that would silently reopen SNRGY-4637. A run executes the
+	// developer's own Python, so a DSN here is a credential handed to code ODE did
+	// not write -- os.environ["CONFIG"] is all it takes to read it back out.
+	if config.Config.TsConn != "" {
+		t.Errorf("config.ts_conn = %q, want no database credential in a job whose code "+
+			"the developer wrote", config.Config.TsConn)
 	}
 	if len(config.InputTopics) != 1 || len(config.InputTopics[0].Mappings) != 1 {
 		t.Fatalf("inputTopics = %+v, want the one topic the launch named", config.InputTopics)

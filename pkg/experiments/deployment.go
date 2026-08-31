@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	pipe "github.com/SENERGY-Platform/analytics-pipeline/lib"
 )
 
 // The deployment config a run is given, in Operator Lib's own shape.
@@ -70,7 +72,19 @@ type operatorSettings struct {
 	LoggerLevel string `json:"logger_level"`
 	MLflowURL   string `json:"mlflow_url"`
 	RayURL      string `json:"ray_url"`
-	TsConn      string `json:"ts_conn"`
+	// TsWrapperURL rather than a ts_conn.
+	//
+	// Operator Lib reads history either over a database DSN or through
+	// timescale-wrapper with the platform token, and it prefers the DSN where it
+	// has one. A run executes Python the developer wrote, so a DSN in its
+	// environment is a credential handed to untrusted code -- os.environ["CONFIG"]
+	// is all it takes. The wrapper needs no credential in the job and checks the
+	// developer's own Execute permission on each device, which is the authority
+	// this path lost when experiments moved onto the operator path (SNRGY-4637).
+	//
+	// A deployed operator keeps the DSN: the flow engine sets one and gives it no
+	// token, and its code is a reviewed image rather than a working copy.
+	TsWrapperURL string `json:"ts_wrapper_url,omitempty"`
 }
 
 // modelID is the key Operator Lib registers a model under, built in
@@ -135,8 +149,8 @@ func (s *Service) deploymentEnvironment(
 			// ray.init() would reject it. A run's driver is already on the cluster, so
 			// "auto" attaches to the cluster around it rather than opening a client
 			// connection back into the cluster it is in.
-			RayURL: s.opts.RayClientURL,
-			TsConn: s.opts.TsConn,
+			RayURL:       s.opts.RayClientURL,
+			TsWrapperURL: s.opts.TimescaleWrapperURL,
 		},
 		// Never nil: Operator Lib iterates it without checking, and a null here is a
 		// TypeError inside the job rather than a refusal the developer can read.
@@ -247,4 +261,24 @@ func validateTopics(topics []InputTopic) error {
 		}
 	}
 	return nil
+}
+
+// asPipeTopics restates the input topics in the shape lib/access reads.
+//
+// The two types are the same fields under the same JSON names -- both exist to be
+// marshalled into Operator Lib's CONFIG -- but the shared check is written
+// against the flow engine's, because that is the service the rule came from.
+// Converting here rather than aliasing the type keeps the doc comment on
+// InputTopic, which records that these names are Operator Lib's rather than this
+// repository's convention.
+func asPipeTopics(topics []InputTopic) []pipe.InputTopic {
+	out := make([]pipe.InputTopic, 0, len(topics))
+	for _, topic := range topics {
+		out = append(out, pipe.InputTopic{
+			Name:        topic.Name,
+			FilterType:  topic.FilterType,
+			FilterValue: topic.FilterValue,
+		})
+	}
+	return out
 }

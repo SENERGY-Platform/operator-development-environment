@@ -39,8 +39,13 @@ type ConfigStruct struct {
 	RequiredRealmRole string `json:"required_realm_role"`
 
 	// Platform services. Read on behalf of the calling user (§3.1 step 3).
-	DeviceRepoUrl         string `json:"device_repo_url"`
-	TimescaleWrapperUrl   string `json:"timescale_wrapper_url"`
+	DeviceRepoUrl       string `json:"device_repo_url"`
+	TimescaleWrapperUrl string `json:"timescale_wrapper_url"`
+	// PermissionsUrl is permissions-v2, which answers whether the developer may
+	// execute a device, an import instance or a pipeline. It is what a launch
+	// authorizes its input topics against; without it there is no experiment
+	// surface, because a launch decides what data a run reads (SNRGY-4637).
+	PermissionsUrl        string `json:"permissions_url"`
 	OntologyCacheTtl      string `json:"ontology_cache_ttl"`
 	OntologyInvalidateInt string `json:"ontology_invalidate_interval"`
 
@@ -379,9 +384,12 @@ type ConfigStruct struct {
 	RepoMaxCommandOutputBytes int64  `json:"repo_max_command_output_bytes"`
 	RepoMaxWorkbenches        int64  `json:"repo_max_workbenches"`
 
-	// The library the scaffold pins (D15). v1.4.0 is the floor: the scaffold's
-	// train.py calls MLOperator.train_once(), which that release made public, and an
-	// older pin fails with AttributeError at the end of a run rather than at import.
+	// The library the scaffold pins (D15). v1.5.0 is the floor: it is where
+	// Config.ts_conn lost its compiled-in default and ts_wrapper_url appeared, and a
+	// run reads history through the wrapper under the developer's own permission
+	// (SNRGY-4637). An older pin ignores the field and falls back to the built-in
+	// DSN, silently. v1.4.0 is separately required for train_once(), which fails
+	// loudly instead.
 	// OperatorLibRef empty resolves the newest
 	// tag at scaffold time, which is what "track latest, pin per repo" means; setting
 	// it fixes every new repository to one ref, which is what a deployment reproducing
@@ -414,22 +422,17 @@ type ConfigStruct struct {
 	MlflowExperimentPrefix      string       `json:"mlflow_experiment_prefix"`
 	ExperimentDefaultEntrypoint string       `json:"experiment_default_entrypoint"`
 
-	// ExperimentTsConn is the timescale DSN a training run reads history through.
+	// A run reads history through timescale_wrapper_url above, not through a DSN of
+	// its own. There is deliberately no experiment_ts_conn: Operator Lib supports
+	// both and prefers a DSN where it has one, and a run executes the developer's
+	// own Python, so a DSN in its environment is a credential handed to code ODE did
+	// not write — os.environ["CONFIG"] is all it takes to read it back out. The
+	// wrapper needs no credential in the job and checks the developer's own Execute
+	// permission on each device, which is the authority this path had before
+	// experiments moved onto the operator path and lost when they did (SNRGY-4637).
 	//
-	// It exists because a run now takes Operator Lib's own path: provide_historic_data
-	// reads timescale by direct Postgres connection from Config.ts_conn, not through
-	// timescale-wrapper with the caller's token. That is a shared credential, so it is
-	// named here rather than left to Operator Lib's built-in default — a credential
-	// ODE hands out should be visible in ODE's configuration and swappable without a
-	// library release.
-	//
-	// It is also the one place where a run is *less* isolated than the rest of ODE:
-	// the DSN reaches every series, and which series a run reads is decided by the
-	// topics in its deployment config rather than by who launched it. Acceptable while
-	// every developer is team-internal with platform administration rights; it is not
-	// acceptable once developer access is given to anyone outside the team. Tracked as
-	// SNRGY-4637.
-	ExperimentTsConn types.Secret `json:"experiment_ts_conn"`
+	// A deployed operator is the other way round: the flow engine sets it a DSN and
+	// gives it no token, and its code is a reviewed image rather than a working copy.
 	// ExperimentKafkaBootstrap is the broker list a training run's deployment config
 	// carries. A run reads history from timescale for a device topic and replays kafka
 	// for everything else (an import's topic, §5.3.4), which is the case that needs it.

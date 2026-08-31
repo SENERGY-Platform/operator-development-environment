@@ -216,7 +216,7 @@ comes up. ODE adds only the commit tag on the run.
 ODE runs this file. It is yours to change, but keep the init()/train_once() pair
 at the end: everything a run records happens inside one of the two.
 
-Needs Operator Lib v1.4.0 or newer for train_once(), which pyproject.toml pins.
+Needs Operator Lib v1.5.0 or newer, which pyproject.toml pins.
 """
 
 import json
@@ -302,7 +302,8 @@ def main() -> int:
 
     if not trains_inside_init:
         # Operator Lib v1.4.0 and newer. On an older pin this raises
-        # AttributeError, and the pin is in pyproject.toml.
+        # AttributeError, and the pin is in pyproject.toml, where the floor is
+        # v1.5.0 for a separate reason: how history is read.
         operator.train_once()
     return 0
 

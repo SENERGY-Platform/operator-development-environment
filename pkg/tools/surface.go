@@ -1282,7 +1282,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			    },
 			    "input_topics": {
 			      "type": "array",
-			      "description": "The operator's inputs, which decide what history the run trains on. Required: a launch without them is refused, because the run would read nothing and fail inside train(). Take them from the developer's confirmed data selection (propose_data_selection for a device, propose_operator_input for an import) rather than composing them yourself.",
+			      "description": "The operator's inputs, which decide what history the run trains on. Required: a launch without them is refused, because the run would read nothing and fail inside train(). Every topic is authorised as the developer before anything is built, so one naming a device, import or pipeline they cannot read is refused rather than obeyed — take them from the developer's confirmed data selection (propose_data_selection for a device, propose_operator_input for an import) instead of composing them yourself.",
 			      "items": {
 			        "type": "object",
 			        "properties": {

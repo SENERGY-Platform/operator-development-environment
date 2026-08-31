@@ -129,6 +129,7 @@ func newHarness(t *testing.T, apply ...options) *harness {
 		Repo:      repoService,
 		Store:     store,
 		IDs:       newSequentialIDs(),
+		Access:    allowAllPermissions{},
 		Options: experiments.Options{
 			RayURL:            ray.URL(),
 			RayToken:          "ray-service-token",
@@ -137,11 +138,11 @@ func newHarness(t *testing.T, apply ...options) *harness {
 			PyExecutable:      "uv run",
 			// The deployment config a run carries. RayClientURL is what Operator Lib
 			// hands to ray.init() and is not RayURL, which is the dashboard's HTTP API.
-			RayClientURL:      "auto",
-			TsConn:            "postgresql://ode:secret@timescale.example.org/postgres",
-			CommandTimeout:    120 * time.Second,
-			RequestTimeout:    30 * time.Second,
-			EmbedProbeTimeout: 2 * time.Second,
+			RayClientURL:        "auto",
+			TimescaleWrapperURL: "https://platform.example.org/db/v3",
+			CommandTimeout:      120 * time.Second,
+			RequestTimeout:      30 * time.Second,
+			EmbedProbeTimeout:   2 * time.Second,
 			Environment: map[string]string{
 				"SENERGY_TIMESCALE_URL": "https://platform.example.org/db/v3",
 			},
@@ -361,4 +362,12 @@ func (h *harness) removeFile(path string) {
 	if err := os.Remove(full); err != nil {
 		h.t.Fatalf("remove %s: %v", path, err)
 	}
+}
+
+// allowAllPermissions authorizes every input topic. The refusal path has its own
+// tests; here it stands in for a developer who may read what they named.
+type allowAllPermissions struct{}
+
+func (allowAllPermissions) UserHasExecuteAccess(string, []string, string) (bool, error) {
+	return true, nil
 }

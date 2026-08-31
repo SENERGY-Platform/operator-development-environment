@@ -6,8 +6,8 @@ github.com/KyleBanks/depth v1.2.1 h1:5h8fQADFrWtarTdtDudMmGsC7GPbOAu6RVB3ffsVFHc
 github.com/KyleBanks/depth v1.2.1/go.mod h1:jzSb9d0L43HxTQfT+oSA1EEp2q+ne2uh6XgeJcm8brE=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
-github.com/SENERGY-Platform/analytics-flow-engine/lib v0.0.0-20251112135741-3edca6fddbc1 h1:tN4L2zHFWgen2Sfw3wdVrGNsPgOSiBpD97Npaf13b34=
-github.com/SENERGY-Platform/analytics-flow-engine/lib v0.0.0-20251112135741-3edca6fddbc1/go.mod h1:YqN8BEpupeyBmKTlmfgCiZMc2Kjgg+XiE1IwM5ovdAM=
+github.com/SENERGY-Platform/analytics-flow-engine/lib v0.0.0-20260831085754-370b49658c38 h1:cOFIsUWpg1rn2bJM2pikCmv8PZOdjFINbViDqCV2gg8=
+github.com/SENERGY-Platform/analytics-flow-engine/lib v0.0.0-20260831085754-370b49658c38/go.mod h1:YqN8BEpupeyBmKTlmfgCiZMc2Kjgg+XiE1IwM5ovdAM=
 github.com/SENERGY-Platform/analytics-pipeline/lib v0.0.0-20251021095503-e4fc32dc684d h1:S0HJY/JPex4/2lZFcDKB5TZoMWZSYpO/RNb4klZThPs=
 github.com/SENERGY-Platform/analytics-pipeline/lib v0.0.0-20251021095503-e4fc32dc684d/go.mod h1:BN4oIwsTK4InYwgczhP+V3OJJlXt+ilcaJ2/UYzs51w=
 github.com/SENERGY-Platform/developer-notifications v0.0.5 h1:x66XZgLxiwzWTaUXE9xcWI2zlW9reS6Moizc93nuQSs=

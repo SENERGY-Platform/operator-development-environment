@@ -39,6 +39,55 @@ because timescale-wrapper checks `Execute` itself and would otherwise refuse the
 read after the developer had already chosen the series. `POST /selection` is scoped
 to `Execute` for the same reason: it offers series to read.
 
+### A launch authorizes its input topics, because Operator Lib authorizes nothing
+
+The tier gate decides which *tools* a session may call. It says nothing about
+which *series* a run reads, and those are different questions: a developer at any
+tier may launch an experiment, and what that experiment reads is decided by the
+input topics in its deployment config.
+
+Operator Lib performs no check of its own. `provide_historic_data` reads whatever
+its `inputTopics` name, so whichever service wrote those topics is the only party
+able to refuse. There are two such services and they now apply the same rule from
+the same code: the flow engine when it deploys a pipeline, and `experiments.Launch`
+here. The rule lives in `lib/access` of `analytics-flow-engine` — id extraction
+per filter type, `Execute` on `devices`, `import-instances` or
+`analytics-pipelines`, and a refusal for anything it cannot resolve.
+
+Three properties are deliberate:
+
+- **It fails closed.** An unknown filter type or an operator reference that names
+  no pipeline is refused rather than skipped. A topic that skips the check is a
+  topic that is read unauthorized.
+- **It runs before the package is built**, for the same reason the dirty
+  working-copy refusal does: everything past that point spends something.
+- **It authorizes the topic, not the storage.** A topic backed by timescale and
+  one replayed from Kafka are authorized identically, which is what makes this
+  cover the Kafka path — where there is no per-read check at all, the broker
+  taking no credentials.
+
+The checker is a required dependency: `experiments.New` refuses without one
+rather than launching unauthorized while looking like it works.
+
+### A run carries no database credential
+
+Before this, a run's deployment config carried `ts_conn`, a shared DSN reaching
+every series. A run executes the developer's own Python, so that was a credential
+handed to code ODE did not write — `os.environ["CONFIG"]` is all it takes to read
+it back out, and no gate in this document stands between a developer and that
+string.
+
+A run is now given `ts_wrapper_url` instead. Operator Lib supports both and
+prefers a DSN where it has one; ODE gives it none, so it reads through
+timescale-wrapper with the `SENERGY_TOKEN` the job already carries, and
+timescale-wrapper checks `Execute` on the device itself. That restores the
+authority the pre-operator-path read had — the reason `POST /selection` and the
+profile reads are scoped to `Execute` in the first place — and it is enforced at
+read time rather than only at launch.
+
+A deployed operator is the other way round: the flow engine sets it a DSN and
+gives it no token, and its code is a reviewed image rather than a working copy.
+
 ### Every tool call goes through one `Dispatch`, and that is the whole tier argument
 
 `pkg/tools` is written so there is no path to an executor that skips a
