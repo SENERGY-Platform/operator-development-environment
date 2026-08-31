@@ -1,0 +1,7 @@
+{
+  "committed": false,
+  "files": 1,
+  "message": "feat(operator): adjust the entry point\n\nThe forecast needs a second input.",
+  "model": "stub-model",
+  "provider": "stub"
+}

@@ -537,3 +537,25 @@ export function shortId(id: string): string {
   const parts = id.split(":");
   return parts.length > 1 ? parts[parts.length - 1] : id;
 }
+
+/**
+ * A commit as the seven characters a developer reads, quotes and pastes.
+ *
+ * Separate from shortId, which cuts a URN at its last colon: a sha has no colon
+ * in it, so shortId hands all forty characters straight back — which is how the
+ * repository panel came to print a full sha where it meant to print a short one.
+ */
+export function shortSHA(sha: string): string {
+  return sha.slice(0, 7);
+}
+
+/**
+ * A moment as a clock time, for a fact whose worth is how long ago it was.
+ *
+ * The date is left off deliberately: this labels something that happened in the
+ * browser session being looked at, and a session that has run past midnight is
+ * rare enough that carrying a date on every reading of it is the worse trade.
+ */
+export function clock(at: number): string {
+  return new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}

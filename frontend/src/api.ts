@@ -44,6 +44,19 @@ export class ApiError extends Error {
     const needs = this.body?.needs;
     return typeof needs === "string" ? needs : undefined;
   }
+
+  /**
+   * What to do about it, where the backend says that too.
+   *
+   * The repo routes have carried a `hint` beside every `needs` from the start and
+   * nothing ever showed it, so a refusal that already knew the repair — reconnect
+   * the account, select the repository the checkout points at — reached the
+   * developer as the bare sentence in `error`.
+   */
+  get hint(): string | undefined {
+    const hint = this.body?.hint;
+    return typeof hint === "string" ? hint : undefined;
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -170,7 +183,13 @@ export interface Session {
   };
   /** Present only when the repo surface is configured (M7): what the GitHub
    * consent screen will ask for, so the SPA can say it before GitHub does. */
-  repo?: { scopes: string[] };
+  repo?: {
+    scopes: string[];
+    /** Whether this deployment can draft a commit message: it needs an LLM
+     * provider, and the repo routes are served without one. The commit box leaves
+     * the button out rather than offering one that can only fail. */
+    commit_message_draft?: boolean;
+  };
   /** Present only when the LLM surface is configured (M3). */
   max_exposure_tier?: Tier;
   limits?: Limits;
@@ -1833,6 +1852,8 @@ export interface RepoConnection {
   connected: boolean;
   scopes_requested: string[];
   identity?: GitHubIdentity;
+  /** Present only when asked for: see RepoVerification. */
+  verification?: RepoVerification;
 }
 
 export interface RepoAuthorize {
@@ -1883,6 +1904,34 @@ export interface RepoChange {
   staged: boolean;
   unstaged: boolean;
   renamed_from?: string;
+}
+
+/**
+ * What GitHub says about the stored credential right now, from
+ * `/repo/connection?verify=true`.
+ *
+ * `kind` is the token's public prefix and what it means — never any part of the
+ * value. It is the field that most often ends an argument: `gho_` is an OAuth app's
+ * token, which carries scopes and does not expire, while `ghu_` is a GitHub App's
+ * user token, which has no scopes, expires within hours unless the app disables
+ * expiry, and only reaches repositories that app is installed on.
+ */
+export interface RepoVerification {
+  valid: boolean;
+  code?: number;
+  message?: string;
+  login?: string;
+  scopes: string[];
+  /** Whether GitHub sent the scopes header at all, which is not the same as an empty list. */
+  scopes_reported: boolean;
+  kind: string;
+  length: number;
+  /** When ODE stored this credential, and how long ago — the fact that says whether
+   * a reconnection actually happened. */
+  stored_at?: string;
+  age?: string;
+  /** The account the stored row names, which may not be the one GitHub reports. */
+  stored_login?: string;
 }
 
 export interface RepoScaffoldState {
@@ -1950,6 +1999,24 @@ export interface RepoCommit {
   subject: string;
   files: number;
   branch: string;
+}
+
+/**
+ * A proposed commit message. Nothing has happened to the working copy: the draft
+ * lands in the commit box for the developer to edit or throw away, and committing
+ * is still their own separate action — which is what `committed: false` says out
+ * loud.
+ */
+export interface RepoCommitDraft {
+  /** A subject line, a blank line, and a short body. */
+  message: string;
+  /** How many changed files the draft was written from. */
+  files: number;
+  /** The diff did not fit the budget and was cut, so the body saw less than everything. */
+  truncated?: boolean;
+  provider?: string;
+  model?: string;
+  committed: boolean;
 }
 
 export interface RepoPush {
@@ -2524,7 +2591,13 @@ export const api = {
   /** Closes one. The checkout stays on the PVC — it may hold uncommitted work. */
   deleteWorkbench: (id: string) => del(`/workbenches/${encodeURIComponent(id)}`),
 
-  repoConnection: () => get<RepoConnection>("/repo/connection"),
+  /**
+   * `verify` asks GitHub whether the stored credential still works, which costs a
+   * round trip to GitHub — so the pane's poll leaves it off and only a refusal that
+   * blamed the credential turns it on.
+   */
+  repoConnection: (verify = false) =>
+    get<RepoConnection>(`/repo/connection${query({ verify: verify || undefined })}`),
   /** Begins the OAuth flow. The state is single-use and bound to this developer. */
   repoAuthorize: () => post<RepoAuthorize>("/repo/connection/authorize", {}),
   /** Completes it, with the code GitHub returned to the SPA's callback. */
@@ -2563,6 +2636,14 @@ export const api = {
 
   repoCommit: (message: string, paths?: string[]) =>
     workspace((wb) => post<RepoCommit>(inWorkbench("/repo/commit", wb), { message, paths })),
+  /**
+   * Asks the model for a commit message for what is uncommitted. Reads only: the
+   * working copy, the index and the remote are untouched.
+   */
+  repoCommitMessage: (paths?: string[]) =>
+    workspace((wb) =>
+      post<RepoCommitDraft>(inWorkbench("/repo/commit/message", wb), { paths }),
+    ),
   repoPush: (branch?: string) =>
     workspace((wb) => post<RepoPush>(inWorkbench("/repo/push", wb), { branch })),
   repoStash: (message?: string) =>

@@ -162,6 +162,31 @@
     --series-6: #008300;
     --series-7: #4a3aa7;
     --series-8: #e34948;
+
+    /*
+     * git's decoration colours, and the five file-icon families beside them.
+     *
+     * Taken from VS Code's own two palettes rather than invented, because these are
+     * the colours a developer already reads: amber is "modified", green is "new",
+     * red is "gone", and they mean that in the editor they were looking at a minute
+     * ago. Each scope gets the palette that theme uses — the dark values are
+     * lightened, or they disappear into a dark plane, and the light values are
+     * darkened, or a thin glyph on white is unreadable.
+     *
+     * The icon families are five, not one per extension: a per-extension palette is
+     * a legend nobody learns, and the useful property is only that the same kind of
+     * file is always the same colour.
+     */
+    --git-modified: #895503;
+    --git-added: #388a34;
+    --git-untracked: #388a34;
+    --git-deleted: #ad0707;
+    --git-conflict: #ad0707;
+    --icon-code: #3f7ea8;
+    --icon-data: #8a7400;
+    --icon-config: #a1522e;
+    --icon-doc: #4f5b66;
+    --icon-media: #7a5bb0;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -206,6 +231,17 @@
         --series-6: #008300;
         --series-7: #9085e9;
         --series-8: #e66767;
+        /* VS Code's dark palette for the same tokens — see the light scope. */
+        --git-modified: #e2c08d;
+        --git-added: #81b88b;
+        --git-untracked: #73c991;
+        --git-deleted: #c74e39;
+        --git-conflict: #e4676b;
+        --icon-code: #519aba;
+        --icon-data: #cbcb41;
+        --icon-config: #cc6d2e;
+        --icon-doc: #9ba7b0;
+        --icon-media: #a074c4;
     }
 }
 
@@ -250,6 +286,17 @@
     --series-6: #008300;
     --series-7: #9085e9;
     --series-8: #e66767;
+    /* VS Code's dark palette for the same tokens — see the light scope. */
+    --git-modified: #e2c08d;
+    --git-added: #81b88b;
+    --git-untracked: #73c991;
+    --git-deleted: #c74e39;
+    --git-conflict: #e4676b;
+    --icon-code: #519aba;
+    --icon-data: #cbcb41;
+    --icon-config: #cc6d2e;
+    --icon-doc: #9ba7b0;
+    --icon-media: #a074c4;
 }
 
 @layer base {
@@ -817,6 +864,18 @@
     min-width: 0;
   }
 
+  /*
+   * The commit beside the branch. Quieter than the branch name and monospaced,
+   * because it is read character by character when it is read at all — and it sits
+   * inside the branch fact, so it must not compete with it for the eye.
+   */
+  .repo-bar-sha {
+    margin-left: 0.35rem;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.85em;
+    color: var(--muted-foreground);
+  }
+
   .repo-pop {
     display: flex;
     flex-direction: column;
@@ -940,12 +999,148 @@
     gap: 0.4rem;
   }
 
+  .commit-message {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.8rem;
+    /* git's own guidance, made visible rather than written down: the subject fits
+       in one line of this width, and a body wraps under it. */
+    min-height: 4.5rem;
+  }
+
+  /* The four answers in a row rather than a column of full-width buttons: stacked,
+     the destructive one sat directly under the primary one and read as the next
+     step of it. */
+  .commit-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  /* The account card's two answers, side by side: replacing the credential is not a
+     smaller version of throwing it away. */
+  .account-actions,
+  .repo-lapsed {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  /* GitHub's verdict under a refusal: a second line rather than a second notice, so
+     it cannot be dismissed separately from the thing it explains. */
+  .repo-bar-verdict {
+    display: block;
+    font-size: 0.72rem;
+    margin-top: 0.15rem;
+  }
+
   .changes {
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
     max-height: 12rem;
     overflow: auto;
+  }
+
+  /*
+   * One changed file, in the arrangement VS Code's Source Control list uses: icon,
+   * name, the directory dimmed beside it, then the status letter at the right edge.
+   *
+   * The row takes its decoration colour from the change itself, through
+   * `--change-colour`, so the name and the letter cannot come to disagree about
+   * what kind of change this is — which is what a rule per combination of the two
+   * would eventually allow.
+   */
+  .change-row {
+    --change-colour: var(--foreground);
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+    font-size: 0.8rem;
+  }
+
+  .change-row.modified,
+  .change-row.typechange {
+    --change-colour: var(--git-modified);
+  }
+
+  .change-row.added,
+  .change-row.renamed,
+  .change-row.copied {
+    --change-colour: var(--git-added);
+  }
+
+  .change-row.untracked {
+    --change-colour: var(--git-untracked);
+  }
+
+  .change-row.deleted {
+    --change-colour: var(--git-deleted);
+  }
+
+  .change-row.unmerged {
+    --change-colour: var(--git-conflict);
+  }
+
+  .change-icon {
+    width: 0.95rem;
+    height: 0.95rem;
+    flex: none;
+  }
+
+  .change-icon.icon-code {
+    color: var(--icon-code);
+  }
+
+  .change-icon.icon-data {
+    color: var(--icon-data);
+  }
+
+  .change-icon.icon-config {
+    color: var(--icon-config);
+  }
+
+  .change-icon.icon-doc {
+    color: var(--icon-doc);
+  }
+
+  .change-icon.icon-media {
+    color: var(--icon-media);
+  }
+
+  .change-name {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    color: var(--change-colour);
+    white-space: nowrap;
+    flex: none;
+  }
+
+  /* A deleted file is not there any more, and saying so with the same strike git
+     tooling everywhere else uses costs nothing to learn. */
+  .change-row.deleted .change-name {
+    text-decoration: line-through;
+  }
+
+  /* Takes the slack, and gives it up first: the directory is the half of a path a
+     developer can lose without losing the row. */
+  .change-dir {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.72rem;
+    color: var(--muted-foreground);
+  }
+
+  .change-status {
+    flex: none;
+    width: 1.1rem;
+    text-align: center;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-weight: 600;
+    color: var(--change-colour);
   }
 
   /* --- the kernel --- */

@@ -37,6 +37,7 @@ import type {
   RelationProfile,
   RelationProposal,
   RepoCommit,
+  RepoCommitDraft,
   RepoConnection,
   Workbench,
   RepoFile,
@@ -90,6 +91,7 @@ import relationDecision from "./relation_decision.json";
 import relationDecisions from "./relation_decisions.json";
 import relationSets from "./relation_sets.json";
 import repoCommit from "./repo_commit.json";
+import repoCommitMessage from "./repo_commit_message.json";
 import repoConnection from "./repo_connection.json";
 import workbenches from "./workbenches.json";
 import repoFile from "./repo_file.json";
@@ -170,6 +172,7 @@ export const checked = {
   repoFile: repoFile satisfies Loose<RepoFile>,
   repoScaffold: repoScaffold satisfies Loose<RepoScaffoldResult>,
   repoCommit: repoCommit satisfies Loose<RepoCommit>,
+  repoCommitDraft: repoCommitMessage satisfies Loose<RepoCommitDraft>,
   repoPush: repoPush satisfies Loose<RepoPush>,
 
   // M8. Emitted by the API test harness, and split the way the M7 files are. The

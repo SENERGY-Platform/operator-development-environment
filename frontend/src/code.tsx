@@ -19,19 +19,37 @@ import {
   ApiError,
   api,
   type GitHubRepository,
+  type RepoChange,
   type RepoConnection,
   type RepoFile,
   type RepoNode,
   type RepoStatus,
+  type RepoVerification,
   type Session,
 } from "./api";
+import { Abandoned, reconnect } from "./github";
 import { monaco, monacoLanguage } from "./monaco";
 import { setParam, useParam } from "./router";
-import { Busy, Muted, Pane, bytes, dateTime, describe, shortId } from "./ui";
+import { Busy, Muted, Pane, bytes, clock, dateTime, describe, shortSHA } from "./ui";
 import { WorkbenchBar } from "./workbench";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  File,
+  FileArchive,
+  FileBraces,
+  FileCode,
+  FileCog,
+  FileImage,
+  FileLock,
+  FileSpreadsheet,
+  FileTerminal,
+  FileText,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 
 /**
  * The Code view (§5.11).
@@ -58,9 +76,33 @@ import { Checkbox } from "@/components/ui/checkbox";
 export function CodeView({ session }: { session: Session }) {
   const [connection, setConnection] = useState<RepoConnection | null>(null);
   const [status, setStatus] = useState<RepoStatus | null>(null);
+  /*
+   * When the remote was last actually contacted, as epoch milliseconds, or null
+   * for a session that has never reached it.
+   *
+   * Held here rather than read off the status, because `fetched` on a status is a
+   * fact about *that request*: it says this call contacted the remote, not that
+   * the distance beside it is fresh. Every status that follows — saving a file,
+   * committing, pushing, opening a panel — comes back with it false, and the bar
+   * would go straight back to calling a distance "unfetched" that a fetch a second
+   * earlier had made current. The distance itself stays current, because it is
+   * measured against the remote-tracking ref that the fetch moved; what the
+   * developer is missing is when that was, and that is what this remembers.
+   */
+  const [fetchedAt, setFetchedAt] = useState<number | null>(() => lastFetchAt());
   const [needs, setNeeds] = useState<"github_connection" | "repository" | null>(null);
+  /** Connected, and GitHub has stopped accepting the credential. */
+  const [lapsed, setLapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
+
+  // Every status the pane accepts arrives through here, so that a fetch is recorded
+  // once wherever it came from: the fetch on open, the Fetch button, or the status
+  // a push reads back.
+  const receive = useCallback((next: RepoStatus) => {
+    setStatus(next);
+    if (next.fetched) setFetchedAt(recordFetch());
+  }, []);
 
   // One loader for both, because the answer to "what should this pane show" is the
   // pair: a connection without a repository is the picker, and a repository always
@@ -68,6 +110,7 @@ export function CodeView({ session }: { session: Session }) {
   const reload = useCallback(async (fetchRemote = false) => {
     setBusy(true);
     setError(null);
+    setLapsed(false);
     try {
       const current = await api.repoConnection();
       setConnection(current);
@@ -77,9 +120,20 @@ export function CodeView({ session }: { session: Session }) {
         return;
       }
       try {
-        setStatus(await api.repoStatus(fetchRemote));
+        receive(await api.repoStatus(fetchRemote));
         setNeeds(null);
       } catch (e: unknown) {
+        // The `needs` is read before the status code, because both of these are 409
+        // and they are opposite answers: one means pick a repository, the other means
+        // the credential ODE holds has stopped working. Read the other way round, a
+        // lapsed credential put the developer in front of a repository picker that
+        // could not list anything.
+        if (isCredentialLapse(e)) {
+          setStatus(null);
+          setLapsed(true);
+          setNeeds("github_connection");
+          return;
+        }
         if (e instanceof ApiError && e.status === 409) {
           setStatus(null);
           setNeeds("repository");
@@ -88,11 +142,17 @@ export function CodeView({ session }: { session: Session }) {
         throw e;
       }
     } catch (e: unknown) {
+      if (isCredentialLapse(e)) {
+        setStatus(null);
+        setLapsed(true);
+        setNeeds("github_connection");
+        return;
+      }
       setError(describe(e));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [receive]);
 
   // Which workbench the panes are acting in. Read here so the pane reloads when it
   // changes — the bar below switches it, and so does opening a chat session that
@@ -123,6 +183,21 @@ export function CodeView({ session }: { session: Session }) {
         picker would make a second operator look like a second repository.
       */}
       <WorkbenchBar onSwitched={() => void reload()} />
+      {/*
+        The wait for `/repo`, which is the only part of this pane that is slow.
+
+        The guard above only holds until the connection is in, and that answer costs
+        nothing; the status behind it reads the checkout and, once per browser
+        session, fetches from GitHub. Between the two the pane had a bar and nothing
+        under it — a workbench that looks like it holds no repository rather than one
+        still being read. Same animated line the shell shows while the session loads,
+        for the same reason: a slow answer has to say it is coming.
+      */}
+      {busy && !error && !status && needs === null && (
+        <Pane title="Code" subtitle="The operator repository">
+          <Busy>Reading the checkout…</Busy>
+        </Pane>
+      )}
       {error && (
         <Pane title="Code" subtitle="The operator repository">
           <p className="error text-destructive">{error}</p>
@@ -130,19 +205,33 @@ export function CodeView({ session }: { session: Session }) {
         </Pane>
       )}
       {!error && needs === "github_connection" && (
-        <ConnectPane session={session} connection={connection} />
+        <ConnectPane
+          session={session}
+          connection={connection}
+          lapsed={lapsed}
+          onReconnected={() => void reload()}
+        />
       )}
       {!error && needs === "repository" && connection?.connected && (
         <>
           <RepositoryPicker onSelected={() => void reload(true)} />
-          <ConnectedPane connection={connection} onDisconnected={() => void reload()} />
+          <ConnectedPane
+            connection={connection}
+            onDisconnected={() => void reload()}
+            onReconnected={() => void reload()}
+          />
         </>
       )}
       {!error && status && (
         <WorkingCopy
           status={status}
           connection={connection}
-          onStatus={setStatus}
+          // Read from /session rather than probed: whether this deployment has an
+          // LLM provider is a deployment fact, and the pane should not learn it from
+          // a failed request.
+          canDraft={session.repo?.commit_message_draft === true}
+          fetchedAt={fetchedAt}
+          onStatus={receive}
           onReload={reload}
         />
       )}
@@ -154,9 +243,14 @@ export function CodeView({ session }: { session: Session }) {
 function ConnectPane({
   session,
   connection,
+  lapsed = false,
+  onReconnected,
 }: {
   session: Session;
   connection: RepoConnection | null;
+  /** The account is connected and GitHub has stopped accepting the credential. */
+  lapsed?: boolean;
+  onReconnected?: () => void;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,6 +271,20 @@ function ConnectPane({
       setPending(false);
     }
   };
+
+  if (lapsed) {
+    return (
+      <Pane title="GitHub" subtitle="The stored credential has stopped working">
+        <p>
+          GitHub is no longer accepting the token ODE holds for{" "}
+          {connection?.identity?.login ?? "this account"} — it was revoked, it expired, or
+          the authorisation was withdrawn. Nothing has been lost: the working copy is on
+          your own storage, and reconnecting replaces the token in place.
+        </p>
+        <ReconnectButton onDone={() => onReconnected?.()} />
+      </Pane>
+    );
+  }
 
   return (
     <Pane title="GitHub" subtitle="The operator lives in a repository of yours">
@@ -212,9 +320,11 @@ function ConnectPane({
 function ConnectedPane({
   connection,
   onDisconnected,
+  onReconnected,
 }: {
   connection: RepoConnection;
   onDisconnected: () => void;
+  onReconnected: () => void;
 }) {
   const identity = connection.identity;
   const [pending, setPending] = useState(false);
@@ -251,14 +361,78 @@ function ConnectedPane({
         </p>
       )}
       <p className="muted text-muted-foreground">
-        Disconnecting forgets the token. Your working copy stays where it is — it is on
-        your own storage, and ODE does not delete your work.
+        Reconnecting replaces the stored token, which is what a credential GitHub has
+        stopped accepting needs — the date above is when this one was stored, not proof
+        that it still works. Disconnecting forgets it instead. Either way your working
+        copy stays where it is: it is on your own storage, and ODE does not delete your
+        work.
       </p>
-      <Button variant="outline" onClick={() => void disconnect()} disabled={pending}>
-        Disconnect
-      </Button>
+      <div className="account-actions">
+        <ReconnectButton onDone={onReconnected} />
+        <Button variant="outline" onClick={() => void disconnect()} disabled={pending}>
+          Disconnect
+        </Button>
+      </div>
     </Pane>
   );
+}
+
+/**
+ * The button that was missing everywhere except the bar.
+ *
+ * A credential that lapses mid-session is not a rare state, and until now only one
+ * of the four places that meet it could do anything about it: the account card
+ * offered Disconnect and nothing else, the repository list printed GitHub's 401
+ * beside a spinner that never stopped, and the pane's own loader had no case for it.
+ * Disconnect-then-connect *is* a repair, but it asks a developer to throw the
+ * connection away in order to get it back, which reads like losing something.
+ *
+ * The popup flow rather than the connect card's full-page one, for the reason
+ * github.ts gives: the tab keeps its state. A click is what opens it, which is the
+ * arrangement the browser requires anyway.
+ */
+function ReconnectButton({
+  label = "Reconnect GitHub",
+  onDone,
+}: {
+  label?: string;
+  onDone: () => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    setPending(true);
+    setError(null);
+    try {
+      await reconnect();
+      onDone();
+    } catch (e: unknown) {
+      // Closing the window is a decision, not a failure.
+      setError(e instanceof Abandoned ? e.message : describe(e));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <>
+      <Button variant="default"
+        className={pending ? "primary busy animate-pulse" : "primary"}
+        onClick={() => void run()}
+        disabled={pending}
+        title="Opens GitHub in a small window. Nothing on this page is lost."
+      >
+        {pending ? "Connecting to GitHub…" : label}
+      </Button>
+      {error && <p className="muted text-muted-foreground">{error}</p>}
+    </>
+  );
+}
+
+/** Whether a refusal is the stored GitHub credential having lapsed. */
+function isCredentialLapse(e: unknown): boolean {
+  return e instanceof ApiError && e.needs === "github_connection";
 }
 
 /** Pick an existing repository, or create one and have it scaffolded. */
@@ -266,26 +440,38 @@ function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
   const [repositories, setRepositories] = useState<GitHubRepository[] | null>(null);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** Whether the error above is the credential rather than anything about a repository. */
+  const [lapsed, setLapsed] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [isPrivate, setPrivate] = useState(false);
 
-  useEffect(() => {
-    let live = true;
-    api
-      .repoRepositories()
-      .then((result) => {
-        if (live) setRepositories(result.repositories);
-      })
-      .catch((e: unknown) => {
-        if (live) setError(describe(e));
-      });
-    return () => {
-      live = false;
-    };
+  /*
+   * Held so that reconnecting can retry it, and so that a failure ends the wait.
+   *
+   * `repositories` staying null was read as "still loading" no matter what had
+   * happened, so a 401 rendered GitHub's message *above* a spinner that ran for as
+   * long as the pane was open. An empty list is a different answer from no answer,
+   * and both are different from a refusal.
+   */
+  const load = useCallback(async () => {
+    setError(null);
+    setRepositories(null);
+    try {
+      const result = await api.repoRepositories();
+      setRepositories(result.repositories);
+    } catch (e: unknown) {
+      setError(describe(e));
+      setLapsed(isCredentialLapse(e));
+      setRepositories([]);
+    }
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const select = async (fullName: string) => {
     setPending(fullName);
@@ -295,6 +481,7 @@ function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
       onSelected();
     } catch (e: unknown) {
       setError(describe(e));
+      setLapsed(isCredentialLapse(e));
     } finally {
       setPending(null);
     }
@@ -308,6 +495,7 @@ function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
       onSelected();
     } catch (e: unknown) {
       setError(describe(e));
+      setLapsed(isCredentialLapse(e));
     } finally {
       setPending(null);
     }
@@ -354,6 +542,16 @@ function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
       </p>
 
       {error && <p className="error text-destructive">{error}</p>}
+      {/*
+        The repair, beside the refusal that needs it. A developer looking at "401: Bad
+        credentials" over an empty list could previously only disconnect the account
+        and start again.
+      */}
+      {lapsed && (
+        <div className="repo-lapsed">
+          <ReconnectButton onDone={() => void load()} />
+        </div>
+      )}
 
       <div className="repo-filter">
         <Input
@@ -362,8 +560,8 @@ function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
           onChange={(event) => setFilter(event.target.value)}
         />
       </div>
-      {!repositories && <Busy>Reading your repositories…</Busy>}
-      {repositories && shown.length === 0 && <Muted>No repository matches.</Muted>}
+      {!repositories && !error && <Busy>Reading your repositories…</Busy>}
+      {repositories && shown.length === 0 && !error && <Muted>No repository matches.</Muted>}
       <ul className="repo-list">
         {shown.map((repository) => (
           <li key={repository.full_name}>
@@ -392,11 +590,15 @@ function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
 function WorkingCopy({
   status,
   connection,
+  canDraft,
+  fetchedAt,
   onStatus,
   onReload,
 }: {
   status: RepoStatus;
   connection: RepoConnection | null;
+  canDraft: boolean;
+  fetchedAt: number | null;
   onStatus: (status: RepoStatus) => void;
   onReload: (fetchRemote?: boolean) => Promise<void>;
 }) {
@@ -412,6 +614,8 @@ function WorkingCopy({
       <RepoBar
         status={status}
         connection={connection}
+        canDraft={canDraft}
+        fetchedAt={fetchedAt}
         onStatus={onStatus}
         onReload={onReload}
         onChanged={() => setTreeVersion((version) => version + 1)}
@@ -452,58 +656,363 @@ type Panel = "repository" | "changes" | "warnings";
  * developer's, because one that reopened on every status change would sit over the
  * editor for a whole working afternoon.
  */
+/**
+ * A file's icon and its hue, from its name.
+ *
+ * VS Code's arrangement without VS Code's icon font: the recognisable part of that
+ * list is not the glyph, it is that the same kind of file is always the same colour
+ * — so a developer finds the Python file among fifteen paths by hue before they
+ * have read a single name. The hues are the five families below rather than one per
+ * extension, because a per-extension palette is a legend nobody learns.
+ *
+ * The mapping is by extension, then by whole filename for the handful that carry
+ * their type in the name rather than after a dot — a Dockerfile is not a file with
+ * no type.
+ */
+const FILE_ICONS: Record<string, [LucideIcon, IconFamily]> = {
+  py: [FileCode, "code"],
+  ipynb: [FileCode, "code"],
+  ts: [FileCode, "code"],
+  tsx: [FileCode, "code"],
+  js: [FileCode, "code"],
+  jsx: [FileCode, "code"],
+  go: [FileCode, "code"],
+  rs: [FileCode, "code"],
+  java: [FileCode, "code"],
+  sql: [FileCode, "code"],
+  json: [FileBraces, "data"],
+  yaml: [FileCog, "config"],
+  yml: [FileCog, "config"],
+  toml: [FileCog, "config"],
+  ini: [FileCog, "config"],
+  cfg: [FileCog, "config"],
+  conf: [FileCog, "config"],
+  env: [FileCog, "config"],
+  sh: [FileTerminal, "code"],
+  bash: [FileTerminal, "code"],
+  csv: [FileSpreadsheet, "data"],
+  tsv: [FileSpreadsheet, "data"],
+  parquet: [FileSpreadsheet, "data"],
+  md: [FileText, "doc"],
+  rst: [FileText, "doc"],
+  txt: [FileText, "doc"],
+  png: [FileImage, "media"],
+  jpg: [FileImage, "media"],
+  jpeg: [FileImage, "media"],
+  svg: [FileImage, "media"],
+  gif: [FileImage, "media"],
+  zip: [FileArchive, "media"],
+  gz: [FileArchive, "media"],
+  tar: [FileArchive, "media"],
+  whl: [FileArchive, "media"],
+  lock: [FileLock, "config"],
+};
+
+const NAMED_FILES: Record<string, [LucideIcon, IconFamily]> = {
+  dockerfile: [FileCog, "config"],
+  makefile: [FileTerminal, "code"],
+  license: [FileText, "doc"],
+  ".gitignore": [FileCog, "config"],
+  ".dockerignore": [FileCog, "config"],
+};
+
+type IconFamily = "code" | "data" | "config" | "doc" | "media";
+
+function fileIcon(path: string): { Icon: LucideIcon; family: IconFamily } {
+  const name = (path.split("/").pop() ?? path).toLowerCase();
+  const named = NAMED_FILES[name];
+  if (named) return { Icon: named[0], family: named[1] };
+  const extension = name.includes(".") ? (name.split(".").pop() ?? "") : "";
+  const known = FILE_ICONS[extension];
+  if (known) return { Icon: known[0], family: known[1] };
+  return { Icon: File, family: "doc" };
+}
+
+/**
+ * git's own letters, which is the point: `M`, `A`, `D`, `R` mean the same thing
+ * here as in `git status`, in a terminal, and in VS Code's own list. The one
+ * departure is the conflict — VS Code's `C` collides with a copy, and a conflict is
+ * the change a developer must not misread — so it gets `!`.
+ *
+ * The word itself is on the row as a tooltip and as the accessible label, because a
+ * single letter is a reminder for someone who already knows and no help at all to
+ * anyone else.
+ */
+const CHANGE_CODES: Record<RepoChange["kind"], string> = {
+  modified: "M",
+  added: "A",
+  deleted: "D",
+  renamed: "R",
+  copied: "C",
+  untracked: "U",
+  unmerged: "!",
+  typechange: "T",
+};
+
+/**
+ * GitHub's own verdict on the stored credential, as a sentence.
+ *
+ * Shown under a refusal that blamed the credential, because ODE's error text can only
+ * be as specific as what ODE checked, and "reconnect the account" is worth nothing to
+ * a developer who has just reconnected the account. This says which of the two sides
+ * is refusing, and names the property that most often explains it: the token's kind.
+ */
+function verdictOf(verification: RepoVerification): string {
+  // How old the credential is, which is what says whether a reconnection happened at
+  // all: a refused credential that ODE stored yesterday is the one that was never
+  // replaced, and pressing the same button again is exactly the wrong move.
+  const stored = verification.age ? ` ODE has held it for ${verification.age}.` : "";
+  if (!verification.valid) {
+    return (
+      `GitHub refuses this credential: ${verification.code ?? ""} ${verification.message ?? ""}`.trim() +
+      `. Token kind: ${verification.kind}, ${verification.length} characters.${stored}`
+    );
+  }
+  const scopes = !verification.scopes_reported
+    ? "GitHub reports no scopes for it at all, which is what a GitHub App's user token looks like"
+    : verification.scopes.length > 0
+      ? `scopes: ${verification.scopes.join(", ")}`
+      : "the grant carries no scopes";
+  // Two accounts, one of which cannot see the repositories: a working credential for
+  // the wrong login is invisible otherwise, and it is a plausible outcome of
+  // reconnecting in a browser signed in to a second GitHub account.
+  const mismatch =
+    verification.stored_login && verification.login && verification.stored_login !== verification.login
+      ? ` The row says ${verification.stored_login}, so the account was switched.`
+      : "";
+  return (
+    `GitHub still accepts this credential as ${verification.login ?? "this account"} — ` +
+    `${scopes}. Token kind: ${verification.kind}.${stored}${mismatch}`
+  );
+}
+
+/**
+ * A failed git action, with the repair the backend named.
+ *
+ * The bar is where every refusal of a repository action lands, and several of them
+ * are refusals whose answer is a step the developer takes rather than a retry: the
+ * credential has gone stale, the checkout points at another repository. The
+ * backend has always sent that step as `hint`; this is what puts it on screen.
+ */
+function explain(e: unknown): string {
+  const hint = e instanceof ApiError ? e.hint : undefined;
+  return hint ? `${describe(e)} — ${hint}` : describe(e);
+}
+
+/** One row of the changes panel: what changed, where it is, and how. */
+function ChangeRow({ change }: { change: RepoChange }) {
+  const { Icon, family } = fileIcon(change.path);
+  const cut = change.path.lastIndexOf("/");
+  const directory = cut > 0 ? change.path.slice(0, cut) : "";
+  return (
+    <li className={`change-row ${change.kind}`}>
+      <Icon className={`change-icon icon-${family}`} aria-hidden="true" />
+      <span className="change-name">{change.path.slice(cut + 1)}</span>
+      {/*
+        The directory dimmed and beside the name rather than in front of it, so a
+        column of paths reads as a column of *files*. Deep in a package the useful
+        half of `pkg/simulation/solar.py` is the last segment, and it was the half
+        that used to fall off the end of the row.
+      */}
+      <span className="change-dir">
+        {directory}
+        {change.renamed_from && <> ← {change.renamed_from}</>}
+      </span>
+      {change.staged && (
+        <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">
+          staged
+        </span>
+      )}
+      <span className="change-status" title={change.kind} aria-label={change.kind}>
+        {CHANGE_CODES[change.kind] ?? "?"}
+      </span>
+    </li>
+  );
+}
+
 function RepoBar({
   status,
   connection,
+  canDraft,
   onStatus,
+  fetchedAt,
   onReload,
   onChanged,
 }: {
   status: RepoStatus;
   connection: RepoConnection | null;
+  /** Whether this deployment has an LLM provider to draft a commit message with. */
+  canDraft: boolean;
+  /** When the remote was last contacted, epoch milliseconds, or null for never. */
+  fetchedAt: number | null;
   onStatus: (status: RepoStatus) => void;
   onReload: (fetchRemote?: boolean) => Promise<void>;
   onChanged: () => void;
 }) {
   const [message, setMessage] = useState("");
+  // The last draft, verbatim. Kept so the Draft button can tell a message the
+  // developer wrote from one it produced itself: replacing the first without asking
+  // throws away typing, and asking about the second is a pointless question.
+  const [drafted, setDrafted] = useState("");
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel | null>(null);
+  /*
+   * The action that refused for want of a working GitHub credential, kept whole.
+   *
+   * A stale credential is the one refusal in this bar whose repair is a round trip
+   * through GitHub and then *the same action again*. Holding the closure is what
+   * turns that into one button: the developer does not have to remember they were
+   * pushing, find the button again, and press it a second time. It is cleared on the
+   * next action, so a button offering to finish a push cannot outlive the push.
+   */
+  const [stalled, setStalled] = useState<{
+    label: string;
+    run: () => Promise<RepoStatus | void>;
+  } | null>(null);
+  /** GitHub's verdict on the credential, fetched only when one is blamed. */
+  const [verdict, setVerdict] = useState<string | null>(null);
   const bar = useRef<HTMLDivElement | null>(null);
   const triggers = useRef<Partial<Record<Panel, HTMLButtonElement | null>>>({});
 
-  const act = async (label: string, run: () => Promise<RepoStatus | void>) => {
+  /*
+   * One action, with its refusal handled in one place.
+   *
+   * `run` returning a status is what saves the round trip after it: an action that
+   * already read the working copy back hands that status over, and only one that
+   * did not costs a reload. That is not only economy — the reload does not fetch,
+   * so a push handing its status to `onStatus` itself and then leaving `act` to
+   * reload would have replaced the fetched status it had just produced with an
+   * unfetched one.
+   *
+   * `moved` is whether the files under the tree can have changed. False for the
+   * actions that only ask the remote a question: re-listing the tree after a fetch
+   * is a command in the developer's pod for an answer that cannot have changed.
+   */
+  const act = async (
+    label: string,
+    run: () => Promise<RepoStatus | void>,
+    moved = true,
+  ) => {
     setPending(label);
     setError(null);
     setNote(null);
+    setStalled(null);
+    setVerdict(null);
     try {
       const next = await run();
       if (next) onStatus(next);
       else await onReload();
-      onChanged();
+      if (moved) onChanged();
     } catch (e: unknown) {
-      setError(describe(e));
+      setError(explain(e));
+      // 409 `needs: "github_connection"` — either there is no credential or GitHub
+      // has stopped accepting the one ODE holds. Both are repaired the same way, and
+      // the action itself is still worth finishing.
+      if (e instanceof ApiError && e.needs === "github_connection") {
+        setStalled({ label, run });
+        // And ask GitHub directly, because the developer's next question is whether
+        // it is really the credential — especially if they just replaced it. Fired
+        // rather than awaited: the refusal is already on screen, and this only adds
+        // to it.
+        void api
+          .repoConnection(true)
+          .then((current) => {
+            if (current.verification) setVerdict(verdictOf(current.verification));
+          })
+          .catch(() => {
+            // The verdict is a courtesy. Failing to get one must not replace the
+            // refusal the developer is reading.
+          });
+      }
     } finally {
       setPending(null);
     }
+  };
+
+  /*
+   * Reconnect, then finish what was asked.
+   *
+   * From a click, deliberately: the flow needs a popup, and a browser grants a popup
+   * to a gesture and refuses one to the catch block of a request that already failed.
+   * That is also the honest arrangement — reconnecting can mean GitHub asking the
+   * developer to consent again, and a consent screen nobody asked for is not
+   * something to open behind their back.
+   */
+  const reconnectAndRetry = async () => {
+    const held = stalled;
+    if (!held) return;
+    setPending("reconnect");
+    setError(null);
+    setNote(null);
+    try {
+      await reconnect();
+    } catch (e: unknown) {
+      // A closed window or a refused consent is the developer's decision, not a
+      // failure to report as one.
+      if (e instanceof Abandoned) setNote(e.message);
+      else setError(explain(e));
+      setPending(null);
+      return;
+    }
+    setStalled(null);
+    setPending(null);
+    await act(held.label, held.run);
   };
 
   const commit = () =>
     act("commit", async () => {
       const committed = await api.repoCommit(message);
       setMessage("");
+      setDrafted("");
       setNote(
-        `Committed ${shortId(committed.sha)} on ${committed.branch}: ${committed.files} file(s). Nothing is pushed yet.`,
+        `Committed ${shortSHA(committed.sha)} on ${committed.branch}: ${committed.files} file(s). Nothing is pushed yet.`,
       );
-      onStatus(await api.repoStatus());
+      return api.repoStatus();
     });
+
+  /*
+   * The draft (§5.11 item 5, and §5.7 for what answers it).
+   *
+   * Not routed through `act`, and that is the whole point of it: `act` reloads the
+   * status and tells the tree the working copy moved, because everything else in
+   * this bar changes the working copy. Drafting changes nothing — it reads the diff
+   * and fills in a text box — so it reloads nothing, and the developer's next
+   * decision is still theirs.
+   */
+  const draft = async () => {
+    if (message.trim() !== "" && message !== drafted) {
+      if (!window.confirm("Replace the commit message you have written with a drafted one?")) {
+        return;
+      }
+    }
+    setPending("draft");
+    setError(null);
+    setNote(null);
+    try {
+      const proposal = await api.repoCommitMessage();
+      setMessage(proposal.message);
+      setDrafted(proposal.message);
+      setNote(
+        proposal.truncated
+          ? `Drafted from ${proposal.files} file(s), but the diff was too large to send whole — read the message before committing.`
+          : `Drafted from ${proposal.files} file(s). It is a suggestion: edit it, and commit when you mean to.`,
+      );
+    } catch (e: unknown) {
+      setError(explain(e));
+    } finally {
+      setPending(null);
+    }
+  };
 
   const push = () =>
     act("push", async () => {
       const pushed = await api.repoPush();
       setNote(pushed.output || `Pushed ${pushed.branch} to ${pushed.remote}.`);
-      onStatus(await api.repoStatus(true));
+      // Fetched, because a push is the moment the distance to the remote changes,
+      // and the bar is about to be read for exactly that.
+      return api.repoStatus(true);
     });
 
   /*
@@ -572,7 +1081,7 @@ function RepoBar({
                   ? `Wrote ${result.written.join(", ")}. ${result.hint}`
                   : "Everything was already there.",
               );
-              onStatus(await api.repoStatus());
+              return api.repoStatus();
             })
           }
           disabled={pending !== null}
@@ -671,11 +1180,30 @@ function RepoBar({
       */}
       {(error ?? note) !== null && (
         <p className={error ? "repo-bar-notice error text-destructive" : "repo-bar-notice note"}>
-          <span>{error ?? note}</span>
+          <span>
+            {error ?? note}
+            {verdict && (
+              <span className="repo-bar-verdict muted text-muted-foreground">{verdict}</span>
+            )}
+          </span>
+          {stalled && (
+            <Button variant="default"
+              className={pending === "reconnect" ? "primary busy animate-pulse" : "primary"}
+              onClick={() => void reconnectAndRetry()}
+              disabled={pending !== null}
+              title="Opens GitHub in a small window. This tab, and anything typed in it, stays as it is."
+            >
+              {pending === "reconnect"
+                ? "Connecting to GitHub…"
+                : `Reconnect GitHub and ${stalled.label}`}
+            </Button>
+          )}
           <Button variant="outline"
             onClick={() => {
               setError(null);
               setNote(null);
+              setStalled(null);
+              setVerdict(null);
             }}
           >
             Dismiss
@@ -692,8 +1220,25 @@ function RepoBar({
             `${status.workspace}/${status.link.path} on your own storage`,
           )}
 
+          {/*
+            The commit, beside the branch that points at it.
+
+            Seven characters and not the subject: what the bar is answering is
+            "which commit am I on", which is the question a developer asks when
+            they are about to compare it with a build, a tag or a run elsewhere —
+            and that comparison is done on the sha. The subject and the full sha
+            are on the hover, and the panel above carries both in full.
+          */}
           <span className="repo-bar-fact" title="The branch the working copy is on">
             {status.branch ?? "—"}
+            {status.head && (
+              <code
+                className="repo-bar-sha"
+                title={status.head_subject ? `${status.head}\n${status.head_subject}` : status.head}
+              >
+                {shortSHA(status.head)}
+              </code>
+            )}
             {status.unborn && <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">no commits yet</span>}
             {status.detached && <span className="badge warn inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs text-foreground">detached</span>}
           </span>
@@ -701,19 +1246,23 @@ function RepoBar({
           {/*
             "in sync" rather than "0 ahead, 0 behind": the pair of zeroes is four
             words to say nothing happened, and the bar's room is worth more than
-            that. `unfetched` stays in front of it either way, because a stale zero
-            is not agreement — the same reason the status route makes `fetched`
-            explicit.
+            that. What is in front of it is the age of the answer, because a stale
+            zero is not agreement — the same reason the status route makes
+            `fetched` explicit.
+
+            The age comes from the pane and not from `status.fetched`, which is a
+            fact about one request rather than about the distance: see the note on
+            `fetchedAt` where it is held.
           */}
           <span
             className="repo-bar-fact"
             title={
-              status.fetched
-                ? "Against the remote, as of this fetch"
-                : "Against the remote as ODE last saw it. Press Fetch to make it current."
+              fetchedAt === null
+                ? "Against the remote as ODE last saw it. Press Fetch to make it current."
+                : `Against the remote as it was at the fetch at ${clock(fetchedAt)}`
             }
           >
-            {!status.fetched && "unfetched · "}
+            {fetchedAt === null ? "unfetched · " : `fetched ${clock(fetchedAt)} · `}
             {status.ahead === 0 && status.behind === 0
               ? "in sync"
               : `${status.ahead} ahead, ${status.behind} behind`}
@@ -742,8 +1291,20 @@ function RepoBar({
               : "The working copy matches the last commit",
           )}
 
-          <Button variant="outline" onClick={() => void onReload(true)} disabled={pending !== null}>
-            Fetch
+          {/*
+            Through `act` rather than through the pane's reload, for the two things
+            `act` adds: the button says it is working, and a fetch refused for want
+            of a credential offers the reconnect-and-retry the rest of the bar
+            offers. `moved` is false — a fetch writes remote-tracking refs and
+            nothing the tree lists.
+          */}
+          <Button variant="outline"
+            className={pending === "fetch" ? "busy animate-pulse" : undefined}
+            onClick={() => void act("fetch", () => api.repoStatus(true), false)}
+            disabled={pending !== null}
+            title="Ask GitHub where the branch stands. The working copy is not touched."
+          >
+            {pending === "fetch" ? "Fetching…" : "Fetch"}
           </Button>
           <Button variant="outline"
             className={pending === "push" ? "busy animate-pulse" : undefined}
@@ -780,7 +1341,7 @@ function RepoBar({
             <dd>
               {status.head ? (
                 <>
-                  <code>{shortId(status.head)}</code> {status.head_subject}
+                  <code>{shortSHA(status.head)}</code> {status.head_subject}
                   {status.head_date && (
                     <span className="muted text-muted-foreground"> · {dateTime(status.head_date)}</span>
                   )}
@@ -836,22 +1397,24 @@ function RepoBar({
             <>
               <ul className="changes">
                 {status.changes.map((change) => (
-                  <li key={change.path}>
-                    <span className={`change ${change.kind}`}>{change.kind}</span>
-                    <code>{change.path}</code>
-                    {change.renamed_from && (
-                      <span className="muted text-muted-foreground"> from {change.renamed_from}</span>
-                    )}
-                    {change.staged && <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">staged</span>}
-                  </li>
+                  <ChangeRow key={change.path} change={change} />
                 ))}
               </ul>
               <div className="commit-box">
-                <Input
-                  placeholder="What this change does"
+                {/*
+                  A textarea rather than a single line, because a commit message is a
+                  subject *and* a body: the reason a change was made is the half a
+                  reader of the history cannot recover from the diff, and a field one
+                  line tall says not to bother writing it.
+                */}
+                <Textarea
+                  className="commit-message"
+                  rows={3}
+                  placeholder={"What this change does\n\nAnd why, if the diff does not say it."}
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
                 />
+                <div className="commit-actions">
                 <Button variant="default"
                   className={pending === "commit" ? "primary busy animate-pulse" : "primary"}
                   onClick={() => void commit()}
@@ -864,6 +1427,22 @@ function RepoBar({
                 >
                   {pending === "commit" ? "Committing…" : "Commit"}
                 </Button>
+                {/*
+                  Only where a provider is configured. The repo routes are served
+                  without one, and a button that could only ever answer "unavailable"
+                  is worse than no button.
+                */}
+                {canDraft && (
+                  <Button variant="outline"
+                    className={pending === "draft" ? "busy animate-pulse" : undefined}
+                    onClick={() => void draft()}
+                    disabled={pending !== null}
+                    title="Read the diff and propose a message. Nothing is committed."
+                  >
+                    <Sparkles aria-hidden="true" />
+                    {pending === "draft" ? "Drafting…" : "Draft"}
+                  </Button>
+                )}
                 <Button variant="outline"
                   onClick={() =>
                     void act("stash", async () => {
@@ -883,6 +1462,7 @@ function RepoBar({
                 >
                   Discard
                 </Button>
+                </div>
               </div>
               <p className="muted text-muted-foreground">
                 Saving a file writes the working copy; committing is a separate decision, and so
@@ -1329,5 +1909,44 @@ function fetchedThisSession(): boolean {
     return false;
   } catch {
     return false;
+  }
+}
+
+/** Where the moment of the last fetch is kept, in epoch milliseconds. */
+const fetchedAtKey = "ode.repo.fetched_at";
+
+/**
+ * recordFetch and lastFetchAt are when the remote was last actually contacted.
+ *
+ * Beside fetchedThisSession and in the same storage for the same reason: a page
+ * reload discards the module, and it is precisely the reload that does not fetch
+ * again — so a module-level moment would be lost by the one event that leaves the
+ * distance on screen unchanged.
+ *
+ * Separate from that flag rather than folded into it, because the two answer
+ * different questions. The flag is claimed on mount, *before* the fetch, so that
+ * a second mount does not fetch again; the moment is recorded when a fetched
+ * status has actually come back. Merging them would put a time on the bar for a
+ * fetch that had not happened yet.
+ */
+function recordFetch(): number {
+  const at = Date.now();
+  try {
+    window.sessionStorage.setItem(fetchedAtKey, String(at));
+  } catch {
+    // A browser blocking site data costs the reading across a page reload, and
+    // nothing else: the moment is in React state for as long as the pane lives.
+  }
+  return at;
+}
+
+function lastFetchAt(): number | null {
+  try {
+    const raw = window.sessionStorage.getItem(fetchedAtKey);
+    if (!raw) return null;
+    const at = Number(raw);
+    return Number.isFinite(at) && at > 0 ? at : null;
+  } catch {
+    return null;
   }
 }
