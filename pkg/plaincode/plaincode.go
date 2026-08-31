@@ -37,6 +37,23 @@
 // can reach exactly what they can reach. Auto mode changes who is asked, never
 // what is possible.
 //
+// # The ceiling, and what replaced this
+//
+// Measured over 261 real confirmations, this package recognises 13% of them. The
+// most it could reach is 29%, and only with an unbounded attribute list — which is
+// not available, because half the names it misses are members of the developer's
+// own module. A third-party Python parser was priced against the same corpus and
+// moves it by four cells; see TestCorpusProbe, which carries the numbers and the
+// dated list of every change to the gate.
+//
+// So the question was changed rather than the answer improved.
+// kernel.Options.ContainCells withholds the platform token from a cell that did
+// not ask for one, and what is confirmed becomes the credential rather than the
+// code. Where that is on, this package is not on the path: 84% of the same corpus
+// needs no token and no confirmation. Where it is off — a deployment that has not
+// restricted egress from the singleuser pod — everything below is still the gate,
+// which is why it is still here and still tested.
+//
 // # Why not an AST
 //
 // Go has no Python parser in its standard library. The three ways to get a real

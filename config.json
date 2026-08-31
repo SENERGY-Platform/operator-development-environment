@@ -190,6 +190,9 @@
   "//tool_run_code": "Far smaller than jupyterhub_max_output_bytes above, and for a different cost: that one bounds a developer's console, this one bounds what a cell's output costs in model context.",
   "tool_run_code_max_output_bytes": 8000,
 
+  "//kernel_contain_cells": "Withholds the platform token from an assistant cell that did not ask for it, so such a cell runs without a confirmation: what is confirmed becomes the credential rather than the code. Off by default because the containment is the absence of the token and nothing more -- the pod keeps whatever network its NetworkPolicy leaves it, so a contained cell can still put data on the wire. Turn it on only where egress from the singleuser pod is restricted.",
+  "kernel_contain_cells": false,
+
   "//tool_repo_read": "What one read_file answer may cost the model. The Code pane reads up to a megabyte because an editor shows a megabyte; over this figure the tool answers with a window of whole lines and the from_line to continue at, so a long file is read in a few calls rather than cut in the middle of a statement.",
   "tool_repo_max_read_bytes": 8000,
 

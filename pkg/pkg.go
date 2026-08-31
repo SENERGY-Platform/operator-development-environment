@@ -462,6 +462,10 @@ func startM3(
 
 		RunCodeMaxOutputBytes: int(config.ToolRunCodeMaxOutputBytes),
 		RepoMaxReadBytes:      int(config.ToolRepoMaxReadBytes),
+		// The same value the kernel is built with. Read from configuration in both
+		// places rather than passed between them, so there is no assignment that
+		// could set one and forget the other.
+		ContainCells: config.KernelContainCells,
 	})
 	if err != nil {
 		return err
@@ -628,6 +632,10 @@ func startM4(ctx context.Context, config configuration.Config) (*kernel.Service,
 		// Handed to the pod so code there reaches the same platform ODE is
 		// configured against, rather than the developer restating the URLs.
 		Environment: kernelEnvironment(config),
+		// Withholds the token from an assistant cell that did not ask for it. Paired
+		// with tools.Deps.ContainCells, which is how run_code's confirmation learns
+		// the same thing.
+		ContainCells: config.KernelContainCells,
 	})
 	if err != nil {
 		return nil, err

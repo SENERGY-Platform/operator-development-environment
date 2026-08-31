@@ -965,3 +965,112 @@ func TestATokenRefreshWhileACellRunsNeitherQueuesBehindItNorHoldsTheSession(t *t
 // ref is a request for the developer's default workbench, which is what every
 // test here is about unless it says otherwise.
 func ref(bearer string) kernel.Ref { return kernel.Ref{Bearer: bearer} }
+
+/*
+Containment is the absence of the credential, and these are the two properties it
+rests on.
+
+Both are about the hidden environment cell rather than about what a cell can do,
+because that is where the whole guarantee lives: a contained execution runs
+without a confirmation, so if the token were still in os.environ when it started,
+nothing downstream would ever notice. The first test is the steady state; the
+second is the one that is easy to get wrong, because the token has to come back
+*out* when a confirmed cell is followed by an ordinary one.
+*/
+func TestAContainedCellNeverSeesThePlatformToken(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, func(o *kernel.Options) {
+		o.ContainCells = true
+		o.Environment = map[string]string{"SENERGY_DEVICE_REPO_URL": "https://api.example/device-repository"}
+	})
+
+	events, err := service.RunQueued(context.Background(), ref(unsignedToken("devuser")), "df.head()")
+	if err != nil {
+		t.Fatalf("RunQueued: %v", err)
+	}
+	collect(t, events)
+
+	executed := hub.Calls().Executed
+	if len(executed) != 2 {
+		t.Fatalf("executed %v, want the environment push then the cell", executed)
+	}
+	push := executed[0]
+	if strings.Contains(push, kernel.PlatformTokenEnv+"\"] =") {
+		t.Errorf("a contained cell was preceded by a token install: %s", push)
+	}
+	// The rest of the environment is still installed: containment withholds the
+	// credential, not the configuration a cell needs to be useful.
+	for _, name := range []string{kernel.WorkspaceEnv, "SENERGY_DEVICE_REPO_URL"} {
+		if !strings.Contains(push, name) {
+			t.Errorf("the environment cell does not set %s: %s", name, push)
+		}
+	}
+	// And the removal is unconditional, so a kernel that got a token from somewhere
+	// ODE does not know about is contained too.
+	if !strings.Contains(push, "pop(\""+kernel.PlatformTokenEnv+"\"") {
+		t.Errorf("the environment cell does not remove a token it did not install: %s", push)
+	}
+}
+
+func TestTheTokenComesBackOutAfterAConfirmedCell(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, func(o *kernel.Options) { o.ContainCells = true })
+	bearer := unsignedToken("devuser")
+
+	confirmed := kernel.Ref{Bearer: bearer, WithPlatformToken: true}
+	events, err := service.RunQueued(context.Background(), confirmed, "ode_platform.token()")
+	if err != nil {
+		t.Fatalf("the confirmed run: %v", err)
+	}
+	collect(t, events)
+
+	executed := hub.Calls().Executed
+	if len(executed) != 2 || !strings.Contains(executed[0], kernel.PlatformTokenEnv+"\"] =") {
+		t.Fatalf("a cell that asked for the token did not get one: %v", executed)
+	}
+
+	// The next ordinary cell. It must be preceded by a push of its own that takes
+	// the token away again, rather than by nothing because the environment was
+	// already installed.
+	events, err = service.RunQueued(context.Background(), ref(bearer), "df.head()")
+	if err != nil {
+		t.Fatalf("the contained run: %v", err)
+	}
+	collect(t, events)
+
+	executed = hub.Calls().Executed
+	if len(executed) != 4 {
+		t.Fatalf("executed %v, want a second environment push before the contained cell", executed)
+	}
+	second := executed[2]
+	if strings.Contains(second, kernel.PlatformTokenEnv+"\"] =") {
+		t.Errorf("the contained cell still had the token installed: %s", second)
+	}
+	if !strings.Contains(second, "pop(\""+kernel.PlatformTokenEnv+"\"") {
+		t.Errorf("the token was not removed before the contained cell: %s", second)
+	}
+	if executed[3] != "df.head()" {
+		t.Errorf("fourth cell = %q, want the contained code", executed[3])
+	}
+}
+
+// Without the option nothing moves: every execution carries the token exactly as
+// it did before containment existed, and WithPlatformToken is not consulted.
+func TestWithoutContainmentEveryCellStillCarriesTheToken(t *testing.T) {
+	hub := kerneltest.NewHub(t)
+	service := newService(t, hub, nil)
+
+	events, err := service.RunQueued(context.Background(), ref(unsignedToken("devuser")), "df.head()")
+	if err != nil {
+		t.Fatalf("RunQueued: %v", err)
+	}
+	collect(t, events)
+
+	executed := hub.Calls().Executed
+	if len(executed) != 2 || !strings.Contains(executed[0], kernel.PlatformTokenEnv+"\"] =") {
+		t.Fatalf("the token was withheld with containment off: %v", executed)
+	}
+	if strings.Contains(executed[0], "pop(") {
+		t.Errorf("a removal was emitted with containment off: %s", executed[0])
+	}
+}

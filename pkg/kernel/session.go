@@ -46,6 +46,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +64,16 @@ type Ref struct {
 	Bearer string
 	// Workbench is the working context, as pkg/repo mints it.
 	Workbench string
+	// WithPlatformToken asks for the developer's token to be installed in the
+	// kernel for this execution. Only consulted under Options.ContainCells, which
+	// is what makes withholding it possible at all; without that option every
+	// execution receives the token as it always has.
+	//
+	// It says what the execution needs, not who is asking. Run sets it for the
+	// developer's own pane; a tool call sets it when the model has been told by a
+	// failed contained run that the cell cannot do without it, and that is the call
+	// the developer confirms.
+	WithPlatformToken bool
 }
 
 // Workbenches says which directory a workbench's kernel runs in.
@@ -159,10 +170,17 @@ type bench struct {
 	generation uint64
 	kernelID   string
 	conn       *connection
-	// pushedToken is the platform token currently installed in this kernel. Held to
-	// notice a refresh, not for any other purpose, and never logged.
-	pushedToken    string
-	workspaceReady bool
+	// pushedToken is the platform token currently installed in this kernel, and the
+	// empty string when none is — which under Options.ContainCells is the ordinary
+	// state rather than an error. Held to notice a refresh and to notice that the
+	// token has to come out again before the next contained cell, and never logged.
+	pushedToken string
+	// environmentReady says the hidden environment cell landed. Separate from
+	// pushedToken because the interesting state is now reachable with no token in
+	// it: "" alone cannot distinguish a kernel deliberately left contained from one
+	// whose environment was never installed, and the second must not be run in.
+	environmentReady bool
+	workspaceReady   bool
 	// held says this bench is counted in pod.live.
 	held bool
 	// running names the execution that currently holds the kernel, zero when none
@@ -363,9 +381,14 @@ func (s *Service) Status(ctx context.Context, ref Ref) (Status, error) {
 // case ErrBusy reports, and the pane's answer is the interrupt rather than a
 // queue — they are sitting in front of it and can decide. Another workbench being
 // busy does not reach here at all.
+// The developer's own cell always carries the platform token. Options.ContainCells
+// withholds it from the assistant, whose cells are the ones a confirmation exists
+// to check; a console that cannot reach the platform is not a console, and the
+// developer typing into it is the party whose authority the token already is.
 func (s *Service) Run(
 	ctx context.Context, ref Ref, code string,
 ) (<-chan ExecutionEvent, error) {
+	ref.WithPlatformToken = true
 	return s.run(ctx, ref, code, 0)
 }
 
@@ -741,7 +764,8 @@ func (s *Service) RefreshPlatformToken(ctx context.Context, bearer string) error
 				"a cell is running, so the refreshed platform token is left to the next execution",
 				"user", user.Name, "workbench", target.workbench)
 		default:
-			if err := s.pushEnvironmentLocked(ctx, target, bearer); err != nil && failure == nil {
+			if err := s.pushEnvironmentLocked(
+				ctx, target, bearer, target.pushedToken != ""); err != nil && failure == nil {
 				failure = err
 			}
 		}
@@ -812,7 +836,7 @@ func (s *Service) bringUpLocked(
 	if err := s.ensureConnectionLocked(ctx, target, server, token); err != nil {
 		return KernelHandle{}, err
 	}
-	if err := s.pushEnvironmentLocked(ctx, target, ref.Bearer); err != nil {
+	if err := s.pushEnvironmentLocked(ctx, target, ref.Bearer, ref.WithPlatformToken); err != nil {
 		return KernelHandle{}, err
 	}
 	s.holdLocked(target)
@@ -987,6 +1011,7 @@ func (s *Service) ensureConnectionLocked(
 		// A dropped socket says nothing about the kernel, but the pushed token was
 		// installed in a kernel that may itself be gone, so it is re-pushed.
 		target.pushedToken = ""
+		target.environmentReady = false
 	}
 
 	endpoint := channelsEndpoint(server, target.kernelID)
@@ -1006,54 +1031,90 @@ func (s *Service) ensureConnectionLocked(
 // need not be, and the difference is not something a reader of this code should
 // have to reason about. The execution is silent, so it leaves no history and
 // nothing reaches the developer's console.
+// Under Options.ContainCells the token is installed only for an execution that
+// asked for it, and removed again before one that did not. Both directions happen
+// here, under the bench lock, in the bring-up every execution goes through — which
+// is what makes the removal worth anything: a cell that did not ask for the token
+// cannot observe the window in which the previous one had it, because closing that
+// window is a step on its own path to the kernel.
 func (s *Service) pushEnvironmentLocked(
-	ctx context.Context, target *bench, bearer string,
+	ctx context.Context, target *bench, bearer string, withToken bool,
 ) error {
 	token := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(bearer, "Bearer "), "bearer "))
 	if token == "" {
 		return fmt.Errorf("%w: no platform token to install in the kernel", ErrInvalidRequest)
 	}
-	if target.pushedToken == token {
+	// Without containment every execution carries the token, which is the behaviour
+	// every deployment had before the option existed.
+	wanted := token
+	if s.opts.ContainCells && !withToken {
+		wanted = ""
+	}
+	if target.pushedToken == wanted && target.environmentReady {
 		return nil
 	}
 	if target.conn == nil {
 		return ErrNoKernel
 	}
 
-	environment := map[string]string{
-		PlatformTokenEnv: token,
-		WorkspaceEnv:     s.opts.WorkspacePath,
-	}
+	environment := map[string]string{WorkspaceEnv: s.opts.WorkspacePath}
 	for name, value := range s.opts.Environment {
 		environment[name] = value
 	}
+	if wanted != "" {
+		environment[PlatformTokenEnv] = wanted
+	}
 
-	events, err := target.conn.execute(ctx, environmentCode(environment), executeOptions{
-		Silent:         true,
-		MaxOutputBytes: 4096,
-	})
+	// The removal is unconditional rather than conditional on pushedToken. A kernel
+	// ODE did not start, one the developer pushed a token into from JupyterLab, and
+	// one whose bench record was rebuilt all look the same from here, and in each of
+	// them a `del` that finds nothing is free.
+	code := environmentCode(environment)
+	if wanted == "" {
+		code += fmt.Sprintf("_ = _os_env.pop(%q, None)\n", PlatformTokenEnv)
+	}
+
+	events, err := target.conn.execute(ctx, environmentPrelude+code+environmentEpilogue,
+		executeOptions{Silent: true, MaxOutputBytes: 4096})
 	if err != nil {
 		return err
 	}
 	for event := range events {
 		if event.Kind == KindDone && event.Status != StatusOK {
-			return fmt.Errorf("kernel: installing the platform token failed: %s %s",
+			// Deliberately does not name which direction failed. A kernel whose
+			// environment is not what ODE believes it to be must not be run in either
+			// way, and environmentReady staying false is what stops the next claim
+			// from skipping this.
+			target.environmentReady = false
+			return fmt.Errorf("kernel: installing the environment failed: %s %s",
 				event.Status, event.Error)
 		}
 	}
-	target.pushedToken = token
+	target.pushedToken = wanted
+	target.environmentReady = true
 	return nil
 }
+
+const (
+	environmentPrelude  = "import base64 as _b64\nfrom os import environ as _os_env\n"
+	environmentEpilogue = "del _b64, _os_env\n"
+)
 
 // environmentCode renders the hidden cell that installs the environment.
 func environmentCode(environment map[string]string) string {
 	var builder strings.Builder
-	builder.WriteString("import base64 as _b64, os as _os\n")
-	for name, value := range environment {
-		builder.WriteString(fmt.Sprintf("_os.environ[%q] = _b64.b64decode(%q).decode(\"utf-8\")\n",
-			name, base64.StdEncoding.EncodeToString([]byte(value))))
+	names := make([]string, 0, len(environment))
+	for name := range environment {
+		names = append(names, name)
 	}
-	builder.WriteString("del _b64, _os\n")
+	// Sorted so the cell is the same text for the same environment. Map order would
+	// make pushedToken's short-circuit the only thing standing between a reconnect
+	// and a different hidden cell every time.
+	sort.Strings(names)
+	for _, name := range names {
+		builder.WriteString(fmt.Sprintf("_os_env[%q] = _b64.b64decode(%q).decode(\"utf-8\")\n",
+			name, base64.StdEncoding.EncodeToString([]byte(environment[name]))))
+	}
 	return builder.String()
 }
 
@@ -1146,6 +1207,7 @@ func (s *Service) dropKernelLocked(target *bench) {
 	}
 	target.kernelID = ""
 	target.pushedToken = ""
+	target.environmentReady = false
 	// The kernel is gone, so no execution holds it any more. The token of the run
 	// that did is not reused, so its own finish will find nothing to release.
 	target.freeLocked()
@@ -1291,6 +1353,7 @@ func (s *Service) releaseLocked(target *bench) {
 		target.conn = nil
 	}
 	target.pushedToken = ""
+	target.environmentReady = false
 	s.releaseHoldLocked(target)
 }
 

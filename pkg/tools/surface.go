@@ -338,6 +338,12 @@ type Deps struct {
 	// smaller than the cap on the developer's own console: the two answer to
 	// different costs, memory there and context here.
 	RunCodeMaxOutputBytes int
+	// ContainCells mirrors kernel.Options.ContainCells, which is what actually
+	// withholds the token; this is only how run_code's confirmation learns that it
+	// has been withheld. The two must be set from the same configuration value: on
+	// here and off there would waive the confirmation on cells that still carry the
+	// token, which is the one combination that must not be reachable.
+	ContainCells bool
 	// RepoMaxReadBytes bounds what one read_file returns. The same reasoning as
 	// above, against a different ceiling: pkg/repo lets the Code pane read a
 	// megabyte because an editor shows a megabyte, and a model that read one would
@@ -1223,12 +1229,24 @@ func NewSurface(deps Deps) (*Registry, error) {
 				if err := json.Unmarshal(input, &in); err != nil {
 					return false, "the arguments did not parse"
 				}
+				// Where cells are contained, what is confirmed is the token rather than
+				// the code, and the code no longer has to be recognised for the developer
+				// to be left alone. A cell that asked for the token is asking for exactly
+				// the authority the confirmation exists to check, so it is never waived —
+				// and one that did not cannot reach it, whatever it says.
+				if s.deps.ContainCells {
+					if in.NeedsPlatformToken {
+						return false, "this cell asked for the developer's platform token"
+					}
+					return true, ""
+				}
 				return plaincode.Recognised(in.Code)
 			},
 			Schema: json.RawMessage(`{
 			  "type": "object",
 			  "properties": {
-			    "code": {"type": "string", "description": "Python source. Runs as one cell, so the value of the last expression comes back as the result."}
+			    "code": {"type": "string", "description": "Python source. Runs as one cell, so the value of the last expression comes back as the result."},
+			    "needs_platform_token": {"type": "boolean", "description": "Leave this out. A cell runs with no platform token in the kernel and needs no confirmation; if it turns out to need one it fails saying so, and the hint on that failure tells you to call again with this set. Setting it up front asks the developer for nothing."}
 			  },
 			  "required": ["code"]
 			}`),

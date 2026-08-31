@@ -297,6 +297,19 @@ type ConfigStruct struct {
 	// costs: a developer's console is bounded by memory, a tool result by context.
 	ToolRunCodeMaxOutputBytes int64 `json:"tool_run_code_max_output_bytes"`
 
+	// KernelContainCells withholds the platform token from an assistant cell that
+	// did not ask for it, which is what lets such a cell run without a confirmation.
+	// It moves what is confirmed from the code to the credential: measured over 261
+	// real confirmations, recognising the code tops out near 29% while the token is
+	// needed by 16%.
+	//
+	// Off by default, and the default is not timidity. The containment is the
+	// absence of the credential and nothing else — the pod keeps whatever network
+	// its NetworkPolicy leaves it, so a contained cell can still put data on the
+	// wire. A deployment that has not restricted egress from the singleuser pod
+	// should leave this off and keep the confirmation on every cell.
+	KernelContainCells bool `json:"kernel_contain_cells"`
+
 	// ToolRepoMaxReadBytes bounds one read_file answer, and it is the same kind of
 	// bound as the one above rather than a limit on what may be read: pkg/repo's
 	// MaxFileBytes is a megabyte because that is a sensible size for an editor, and

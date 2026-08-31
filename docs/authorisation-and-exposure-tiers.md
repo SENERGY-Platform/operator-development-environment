@@ -227,7 +227,14 @@ deliberately wrong at. A recogniser that erred the other way would be the bounda
 it refuses to be.
 
 What the vocabulary holds is decided against real confirmations rather than
-guessed. Measured over 241 `run_code` cells from four days of one developer's
+guessed, and the measurement is repeatable: `TestCorpusProbe` in `pkg/plaincode`
+runs the production gate over the decided rows of `ode_confirmations` with one
+part relaxed at a time. It carries a dated list of every change to what
+`run_code` asks about, because the table spans all of them — a rate averaged over
+the whole corpus is an average of gates rather than a measurement of this one.
+Any change to the gate goes in that list on the day it lands.
+
+Measured over 241 `run_code` cells from four days of one developer's
 sessions, of which they approved 232: nine were recognised. Adding the members
 those cells were refused for — `re.search` and `.group` over source the cell had
 just read, `joinpath` where `/` would have passed, `np.array`, `.tolist`,
@@ -256,6 +263,87 @@ Three properties bound it, and each has a test in `pkg/tools/dispatch_test.go`:
 There is no LLM tool for the switch. `set_auto_run` is in `tools.Denied()` for the
 same reason `set_exposure_tier` is: a model able to stop itself being asked is not
 subject to the confirmation at all.
+
+## Contained execution, which asks about the credential instead
+
+Everything above is a recogniser, and a recogniser over Python has a ceiling that
+the measurement finds rather than argues. Re-run over 261 cells: 13% recognised;
+29% if the attribute vocabulary were unbounded, which it cannot be, because half
+the names it misses are members of the developer's own module and that is an open
+set. A third-party Python parser was priced against the same corpus and moves it
+to 14.6% — four cells — so it was rejected. `TestCorpusProbe` carries those
+numbers and the dated list of every gate change behind them.
+
+`kernel_contain_cells` changes the question. Instead of asking whether the code is
+recognisably an inspection, ODE withholds the platform token: a `run_code` call
+that did not ask for one runs in a kernel that has none, and is not confirmed. A
+call that *did* ask is confirmed always, and no setting waives it — it is asking
+for exactly the authority §5.8's confirmation exists to check. The model is not
+asked to predict which it needs. A contained cell that reaches for the platform
+fails on `SENERGY_TOKEN`, and the hint on that failure is what tells it to call
+again with `needs_platform_token`, so the developer is asked once, on the call
+that needed it. Measured against the same corpus, 16% of cells touch the token or
+the platform; the other 84% would run unasked.
+
+Two things make this sound rather than a louder version of the same wish. The
+token is not a spawn-time variable — `pushEnvironmentLocked` installs it by
+executing into the running kernel — so withholding it is something ODE already
+controls, and the *removal* runs in the bring-up that every execution passes
+through under the bench lock. A cell that did not ask for the token therefore
+cannot observe the window in which the previous one had it: closing that window is
+a step on its own path to the kernel. And the developer's own pane is unaffected.
+`Run` always carries the token, because the confirmation exists to check the model
+rather than the developer, and a console that cannot reach the platform is not a
+console.
+
+**What it contains is the credential and nothing else.** The pod keeps whatever
+network its NetworkPolicy leaves it, so a contained cell can still reach an
+unauthenticated endpoint and can still put data on the wire. That is a policy on
+the singleuser pod and not something this repository enforces, which is why the
+option is off by default. A confirmed cell can also stash the token in a variable
+that later contained cells can read — the same standing as the redaction below,
+and conceded for the same reason.
+
+### What the deployed policy actually leaves open
+
+`ses-prod-rke2` has a `singleuser` NetworkPolicy in the `jupyterhub` namespace
+(chart `jupyterhub-3.3.6`), and it does bind ODE's kernels: the spawned pod
+carries `component=singleuser-server`, which is the policy's selector. Read before
+relying on it, because what it restricts and what containment needs are not the
+same thing.
+
+Cluster-internally it is tight. Egress is enumerated — the hub on 8081, the proxy
+on 8000, DNS, `ml-trainer-api` on 5000, MLflow's object storage on 9000, the
+external ingress controller on 443, one further host on 443 — and the three
+RFC1918 ranges plus the metadata endpoint at `169.254.169.254` are excluded
+everywhere they could otherwise be reached. Lateral movement to another service in
+the cluster is closed.
+
+The public internet is not. One rule allows
+
+```yaml
+to:
+  - ipBlock:
+      cidr: 0.0.0.0/0
+      except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.169.254/32]
+```
+
+on every port, which is z2jh's `egressAllowRules.nonPrivateIPs` default. So a
+contained cell can open a connection to any public host and put a dataframe
+through it. **Containment as deployed is therefore about authority, not
+confidentiality**: a cell without the token cannot read anything the developer's
+credential unlocks, and can still send anywhere whatever is already in its
+namespace.
+
+Whether that is the right trade is a deployment decision rather than this
+document's to make, and it is a narrower one than it first looks: the cell was
+written by a model that reached the pod through ODE, the conversation is
+persisted, and a developer's own console has had the same reach all along.
+Closing it means setting `singleuser.networkPolicy.egressAllowRules.nonPrivateIPs`
+to `false` and enumerating what a training cell legitimately fetches — PyPI, the
+open datasets §5.10 has `run_code` pull in — which is a real restriction on the
+work, not a free tightening. Until that is decided, a deployment turning
+`kernel_contain_cells` on should know it is buying the token half only.
 
 ## The same gate over MCP
 

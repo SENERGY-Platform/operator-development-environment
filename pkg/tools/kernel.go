@@ -34,6 +34,37 @@ import (
 
 type runCodeInput struct {
 	Code string `json:"code"`
+	// NeedsPlatformToken asks for the cell to run with the developer's platform
+	// token installed, which is what makes it a confirmed call rather than a
+	// contained one. Only meaningful where the deployment contains cells; without
+	// that, every cell has the token and every cell is confirmed.
+	//
+	// The model is not asked to predict this and should not try. A contained cell
+	// that turns out to need the token fails with a legible error, and the hint on
+	// that failure is what tells it to ask again with this set — one confirmation,
+	// on the call that actually needed one.
+	NeedsPlatformToken bool `json:"needs_platform_token,omitempty"`
+}
+
+// tokenMissing recognises the failure a contained cell produces when it reaches
+// for the platform. `ode_platform.token()` raises it by name
+// (singleuser-image/ode_platform.py), and a cell reading the variable itself gets
+// a KeyError naming the same thing.
+//
+// Matched on the variable name rather than on the sentence, because the sentence
+// belongs to the image and the two version independently. A false positive costs a
+// hint the model can ignore; a false negative costs it the one piece of
+// information that would have told it what to do next.
+func tokenMissing(result RunCodeResult) bool {
+	if result.Status == kernel.StatusOK {
+		return false
+	}
+	for _, text := range []string{result.ErrorValue, result.Traceback, result.Stderr} {
+		if strings.Contains(text, kernel.PlatformTokenEnv) {
+			return true
+		}
+	}
+	return false
 }
 
 // RunCodeResult is what the model reads back.
@@ -74,6 +105,7 @@ func (s *surface) runCode(ctx context.Context, req Request) (any, error) {
 	req.Progress("kernel", "ensuring the developer's pod and kernel are up")
 	events, err := s.deps.Kernel.RunQueued(ctx, kernel.Ref{
 		Bearer: req.Token, Workbench: req.WorkbenchID,
+		WithPlatformToken: in.NeedsPlatformToken,
 	}, in.Code)
 	if err != nil {
 		return nil, err
@@ -148,6 +180,15 @@ func (s *surface) runCode(ctx context.Context, req Request) (any, error) {
 	if result.Truncated {
 		result.Hint = "the output was truncated; print less, or write it to a file in the workspace " +
 			"and read back the part that matters"
+	}
+	// The one place a contained run turns into a confirmed one. Without this the
+	// model sees a cell that failed for a reason it has no way to act on, and the
+	// likeliest thing it does next is rewrite working code.
+	if !in.NeedsPlatformToken && tokenMissing(result) {
+		result.Hint = "this kernel has no platform token, which is why that failed. " +
+			"Call run_code again with needs_platform_token set to true and the same code: " +
+			"that asks the developer, and their answer is what installs the token. " +
+			"Do not set it on a cell that does not reach the platform -- those run without asking."
 	}
 
 	// Hygiene, not a boundary. The developer's platform token is installed in the

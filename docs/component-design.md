@@ -579,7 +579,7 @@ The whole surface, in one table, because the omissions are the point.
 | `delete_import_instance` | remove an import instance this session created | L0 | **yes** |
 | `delete_export` | remove an export this session created | L0 | **yes** |
 | `write_file` | write repo working copy | L0 | no |
-| `run_code` | execute in kernel | L0 | **yes** |
+| `run_code` | execute in kernel | L0 | **yes**, unless the cell is contained |
 | `launch_experiment` | submit Ray job | L0 | **yes** |
 | `get_experiment_results` | read MLflow | L0 | no |
 

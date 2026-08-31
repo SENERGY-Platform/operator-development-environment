@@ -32,7 +32,10 @@ import (
 type fakeKernel struct {
 	events []kernel.ExecutionEvent
 	code   []string
-	err    error
+	// refs records what each execution asked for, so the containment flag can be
+	// followed from the tool's argument through to the kernel.
+	refs []kernel.Ref
+	err  error
 
 	// files is what the workspace holds, by path, for upload_simulation_dataset.
 	files map[string]kernel.FileContent
@@ -57,11 +60,12 @@ func (f *fakeKernel) ReadFile(_ context.Context, _ kernel.Ref, path string, _ in
 	return content, nil
 }
 
-func (f *fakeKernel) RunQueued(_ context.Context, _ kernel.Ref, code string) (<-chan kernel.ExecutionEvent, error) {
+func (f *fakeKernel) RunQueued(_ context.Context, ref kernel.Ref, code string) (<-chan kernel.ExecutionEvent, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	f.code = append(f.code, code)
+	f.refs = append(f.refs, ref)
 	out := make(chan kernel.ExecutionEvent, len(f.events))
 	for _, event := range f.events {
 		out <- event
@@ -245,5 +249,140 @@ func TestRunCodeRefusesAnEmptyCell(t *testing.T) {
 	}
 	if len(fake.code) != 0 {
 		t.Errorf("an empty cell reached the kernel: %v", fake.code)
+	}
+}
+
+// --- containment ---
+
+/*
+Where cells are contained, the confirmation moves from the code to the credential.
+
+That is the whole change and it is worth stating as a property rather than a
+setting: a cell that did not ask for the platform token runs without anybody being
+asked — including one full of `subprocess`, which the recogniser would have
+refused and which is now beside the point, because a kernel with no token in it
+does not become more dangerous for containing the word. A cell that *did* ask is
+asking for precisely the authority the confirmation exists to check, so it is
+never waived, and no configuration makes it waivable.
+
+The third test is the rollback: with the option off, nothing about auto mode moves.
+*/
+func containedSurface(t *testing.T, fake *fakeKernel, contain bool) *Registry {
+	t.Helper()
+	registry, err := NewSurface(Deps{Kernel: fake, ContainCells: contain})
+	if err != nil {
+		t.Fatalf("NewSurface: %v", err)
+	}
+	return registry
+}
+
+func dispatchAuto(t *testing.T, registry *Registry, input string) (Result, *Dispatcher) {
+	t.Helper()
+	dispatcher, err := NewDispatcher(registry, nil, &sequentialIDs{})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	return dispatcher.Dispatch(context.Background(),
+		Request{Token: "Bearer " + strings.Repeat("t", 40), UserSub: "u", SessionID: "s",
+			Tier: L0, AutoRun: true},
+		Call{ID: "c1", Name: "run_code", Input: json.RawMessage(input)}), dispatcher
+}
+
+func TestAContainedCellRunsWithoutBeingConfirmed(t *testing.T) {
+	fake := &fakeKernel{events: []kernel.ExecutionEvent{
+		{Kind: kernel.KindDone, Status: kernel.StatusOK},
+	}}
+	registry := containedSurface(t, fake, true)
+
+	// Not a dull cell by any reading, and that is the point: the recogniser is no
+	// longer what decides.
+	result, _ := dispatchAuto(t, registry, `{"code":"import subprocess\nsubprocess.run(['ls'])"}`)
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("a contained cell was held: outcome = %q, content %v", result.Outcome, result.Content)
+	}
+	if len(fake.refs) != 1 {
+		t.Fatalf("the cell did not reach the kernel: %d executions", len(fake.refs))
+	}
+	if fake.refs[0].WithPlatformToken {
+		t.Error("a cell that did not ask for the token was given one")
+	}
+}
+
+func TestACellThatAsksForTheTokenIsAlwaysConfirmed(t *testing.T) {
+	fake := &fakeKernel{events: []kernel.ExecutionEvent{
+		{Kind: kernel.KindDone, Status: kernel.StatusOK},
+	}}
+	registry := containedSurface(t, fake, true)
+
+	// Dull by the recogniser's own reckoning, so this is not the code being
+	// refused — it is the request for the credential.
+	result, _ := dispatchAuto(t, registry, `{"code":"df.head()","needs_platform_token":true}`)
+	if result.Outcome != OutcomeAwaitingConfirmation {
+		t.Fatalf("a cell asking for the token skipped the confirmation: %q", result.Outcome)
+	}
+	if len(fake.code) != 0 {
+		t.Fatal("it reached the kernel before the developer answered")
+	}
+}
+
+func TestWithoutContainmentTheRecogniserStillDecides(t *testing.T) {
+	fake := &fakeKernel{events: []kernel.ExecutionEvent{
+		{Kind: kernel.KindDone, Status: kernel.StatusOK},
+	}}
+	registry := containedSurface(t, fake, false)
+
+	result, _ := dispatchAuto(t, registry, `{"code":"import subprocess\nsubprocess.run(['ls'])"}`)
+	if result.Outcome != OutcomeAwaitingConfirmation {
+		t.Errorf("with containment off, an unrecognised cell ran unasked: %q", result.Outcome)
+	}
+
+	fake2 := &fakeKernel{events: []kernel.ExecutionEvent{
+		{Kind: kernel.KindDone, Status: kernel.StatusOK},
+	}}
+	result, _ = dispatchAuto(t, containedSurface(t, fake2, false), `{"code":"df.head()"}`)
+	if result.Outcome != OutcomeOK {
+		t.Errorf("with containment off, a recognised cell was held: %q", result.Outcome)
+	}
+}
+
+/*
+The failure that turns a contained run into a confirmed one.
+
+Without this hint the model is handed a cell that failed for a reason it has no
+way to act on, and the likeliest thing it does next is rewrite code that was
+already correct. The hint is the only path from "ran contained" to "ask the
+developer", so it is load-bearing rather than a nicety.
+*/
+func TestAContainedCellThatNeededTheTokenSaysHowToAskForIt(t *testing.T) {
+	fake := &fakeKernel{events: []kernel.ExecutionEvent{
+		{Kind: kernel.KindError, ErrorName: "RuntimeError",
+			ErrorValue: "SENERGY_TOKEN is not set: this kernel was not started by ODE, " +
+				"or the session has not pushed a token yet"},
+		{Kind: kernel.KindDone, Status: "error"},
+	}}
+	registry := containedSurface(t, fake, true)
+
+	result, _ := dispatchAuto(t, registry, `{"code":"ode_platform.token()"}`)
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q, content %v", result.Outcome, result.Content)
+	}
+	payload, err := json.Marshal(result.Content)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got RunCodeResult
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !strings.Contains(got.Hint, "needs_platform_token") {
+		t.Errorf("the failure does not say how to ask for the token: %q", got.Hint)
+	}
+
+	// And a cell that already asked is not told to ask again.
+	fake2 := &fakeKernel{events: fake.events}
+	result, _ = dispatchAuto(t, containedSurface(t, fake2, true),
+		`{"code":"ode_platform.token()","needs_platform_token":true}`)
+	if result.Outcome != OutcomeAwaitingConfirmation {
+		t.Fatalf("expected the confirmation, got %q", result.Outcome)
 	}
 }

@@ -174,6 +174,29 @@ type Options struct {
 	// without the developer restating the URLs.
 	Environment map[string]string
 
+	// ContainCells withholds the platform token from an execution that did not ask
+	// for it, so that the assistant's cells run in a kernel with no credential in
+	// it and need no confirmation.
+	//
+	// What it changes is which question the gate asks. Without it, `run_code` is
+	// confirmed unless pkg/plaincode recognises the cell — and a recogniser over
+	// Python tops out low, because most cells name something it cannot positively
+	// know. With it, the cell runs first and the token is what is confirmed: an
+	// execution that never receives one cannot reach anything the developer's
+	// authority unlocks, so there is nothing for a confirmation to protect.
+	//
+	// The containment is the absence of the credential and nothing more. A pod
+	// still has whatever network its NetworkPolicy allows, so a contained cell can
+	// still reach an unauthenticated endpoint and can still put data on the wire.
+	// Closing that is a policy on the singleuser pod and is not this package's to
+	// enforce; a deployment that has not applied one should leave this off.
+	//
+	// Applies to the assistant's path only. Run — the developer's own pane — always
+	// receives the token, because the confirmation exists to check the model rather
+	// than the developer, and a console that cannot reach the platform is not a
+	// console.
+	ContainCells bool
+
 	// HTTPClient and Dialer are replaced by tests.
 	HTTPClient *http.Client
 	Dialer     *websocket.Dialer
