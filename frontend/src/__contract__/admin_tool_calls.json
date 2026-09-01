@@ -2,7 +2,7 @@
   "period": "720h0m0s",
   "tool_calls": [
     {
-      "at": "2026-08-27T07:20:45.97409494Z",
+      "at": "2026-09-01T06:20:58.706472434Z",
       "duration_ms": 0,
       "outcome": "blocked_by_tier",
       "session_id": "id-1",
@@ -11,7 +11,7 @@
       "user_sub": "user-123"
     },
     {
-      "at": "2026-08-27T07:20:45.974086632Z",
+      "at": "2026-09-01T06:20:58.706464675Z",
       "duration_ms": 0,
       "outcome": "ok",
       "session_id": "id-1",

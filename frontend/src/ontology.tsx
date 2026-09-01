@@ -159,7 +159,7 @@ function DevicesPane() {
       {data && data.devices.length === 0 && <Muted>No devices match.</Muted>}
       {data && data.devices.length > 0 && (
         <>
-          <Table className="grid">
+          <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>

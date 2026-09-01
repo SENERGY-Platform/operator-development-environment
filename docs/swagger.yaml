@@ -890,43 +890,6 @@ definitions:
           while a metric the run never logged has to be visibly absent.
         type: number
     type: object
-  experiments.EmbedProbe:
-    properties:
-      embeddable:
-        type: string
-      probed_at:
-        type: string
-      reason:
-        description: |-
-          Reason is the header that decided it, or why nothing did. Carried because
-          "no" without the header is not actionable by whoever has to change it.
-        type: string
-      service:
-        description: Service is "ray" or "mlflow".
-        type: string
-      status:
-        description: |-
-          Status is the HTTP status the probe got. Zero when the service could not be
-          reached at all.
-        type: integer
-      url:
-        type: string
-    type: object
-  experiments.EmbedReport:
-    properties:
-      as_of:
-        type: string
-      cached:
-        description: Cached says this answer came from the TTL cache rather than a
-          fresh probe.
-        type: boolean
-      services:
-        items:
-          $ref: '#/definitions/experiments.EmbedProbe'
-        type: array
-      ttl:
-        type: string
-    type: object
   experiments.Experiment:
     properties:
       branch:
@@ -4807,39 +4770,6 @@ paths:
       security:
       - Bearer: []
       summary: Stop a running job
-      tags:
-      - experiments
-  /experiments/embed:
-    get:
-      description: |-
-        The backend half of D6: each configured service is asked for its
-        X-Frame-Options and Content-Security-Policy frame-ancestors, and the
-        verdict is cached with a TTL. `embeddable` is "yes", "no" or "unknown",
-        and **"unknown" is a real answer** — ODE is inside the cluster and the
-        browser is not, so a service ODE cannot reach may still frame perfectly.
-        The pane should still load a hidden iframe with a timeout and fall back
-        to a link-only card, which is the half only a browser can decide.
-      parameters:
-      - description: re-probe rather than answering from the cache
-        in: query
-        name: refresh
-        type: boolean
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/experiments.EmbedReport'
-        "401":
-          description: Unauthorized
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      security:
-      - Bearer: []
-      summary: Whether the Ray and MLflow UIs can be framed
       tags:
       - experiments
   /health:

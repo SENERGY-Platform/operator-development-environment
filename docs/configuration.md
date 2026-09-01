@@ -268,7 +268,7 @@ A run is submitted from a commit or it is not submitted — see
 | --- | --- | --- |
 | `ray_url` / `mlflow_url` | none | The API bases ODE calls. Empty leaves the experiment routes unserved and `launch_experiment` and `get_experiment_results` declared-but-unavailable; **setting one without the other fails startup**, because ODE creates the MLflow run before submitting the job. The surface also needs a `jupyterhub_url` and a `github_client_id` |
 | `ray_token` / `mlflow_token` | empty | The service accounts §3.1 item 5 permits — the only place in ODE where one is legitimate. Both may be empty, because an in-cluster dashboard is commonly unauthenticated and M10's NetworkPolicy is what bounds who reaches it. They belong in the environment |
-| `ray_dashboard_url` / `mlflow_ui_url` | the API base | What a browser should open, which in a cluster is routinely a different host. This is what the embed probe of D6 asks and what the pane links to |
+| `ray_dashboard_url` / `mlflow_ui_url` | the API base | What a browser should open, which in a cluster is routinely a different host. D6 links rather than embeds, so this is what a pane's link to a job and to a run is built from |
 | `mlflow_experiment_prefix` | `ode` | Prefix on the MLflow experiment names ODE creates |
 | `experiment_default_entrypoint` | `uv run python train.py` | The scaffold's training-only entrypoint: Operator Lib's own init sequence, stopped before the Kafka loop `main.py` would enter and never leave. A committed file rather than one ODE injects, so the package stays exactly the commit it claims to be |
 | `experiment_py_executable` | `uv run` | What Ray starts worker processes with. Has to match how the entrypoint starts the driver, or a Ray task starts on the cluster image's interpreter and fails on the first import `uv.lock` provides. This is why the Ray image needs none of an operator's dependencies: uv builds the environment from the repository's own `pyproject.toml` and `uv.lock`, which travel in the package, and caches it per node. `rayproject/ray` has shipped uv since 2.45 |
@@ -280,7 +280,6 @@ A run is submitted from a commit or it is not submitted — see
 | `experiment_max_log_bytes` | `1048576` | Bounds the developer's own log route. Logs never reach a model (§5.13) |
 | `experiment_request_timeout` | `30s` | Bounds one Ray or MLflow API call |
 | `experiment_upload_timeout` | `300s` | Bounds the one request that moves the whole archive. Separate for the reason the profiler's two read timeouts are separate: one figure for both means either the probe hangs or the upload is cut off mid-body |
-| `experiment_embed_ttl` / `experiment_embed_timeout` | `10m`, `5s` | D6's pair: how long a framing verdict is cached, and how long one probe may take. The probe timeout is short because an unreachable service is a normal answer there and the pane is waiting for it |
 
 ## Result interpretation
 

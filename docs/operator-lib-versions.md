@@ -40,7 +40,7 @@ The distribution matters. The pin the developer can see in the Code pane
 only. The two environments they actually work in — the kernel and the Ray
 cluster — are both deployment-wide and neither consults it.
 
-As of 2026-08-31 the library is at `v1.6.0` and pins:
+As of 2026-09-01 the library is at `v1.6.1` and pins:
 
 ```text
 ray[data]==2.55.0
@@ -49,6 +49,13 @@ mlflow==3.8.1
 confluent_kafka==2.4.0
 psycopg2-binary==2.9.11
 ```
+
+`v1.6.1` moved none of them. It changes one thing, and only on the experiment
+path: `MLOperator` no longer renames a run it was handed in `MLFLOW_RUN_ID`, so an
+ODE run keeps the name the launch gave it. That makes step 6 of the runbook below
+— the Ray cluster's own image — the only step that decides whether the fix is in
+effect; the singleuser image carries it for consistency, not because a cell reaches
+that code.
 
 ## Why only the latest is supported
 

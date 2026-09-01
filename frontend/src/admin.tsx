@@ -341,7 +341,7 @@ function PricingTable({ surface }: { surface: LimitsSurface }) {
           cannot bind. Token caps still work. Set <code>llm_pricing</code> in the configuration.
         </Muted>
       ) : (
-        <Table className="grid">
+        <Table>
           <TableHeader>
             <TableRow>
               <TableHead>Model or prefix</TableHead>
@@ -434,7 +434,7 @@ function UsageReport({ currency }: { currency: string }) {
           {data.usage.length === 0 ? (
             <Muted>No requests in this period.</Muted>
           ) : (
-            <Table className="grid">
+            <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>When</TableHead>
@@ -515,7 +515,7 @@ function ToolAudit() {
       <Muted>
         {num(calls.length)} calls, {num(refused)} refused or failed.
       </Muted>
-      <Table className="grid">
+      <Table>
         <TableHeader>
           <TableRow>
             <TableHead>When</TableHead>

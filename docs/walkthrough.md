@@ -370,8 +370,9 @@ nothing to install on this side.
 The first two are the **API bases ODE calls**; the second two are what a
 *browser* should open, which in a cluster is routinely a different host. Empty
 falls back to the API base, which is right when the two are the same origin and
-wrong in a way the embed probe will not catch, because a URL ODE can reach and a
-URL the developer's browser can reach are different questions.
+wrong in a way nothing on the backend can catch, because a URL ODE can reach and
+a URL the developer's browser can reach are different questions. The symptom is a
+link into Ray or MLflow that opens nothing.
 
 Setting one of `ray_url` and `mlflow_url` without the other **fails startup**
 rather than half-serving. ODE creates the MLflow run before it submits the job —

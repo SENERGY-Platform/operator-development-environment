@@ -133,6 +133,26 @@ func TestWithoutATokenExchangeTheJobCarriesTheSessionTokenAndSaysSo(t *testing.T
 	}
 }
 
+// The bearer ODE receives still carries its "Bearer " prefix: service-commons'
+// jwt.Parse keeps the caller's original string and strips the prefix only to
+// parse it. Operator Lib's wrapper client builds its own Authorization header
+// from SENERGY_TOKEN, so a prefix passed through arrives as "Bearer Bearer ey..."
+// and the read fails with a 401 that surfaces as TokenExpiredError — an hour of
+// looking at token lifetimes for a defect in the first eight characters.
+func TestTheSessionTokenReachesTheJobWithoutItsBearerPrefix(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	bare := unsignedToken(testUsername)
+	h.launch(func(req *experiments.LaunchRequest) {
+		req.Bearer = "Bearer " + bare
+	})
+
+	if got := h.ray.LastJob(t).RuntimeEnv.EnvVars["SENERGY_TOKEN"]; got != bare {
+		t.Errorf("SENERGY_TOKEN = %q, want the bare token %q", got, bare)
+	}
+}
+
 func TestAConfiguredExchangeMintsATokenForTheJob(t *testing.T) {
 	fake := newKeycloak(t)
 	h := newHarness(t, withKeycloak(fake))

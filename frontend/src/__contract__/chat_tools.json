@@ -7,9 +7,10 @@
     "modify_operator_lib": "the shared Operator Lib is platform code, out of scope for a session",
     "promote_recommendation": "recommendations are strictly advisory and become binding only by explicit developer promotion",
     "set_admin_limits": "admin limits bound the LLM's own spend, so the LLM must not be able to move them",
+    "set_auto_run": "auto mode is the developer's standing answer to a run_code confirmation; a tool to turn it on would let the model stop itself being asked, which is the confirmation it exists to be subject to",
     "set_exposure_tier": "the exposure tier is the developer's control over what the LLM may see; a tool to raise it would defeat the control entirely",
     "write_profile_override": "a ProfileOverride is a human confirmation of derived semantics and an empirical record; an LLM-written one would be fabricated ground truth",
-    "write_timeseries": "ODE reads the timeseries store and never writes to it"
+    "write_timeseries": "no tool writes a value into the timeseries store. backfill_simulation is not an exception under another name: it asks MOSES to run a simulation the developer owns over a past window, and the simulated devices publish through the ordinary connector. Nothing anywhere reaches a series ODE did not create the device behind"
   },
   "tiers": [
     {

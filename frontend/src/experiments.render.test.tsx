@@ -18,8 +18,8 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
-import type { EvaluationCriterion, Session } from "./api";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { EvaluationCriterion, Experiment, Session } from "./api";
 
 /**
  * The two claims the run document makes that are wrong in a way nothing crashes on.
@@ -31,9 +31,11 @@ import type { EvaluationCriterion, Session } from "./api";
  * `experiments.test.ts`, and what is left to get wrong is the last step.
  *
  * Mounted the way `routes.test.tsx` mounts the application: only the process
- * boundaries are faked. Nothing here asserts anything about the iframes; whether a
- * cross-origin page frames is not a question jsdom can answer, and the probe is
- * deliberately left untested.
+ * boundaries are faked.
+ *
+ * The launch card in the conversation is here too, for the same reason: what it
+ * gets wrong is a run that stays "running" on screen after Ray has finished it, and
+ * that is a claim about a poll and a re-render rather than about a helper.
  */
 
 vi.mock("./keycloak", () => ({
@@ -81,18 +83,34 @@ const EXPERIMENT = {
   ended_at: "2026-08-24T08:15:09Z",
 };
 
+/** What the listing route answers with. Mutable: a poll that changed nothing is
+ *  indistinguishable from no poll at all. */
+let listing: Experiment[] = [];
+/** How many times the listing was read, which is what a stopped poll is visible in. */
+let listingReads = 0;
+/** Records the listing does not produce, readable only by id. */
+let byId: Experiment[] = [];
+
 vi.mock("./api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api")>();
   return {
     ...actual,
     api: {
       ...actual.api,
-      experiments: async () => ({
-        experiments: [EXPERIMENT],
-        count: 1,
-        ray_url: "http://ray.test",
-        mlflow_url: "http://mlflow.test",
-      }),
+      experiments: async () => {
+        listingReads += 1;
+        return {
+          experiments: listing,
+          count: listing.length,
+          ray_url: "http://ray.test",
+          mlflow_url: "http://mlflow.test",
+        };
+      },
+      experiment: async (id: string) => {
+        const found = [...byId, ...listing].find((run) => run.experiment_id === id);
+        if (!found) throw new Error(`no such experiment: ${id}`);
+        return found;
+      },
       experimentResults: async () => ({
         run_id: "run-2",
         experiment_id: "e-1",
@@ -111,7 +129,6 @@ vi.mock("./api", async (importOriginal) => {
       // Never settles: the interpretation is not what these two tests are about, and
       // a pending read keeps its section out of the text being asserted on.
       interpretation: () => new Promise<never>(() => {}),
-      embedProbes: () => new Promise<never>(() => {}),
     },
   };
 });
@@ -140,6 +157,12 @@ const SESSION = {
 } as Session;
 
 const mounted: Root[] = [];
+
+beforeEach(() => {
+  listing = [EXPERIMENT];
+  listingReads = 0;
+  byId = [];
+});
 
 afterEach(async () => {
   const roots = mounted.splice(0, mounted.length);
@@ -266,4 +289,174 @@ it("a run with a previous one to compare against gets the table and the rule bes
   // the direction is inferred from the metric's name, and a hidden rule reads as a
   // judgement rather than as a convention.
   expect(text).toContain("lower is better");
+});
+
+// --- the launch card in the conversation (§5.12, D6) ---
+
+/**
+ * A probe that mounts the card the way the transcript does.
+ *
+ * The hook and the card are two halves of one behaviour — a poll that re-reads and
+ * a card that re-renders — and testing either alone would leave the join untested,
+ * which is where "still running" after a job finished actually comes from.
+ */
+async function openCard(sessionId: string, launches: number, experimentId: string | null) {
+  vi.resetModules();
+  const { LaunchedRunsCard, useLaunchedRuns } = await import("./experiments");
+
+  function Probe() {
+    const launched = useLaunchedRuns(
+      sessionId,
+      launches,
+      experimentId ? [experimentId] : [],
+    );
+    return <LaunchedRunsCard experimentId={experimentId} launched={launched} />;
+  }
+
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  mounted.push(root);
+  await act(async () => root.render(<Probe />));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  return host;
+}
+
+/** A run of one conversation, in the state Ray reports. */
+function launched(id: string, status: Experiment["status"], sessionId = "chat-1"): Experiment {
+  return { ...EXPERIMENT, experiment_id: id, submission_id: `sub-${id}`, session_id: sessionId, status };
+}
+
+/*
+ * The whole point of the card: the status is Ray's current one, not the PENDING the
+ * launch answered with, and it changes on its own.
+ */
+it("a running job switches to finished without the developer doing anything", async () => {
+  vi.useFakeTimers();
+  try {
+    listing = [launched("e-1", "RUNNING")];
+    const host = await openCard("chat-1", 1, "e-1");
+    expect(host.textContent).toContain("running");
+
+    listing = [launched("e-1", "SUCCEEDED")];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(host.textContent).toContain("finished");
+    expect(host.textContent).not.toContain("running");
+
+    // And the poll stops, because a finished run's status cannot change again. The
+    // count is the assertion: nothing on screen would show a poll that kept going.
+    const settled = listingReads;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20000);
+    });
+    expect(listingReads).toBe(settled);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+/* A failed job is not a finished one. It is the reading a developer acts on. */
+it("a failed job reads as an error", async () => {
+  listing = [launched("e-1", "FAILED")];
+  const host = await openCard("chat-1", 1, "e-1");
+  expect(host.textContent).toContain("error");
+  expect(host.textContent).not.toContain("finished");
+});
+
+/*
+ * The links D6 replaced the frames with, built from the record and the two bases the
+ * listing carries. Both open in a tab of their own: a Ray dashboard that replaced
+ * the conversation would lose the developer the thing they launched it from.
+ */
+it("the card links the Ray job and the MLflow run, each in a new tab", async () => {
+  listing = [launched("e-1", "RUNNING")];
+  const host = await openCard("chat-1", 1, "e-1");
+
+  const popouts = [...host.querySelectorAll(".exp-popout")];
+  expect(popouts.map((link) => link.getAttribute("href"))).toEqual([
+    "http://ray.test/#/jobs/sub-e-1",
+    "http://mlflow.test/#/experiments/1/runs/run-2",
+  ]);
+  for (const link of popouts) {
+    expect(link.getAttribute("target")).toBe("_blank");
+    // Without noopener the opened page gets a handle on the conversation's window.
+    expect(link.getAttribute("rel")).toContain("noopener");
+  }
+});
+
+/*
+ * And the third link is ODE's own, which is the one that answers "how did it go":
+ * the summary, the comparison and the interpretation are in the run document and in
+ * neither dashboard. Same tab on purpose — leaving the conversation for a pane of
+ * this same application is a move, not a departure — and a real href, so it can be
+ * middle-clicked and copied like any link.
+ */
+it("the card links into the run document, in this tab", async () => {
+  listing = [launched("e-1", "RUNNING")];
+  const host = await openCard("chat-1", 1, "e-1");
+
+  const inApp = host.querySelector(".exp-open-run");
+  expect(inApp?.getAttribute("href")).toContain("/tools/experiments?run=e-1");
+  expect(inApp?.getAttribute("target")).toBeNull();
+});
+
+/*
+ * Another developer's conversation is another conversation. The listing is the
+ * caller's own runs, so the filter is about which exchange launched them — the card
+ * says what *this* one did, and a run from the session in the next tab appearing
+ * under it would be a claim about work this conversation did not do.
+ */
+it("a run from another conversation is not listed", async () => {
+  listing = [launched("e-1", "RUNNING"), launched("e-2", "RUNNING", "chat-2")];
+  const host = await openCard("chat-1", 1, "e-1");
+  expect(host.querySelectorAll(".exp-launched-row")).toHaveLength(1);
+});
+
+/*
+ * A conversation that launched nothing must not read the route at all. Not a
+ * performance point: a deployment with no Ray cluster does not serve it, and a card
+ * that asks anyway turns "this deployment has no experiments" into an error under a
+ * tool call that never ran.
+ */
+it("a conversation with no launch does not read the listing", async () => {
+  listing = [launched("e-1", "RUNNING")];
+  await openCard("chat-1", 0, null);
+  expect(listingReads).toBe(0);
+});
+
+/*
+ * The defect this card shipped with, in its final form.
+ *
+ * The listing is filtered to the conversation by the `session_id` on the record,
+ * and a run that does not carry one — or carries another — disappeared from the
+ * card belonging to the very call that launched it, which then said no run was on
+ * the cluster while the job was running. The id came back in the tool result, so
+ * the card can always ask for that record by name; the filter decides what *else*
+ * is shown, never whether the launch's own run is.
+ */
+it("the launch's own run is shown even when the listing does not produce it", async () => {
+  listing = [launched("e-other", "RUNNING", "chat-2")];
+  byId = [{ ...launched("e-1", "RUNNING"), session_id: undefined }];
+
+  const host = await openCard("chat-1", 1, "e-1");
+  const rows = [...host.querySelectorAll(".exp-launched-row")];
+  expect(rows).toHaveLength(1);
+  expect(rows[0].textContent).toContain("running");
+  expect(host.textContent).not.toContain("No run of this conversation");
+});
+
+/*
+ * A run that cannot be read by id either — pruned, or another developer's — leaves
+ * the rest of the card standing rather than turning the whole thing into an error.
+ */
+it("a run that cannot be read at all does not take the card down with it", async () => {
+  listing = [launched("e-2", "RUNNING")];
+  byId = [];
+
+  const host = await openCard("chat-1", 1, "gone");
+  expect(host.querySelectorAll(".exp-launched-row")).toHaveLength(1);
 });

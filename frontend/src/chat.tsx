@@ -61,6 +61,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { announce } from "./attention";
 import { CodeView } from "./codeview";
+import { LaunchedRunsCard, launchedExperimentId, useLaunchedRuns } from "./experiments";
 import { Markdown } from "./markdown";
 import { Cancelled, odeSocket, type SocketState } from "./ws";
 import { setParam, useParam } from "./router";
@@ -163,6 +164,45 @@ function rows(turns: Turn[]): Row[] {
     );
   }
   return out;
+}
+
+/**
+ * launchesIn picks the successful `launch_experiment` calls out of a row.
+ *
+ * A row rather than a call, because a launch is routinely folded into a run of
+ * tool calls — the assistant commits, reads the status back and then launches —
+ * and a card rendered inside the group would be behind a disclosure that is shut.
+ * What a launch produces is the one tool result a developer wants without opening
+ * anything, so it is drawn beside the row instead of inside it.
+ */
+function launchesIn(row: Row): ToolCallTurn[] {
+  const calls = row.kind === "tools" ? row.calls : row.turn.kind === "tool" ? [row.turn] : [];
+  return calls.filter(
+    (entry) => entry.call.name === "launch_experiment" && entry.result && !entry.result.is_error,
+  );
+}
+
+/**
+ * launchesInTranscript is what this conversation has launched, in two forms.
+ *
+ * The count is what decides whether the runs are read at all — a conversation that
+ * launched nothing must not touch a route this deployment may not serve. The ids
+ * are what lets a run be read directly when the listing does not produce it, and
+ * they are deliberately allowed to be fewer than the count: a launch whose result
+ * carried no readable id is still a launch, and its card still shows what is
+ * running rather than waiting forever for a read that was never started.
+ */
+function launchesInTranscript(turns: Turn[]): { count: number; ids: string[] } {
+  const ids: string[] = [];
+  let count = 0;
+  for (const turn of turns) {
+    if (turn.kind !== "tool" || turn.call.name !== "launch_experiment") continue;
+    if (!turn.result || turn.result.is_error) continue;
+    count += 1;
+    const id = launchedExperimentId(turn.result.content);
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  return { count, ids };
 }
 
 /**
@@ -971,7 +1011,7 @@ function ToolSurfaceSummary({ surface, tier }: { surface: ToolSurface; tier: Tie
       note={`${available.size} available at ${tier}`}
       defaultOpen={false}
     >
-      <Table className="grid tools">
+      <Table className="tools">
         <TableHeader>
           <TableRow>
             <TableHead>Tool</TableHead>
@@ -1109,6 +1149,13 @@ function Conversation({
   // Read here rather than handed down from the session list: this is the list the
   // control in the header offers, and the provider is the one source of it.
   const { all: benches } = useWorkbenches();
+
+  // The runs this conversation launched, polled while any of them is unfinished.
+  // Held here rather than in each launch card so that three launches in a
+  // conversation are one poll rather than three, and so that every card on screen
+  // shows the same statuses at the same moment.
+  const launches = launchesInTranscript(turns);
+  const launched = useLaunchedRuns(session.id, launches.count, launches.ids);
 
   const input = draft;
   const setInput = useCallback(
@@ -1624,6 +1671,20 @@ function Conversation({
                   ) : (
                     <TurnView turn={row.turn} onOpenChart={onOpenChart} />
                   )}
+                  {/*
+                    What the launch actually produced, under the call that made it:
+                    the run, whether it is still going, and the way into the Ray job
+                    and the MLflow run. Outside the tool call's own disclosure,
+                    because a developer who has just launched something should not
+                    have to open a JSON blob to find out whether it is running.
+                  */}
+                  {launchesIn(row).map((entry) => (
+                    <LaunchedRunsCard
+                      key={entry.call.id}
+                      experimentId={launchedExperimentId(entry.result?.content)}
+                      launched={launched}
+                    />
+                  ))}
                 </MessageScrollerItem>
               ))}
               {/*
@@ -2050,11 +2111,18 @@ function TierControl({
           conversation is allowed to do without being interrupted — and a developer
           weighing one is weighing both.
 
-          The wording is doing real work. "Run obvious code without asking" says what
-          happens; the title says what "obvious" means and, more importantly, what it
-          does not mean. Calling this "safe code" would be a lie the interface tells
-          on the backend's behalf: nothing here judges safety, it recognises a small
-          vocabulary, and everything outside it is still confirmed.
+          "Auto mode" is the name the rest of the system already uses -- D33, the
+          design doc, the endpoint's own description -- and the label had been the
+          one place that spelled the behaviour out instead of naming it. Two words
+          also read as a state beside a switch, where a sentence read as an
+          instruction.
+
+          The sentence is not lost, it moved: the accessible name and the title
+          still say what happens, and the title still says what "recognised" means
+          and, more importantly, what it does not mean. Calling this "safe code"
+          would be a lie the interface tells on the backend's behalf -- nothing
+          here judges safety, it recognises a small vocabulary, and everything
+          outside it is still confirmed.
         */}
         <label className="auto-run flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
           <Switch
@@ -2071,7 +2139,7 @@ function TierControl({
               "confirmation is what you are waiving, not what protects you."
             }
           >
-            Run obvious code without asking
+            Auto mode
           </span>
         </label>
         <Button

@@ -7,7 +7,7 @@
           "type": "text"
         }
       ],
-      "created_at": "2026-08-27T07:20:45.973919922Z",
+      "created_at": "2026-09-01T06:20:58.706364955Z",
       "role": "user",
       "seq": 0,
       "session_id": "id-1"
@@ -19,7 +19,7 @@
           "type": "text"
         }
       ],
-      "created_at": "2026-08-27T07:20:45.974006815Z",
+      "created_at": "2026-09-01T06:20:58.706416573Z",
       "role": "assistant",
       "seq": 1,
       "session_id": "id-1"
@@ -27,15 +27,15 @@
   ],
   "pending_confirmations": [],
   "session": {
-    "created_at": "2026-08-27T07:20:45.973826086Z",
-    "exposure_tier": "L1",
     "auto_run": false,
+    "created_at": "2026-09-01T06:20:58.706282995Z",
+    "exposure_tier": "L1",
     "id": "id-1",
     "message_count": 2,
     "model": "stub-model",
     "provider": "stub",
     "title": "which devices are there?",
-    "updated_at": "2026-08-27T07:20:45.974053979Z",
+    "updated_at": "2026-09-01T06:20:58.706446277Z",
     "user_sub": "user-123"
   }
 }

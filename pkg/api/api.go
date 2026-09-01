@@ -354,7 +354,7 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		repoRoutes.POST("/files/directory", handleRepoMakeDir(deps.Repo))
 	}
 
-	// M8. Ray and MLflow (§5.12, D6). On HTTP throughout: a launch is bounded in
+	// M8. Ray and MLflow (§5.12). On HTTP throughout: a launch is bounded in
 	// seconds and answers once, and the thing that takes hours is the job, which is
 	// polled rather than streamed. As with the kernel and repo routes, none of them
 	// takes a user parameter.
@@ -362,9 +362,6 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		experimentRoutes := secured.Group("/experiments")
 		experimentRoutes.POST("", handleLaunchExperiment(deps.Experiments))
 		experimentRoutes.GET("", handleListExperiments(deps.Experiments))
-		// The static segment is registered before the :id wildcard, so gin does not
-		// have to choose between them — the same order the relation routes use.
-		experimentRoutes.GET("/embed", handleExperimentEmbed(deps.Experiments))
 		experimentRoutes.GET("/:id", handleGetExperiment(deps.Experiments))
 		experimentRoutes.GET("/:id/results", handleExperimentResults(deps.Experiments))
 		// Logs have a route and no LLM tool, which is §5.13's "never raw logs" made

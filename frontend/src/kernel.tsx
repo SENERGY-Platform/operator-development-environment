@@ -407,7 +407,7 @@ function WorkspacePane({
       {error && <Muted>{error}</Muted>}
       {entries && entries.length === 0 && <Muted>The workspace is empty.</Muted>}
       {entries && entries.length > 0 && (
-        <Table className="grid">
+        <Table>
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>

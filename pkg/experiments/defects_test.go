@@ -17,7 +17,6 @@
 package experiments_test
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -104,6 +103,43 @@ func TestAChatLaunchComparesAgainstAPaneLaunch(t *testing.T) {
 	if summary.ComparisonToPrevious[0].Metric != "rmse" ||
 		summary.ComparisonToPrevious[0].Direction != "better" {
 		t.Errorf("comparison = %+v, want rmse improving", summary.ComparisonToPrevious[0])
+	}
+}
+
+// --- the run handover (D17, Operator Lib) ---
+
+// The experiment ODE creates its run in has to be the one Operator Lib selects.
+//
+// It was not. ODE named its experiment `{prefix}/{user}/{repository}` while
+// MLOperator.init() calls set_experiment(model_id) with
+// `pipeline-{pipeline_id}_operator-{operator_id}`, and mlflow's fluent start_run
+// refuses to resume a run that lives in an experiment other than the active one.
+// So every launch died inside operator.init() with "Cannot start run ... because
+// active experiment ID does not match environment run ID" — before a line of the
+// developer's own code ran, and with a traceback whose deepest readable frame is
+// the scaffold's op.py, which is where it looks like the developer's fault.
+//
+// Asserted against the ids the job is actually given rather than against a literal,
+// because the defect was precisely that two derivations of the same pair drifted
+// apart.
+func TestTheRunLandsInTheExperimentOperatorLibSelects(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	result := h.launch()
+	job := h.ray.LastJob(t)
+
+	want := "pipeline-" + job.RuntimeEnv.EnvVars["PIPELINE_ID"] +
+		"_operator-" + job.RuntimeEnv.EnvVars["OPERATOR_ID"]
+
+	if result.MLflowExperimentName != want {
+		t.Errorf("the run was created in %q and MLOperator selects %q; start_run "+
+			"refuses the handover in MLFLOW_RUN_ID when the two differ",
+			result.MLflowExperimentName, want)
+	}
+	if names := h.mlflow.Experiments(); len(names) != 1 || names[0] != want {
+		t.Errorf("mlflow holds %v, want only %q — a second experiment here is the "+
+			"failed launch, not litter", names, want)
 	}
 }
 
@@ -349,50 +385,3 @@ func TestAListingIsCappedWhateverTheCallerAsksFor(t *testing.T) {
 	}
 }
 
-// --- the framing verdict cache (D6) ---
-
-// A probe whose caller went away must not poison the cache.
-//
-// probeEmbed reports an unreachable service as "unknown", which is a real answer —
-// ODE is inside the cluster and the browser is not. But a request cancelled
-// because the developer closed the pane produces the same "unknown" from a request
-// that never left, and M8 stored it under a ten-minute TTL. One closed tab could
-// pin both services at "unknown" for every developer on the deployment.
-func TestACancelledEmbedProbeIsNotCached(t *testing.T) {
-	h := newHarness(t, func(deps *experiments.Deps) {
-		deps.RayDashboardURL = ""
-		deps.MLflowUIURL = ""
-		deps.EmbedProbeTTL = time.Hour
-	})
-
-	cancelled, cancel := context.WithCancel(t.Context())
-	cancel()
-	abandoned := h.service.EmbedProbes(cancelled, false)
-	if len(abandoned.Services) == 0 {
-		t.Fatal("no service was probed")
-	}
-	for _, probe := range abandoned.Services {
-		if probe.Embeddable != experiments.EmbedUnknown {
-			t.Errorf("%s = %q, want unknown for a request that never left",
-				probe.Service, probe.Embeddable)
-		}
-	}
-
-	// The next caller, who did not cancel anything, must get a real probe rather
-	// than the abandoned one's verdict.
-	fresh := h.service.EmbedProbes(t.Context(), false)
-	if fresh.Cached {
-		t.Fatal("the cancelled probe was cached; a closed tab would pin the verdict " +
-			"for the whole TTL")
-	}
-	for _, probe := range fresh.Services {
-		if probe.Embeddable == experiments.EmbedUnknown {
-			t.Errorf("%s = %q with reason %q, want a verdict from a request that "+
-				"actually reached the service", probe.Service, probe.Embeddable, probe.Reason)
-		}
-	}
-	// And that one is cached, because it is a verdict.
-	if again := h.service.EmbedProbes(t.Context(), false); !again.Cached {
-		t.Error("a real verdict was not cached; the TTL of D6 does nothing")
-	}
-}

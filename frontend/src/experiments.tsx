@@ -14,12 +14,10 @@
  * limitations under the License.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
   api,
-  type EmbedProbe,
-  type EmbedReport,
   type EvaluationCriterion,
   type Experiment,
   type ExperimentCredential,
@@ -35,6 +33,8 @@ import {
 } from "./api";
 import { Markdown } from "./markdown";
 import { Link, setParam, useParam } from "./router";
+import { ExternalLinkIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -81,10 +81,10 @@ import {
  *     agreement and launches nothing. Promoting a value into `evaluation.yaml` or
  *     the operator config is a separate act the developer performs by hand, and
  *     §5.8 denies every tool that could do it for them. So there is no "Apply".
- *   - **The dashboards are probed twice.** ODE reads the framing headers from
- *     inside the cluster; the browser is outside it and is the only thing that can
- *     find out whether the page actually renders in a frame. Both answers are used,
- *     and "unknown" from the backend is not treated as a refusal.
+ *   - **Ray and MLflow are linked, never framed (D6).** Two links in the header and
+ *     a pair on every run, rather than a dashboard embedded in a column that has no
+ *     room for one. The module also holds the launch card the conversation renders,
+ *     because the links and the statuses in it are these same two.
  */
 export function ExperimentsView({ session }: { session: Session }) {
   /*
@@ -143,9 +143,12 @@ export function ExperimentsView({ session }: { session: Session }) {
         title="Experiments"
         subtitle="Ray jobs and their MLflow runs, each tagged with the commit it was built from"
         actions={
-          <Button variant="outline" onClick={() => void load()} disabled={loading}>
-            Refresh
-          </Button>
+          <>
+            <DashboardLinks session={session} />
+            <Button variant="outline" onClick={() => void load()} disabled={loading}>
+              Refresh
+            </Button>
+          </>
         }
       >
         <LaunchCard session={session} onLaunched={load} />
@@ -173,11 +176,11 @@ export function ExperimentsView({ session }: { session: Session }) {
         note attached to another's numbers. The same reason the profiler keys its
         right-hand pane on the candidate and the window.
       */}
-      <RunDocument key={selected?.experiment_id ?? "none"} experiment={selected} />
-
-      <div className="exp-dashboards">
-        <Dashboards />
-      </div>
+      <RunDocument
+        key={selected?.experiment_id ?? "none"}
+        experiment={selected}
+        urls={session.experiments}
+      />
     </main>
   );
 }
@@ -478,7 +481,7 @@ function RunList({
   }
 
   return (
-    <Table className="grid exp-list">
+    <Table>
       <TableHeader>
         <TableRow>
           <TableHead>Status</TableHead>
@@ -560,7 +563,14 @@ function RunRow({
 
 // --- the run document ---
 
-function RunDocument({ experiment }: { experiment: Experiment | null }) {
+function RunDocument({
+  experiment,
+  urls,
+}: {
+  experiment: Experiment | null;
+  /** Where a browser should open Ray and MLflow, from `/session`. */
+  urls: Session["experiments"];
+}) {
   if (!experiment) {
     return (
       <Pane title="Run" subtitle="Pick an experiment on the left">
@@ -584,7 +594,7 @@ function RunDocument({ experiment }: { experiment: Experiment | null }) {
       )}
       <Results experiment={experiment} />
       <InterpretationSection experiment={experiment} />
-      <Submission experiment={experiment} />
+      <Submission experiment={experiment} urls={urls} />
       <LogsSection experiment={experiment} />
     </Pane>
   );
@@ -752,7 +762,7 @@ function Comparison({ summary }: { summary: ExperimentSummary }) {
   }
 
   return (
-    <Table className="grid exp-comparison">
+    <Table className="exp-comparison">
       <TableHeader>
         <TableRow>
           <TableHead>Metric</TableHead>
@@ -896,18 +906,33 @@ function Pairs({ title, entries }: { title: string; entries: [string, string][] 
 }
 
 /** The join ODE is the only record of: a Ray submission, an MLflow run, a commit. */
-function Submission({ experiment }: { experiment: Experiment }) {
+function Submission({
+  experiment,
+  urls,
+}: {
+  experiment: Experiment;
+  urls: Session["experiments"];
+}) {
   return (
     <Section title="Submission" defaultOpen={false}>
       <KV>
         <Row label="Experiment">
           <code>{experiment.experiment_id}</code>
         </Row>
+        {/*
+          The ids stay, and the links sit beside them. An id is what a developer
+          quotes in a ticket or greps a Ray log for; a link is what they press. D6
+          replaced the framed dashboards with exactly this — the job and the run,
+          opened where they belong.
+        */}
         <Row label="Ray submission">
           <code>{experiment.submission_id}</code>
         </Row>
         <Row label="MLflow run">
           <code>{experiment.mlflow_run_id}</code>
+        </Row>
+        <Row label="Open">
+          <RunLinks experiment={experiment} urls={urls} />
         </Row>
         <Row
           label="MLflow experiment"
@@ -1285,204 +1310,389 @@ export function isStaleProposal(e: unknown): boolean {
   return e instanceof ApiError && e.status === 409 && e.needs === "reread";
 }
 
-// --- the dashboards (D6) ---
+// --- the links into Ray and MLflow (D6) ---
 
 /**
- * The Ray dashboard and the MLflow UI, framed if they can be framed.
+ * Ray and MLflow, as two links in the pane's header.
  *
- * Two probes, because neither alone answers the question. ODE reads
- * `X-Frame-Options` and `frame-ancestors` from inside the cluster, which settles a
- * refusal but not a permission: it may not be able to reach a service the browser
- * reaches perfectly, and it answers `unknown` for that rather than `no`. The browser
- * settles the other half by trying, which is the only way to find out whether the
- * page actually renders in a frame.
+ * D6 used to say the two UIs were probed at runtime and framed where the headers
+ * allowed. They are not framed any more, and the probe is gone with them: a
+ * dashboard that does frame is still a second application's chrome — its own
+ * navigation, its own sidebar, its own idea of how wide it is — inside a pane with
+ * room for none of it, and what a developer does with it is open it properly. Two
+ * links do that and cost the pane no room at all, which is why they are beside
+ * Refresh rather than in a card of their own.
+ *
+ * The URLs come from `/session` rather than from a probe, which is the same
+ * configuration the probe reported: `ray_dashboard_url` and `mlflow_ui_url`, each
+ * falling back to the API base ODE itself calls.
  */
-function Dashboards() {
-  const [report, setReport] = useState<EmbedReport | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // Bumped by a re-probe, so the iframes below remount and try again rather than
-  // keeping the verdict the last attempt reached.
-  const [attempt, setAttempt] = useState(0);
-
-  const probe = useAction(async (_signal: AbortSignal, refresh: boolean) => {
-    const result = await api.embedProbes(refresh);
-    setReport(result);
-    setError(null);
-    setAttempt((n) => n + 1);
-    return result;
-  });
-
-  useEffect(() => {
-    // On pane open, as §5.12 asks. The backend caches with a TTL, so this is not a
-    // probe per mount.
-    api
-      .embedProbes()
-      .then((result) => {
-        setReport(result);
-        setAttempt((n) => n + 1);
-      })
-      .catch((e: unknown) => setError(describe(e)));
-  }, []);
-
+function DashboardLinks({ session }: { session: Session }) {
+  const urls = session.experiments;
+  if (!urls?.ray_url && !urls?.mlflow_url) return null;
   return (
-    <Pane
-      title="Dashboards"
-      subtitle="Ray and MLflow, embedded where framing allows and linked where it does not"
-      actions={
-        <Button variant="outline"
-          className={probe.pending ? "busy animate-pulse" : undefined}
-          onClick={() => void probe.invoke(true)}
-          disabled={probe.pending}
-        >
-          {probe.pending ? "Probing…" : "Re-probe"}
-        </Button>
-      }
-    >
-      {error && <p className="error text-destructive">{error}</p>}
-      {probe.error && <p className="error text-destructive">{probe.error}</p>}
-      {!report && !error && <Busy>Probing…</Busy>}
-      {report && (
-        <>
-          <div className="exp-embeds">
-            {report.services.map((service) => (
-              <EmbedCard key={service.service} probe={service} attempt={attempt} />
-            ))}
-          </div>
-          <p className="muted text-muted-foreground">
-            {report.cached ? "From the cached verdict" : "Freshly probed"} · TTL {report.ttl} · as of{" "}
-            {dateTime(report.as_of)}
-          </p>
-        </>
-      )}
-    </Pane>
+    <span className="exp-links">
+      {urls.ray_url && <Popout href={urls.ray_url}>Ray dashboard</Popout>}
+      {urls.mlflow_url && <Popout href={urls.mlflow_url}>MLflow</Popout>}
+    </span>
   );
 }
 
-/** How long the browser waits for a frame before calling it a refusal. */
-const FRAME_TIMEOUT_MS = 6000;
-
-/** What the browser made of its own attempt to frame a service. */
-export type BrowserVerdict = "probing" | "loaded" | "timeout";
-
 /**
- * framingVerdict combines the two probes into the one thing the card renders.
+ * Popout is every link that leaves ODE, drawn as one.
  *
- * A backend `no` wins outright: it read the header, and a browser reports an
- * `X-Frame-Options: DENY` refusal as a load of the error page, so the iframe cannot
- * contradict it. Everything else defers to the browser, which is why `unknown` does
- * not stop the attempt — ODE could not tell, not "framing fails" (D6).
+ * It has to *look* like a link. These sat as bare anchors carrying a class with no
+ * rule behind it, and the preset's reset had already taken the colour and the
+ * underline off every `a` — so "Ray job" and "MLflow run" read as two words of
+ * prose beside a status, and nobody would think to click them. The underline and
+ * the colour say it is a link; the arrow says it opens elsewhere, and the screen
+ * reader is told the same thing in words rather than left with an icon.
  */
-export function framingVerdict(
-  embeddable: EmbedProbe["embeddable"],
-  browser: BrowserVerdict,
-): "ok" | "refused" | "probing" {
-  if (embeddable === "no") return "refused";
-  if (browser === "timeout") return "refused";
-  if (browser === "loaded") return "ok";
-  return "probing";
+function Popout({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      className="exp-popout inline-flex items-center gap-1 text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+    >
+      {children}
+      <ExternalLinkIcon className="size-3" aria-hidden="true" />
+      <span className="sr-only">(opens in a new tab)</span>
+    </a>
+  );
 }
 
 /**
- * One service's card: the frame, or the link that replaces it.
+ * rayJobUrl and mlflowRunUrl build the deep links D6 replaced the frames with.
  *
- * Embed, hide and open-in-a-new-tab are offered whatever the verdict was, which is
- * §5.12's own wording — only the *content* of the card is conditional. A developer
- * who hid a working frame should be able to bring it back without re-probing, and
- * one whose frame was refused still gets the pop-out.
+ * Built here rather than served, because the record already carries everything
+ * they need and the two bases are in `/session`: a route that returned the strings
+ * would be a second place for the same join to be wrong. Null when a base is
+ * missing or the record has no id for that half — a submission that failed before
+ * ODE created the MLflow run has no run to open, and a link to nothing is worse
+ * than no link.
  */
-function EmbedCard({ probe, attempt }: { probe: EmbedProbe; attempt: number }) {
-  const [shown, setShown] = useState(true);
-  const [browser, setBrowser] = useState<BrowserVerdict>("probing");
-  const timer = useRef<number | null>(null);
+export function rayJobUrl(base: string | undefined, submissionId: string): string | null {
+  if (!base || !submissionId) return null;
+  return `${trimSlash(base)}/#/jobs/${encodeURIComponent(submissionId)}`;
+}
+
+export function mlflowRunUrl(
+  base: string | undefined,
+  experimentId: string,
+  runId: string,
+): string | null {
+  if (!base || !experimentId || !runId) return null;
+  return `${trimSlash(base)}/#/experiments/${encodeURIComponent(experimentId)}/runs/${encodeURIComponent(runId)}`;
+}
+
+/** trimSlash keeps a configured base with a trailing slash from doubling it. */
+function trimSlash(base: string): string {
+  return base.replace(/\/+$/, "");
+}
+
+/**
+ * RunLinks is the pair of pop-outs a run carries: the Ray job, and the MLflow run.
+ *
+ * One component because the two are always offered together and each can
+ * legitimately be absent — an unconfigured base, or a launch that never got as far
+ * as a run — and a card that renders one of them still reads correctly.
+ */
+export function RunLinks({
+  experiment,
+  urls,
+}: {
+  experiment: Pick<Experiment, "submission_id" | "mlflow_experiment_id" | "mlflow_run_id">;
+  urls: { ray_url?: string; mlflow_url?: string } | undefined;
+}) {
+  const ray = rayJobUrl(urls?.ray_url, experiment.submission_id);
+  const mlflow = mlflowRunUrl(
+    urls?.mlflow_url,
+    experiment.mlflow_experiment_id,
+    experiment.mlflow_run_id,
+  );
+  if (!ray && !mlflow) return null;
+  return (
+    <span className="exp-links">
+      {ray && <Popout href={ray}>Ray job</Popout>}
+      {mlflow && <Popout href={mlflow}>MLflow run</Popout>}
+    </span>
+  );
+}
+
+// --- what a launch looks like in the conversation (§5.12, D6) ---
+
+/**
+ * The runs one conversation has launched, polled while any of them is unfinished.
+ *
+ * It exists because the assistant's answer to "launch it" is a tool result: an
+ * experiment id, a submission id and the status Ray gave the job in the second it
+ * was accepted, which is `PENDING` for every run that ever succeeded. The
+ * developer's next question is whether it is still going, and re-reading a JSON
+ * blob in a folded tool call cannot answer it.
+ *
+ * One hook per conversation rather than one per launch card. Three launches in a
+ * conversation are three cards, and three pollers asking the same question of the
+ * same route four times a minute is a cost with nothing to show for it.
+ *
+ * The listing route carries `ray_url` and `mlflow_url` beside the records, so the
+ * links come from the same read as the statuses and the card needs no configuration
+ * of its own.
+ */
+export interface LaunchedRuns {
+  /** This conversation's runs, newest first. Empty until the first read lands. */
+  runs: Experiment[];
+  /** Where a browser should open Ray and MLflow, as the listing reported them. */
+  urls: { ray_url: string; mlflow_url: string } | undefined;
+  error: string | null;
+  /** False only before the first read answers, so a card can say it is looking. */
+  loaded: boolean;
+}
+
+/**
+ * useLaunchedRuns reads them, and keeps reading while something is unfinished.
+ *
+ * Two reads rather than one, and the second is the one that makes the card honest.
+ * The listing answers with the developer's runs and is filtered here to the ones
+ * this conversation launched — that is what the card's "what else is still going"
+ * half is made of. But a run that is missing from that filtered list is not
+ * evidence that it does not exist: the record's `session_id` is written at launch
+ * and a run reaching the developer by any other route has none, and the listing is
+ * capped. So every id a launch actually returned that the filter did not produce is
+ * read directly by id. One extra request per unaccounted launch, and the launch a
+ * developer is looking at is never missing from the card that belongs to it.
+ *
+ * `launchedIds` is joined into a key because it is a fresh array on every render of
+ * the transcript, and an effect keyed on the array itself would re-read on every
+ * token that arrives. The ids are recovered from that key inside `load`, so the
+ * dependency and the value used cannot drift apart.
+ */
+export function useLaunchedRuns(
+  sessionId: string,
+  launches: number,
+  launchedIds: string[],
+): LaunchedRuns {
+  const [runs, setRuns] = useState<Experiment[]>([]);
+  const [urls, setUrls] = useState<{ ray_url: string; mlflow_url: string } | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  // The count leads, because a launch whose result carried no readable id still has
+  // to start the read: without it the card under that call would wait for ever.
+  const key = `${launches}:${launchedIds.join(" ")}`;
+
+  const load = useCallback(async () => {
+    const ids = key.slice(key.indexOf(":") + 1).split(" ").filter(Boolean);
+    try {
+      const listing = await api.experiments();
+      const mine = listing.experiments.filter((run) => run.session_id === sessionId);
+      const seen = new Set(mine.map((run) => run.experiment_id));
+
+      // Tolerated rather than awaited as a group: a run that cannot be read — it was
+      // pruned, or the record is another developer's — must not take the runs that
+      // can be read down with it, and the listing is already an answer.
+      const missing = await Promise.all(
+        ids
+          .filter((id) => !seen.has(id))
+          .map((id) => api.experiment(id).catch(() => null)),
+      );
+
+      const merged = [...mine, ...missing.filter((run): run is Experiment => run !== null)];
+      merged.sort((left, right) => right.submitted_at.localeCompare(left.submitted_at));
+      setRuns(merged);
+      setUrls({ ray_url: listing.ray_url, mlflow_url: listing.mlflow_url });
+      setError(null);
+    } catch (e: unknown) {
+      setError(describe(e));
+    } finally {
+      setLoaded(true);
+    }
+  }, [key, sessionId]);
 
   useEffect(() => {
-    setBrowser("probing");
-    timer.current = window.setTimeout(() => setBrowser("timeout"), FRAME_TIMEOUT_MS);
-    return () => {
-      if (timer.current !== null) window.clearTimeout(timer.current);
-    };
-  }, [probe.url, attempt]);
+    if (launches === 0) return;
+    void load();
+  }, [launches, load]);
 
-  const settle = useCallback(() => {
-    if (timer.current !== null) window.clearTimeout(timer.current);
-    setBrowser("loaded");
-  }, []);
+  // The same predicate the pane polls on, and for the same reason: a list of
+  // finished runs cannot change, so re-reading it asks Ray nothing. This is what
+  // makes the last poll after a job settles also the one that switches it off.
+  const pending = launches > 0 && hasUnfinished(runs);
+  useEffect(() => {
+    if (!pending) return;
+    const timer = window.setInterval(() => void load(), POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [pending, load]);
 
-  const verdict = framingVerdict(probe.embeddable, browser);
-  const label = probe.service === "ray" ? "Ray dashboard" : "MLflow";
+  return { runs, urls, error, loaded };
+}
+
+/**
+ * launchedExperimentId picks the run out of a `launch_experiment` result.
+ *
+ * Three shapes, because a tool result reaches the transcript by two routes. A
+ * provider whose tool loop ODE runs stores what the executor returned, so the
+ * result is the object itself. The CLI provider (§5.7) runs its own loop over MCP
+ * and echoes the client's result back verbatim, which is MCP's envelope: a list of
+ * content blocks whose text happens to be the JSON. And an unparseable result is
+ * kept as the raw string it arrived as (see `replay`), which is worth one more
+ * parse here rather than a card that silently has no run.
+ *
+ * Reading only the first shape is what put "No run of this conversation is on the
+ * cluster yet" under a launch that had plainly succeeded.
+ */
+export function launchedExperimentId(content: unknown): string | null {
+  if (typeof content === "string") {
+    return launchedExperimentId(parseJSON(content));
+  }
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      const text = (block as { type?: string; text?: string } | null)?.text;
+      if (typeof text !== "string") continue;
+      const found = launchedExperimentId(parseJSON(text));
+      if (found) return found;
+    }
+    return null;
+  }
+  const result = content as { experiment_id?: string } | null;
+  return typeof result?.experiment_id === "string" ? result.experiment_id : null;
+}
+
+/** parseJSON answers null rather than throwing, because a tool result may be prose. */
+function parseJSON(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * liveLabel is the word the conversation uses for a job's state.
+ *
+ * The pane keeps Ray's own vocabulary deliberately — it sits beside the Ray
+ * dashboard, and two names for one state would give a developer two answers to
+ * reconcile. A chat card is read at a glance and in the middle of a sentence, so it
+ * says the three things the reader is actually waiting to hear apart, and carries
+ * Ray's own word in the title for whoever is about to go and look for it.
+ */
+export function liveLabel(status: ExperimentStatus): "running" | "finished" | "error" | "stopped" {
+  switch (status) {
+    case "PENDING":
+    case "RUNNING":
+      return "running";
+    case "SUCCEEDED":
+      return "finished";
+    case "FAILED":
+      return "error";
+    case "STOPPED":
+      return "stopped";
+  }
+}
+
+/**
+ * The card under a `launch_experiment` call: what this call started, and what else
+ * is still going.
+ *
+ * Not the whole conversation's history. A finished run from an hour ago is answered
+ * by the Experiments pane, and repeating it under every launch would make the rule
+ * "everything, forever" — three launches in an afternoon and the transcript carries
+ * the same six rows three times. The rule here is narrower and is the one a reader
+ * of *this* call wants: the run it produced, whatever became of it, and anything
+ * else of theirs that has not finished yet.
+ *
+ * Each row carries three links, and the third is the point of the other two being
+ * only links: Ray has the job, MLflow has the run, and the thing a developer
+ * actually came back for — the summary, the comparison and the interpretation of
+ * §5.13 — is in ODE's own run document.
+ */
+/**
+ * launchedRows is what one launch card shows: its own run, then what is still going.
+ *
+ * A function rather than an expression in the card, because the rule is the
+ * decision — the card's own run stays whatever became of it, everything else earns
+ * its place by being unfinished, and neither list may repeat the other. Newest
+ * first is the listing's own order and is kept.
+ */
+export function launchedRows(runs: Experiment[], experimentId: string | null): Experiment[] {
+  const own = runs.find((run) => run.experiment_id === experimentId) ?? null;
+  return [...(own ? [own] : []), ...runs.filter((run) => run !== own && !isFinished(run.status))];
+}
+
+export function LaunchedRunsCard({
+  experimentId,
+  launched,
+}: {
+  /** The run this launch produced, from the tool result. */
+  experimentId: string | null;
+  launched: LaunchedRuns;
+}) {
+  const { runs, urls, error, loaded } = launched;
+  const rows = launchedRows(runs, experimentId);
 
   return (
-    <div className="exp-embed">
-      <div className="exp-embed-head">
-        <span className="exp-embed-title">{label}</span>
-        <div className="exp-embed-actions">
-          <Button variant="outline" className={shown ? "active" : undefined} onClick={() => setShown(true)}>
-            Embed
-          </Button>
-          <Button variant="outline" className={shown ? undefined : "active"} onClick={() => setShown(false)}>
-            Hide
-          </Button>
-          {/*
-            A real anchor rather than window.open: this is the "Open in new tab" of
-            D6's link-only card and also the pop-out §5.12 asks every pane to have,
-            and a developer should be able to middle-click or copy it like any link.
-          */}
-          <a className="exp-popout" href={probe.url} target="_blank" rel="noreferrer noopener">
-            Open in new tab
-          </a>
-        </div>
-      </div>
-
-      {/*
-        The hidden probe of §5.12, mounted outside the Hide switch: hiding the card
-        is the developer saying they do not want the dashboard on screen, not that
-        the question of whether it can be framed should go unanswered. It runs
-        whenever the verdict is still open, which is every service the backend did
-        not already rule out — "unknown" included, because that means ODE could not
-        tell rather than that framing fails.
-      */}
-      {verdict === "probing" && (
-        <iframe
-          className="exp-frame-probe"
-          src={probe.url}
-          title={`${label} framing probe`}
-          onLoad={settle}
-          aria-hidden="true"
-          tabIndex={-1}
-        />
+    <div className="exp-launched flex flex-col gap-1.5 rounded-md border bg-card/50 px-3 py-2">
+      <span className="text-xs font-medium text-muted-foreground">Experiment runs</span>
+      {error && (
+        <p className="muted text-xs text-muted-foreground">The runs could not be read: {error}</p>
       )}
-
+      {!error && !loaded && <Busy>Reading the runs this conversation launched…</Busy>}
       {/*
-        Hide works whatever the probe decided. §5.12 asks for embed, hide and
-        pop-out regardless of the outcome, and a Hide button that does nothing on a
-        link-only card would be a control that lies about what it does — the card
-        still takes space on the pane whether or not it holds a frame.
+        An empty list is not an error and is not "nothing was launched": the record
+        exists, and the listing has not caught up with a launch accepted a moment
+        ago. The next poll fills it in.
       */}
-      {!shown && <Muted>Hidden. Press Embed to bring it back.</Muted>}
-      {shown && verdict === "probing" && (
-        <Busy>Checking whether {label} can be framed…</Busy>
+      {!error && loaded && rows.length === 0 && (
+        <Muted>No run of this conversation is on the cluster yet.</Muted>
       )}
-      {shown && verdict === "ok" && <iframe className="exp-frame" src={probe.url} title={label} />}
-      {shown && verdict === "refused" && (
-        <p className="exp-embed-refused">
-          {label} cannot be shown in a frame here, so this is a link instead of an embed. Use
-          “Open in new tab” above.
-        </p>
-      )}
+      {rows.map((run) => (
+        <LaunchedRunRow key={run.experiment_id} run={run} urls={urls} />
+      ))}
+    </div>
+  );
+}
 
+function LaunchedRunRow({
+  run,
+  urls,
+}: {
+  run: Experiment;
+  urls: LaunchedRuns["urls"];
+}) {
+  const label = liveLabel(run.status);
+  const tone = statusTone(run.status);
+  return (
+    <div className="exp-launched-row flex flex-wrap items-center gap-2">
+      <Badge
+        variant={tone === "bad" ? "destructive" : tone === "running" ? "default" : "secondary"}
+        className={tone === "running" ? "font-normal animate-pulse" : "font-normal"}
+        // Ray's own word, for a developer about to look for this job in the
+        // dashboard the link beside it opens.
+        title={`Ray reports ${run.status}`}
+      >
+        {label}
+      </Badge>
+      <code className="text-xs">{run.entrypoint}</code>
+      <span className="muted-inline text-xs text-muted-foreground" title={run.commit_sha}>
+        {run.commit_sha.slice(0, 7)}
+      </span>
+      <RunLinks experiment={run} urls={urls} />
       {/*
-        ODE's own reading, always — a verdict without the header that produced it is
-        not actionable by whoever would have to change it. The sentence after it is
-        added rather than substituted, because "unknown" is a statement about ODE's
-        vantage point and the reason is a statement about the service.
+        The third link is ODE's own, and it is deliberately not a pop-out: the run
+        document is what §5.13 is delivered into — the summary, the comparison
+        against the previous run, and the assistant's interpretation with the
+        proposal there is something to decide about — and none of that is in Ray or
+        in MLflow. Same tab, no arrow, because it is a move within this application
+        rather than a departure from it.
       */}
-      <p className="muted exp-embed-reason text-muted-foreground">
-        {probe.reason}
-        {probe.status !== undefined ? ` · HTTP ${probe.status}` : ""}
-        {probe.embeddable === "unknown"
-          ? " — ODE probes from inside the cluster and your browser does not, so the browser was asked as well"
-          : ""}
-      </p>
+      <Link
+        className="exp-open-run text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+        to={`/tools/experiments?run=${encodeURIComponent(run.experiment_id)}`}
+        title="Opens this run in the Experiments pane: its summary, the comparison with the previous run, and the assistant's interpretation"
+      >
+        Results
+      </Link>
     </div>
   );
 }

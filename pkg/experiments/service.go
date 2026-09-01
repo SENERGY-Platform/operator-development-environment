@@ -69,8 +69,8 @@ type Options struct {
 	RayToken string
 	// RayDashboardURL is where a *browser* should open the dashboard, when that is
 	// not the API base — a cluster-internal API and an ingress-exposed UI are
-	// routinely different hosts. Used for the embed probe and for the links in a
-	// launch result, never for an API call.
+	// routinely different hosts. Used for the links the panes offer, never for an
+	// API call.
 	RayDashboardURL string
 
 	// MLflowURL is the tracking server's API base, and MLflowUIURL the browser's
@@ -79,9 +79,10 @@ type Options struct {
 	MLflowToken string
 	MLflowUIURL string
 
-	// ExperimentPrefix is what the per-user MLflow experiment names are grouped
-	// under (D17), so ODE's experiments are distinguishable in a tracking server
-	// shared with the rest of the platform.
+	// ExperimentPrefix is what a developer's synthesised pipeline id is prefixed
+	// with (D17), so ODE's runs are distinguishable from a deployed operator's in a
+	// tracking server shared with the rest of the platform. It reaches the
+	// experiment name through that id, because the name is the model registry key.
 	ExperimentPrefix string
 
 	// PyExecutable is what Ray starts worker processes with, matching whatever the
@@ -151,12 +152,6 @@ type Options struct {
 	// shortfall becomes a warning on the launch.
 	JobTokenLifetime time.Duration
 
-	// EmbedProbeTTL is how long a framing verdict is cached (D6), and
-	// EmbedProbeTimeout bounds one probe. The timeout is short: an unreachable
-	// service is a normal answer here, and the pane is waiting.
-	EmbedProbeTTL     time.Duration
-	EmbedProbeTimeout time.Duration
-
 	// Environment is what a job is told about the platform besides its own
 	// credential — the same URLs kernelEnvironment pushes into a pod, for the same
 	// reason: a job reads timeseries directly (§5.3.4) and should not need the
@@ -173,8 +168,8 @@ type Deps struct {
 	Repo      Repository
 	Store     Store
 	IDs       IDs
-	// HTTPClient is replaced by tests. One client for Ray, MLflow, Keycloak and the
-	// embed probe, because they differ only in the host.
+	// HTTPClient is replaced by tests. One client for Ray, MLflow and Keycloak,
+	// because they differ only in the host.
 	HTTPClient *http.Client
 	// Access authorizes a launch's input topics. Required: without it a launch
 	// would read whatever series its topics name, which is the one thing in a
@@ -198,7 +193,6 @@ type Service struct {
 	http      *http.Client
 	ray       *rayClient
 	mlflow    *mlflowClient
-	embed     embedCache
 	// criteria memoises the developer's evaluation.yaml per commit. Safe because a
 	// commit's tree is immutable — see criteriaCache.
 	criteria criteriaCache
@@ -221,8 +215,6 @@ const (
 	defaultRequestTimeout    = 30 * time.Second
 	defaultUploadTimeout     = 5 * time.Minute
 	defaultCommandTimeout    = 5 * time.Minute
-	defaultEmbedProbeTTL     = 10 * time.Minute
-	defaultEmbedProbeTimeout = 5 * time.Second
 )
 
 // New builds the service.
@@ -297,12 +289,6 @@ func New(deps Deps) (*Service, error) {
 	if opts.JobTokenLifetime <= 0 {
 		opts.JobTokenLifetime = defaultJobTokenLifetime
 	}
-	if opts.EmbedProbeTTL <= 0 {
-		opts.EmbedProbeTTL = defaultEmbedProbeTTL
-	}
-	if opts.EmbedProbeTimeout <= 0 {
-		opts.EmbedProbeTimeout = defaultEmbedProbeTimeout
-	}
 
 	client := deps.HTTPClient
 	if client == nil {
@@ -343,6 +329,18 @@ func (s *Service) DashboardURL() string {
 // TrackingUIURL is where a browser should open MLflow.
 func (s *Service) TrackingUIURL() string {
 	return firstNonEmpty(s.opts.MLflowUIURL, s.opts.MLflowURL)
+}
+
+// firstNonEmpty is the fallback both URLs above use: a deployment that exposes one
+// host to the browser and another to ODE sets both, and one that does not sets the
+// API base alone.
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // Request is what every operation needs: whose pod, whose repository, and who is
@@ -474,20 +472,22 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 		}
 	}
 
-	// The experiment stays D17's, one per developer per repository: Store.Previous
+	// The experiment is D17's, one per developer per repository: Store.Previous
 	// scopes the comparison to it, so a per-run experiment would make every run a
-	// first run. Operator Lib's own set_experiment(model_id) does not move the run
-	// away from it — MLOperator opens the run with start_run(), which resumes the
-	// one MLFLOW_RUN_ID names regardless of which experiment is selected, so the
-	// metrics land in the run ODE created and tagged.
+	// first run.
 	//
-	// The pipeline and operator ids are therefore only the registry key, which is a
-	// separate namespace from the experiment. Stable per developer and repository,
-	// so model versions accumulate the way a deployed operator's do — see
-	// deployment.go for why that needed Operator Lib v1.4.0.
+	// It is named modelID rather than a namespace of ODE's own, and that is not a
+	// preference. MLOperator calls set_experiment(model_id) before it resumes the
+	// run MLFLOW_RUN_ID names, and mlflow's fluent start_run refuses a resume whose
+	// run lives in a different experiment than the active one — so a separately
+	// named experiment failed every launch inside operator.init(). It costs nothing
+	// to agree: both ids are already stable per developer and per repository, which
+	// is exactly the granularity D17 asks for, and the same string is the model
+	// registry key — see deployment.go for why the stable pair needed Operator Lib
+	// v1.4.0.
 	pipelineID := s.pipelineID(req.Request)
-	operatorIdentifier := operatorID(status.Link.FullName)
-	mlflowExperimentName := s.experimentName(req.Request, status.Link)
+	operatorIdentifier := operatorID(repositoryOf(status.Link))
+	mlflowExperimentName := modelID(pipelineID, operatorIdentifier)
 	mlflowExperimentID, err := s.mlflow.ensureExperiment(ctx, mlflowExperimentName, []mlflowTag{
 		{Key: TagUserSub, Value: req.UserSub},
 		{Key: TagRepository, Value: status.Link.FullName},
@@ -707,22 +707,14 @@ func remoteOrNone(remote string) string {
 	return remote
 }
 
-// experimentName is D17's per-user namespace.
-//
-// Deterministic, so a developer's runs on one repository all land in one
-// experiment across sessions and restarts. The Hub username is preferred over the
-// subject because this string is what a human reads in MLflow's own UI, and the
-// subject — which is what actually identifies the developer — is carried as an
-// experiment tag so the mapping survives a username change.
-func (s *Service) experimentName(req Request, link repo.Link) string {
-	who := usernameOf(req)
-	repository := link.FullName
-	if repository == "" {
-		repository = link.Name
+// repositoryOf is the repository half of the operator id, and through it of the
+// experiment name: GitHub's full name where the link carries one, the bare name
+// otherwise.
+func repositoryOf(link repo.Link) string {
+	if link.FullName != "" {
+		return link.FullName
 	}
-	return strings.Join([]string{
-		s.opts.ExperimentPrefix, sanitiseSegment(who), sanitiseSegment(repository),
-	}, "/")
+	return link.Name
 }
 
 // usernameOf is the Hub username this launch is namespaced under, from the request

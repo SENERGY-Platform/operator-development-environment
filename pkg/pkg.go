@@ -832,14 +832,6 @@ func startM8(
 	if err != nil {
 		return nil, err
 	}
-	embedTTL, err := parse("experiment_embed_ttl", config.ExperimentEmbedTtl)
-	if err != nil {
-		return nil, err
-	}
-	embedTimeout, err := parse("experiment_embed_timeout", config.ExperimentEmbedTimeout)
-	if err != nil {
-		return nil, err
-	}
 	jobTokenLifetime, err := parse("job_token_lifetime", config.JobTokenLifetime)
 	if err != nil {
 		return nil, err
@@ -882,8 +874,6 @@ func startM8(
 			RequestTimeout:      requestTimeout,
 			UploadTimeout:       uploadTimeout,
 			CommandTimeout:      commandTimeout,
-			EmbedProbeTTL:       embedTTL,
-			EmbedProbeTimeout:   embedTimeout,
 
 			KeycloakURL:          config.KeycloakUrl,
 			KeycloakRealm:        config.KeycloakRealm,

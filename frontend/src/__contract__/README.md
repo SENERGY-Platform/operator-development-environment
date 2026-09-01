@@ -106,14 +106,6 @@ those two arms must render differently. A frontend that showed the object arm as
 failed criterion would be making exactly the claim D24 exists to prevent — the run
 did not miss that target, nothing compared it.
 
-`experiment_embed.json` is the least meaningful of the whole set and is here for
-its field set alone. Both services in it are the test's own httptest servers, which
-set no framing headers and answer 404 to `/` — so both come back `embeddable:
-"yes"` with a status of 404, which is a combination no real deployment produces.
-The verdicts that matter are covered in Go instead (`pkg/experiments/embed_test.go`
-drives `X-Frame-Options: DENY`, a restrictive `frame-ancestors`, an allow-list and
-an unreachable service). Read this file as "these are the keys", nothing more.
-
 One field is absent rather than empty and that is not a mistake: the runs carry no
 `session_id` tag, because the fixture launches through the HTTP route rather than
 from a chat session. A launch that came from one would have it.

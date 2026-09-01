@@ -20,7 +20,6 @@ import type {
   ChartConfirmation,
   ChatSession,
   ChatSessionDetail,
-  EmbedReport,
   Experiment,
   ExperimentLaunch,
   ExperimentLogs,
@@ -72,7 +71,6 @@ import chatSessions from "./chat_sessions.json";
 import chatTierChanges from "./chat_tier_changes.json";
 import chatTools from "./chat_tools.json";
 import experiment from "./experiment.json";
-import experimentEmbed from "./experiment_embed.json";
 import experimentInterpretation from "./experiment_interpretation.json";
 import experimentInterpretationDecided from "./experiment_interpretation_decided.json";
 import experimentLaunch from "./experiment_launch.json";
@@ -187,7 +185,6 @@ export const checked = {
   experiment: experiment satisfies Loose<Experiment>,
   experimentResults: experimentResults satisfies Loose<ExperimentSummary>,
   experimentLogs: experimentLogs satisfies Loose<ExperimentLogs>,
-  embedProbes: experimentEmbed satisfies Loose<EmbedReport>,
 
   // M9. Emitted by the API test harness through the *real* poller and the real
   // chat engine, so the injected summary, the proposal's fingerprint and the

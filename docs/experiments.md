@@ -7,8 +7,8 @@ a model.
 
 ## Applies when
 
-Working on `pkg/experiments`, or diagnosing a launch that was refused, a run
-whose commit cannot be identified, or an embed that will not frame.
+Working on `pkg/experiments`, or diagnosing a launch that was refused or a run
+whose commit cannot be identified.
 
 **Not this if**: the question is what happens *after* a run finishes without
 anyone watching — that is the interpretation turn, see
@@ -17,10 +17,7 @@ mechanics — the pod, the workspace, one cell at a time — are
 [kernel-and-repository.md](kernel-and-repository.md); what this file adds about
 them is only why a cell is not a run.
 
-The commit rule and the credential model follow from §5.12 and §3.1 item 6. What
-the embed probe *answers* does not: it reports the headers this deployment's Ray
-and MLflow send, so an `embeddable` verdict from one cluster says nothing about
-another.
+The commit rule and the credential model follow from §5.12 and §3.1 item 6.
 
 ## A run is submitted from a commit, or it is not submitted
 
@@ -194,7 +191,8 @@ Operator Lib's:
 1. the working copy is checked and the launch refused if it is dirty;
 2. the launch is refused if it names no input topics — see below;
 3. the package is built from that commit and uploaded;
-4. the per-user experiment is found or created (D17);
+4. the per-user experiment is found or created (D17), under the name
+   `MLOperator` will select;
 5. **the run is created, with its tags in the same request**;
 6. the job is submitted with the deployment config, and `MLOperator` sets the
    tracking URI, opens the run, connects to Ray, calls `train()` and registers the
@@ -208,19 +206,41 @@ rests on; a crash between two round trips would otherwise leave a run permanentl
 unreproducible and looking fine.
 
 **The job adopts that run rather than opening its own.** `MLOperator` calls
-`mlflow.start_run(run_name=...)` without a run id, and MLflow's fluent API resumes
-the run `MLFLOW_RUN_ID` names when none is passed. Without that one variable there
-would be two runs per experiment — ODE's, carrying the commit tag and no metrics,
-and the job's, carrying the metrics and no commit — and `get_experiment_results`
+`mlflow.start_run()` without a run id, and MLflow's fluent API resumes the run
+`MLFLOW_RUN_ID` names when none is passed. Without that one variable there would
+be two runs per experiment — ODE's, carrying the commit tag and no metrics, and
+the job's, carrying the metrics and no commit — and `get_experiment_results`
 reads ODE's.
 
-The experiment stays D17's, one per developer and repository
-(`ode/{hub username}/{owner}-{repo}`), because `Store.Previous` scopes §5.13's
-comparison to it and a per-run experiment would make every run a first run.
-`MLOperator` also calls `set_experiment(model_id)`, but that does not move the
-run: `start_run` resumes by id whatever experiment is selected. What it leaves
-behind is one empty MLflow experiment per launch, which is litter rather than a
-problem.
+**The experiment is named `model_id`, and that is what makes the adoption work.**
+`MLOperator.init()` calls `set_experiment(model_id)` before it resumes, and
+MLflow's `start_run` refuses a resume whose run lives in a different experiment
+than the active one:
+
+```text
+Cannot start run with ID … because active experiment ID does not match
+environment run ID
+```
+
+ODE named its experiment `{prefix}/{user}/{repository}` until 2026-09-01, which is
+the same information in a different shape, and every launch failed on that line
+inside `operator.init()` — before a line of the developer's code ran, with a
+traceback whose deepest readable frame is the scaffold's `op.py`. Agreeing on
+`pipeline-{pipeline}_operator-{operator}` costs nothing: both ids are already
+stable per developer and per repository, so the experiment keeps exactly the
+granularity D17 asks for, `Store.Previous` still scopes §5.13's comparison to one
+experiment, and the empty experiment `set_experiment` used to leave behind per
+repository is gone.
+
+**The run keeps the name ODE gave it only from Operator Lib v1.6.1.** Older
+libraries pass a `run_name` on the resume path too, and MLflow forwards it to
+`update_run_info`, so the name from the launch request — or `ode-{short sha}` —
+came back overwritten with `{model_id}@{timestamp}`. An experiment reads
+`operator_lib` from the Ray cluster's image rather than from the repository's pin,
+so this one follows the cluster and not `pyproject.toml`; see
+[operator-lib-versions.md](operator-lib-versions.md). Where the name is wrong the
+run is still identifiable, because `session_id`, `ode_experiment_id` and
+`commit_sha` are tags rather than part of the name.
 
 ## The pipeline and operator ids ODE invents
 
@@ -242,8 +262,8 @@ the first launch and silently recorded nothing on the second. The pair was made
 unique per launch to miss by construction. v1.4.0 made `train_once()` public — a
 training pass a caller can ask for — and `train.py` asks, so the pair no longer
 has to carry that job. The per-launch pair also left one empty MLflow experiment
-behind per launch, from `init()`'s own `set_experiment(model_id)`; one per
-repository is the remainder.
+behind per launch, from `init()`'s own `set_experiment(model_id)`; since the
+experiment is named after the pair, there is no leftover at all.
 
 `train.py` asks the alias question itself before calling `init()`, because `init()`
 does not report whether it trained. Getting that wrong costs a duplicate training
@@ -482,49 +502,67 @@ reads SUCCEEDED. The rule: Ray decides whether the run is *over*, because only R
 sees the process end — and MLflow's FAILED wins over Ray's SUCCEEDED, because a job
 that recorded its own failure knew something the exit code did not.
 
-## The embed probe, and why "unknown" is an answer
+## Linking a job and a run, rather than framing them
 
-D6 says the Ray and MLflow UIs are probed at runtime and fall back to a link on
-framing failure. `GET /experiments/embed` is the backend half:
+D6 says the Ray and MLflow UIs are linked and never embedded. There is no framing
+probe: `GET /experiments/embed` and the `experiment_embed_*` settings that fed it
+are gone, and nothing in ODE reads `X-Frame-Options` any more.
+
+What replaces them is configuration the SPA already has. `GET /session` and
+`GET /experiments` both report where a browser should open the two services:
 
 ```text
-GET /experiments/embed
-200 {"services":[
-      {"service":"ray","url":"https://ray.example.org","embeddable":"no",
-       "reason":"X-Frame-Options: DENY — the service refuses to be framed at all",
-       "status":200,"probed_at":"…"},
-      {"service":"mlflow","url":"https://mlflow.example.org","embeddable":"unknown",
-       "reason":"ODE could not reach the service, which does not mean a browser
-                 cannot: try the iframe and fall back to a link if it does not load"}],
-     "cached":false,"ttl":"10m0s"}
+"ray_url":    "https://ray.example.org",
+"mlflow_url": "https://mlflow.example.org"
 ```
 
-It reads the two headers that decide framing: `X-Frame-Options`, and the
-`frame-ancestors` directive of a `Content-Security-Policy`. CSP is checked even
-when `X-Frame-Options` said nothing permissive, because `frame-ancestors` takes
-precedence in the browsers that implement both. A concrete allow-list comes back
-as **unknown** rather than yes or no — whether the SPA's origin is on it is a
-question about the deployment, and ODE does not reliably know the origin it is
-served from.
+Those are `ray_dashboard_url` and `mlflow_ui_url`, each falling back to the API
+base ODE itself calls — which is right whenever the browser resolves the same
+names the backend does, and wrong in exactly the deployment where the two hosts
+differ, which is what the pair exists for.
 
-The division of labour is the design. Only a browser can find out whether a page
-*actually* renders in an iframe: a service may permit framing by header and still
-break inside one, or sit behind an SSO redirect that does not. So the pane still
-loads a hidden iframe with a load timeout and falls back to a link-only card. What
-the backend adds is the case the browser handles worst — a service answering
-`X-Frame-Options: DENY` produces a blank frame and no event the SPA can catch, so
-without this the pane would wait out its whole timeout on every open, and nobody
-would learn which header caused it.
+A record carries the rest of what a deep link needs, so the SPA builds one without
+asking ODE for it:
 
-**"unknown" is a real answer and not a failure.** ODE is inside the cluster and the
-developer's browser is not, so a service ODE cannot reach may frame perfectly. The
-verdict is cached with a TTL, keyed on the configured URLs — which is D6's
-"re-probe on config change" with one fewer moving part, since a changed URL simply
-misses — and `?refresh=true` forces a fresh probe for the pane's re-probe control.
+```text
+<ray_url>/#/jobs/<submission_id>
+<mlflow_url>/#/experiments/<mlflow_experiment_id>/runs/<mlflow_run_id>
+```
 
-The SPA half is the Experiments pane at `/tools/experiments`, which renders the
-verdict this probe returns: an embedded dashboard where framing allows, a link-only
-card where it does not, and a re-probe control that passes `?refresh=true`.
+The join those two paths are built from is the record itself, and ODE is its only
+holder: Ray forgets a submission when the cluster restarts, and MLflow knows the
+run but not which working copy produced it.
+
+The conversation renders the same pair. A `launch_experiment` call answers with an
+experiment id and the status Ray gave the job in the second it accepted it, which
+is `PENDING` for every run that ever succeeded — so the SPA draws a card beside the
+call rather than leaving that in the tool result: the run it started, whatever
+became of it, and anything else of that conversation's that has not finished yet,
+each with a state that changes on its own and three links — the Ray job, the MLflow
+run, and the run document at `/tools/experiments?run=<experiment_id>`. The third is
+ODE's own and opens in the same tab: the §5.13 summary, the comparison against the
+previous run and the assistant's interpretation are there and in neither dashboard,
+so a developer reading "it finished" has somewhere to go for how it went.
+
+The state comes from `GET /experiments`, filtered to the conversation by the
+`session_id` the record carries, plus `GET /experiments/{id}` for every launch that
+filter did not produce. The second read is the one that keeps the card honest: a
+run reaching the developer by any route that recorded no session id would otherwise
+be missing from the card belonging to the call that launched it, which then says
+nothing is on the cluster while the job runs. The filter decides what *else* the
+card shows, never whether the launch's own run is shown. Both are polled on the
+listing's own terms: the route refreshes a status from Ray only for runs that have
+not finished, so the poll stops when nothing is unfinished and a conversation that
+launched nothing never asks at all. That last part is not a saving — a deployment with no Ray cluster does
+not serve the route, and a card that asked anyway would turn "no experiments here"
+into a failed request under a tool call that never ran.
+
+Reading the id back out of the result is two shapes rather than one. A provider
+whose tool loop ODE runs stores what the executor returned, so the result is the
+object; the CLI provider (§5.7) runs its own loop over MCP and echoes the client's
+result back verbatim, so the result is MCP's envelope — a list of content blocks
+whose text is that same JSON. A surface that reads only the first form works on
+every provider but the one a developer runs without an API key.
 
 ## The last two tools
 

@@ -23,8 +23,12 @@ import { ApiError, type EvaluationCriterion, type Experiment, type ExperimentSta
 import {
   canStop,
   criterionVerdict,
-  framingVerdict,
   hasUnfinished,
+  launchedExperimentId,
+  launchedRows,
+  liveLabel,
+  mlflowRunUrl,
+  rayJobUrl,
   isFinished,
   isStaleProposal,
   launchRefusal,
@@ -37,13 +41,9 @@ import {
  * Four of them, and each is a place where getting it wrong produces a screen that
  * looks fine: a criterion that could not be evaluated drawn as one that failed, a
  * poll that keeps asking Ray about jobs that ended, a 409 that means "re-read this"
- * printed as an error, and a framing verdict that treats "ODE could not tell" as
- * "framing is refused". None of them would show up as a crash, which is why they
- * are here.
- *
- * The iframe probe itself is not tested. Whether a cross-origin page renders inside
- * a frame is a thing only a real browser decides, and a jsdom iframe would answer a
- * question nobody asked.
+ * printed as an error, a deep link built from a base and an id that do not quite
+ * join, and a launch card that repeats a run it has already listed. None of them
+ * would show up as a crash, which is why they are here.
  *
  * Fixtures are built here rather than taken from `__contract__`, for the reason
  * `routes.test.tsx` gives: those files pin the wire shape against a running
@@ -289,35 +289,132 @@ it("another conflict is not mistaken for a stale proposal", () => {
   expect(isStaleProposal(new Error("network down"))).toBe(false);
 });
 
-// --- the two halves of the embed probe (D6) ---
+// --- the links that replaced the frames (D6) ---
 
 /*
- * "unknown" is a real answer and not a refusal. ODE probes from inside the cluster
- * and the browser is outside it, so a service ODE cannot reach may frame perfectly —
- * which is why the pane tries anyway and lets the browser settle it.
+ * A base with a trailing slash is a configuration nobody notices setting, and it is
+ * the one input that turns a working link into `//#/jobs/...`. Both builders take
+ * the base exactly as the deployment wrote it.
  */
-it("a service ODE could not judge is still given to the browser to try", () => {
-  expect(framingVerdict("unknown", "probing")).toBe("probing");
-  expect(framingVerdict("unknown", "loaded")).toBe("ok");
-  expect(framingVerdict("unknown", "timeout")).toBe("refused");
+it("a base with a trailing slash does not double it", () => {
+  expect(rayJobUrl("https://ray.example.org/", "sub-1")).toBe("https://ray.example.org/#/jobs/sub-1");
+  expect(mlflowRunUrl("https://mlflow.example.org/", "12", "run-1")).toBe(
+    "https://mlflow.example.org/#/experiments/12/runs/run-1",
+  );
 });
 
 /*
- * A header the backend read is definitive in one direction only. `X-Frame-Options:
- * DENY` is a refusal a browser reports as a *load* — of the error page — so the
- * iframe cannot overturn it, and believing the iframe there would leave an empty
- * frame on screen with no link beside it.
+ * A launch that failed before ODE created the MLflow run has no run to open, and a
+ * deployment that configured neither UI has nowhere to open anything. Both are null
+ * rather than a link into a URL that is missing half its path: a link that lands on
+ * a 404 reads as the run being gone.
  */
-it("a header that refuses framing is not overturned by the frame appearing to load", () => {
-  expect(framingVerdict("no", "loaded")).toBe("refused");
-  expect(framingVerdict("no", "probing")).toBe("refused");
-  expect(framingVerdict("no", "timeout")).toBe("refused");
+it("a missing base or a missing id is no link at all", () => {
+  expect(rayJobUrl(undefined, "sub-1")).toBeNull();
+  expect(rayJobUrl("https://ray.example.org", "")).toBeNull();
+  expect(mlflowRunUrl("https://mlflow.example.org", "12", "")).toBeNull();
+  expect(mlflowRunUrl("https://mlflow.example.org", "", "run-1")).toBeNull();
+  expect(mlflowRunUrl(undefined, "12", "run-1")).toBeNull();
 });
 
-// A permissive header is not a promise that the page renders: it may still refuse in
-// its own script, or never arrive. The browser has the last word in that direction.
-it("a permissive header still waits for the browser before embedding", () => {
-  expect(framingVerdict("yes", "probing")).toBe("probing");
-  expect(framingVerdict("yes", "loaded")).toBe("ok");
-  expect(framingVerdict("yes", "timeout")).toBe("refused");
+// Ray's own ids are opaque and MLflow's run ids are hex, but neither is guaranteed
+// to be URL-safe by anything ODE enforces, and an id that is not escaped ends the
+// path early.
+it("an id is escaped into the path", () => {
+  expect(rayJobUrl("https://ray.example.org", "sub/1?x")).toBe(
+    "https://ray.example.org/#/jobs/sub%2F1%3Fx",
+  );
+});
+
+
+// --- what a launch shows in the conversation ---
+
+/*
+ * The card's own run stays whatever became of it.
+ *
+ * It is the answer to "what did that call start", and a finished run dropping out
+ * of the card that launched it would leave the call with nothing under it at
+ * exactly the moment the developer came back to see how it went.
+ */
+it("the run a launch produced is listed even after it has finished", () => {
+  const finished = { ...run("SUCCEEDED"), experiment_id: "mine" };
+  expect(launchedRows([finished], "mine").map((entry) => entry.experiment_id)).toEqual(["mine"]);
+});
+
+/*
+ * Everything else earns its place by being unfinished. A conversation with four
+ * launches would otherwise carry every one of its runs under every one of its
+ * calls, four times over, and the Experiments pane is where a history belongs.
+ */
+it("another run is listed only while it is still going", () => {
+  const mine = { ...run("RUNNING"), experiment_id: "mine" };
+  const going = { ...run("PENDING"), experiment_id: "other-going" };
+  const done = { ...run("FAILED"), experiment_id: "other-done" };
+  expect(launchedRows([mine, going, done], "mine").map((entry) => entry.experiment_id)).toEqual([
+    "mine",
+    "other-going",
+  ]);
+});
+
+/*
+ * And the card's own run is not listed twice while it is the one still running,
+ * which is the state every card is in for the first minutes of its life.
+ */
+it("a running card does not list its own run twice", () => {
+  const mine = { ...run("RUNNING"), experiment_id: "mine" };
+  expect(launchedRows([mine], "mine")).toHaveLength(1);
+});
+
+/*
+ * A launch whose result carried no experiment id — nothing does this today, but the
+ * card reads a tool result rather than a typed record — still shows what is running
+ * rather than nothing at all.
+ */
+it("a launch with no id of its own still shows what is running", () => {
+  const going = { ...run("RUNNING"), experiment_id: "other" };
+  const done = { ...run("SUCCEEDED"), experiment_id: "old" };
+  expect(launchedRows([going, done], null).map((entry) => entry.experiment_id)).toEqual(["other"]);
+});
+
+/*
+ * The three words the conversation uses. PENDING is "running" on purpose: a job Ray
+ * has queued and not yet started is one the developer is waiting for, and the
+ * distinction between queued and started is the dashboard's business — the badge
+ * carries Ray's own word in its title for whoever is going there.
+ */
+it("a queued job reads as running, and a failure reads as an error", () => {
+  expect(liveLabel("PENDING")).toBe("running");
+  expect(liveLabel("RUNNING")).toBe("running");
+  expect(liveLabel("SUCCEEDED")).toBe("finished");
+  expect(liveLabel("FAILED")).toBe("error");
+  expect(liveLabel("STOPPED")).toBe("stopped");
+});
+
+
+/*
+ * The shape the CLI provider stores, and the defect it caused.
+ *
+ * That provider runs its own tool loop over MCP (§5.7) and echoes the client's
+ * result back verbatim, so the transcript holds MCP's envelope — a list of content
+ * blocks whose text is the JSON — rather than the object ODE's own dispatcher
+ * returns. Reading only the object left the card with no run of its own, which is
+ * how a launch that had plainly succeeded came to say nothing was on the cluster.
+ */
+it("a launch result reaches the card whether it is the object or MCP's envelope", () => {
+  expect(launchedExperimentId({ experiment_id: "e-1" })).toBe("e-1");
+  expect(
+    launchedExperimentId([{ type: "text", text: JSON.stringify({ experiment_id: "e-1" }) }]),
+  ).toBe("e-1");
+  // Stored as the raw string, which is what `replay` keeps when a result did not
+  // parse on the way in.
+  expect(launchedExperimentId(JSON.stringify({ experiment_id: "e-1" }))).toBe("e-1");
+});
+
+/* And anything else is no id rather than a wrong one. */
+it("a result with no experiment in it yields no id", () => {
+  expect(launchedExperimentId(null)).toBeNull();
+  expect(launchedExperimentId("the job could not be submitted")).toBeNull();
+  expect(launchedExperimentId([{ type: "text", text: "not json" }])).toBeNull();
+  expect(launchedExperimentId([{ type: "image" }])).toBeNull();
+  expect(launchedExperimentId({ experiment_id: 7 })).toBeNull();
 });

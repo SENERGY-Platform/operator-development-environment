@@ -72,11 +72,12 @@ RUN pip install --no-cache-dir uv
 # for a hand build.
 #
 # The default is the newest release; the floor is older, and the two are different
-# questions. D15's "track latest" is why this sits at the newest — v1.6.0 reads the
-# deployment's OpenTelemetry baggage into every log record, so a line from an
-# operator can be traced back to the smart service instance that started it. That
-# is a diagnostic gain, not something ODE calls, which is why it moves the default
-# and leaves the floor where it is.
+# questions. D15's "track latest" is why this sits at the newest. v1.6.1 stops
+# MLOperator renaming a run it was handed in MLFLOW_RUN_ID, which is the experiment
+# path and therefore the Ray cluster's image rather than this one; v1.6.0 before it
+# reads the deployment's OpenTelemetry baggage into every log record. Neither is
+# something ODE calls from a cell, which is why they move the default and leave the
+# floor where it is.
 #
 # v1.5.0 remains the floor rather than a preference, and it got there for a reason
 # worth reading. v1.4.0 made MLOperator.train_once() public, which the scaffold's
@@ -88,7 +89,7 @@ RUN pip install --no-cache-dir uv
 # permission (SNRGY-4637). A v1.4.0 image does not know the field: it ignores it,
 # falls back to the built-in DSN, and reads every series in the instance without
 # anything in the run saying so.
-ARG OPERATOR_LIB_REF=v1.6.0
+ARG OPERATOR_LIB_REF=v1.6.1
 
 RUN pip install --no-cache-dir \
       "git+https://github.com/SENERGY-Platform/analytics-operator-lib-python@${OPERATOR_LIB_REF}"

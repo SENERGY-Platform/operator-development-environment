@@ -678,7 +678,7 @@ Confirmations persist as session overrides, are re-injected into subsequent prof
 
 - **Ray:** submit via the Job Submission API with the repo working directory. Metadata carries `session_id`, `user_sub`, `commit_sha`, `mlflow_run_id`. No per-user namespace work (D18). Jobs read training data **directly from timescale-wrapper** with their scoped token, or via a `/prepare-download` secret — never streamed through the ODE backend (§5.3.4).
 - **MLflow:** one experiment per ODE project, namespaced per user (D17); one run per job.
-- **Embed probe (D6):** on pane open, attempt to load the target UI in a hidden iframe. On framing failure (CSP / `X-Frame-Options`), record per service and render a link-only card with "Open in new tab". Cache; re-probe on config change. Panes support **embed / hide / pop-out** regardless of outcome.
+- **Links, not frames (D6):** the panes carry "Open in new tab" links to the Ray dashboard, the MLflow UI, and — from a run — that job and that run directly. No iframe, no framing probe: D6 replaces the embed-or-fall-back requirement this section originally carried, so there is nothing to embed, hide or pop out.
 
 ### 5.13 Result interpretation
 

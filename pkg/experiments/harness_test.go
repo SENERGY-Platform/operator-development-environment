@@ -146,7 +146,6 @@ func newHarness(t *testing.T, apply ...options) *harness {
 			TimescaleWrapperURL: "https://platform.example.org/db/v3",
 			CommandTimeout:      120 * time.Second,
 			RequestTimeout:      30 * time.Second,
-			EmbedProbeTimeout:   2 * time.Second,
 			Environment: map[string]string{
 				"SENERGY_TIMESCALE_URL": "https://platform.example.org/db/v3",
 			},

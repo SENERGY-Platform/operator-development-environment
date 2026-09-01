@@ -87,6 +87,19 @@ let renamed: [string, string][] = [];
 let moved: [string, string][] = [];
 /** Notes ODE has put in the conversation, which a move is one of. */
 let notes: string[] = [];
+/**
+ * How the stored conversation holds a `launch_experiment` result, if it holds one.
+ *
+ * Two shapes, because there are two tool loops. "object" is what ODE's own
+ * dispatcher stores; "mcp" is the envelope the CLI provider echoes back, which is
+ * the shape the card first shipped unable to read.
+ */
+let launched: "none" | "object" | "mcp" = "none";
+/** The runs the listing route answers with, and how often it was read. */
+let runs: Record<string, unknown>[] = [];
+let listingReads = 0;
+/** Records the listing does not produce, readable only by id. */
+let byId: Record<string, unknown>[] = [];
 /** The workbenches the developer has open, for the pairing test. */
 let benches: Workbench[] = [];
 /** How many session watches the panel has opened. Counted apart from `streamed`,
@@ -262,6 +275,20 @@ vi.mock("./api", async (importOriginal) => {
         return updated;
       },
       workbenches: async () => ({ workbenches: benches, max: 3 }),
+      experiment: async (id: string) => {
+        const found = [...byId, ...runs].find((record) => record.experiment_id === id);
+        if (!found) throw new Error(`no such experiment: ${id}`);
+        return found;
+      },
+      experiments: async () => {
+        listingReads += 1;
+        return {
+          experiments: runs,
+          count: runs.length,
+          ray_url: "http://ray.test",
+          mlflow_url: "http://mlflow.test",
+        };
+      },
       toolSurface: async () => toolSurface as unknown as ReturnType<typeof actual.api.toolSurface>,
       providers: async () => ({ providers: [], default: "stub" }),
       setAutoRun: async (id: string, on: boolean) => {
@@ -289,6 +316,48 @@ vi.mock("./api", async (importOriginal) => {
             seq: detail.messages.length + 1,
             role: "user",
             content: [{ type: "text", text }],
+            created_at: "2026-01-01T00:00:00Z",
+          });
+        }
+        if (launched !== "none") {
+          // A launch as the engine stores one: the call on the assistant's message,
+          // its result on the developer's, joined by the tool_use_id. The card is
+          // driven off the stored form rather than off a live stream so that it is
+          // there for a developer who reloads and comes back to the conversation.
+          detail.messages.push({
+            session_id: detail.session.id,
+            seq: detail.messages.length + 1,
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                tool_use_id: "call-launch",
+                tool_name: "launch_experiment",
+                tool_input: { entrypoint: "python training.py" },
+              },
+            ],
+            created_at: "2026-01-01T00:00:00Z",
+          });
+          detail.messages.push({
+            session_id: detail.session.id,
+            seq: detail.messages.length + 1,
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "call-launch",
+                tool_name: "launch_experiment",
+                tool_result:
+                  launched === "mcp"
+                    ? JSON.stringify([
+                        {
+                          type: "text",
+                          text: JSON.stringify({ experiment_id: "e-1", status: "PENDING" }),
+                        },
+                      ])
+                    : JSON.stringify({ experiment_id: "e-1", status: "PENDING" }),
+              },
+            ],
             created_at: "2026-01-01T00:00:00Z",
           });
         }
@@ -353,6 +422,10 @@ beforeEach(() => {
   renamed = [];
   moved = [];
   notes = [];
+  launched = "none";
+  runs = [];
+  byId = [];
+  listingReads = 0;
 });
 
 afterEach(async () => {
@@ -857,10 +930,13 @@ it("puts the tier strip in the pane rather than in its header", async () => {
  * The switch sits beside the tier because it is the same kind of decision: what
  * this conversation may do without interrupting. What it must not do is claim to
  * be a safety check — the backend recognises a small vocabulary and confirms
- * everything else, and code runs in the developer's own pod either way. So the
- * label says what happens ("without asking") rather than what it is not doing
- * ("safe"), and this asserts that, because the wording is the part a later edit
- * would soften without noticing.
+ * everything else, and code runs in the developer's own pod either way.
+ *
+ * The visible label names the thing ("Auto mode", as D33 and the endpoint do);
+ * what happens ("without asking") stays on the control, in the accessible name
+ * and the title. Both halves are asserted, because a later edit that shortens
+ * the label is only safe while the promise survives somewhere the developer and
+ * a screen reader can still reach it — and neither half may sell this as "safe".
  */
 it("offers auto mode beside the tier, and sends the developer's answer", async () => {
   const host = await open();
@@ -868,12 +944,23 @@ it("offers auto mode beside the tier, and sends the developer's answer", async (
 
   const control = host.querySelector(".auto-run");
   expect(control, "no auto-mode control in the conversation").not.toBeNull();
-  expect(control?.textContent).toContain("without asking");
+  expect(control?.textContent).toContain("Auto mode");
   // Never sold as a safety property. The title carries the caveat in full.
   expect(control?.textContent?.toLowerCase()).not.toContain("safe");
 
   const toggle = control?.querySelector("[role='switch']") as HTMLElement;
   expect(toggle, "the control is not a switch").not.toBeNull();
+
+  // The short name did not cost the promise: it is still on the control, for the
+  // pointer (title) and for the accessible name (the switch itself).
+  expect(
+    control?.querySelector("[title]")?.getAttribute("title"),
+    "the title no longer says what happens",
+  ).toContain("without asking");
+  expect(
+    toggle.getAttribute("aria-label"),
+    "the accessible name no longer says what happens",
+  ).toContain("without asking");
   await act(async () => toggle.click());
   await settle(3);
 
@@ -1896,4 +1983,90 @@ it("does not offer the move while a turn is running", async () => {
   await act(async () => finishSend?.());
   await settle();
   expect(picker(host)?.hasAttribute("disabled")).toBe(false);
+});
+
+// --- what a launch shows in the transcript (§5.12, D6) ---
+
+/** One run of this conversation, as the listing route answers with it. */
+function run(id: string, status: string, sessionId = "id-1") {
+  return {
+    experiment_id: id,
+    submission_id: `sub-${id}`,
+    mlflow_run_id: "run-2",
+    mlflow_experiment_id: "1",
+    mlflow_experiment_name: "ode/dev/example",
+    session_id: sessionId,
+    repository: "dev/example",
+    commit_sha: "2057193e0dd8968f1981550931dc54fab66b74a3",
+    entrypoint: "python training.py",
+    package_uri: "gcs://_ray_pkg_x.zip",
+    package_bytes: 1024,
+    package_reused: false,
+    status,
+    scoped_credential: true,
+    submitted_at: "2026-08-24T08:14:09Z",
+    updated_at: "2026-08-24T08:14:09Z",
+  };
+}
+
+/*
+ * The launch result is a JSON blob behind a disclosure that is shut, and the status
+ * in it is the PENDING Ray answered the submission with — true for a second and
+ * misleading for the next hour. What the developer needs is beside the call and
+ * without a click: whether it is still going, and the way into the job and the run.
+ */
+it("a launch shows its run, its state and its two links without opening anything", async () => {
+  launched = "object";
+  runs = [run("e-1", "RUNNING")];
+
+  const host = await open();
+  const card = host.querySelector(".exp-launched");
+  expect(card).not.toBeNull();
+  expect(card?.textContent).toContain("running");
+
+  const popouts = [...(card?.querySelectorAll(".exp-popout") ?? [])];
+  expect(popouts.map((link) => link.getAttribute("href"))).toEqual([
+    "http://ray.test/#/jobs/sub-e-1",
+    "http://mlflow.test/#/experiments/1/runs/run-2",
+  ]);
+  // And the way to the run document, which is where §5.13's interpretation is
+  // delivered — the one of the three that is not a dashboard.
+  expect(card?.querySelector(".exp-open-run")?.getAttribute("href")).toContain(
+    "/tools/experiments?run=e-1",
+  );
+});
+
+/*
+ * And a conversation that launched nothing does not read the route. A deployment
+ * with no Ray cluster does not serve it, and every conversation in it would
+ * otherwise open with a failed request.
+ */
+it("a conversation with no launch never asks for the runs", async () => {
+  launched = "none";
+  runs = [run("e-1", "RUNNING")];
+
+  await open();
+  await settle(5);
+  expect(listingReads).toBe(0);
+});
+
+/*
+ * The same launch as stored by the CLI provider, which runs its own tool loop over
+ * MCP and echoes the client's result back verbatim (§5.7). The card reads the run
+ * out of the envelope; reading only the flat object is what left it saying nothing
+ * was on the cluster under a launch that had succeeded.
+ */
+it("a launch made through the CLI provider's own loop shows the same card", async () => {
+  launched = "mcp";
+  // Only readable by id, so the card can show it at all only if the id was read out
+  // of the envelope: this is the failure as it happened, both halves of it.
+  runs = [];
+  byId = [run("e-1", "RUNNING", "another-session")];
+
+  const host = await open();
+  const card = host.querySelector(".exp-launched");
+  expect(card?.textContent).toContain("running");
+  expect(card?.querySelector(".exp-popout")?.getAttribute("href")).toBe(
+    "http://ray.test/#/jobs/sub-e-1",
+  );
 });

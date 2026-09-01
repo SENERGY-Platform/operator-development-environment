@@ -90,11 +90,12 @@ type operatorSettings struct {
 // modelID is the key Operator Lib registers a model under, built in
 // MLOperator.init() as `pipeline-{pipeline_id}_operator-{operator_id}`.
 //
-// It is also what MLOperator passes to set_experiment, but that has no effect on
-// where a run's metrics land: the run is opened with start_run(), which resumes
-// the run MLFLOW_RUN_ID names whatever experiment is selected. So the run stays in
-// ODE's D17 experiment and this string is the registry key alone. The cost is one
-// empty MLflow experiment per launch, which is litter rather than a problem.
+// It is also what MLOperator passes to set_experiment, and therefore ODE's own
+// experiment name: mlflow's fluent start_run refuses to resume the run
+// MLFLOW_RUN_ID names when the active experiment is a different one, so the two
+// have to be the same string. A separately named ODE experiment ended every launch
+// in "Cannot start run ... because active experiment ID does not match environment
+// run ID", inside operator.init() and before a line of the developer's code ran.
 func modelID(pipelineID, operatorID string) string {
 	return fmt.Sprintf("pipeline-%s_operator-%s", pipelineID, operatorID)
 }
@@ -190,11 +191,18 @@ func (s *Service) deploymentEnvironment(
 	}
 
 	// MLFLOW_RUN_ID is how the job adopts the run ODE created rather than opening
-	// a second one. MLOperator calls mlflow.start_run(run_name=...) without a
-	// run_id, and MLflow's fluent API resumes the run this names when no run_id is
-	// passed. Without it there would be two runs per experiment: ODE's, carrying
-	// the commit tag and no metrics, and the job's, carrying the metrics and no
-	// commit — and get_experiment_results reads ODE's.
+	// a second one. MLOperator calls mlflow.start_run() without a run_id, and
+	// MLflow's fluent API resumes the run this names when no run_id is passed.
+	// Without it there would be two runs per experiment: ODE's, carrying the commit
+	// tag and no metrics, and the job's, carrying the metrics and no commit — and
+	// get_experiment_results reads ODE's.
+	//
+	// Two conditions on the other side, both of them Operator Lib's. The run has to
+	// live in the experiment MLOperator selects, which is why the experiment is
+	// named modelID. And the run keeps the name ODE gave it only from Operator Lib
+	// v1.6.1 on, where start_run stopped offering a name for a run it is resuming;
+	// against an older library every run is renamed to `model_id@<timestamp>` and
+	// the name a developer chose survives in the tags alone.
 	if runID != "" {
 		environment["MLFLOW_RUN_ID"] = runID
 	}

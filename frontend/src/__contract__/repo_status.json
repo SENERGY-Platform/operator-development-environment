@@ -8,11 +8,11 @@
   "dirty": false,
   "diverged": false,
   "fetched": true,
-  "head": "6014e603c056da9d9d4153ace600563c0b0c1a17",
-  "head_date": "2026-08-31T13:19:42+02:00",
+  "head": "ae7fb74dce12d674d8547ac7635ba6cae554c0aa",
+  "head_date": "2026-09-01T08:21:01+02:00",
   "head_subject": "Scaffold the operator",
   "link": {
-    "clone_url": "file:///tmp/TestWriteRepoContractFixtures1847021248/003/operator.git",
+    "clone_url": "file:///tmp/TestWriteRepoContractFixtures3485532011/003/operator.git",
     "default_branch": "main",
     "full_name": "jonah/pv-forecast",
     "html_url": "https://github.test/jonah/pv-forecast",
@@ -21,11 +21,11 @@
     "owner": "jonah",
     "path": "jonah/pv-forecast",
     "private": false,
-    "scaffolded_at": "2026-08-31T11:19:42.346987743Z",
-    "selected_at": "2026-08-31T11:19:41.855885276Z",
-    "workbench_id": "mdnmvke4sdg2mak6t2qdn6ksy4"
+    "scaffolded_at": "2026-09-01T06:21:01.017833875Z",
+    "selected_at": "2026-09-01T06:21:00.597747979Z",
+    "workbench_id": "3ld5c734pgj2bcjodpvdgr7sz4"
   },
-  "remote": "file:///tmp/TestWriteRepoContractFixtures1847021248/003/operator.git",
+  "remote": "file:///tmp/TestWriteRepoContractFixtures3485532011/003/operator.git",
   "scaffold": {
     "complete": true,
     "missing": [],

@@ -458,7 +458,7 @@ function CandidatesPane({
           )}
 
           {data.candidates.length > 0 && (
-            <Table className="grid candidates">
+            <Table className="candidates">
               <TableHeader>
                 <TableRow>
                   <TableHead>#</TableHead>
@@ -1503,7 +1503,7 @@ function FullProfile({
         {profile.service_context.relationships.length === 0 ? (
           <Muted>No cross-variable relationship was established.</Muted>
         ) : (
-          <Table className="grid">
+          <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Relationship</TableHead>
@@ -1601,7 +1601,7 @@ function GapTable({ gaps }: { gaps: SeriesProfileGap[] }) {
   if (gaps.length === 0) return null;
   const largest = [...gaps].sort((a, b) => b.duration_s - a.duration_s).slice(0, 10);
   return (
-    <Table className="grid">
+    <Table>
       <TableHeader>
         <TableRow>
           <TableHead>From</TableHead>
@@ -1769,7 +1769,7 @@ function OverridesSection({
           and merged on read, so recomputing with a better detector keeps it.
         </Muted>
       ) : (
-        <Table className="grid">
+        <Table>
           <TableHeader>
             <TableRow>
               <TableHead>Field</TableHead>
@@ -1958,7 +1958,7 @@ function ProvenanceSection({ provenance }: { provenance: Provenance }) {
       note="which pass produced each field — dropped from the LLM view"
       defaultOpen={false}
     >
-      <Table className="grid">
+      <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Field</TableHead>
@@ -2056,7 +2056,7 @@ function Projection({ view }: { view: LLMProfileView }) {
           title={`Elided (${view.elided.length})`}
           note="what was summarised, and where the rest is"
         >
-          <Table className="grid">
+          <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Field</TableHead>
@@ -2154,7 +2154,7 @@ function SessionTable({
   const nextCursor = page.next_cursor;
   return (
     <>
-      <Table className="grid">
+      <Table>
         <TableHeader>
           <TableRow>
             <TableHead>From</TableHead>

@@ -77,9 +77,11 @@ func TestTheMLflowExperimentIsNamespacedPerUserAndRepository(t *testing.T) {
 	if len(names) != 1 {
 		t.Fatalf("experiments = %v, want exactly one", names)
 	}
-	if want := "ode/jonah/jonah-pv-forecast"; names[0] != want {
+	if want := "pipeline-ode-jonah_operator-jonah-pv-forecast"; names[0] != want {
 		t.Errorf("experiment name = %q, want %q — deterministic from the developer and "+
-			"the repository so it is the same one next session", names[0], want)
+			"the repository so it is the same one next session, and Operator Lib's own "+
+			"model_id so that MLOperator selects this experiment and not a second one",
+			names[0], want)
 	}
 }
 

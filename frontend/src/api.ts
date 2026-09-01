@@ -2368,36 +2368,6 @@ export interface ExperimentLogs {
   truncated: boolean;
 }
 
-/** One service's framing verdict (D6).
- *
- * The backend half of the probe: it asks the service for its `X-Frame-Options`
- * and `Content-Security-Policy: frame-ancestors`. The frontend half is still the
- * pane's — a hidden iframe with a load timeout, falling back to a link-only card —
- * because a header can permit framing while the page still refuses to render in
- * one, and only a browser finds that out.
- *
- * **"unknown" is a real answer.** ODE is inside the cluster and the browser is
- * not, so a service ODE cannot reach may frame perfectly: try the iframe anyway. */
-export interface EmbedProbe {
-  service: "ray" | "mlflow";
-  url: string;
-  embeddable: "yes" | "no" | "unknown";
-  /** The header that decided it, or why nothing did. A verdict without the header
-   * is not actionable by whoever would have to change it. */
-  reason: string;
-  probed_at: string;
-  /** Zero when the service answered nothing at all. */
-  status?: number;
-}
-
-export interface EmbedReport {
-  services: EmbedProbe[];
-  /** Whether this came from the TTL cache rather than a fresh probe. */
-  cached: boolean;
-  ttl: string;
-  as_of: string;
-}
-
 export const api = {
   session: () => get<Session>("/session"),
   aspectTree: () => get<{ tree: AspectTreeNode[] }>("/ontology/aspect-tree"),
@@ -2713,12 +2683,6 @@ export const api = {
 
   stopExperiment: (id: string) =>
     post<Experiment>(`/experiments/${encodeURIComponent(id)}/stop`, {}),
-
-  /** D6's backend half. Pass `refresh` when the developer presses re-probe; the
-   * pane should still try a hidden iframe with a timeout regardless of the answer,
-   * because "unknown" means ODE could not tell rather than that framing fails. */
-  embedProbes: (refresh = false) =>
-    get<EmbedReport>(`/experiments/embed${query({ refresh: refresh || undefined })}`),
 
   /** §5.13's interpretation of one finished run: the summary, the assistant's
    * reading of it, the concrete next adjustment it proposed, and the developer's

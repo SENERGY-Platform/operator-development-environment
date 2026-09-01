@@ -757,7 +757,7 @@ function AnnotationSection({
       )}
 
       {annotations.length > 0 && (
-        <Table className="grid annotations">
+        <Table className="annotations">
           <TableHeader>
             <TableRow>
               <TableHead>From</TableHead>
@@ -868,7 +868,7 @@ function ConfirmationLog({ series }: { series: ChartSeriesData[] }) {
       note="append-only, merged at read time only"
       defaultOpen={false}
     >
-      <Table className="grid">
+      <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Series</TableHead>

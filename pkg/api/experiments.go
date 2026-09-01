@@ -290,36 +290,6 @@ func handleStopExperiment(svc *experiments.Service) gin.HandlerFunc {
 	}
 }
 
-// handleExperimentEmbed is the backend half of D6.
-//
-// The frontend half is the SPA's: a hidden iframe with a load timeout, falling
-// back to a link-only card. This answers the question the browser handles worst —
-// a service answering X-Frame-Options: DENY produces a blank frame and no event
-// the SPA can catch, so without this the pane would wait out its whole timeout on
-// every open.
-//
-// @Summary		Whether the Ray and MLflow UIs can be framed
-// @Description	The backend half of D6: each configured service is asked for its
-// @Description	X-Frame-Options and Content-Security-Policy frame-ancestors, and the
-// @Description	verdict is cached with a TTL. `embeddable` is "yes", "no" or "unknown",
-// @Description	and **"unknown" is a real answer** — ODE is inside the cluster and the
-// @Description	browser is not, so a service ODE cannot reach may still frame perfectly.
-// @Description	The pane should still load a hidden iframe with a timeout and fall back
-// @Description	to a link-only card, which is the half only a browser can decide.
-// @Tags			experiments
-// @Produce		json
-// @Security		Bearer
-// @Param			refresh	query		bool	false	"re-probe rather than answering from the cache"
-// @Success		200		{object}	experiments.EmbedReport
-// @Failure		401		{object}	map[string]string
-// @Router			/experiments/embed [get]
-func handleExperimentEmbed(svc *experiments.Service) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		refresh := c.Query("refresh") == "true"
-		c.JSON(http.StatusOK, svc.EmbedProbes(c.Request.Context(), refresh))
-	}
-}
-
 // respondExperiments maps this package's domain errors onto status codes.
 //
 // The two 409s are the pane's own control flow rather than errors, the same shape

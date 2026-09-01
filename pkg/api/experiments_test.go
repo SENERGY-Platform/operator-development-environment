@@ -138,7 +138,6 @@ func newExperimentHarness(t *testing.T) *experimentHarness {
 			PyExecutable:        "uv run",
 			CommandTimeout:      120 * time.Second,
 			RequestTimeout:      30 * time.Second,
-			EmbedProbeTimeout:   2 * time.Second,
 		},
 	})
 	if err != nil {
@@ -333,7 +332,7 @@ func TestTheExperimentRoutesAreNotServedWithoutARayCluster(t *testing.T) {
 	// ray_url. The routes must be absent rather than panicking on nil.
 	h := newHarness(t)
 
-	for _, path := range []string{"/experiments", "/experiments/embed"} {
+	for _, path := range []string{"/experiments", "/experiments/e-1"} {
 		if response := h.get(t, path, "developer"); response.Code != http.StatusNotFound {
 			t.Errorf("%s = %d, want 404 when no Ray cluster is configured", path, response.Code)
 		}
@@ -491,43 +490,6 @@ func TestStoppingIsARouteOfItsOwn(t *testing.T) {
 	}
 }
 
-// D6's backend half. The static /embed segment has to win over the :id wildcard,
-// which is the reason it is registered first.
-func TestTheEmbedRouteAnswersPerServiceAndDoesNotCollideWithTheIdWildcard(t *testing.T) {
-	h := newExperimentHarness(t)
-
-	response := h.call(t, http.MethodGet, "/experiments/embed", nil, "developer")
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
-		t.Fatalf("embed = %d: %s", response.StatusCode, body)
-	}
-	var report experiments.EmbedReport
-	h.decode(t, response, &report)
-	if len(report.Services) != 2 {
-		t.Fatalf("services = %+v, want one probe per configured service", report.Services)
-	}
-	for _, probe := range report.Services {
-		switch probe.Embeddable {
-		case experiments.EmbedYes, experiments.EmbedNo, experiments.EmbedUnknown:
-		default:
-			t.Errorf("%s embeddable = %q, want one of the three D6 values",
-				probe.Service, probe.Embeddable)
-		}
-		if probe.Reason == "" {
-			t.Errorf("%s has a verdict with no reason", probe.Service)
-		}
-	}
-	if report.Cached {
-		t.Error("the first probe was served from a cache")
-	}
-	// And the second one is, which is D6's "cache".
-	response = h.call(t, http.MethodGet, "/experiments/embed", nil, "developer")
-	h.decode(t, response, &report)
-	if !report.Cached {
-		t.Error("the second probe was not cached")
-	}
-}
-
 func TestTheSessionRouteReportsTheExperimentFeatureAndItsLinks(t *testing.T) {
 	h := newExperimentHarness(t)
 
@@ -627,7 +589,6 @@ secondary_metrics:
 		{"experiment.json", http.MethodGet, "/experiments/" + second.ID},
 		{"experiment_results.json", http.MethodGet, "/experiments/" + second.ID + "/results"},
 		{"experiment_logs.json", http.MethodGet, "/experiments/" + second.ID + "/logs"},
-		{"experiment_embed.json", http.MethodGet, "/experiments/embed"},
 	}
 	for _, tc := range cases {
 		response := h.call(t, tc.method, tc.path, nil, "developer")

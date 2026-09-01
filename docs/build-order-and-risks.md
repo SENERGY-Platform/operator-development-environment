@@ -37,7 +37,7 @@ dependencies were deliberate and would be wrong to reverse:
 | **M5** | Exploration pane: chart specs, annotations, confirmation controls, unit conversion |
 | **M6** | Session detection, the relational profiler, aspect-scoped candidate sets |
 | **M7** | Code pane, GitHub OAuth, repo select/create, scaffold, commit and push |
-| **M8** | Ray submission, MLflow, the embed probe with its fallback |
+| **M8** | Ray submission, MLflow, and the links into both |
 | **M9** | Automated result interpretation in chat |
 | **M11** | Imports as operator inputs (§5.2.1) |
 

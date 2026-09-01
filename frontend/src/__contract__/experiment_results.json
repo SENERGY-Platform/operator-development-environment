@@ -1,5 +1,5 @@
 {
-  "commit_sha": "47406ae9bc71ab34c450b3fc8d84e9c5574a25a7",
+  "commit_sha": "3355d2d43d6b2a626a218814764d23adcdb183a2",
   "comparison_to_previous": [
     {
       "current": 0.78,
@@ -18,19 +18,19 @@
       "previous": 0.42
     }
   ],
-  "ended_at": "2026-08-27T07:22:17.057Z",
-  "entrypoint": "python training.py",
+  "ended_at": "2026-09-01T06:22:29.897Z",
+  "entrypoint": "uv run python train.py",
   "evaluation_criteria": {
     "goal": "minimise",
     "goal_stated": true,
     "lower_is_better": true,
     "met": true,
     "metric": "rmse",
-    "source": "evaluation.yaml at 47406ae, which is the developer's own (no tool may modify it)",
+    "source": "evaluation.yaml at 3355d2d, which is the developer's own (no tool may modify it)",
     "threshold": 0.35,
     "value": 0.31
   },
-  "experiment_id": "bvprgu7dyt756ttfe227mpf4ii",
+  "experiment_id": "kqirjhdfxfhj7e7el5nq5sxwc4",
   "finished": true,
   "metrics": {
     "r2": 0.78,
@@ -57,21 +57,21 @@
         "status": "not_computed"
       },
       "metric": "mape",
-      "source": "evaluation.yaml at 47406ae, which is the developer's own (no tool may modify it)",
+      "source": "evaluation.yaml at 3355d2d, which is the developer's own (no tool may modify it)",
       "threshold": 5
     }
   ],
-  "started_at": "2026-08-27T07:20:47.057Z",
+  "started_at": "2026-09-01T06:20:59.897Z",
   "status": "SUCCEEDED",
-  "submission_id": "l425g6hr4sk25yaolpuuvgr2pm",
+  "submission_id": "2tegrqpnetlp24j7f4g2um5gq4",
   "tags": {
     "branch": "main",
-    "commit_sha": "47406ae9bc71ab34c450b3fc8d84e9c5574a25a7",
-    "entrypoint": "python training.py",
-    "ode_experiment_id": "bvprgu7dyt756ttfe227mpf4ii",
+    "commit_sha": "3355d2d43d6b2a626a218814764d23adcdb183a2",
+    "entrypoint": "uv run python train.py",
+    "ode_experiment_id": "kqirjhdfxfhj7e7el5nq5sxwc4",
     "ode_source": "ode",
-    "ray_submission_id": "l425g6hr4sk25yaolpuuvgr2pm",
+    "ray_submission_id": "2tegrqpnetlp24j7f4g2um5gq4",
     "repository": "jonah/pv-forecast",
-    "session_id": "o6iuj3bfcfr4xcfn3fhacaw6py"
+    "session_id": "bbrliemqbpwickvqsu5khx5yfe"
   }
 }

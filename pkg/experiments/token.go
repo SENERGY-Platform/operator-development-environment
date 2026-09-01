@@ -95,7 +95,12 @@ const (
 // misconfigured identity provider look like a broken Ray cluster.
 func (s *Service) jobToken(ctx context.Context, bearer string) (jobCredential, []string) {
 	session := jobCredential{
-		Token: bearer,
+		// The caller's bearer arrives with its "Bearer " prefix still attached —
+		// jwt.Parse keeps the original string and only strips the prefix to parse.
+		// The job's wrapper client builds its own "Bearer " header from what it is
+		// given, so passing the prefix through produces "Bearer Bearer ey..." and a
+		// 401 that Operator Lib reports as an expired token.
+		Token: strings.TrimPrefix(bearer, "Bearer "),
 		Credential: Credential{
 			Source:             credentialSession,
 			ExpiresWithSession: true,

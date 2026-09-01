@@ -310,7 +310,7 @@ function Resolution({ result }: { result: SelectionResult }) {
       >
         {result.criteria.length === 0 && <Muted>Nothing was queried.</Muted>}
         {result.criteria.length > 0 && (
-          <Table className="grid">
+          <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Function</TableHead>
@@ -398,7 +398,7 @@ function Resolved({ result }: { result: SelectionResult }) {
       </Muted>
 
       {ranked && (
-        <Table className="grid candidates">
+        <Table className="candidates">
           <TableHeader>
             <TableRow>
               <TableHead>#</TableHead>
@@ -436,7 +436,7 @@ function Resolved({ result }: { result: SelectionResult }) {
           <Muted>The criteria matched no device type on this platform.</Muted>
         )}
         {result.selectables.length > 0 && (
-          <Table className="grid">
+          <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Device type</TableHead>
@@ -510,7 +510,7 @@ function Resolved({ result }: { result: SelectionResult }) {
 
       {result.candidate_devices.length > 0 && (
         <Section title={`Devices (${result.candidate_devices.length})`} defaultOpen={false}>
-          <Table className="grid">
+          <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Device</TableHead>

@@ -49,7 +49,7 @@ by being disproved.
 | D3 | Profiling is per-device/per-series. A separate **relational profiler** handles multi-device conditional patterns, scoped by the aspect hierarchy. |
 | D4 | Data exposure to the LLM is a **developer-controlled three-tier toggle**, enforced server-side (§3.2). |
 | D5 | Public hosting via proxy. **Keycloak** auth, `developer` realm role required. All platform reads use the **user's token** (on-behalf-of), never a service account. |
-| D6 | Ray/MLflow UI embedding is **probed at runtime**; falls back to link-only on framing failure. |
+| D6 | Ray and MLflow are **linked, never embedded**. The panes open a job and a run in a new tab. Replaces the runtime framing probe: it was built, and a dashboard that does frame is still a second application's chrome inside a pane too narrow for it, which is worth less than the link it displaced. |
 | D7 | Providers: Anthropic API, OpenAI, local OpenAI-compatible, plus a **local `claude` CLI wrapper** for development without an API key. |
 | D8 | **Central** LLM API key. Per-user and global limits configurable by the `admin` realm role. |
 | D9 | Repo-based only. GitHub OAuth; select or create repo; CI workflow ensured on creation. Registry `ghcr.io`, changeable by editing repo files. |
@@ -105,7 +105,7 @@ These are separate questions. **The UI decision stands:** ODE is a standalone SP
   pkg/relations/    aspect-scoped alignment, contingency, rule candidates
   pkg/kernel/       JupyterHub client: spawn, kernel lifecycle, execution
   pkg/repo/         GitHub OAuth, clone, scaffold, commit, push
-  pkg/experiments/  Ray job submission, MLflow query, embed probe
+  pkg/experiments/  Ray job submission, MLflow query, result summary
   pkg/session/      project state, confirmation overrides, quota accounting
                               │
    ┌────────────┬─────────────┼───────────┬──────────┬────────────┐

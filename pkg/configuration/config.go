@@ -425,7 +425,7 @@ type ConfigStruct struct {
 	// RayUrl and MlflowUrl are the *API* bases ODE calls. RayDashboardUrl and
 	// MlflowUiUrl are what a browser should open, which is routinely a different
 	// host: a cluster-internal service and an ingress-exposed UI. They are what the
-	// embed probe of D6 asks and what the pane links to.
+	// panes link to.
 	//
 	// The two tokens are the service accounts §3.1 item 5 permits — the only place
 	// in ODE where one is legitimate, because a Ray cluster and a tracking server
@@ -493,12 +493,6 @@ type ConfigStruct struct {
 	// bound that fits a status probe cannot fit a multi-megabyte upload.
 	ExperimentRequestTimeout string `json:"experiment_request_timeout"`
 	ExperimentUploadTimeout  string `json:"experiment_upload_timeout"`
-
-	// The framing probe of D6. ExperimentEmbedTtl is how long a verdict is cached;
-	// ExperimentEmbedTimeout bounds one probe and is short, because an unreachable
-	// service is a normal answer and the pane is waiting for it.
-	ExperimentEmbedTtl     string `json:"experiment_embed_ttl"`
-	ExperimentEmbedTimeout string `json:"experiment_embed_timeout"`
 
 	// The Keycloak token exchange of §3.1 item 6, and the risk register's "token
 	// expiry vs. long Ray jobs" row.
@@ -836,12 +830,6 @@ func applyDefaults(config Config) {
 	}
 	if config.ExperimentUploadTimeout == "" {
 		config.ExperimentUploadTimeout = "300s"
-	}
-	if config.ExperimentEmbedTtl == "" {
-		config.ExperimentEmbedTtl = "10m"
-	}
-	if config.ExperimentEmbedTimeout == "" {
-		config.ExperimentEmbedTimeout = "5s"
 	}
 	if config.KeycloakRealm == "" {
 		config.KeycloakRealm = "master"

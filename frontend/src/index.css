@@ -1183,37 +1183,22 @@
 
   /* --- experiments --- */
 
-  .exp-list,
-  .exp-embeds,
-  .exp-dashboards {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-  }
-
-  .exp-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    border-radius: var(--radius-md);
-  }
-
-  .exp-row:hover,
+  /*
+    The run list is a real table: its columns only line up while the browser
+    lays it out as one. A flex row here detaches the header from the body,
+    which is what the column widths did before.
+  */
   .exp-row.selected {
     background: var(--accent);
   }
 
   .exp-open {
-    display: grid;
-    flex: 1;
-    gap: 0.1rem;
     padding: 0.35rem 0.5rem;
     text-align: left;
     min-width: 0;
   }
 
   .exp-criterion,
-  .exp-embed,
   .exp-proposal,
   .exp-decision {
     display: flex;
@@ -1224,8 +1209,7 @@
     padding: 0.6rem;
   }
 
-  .exp-criterion-head,
-  .exp-embed-head {
+  .exp-criterion-head {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -1233,11 +1217,14 @@
     gap: 0.5rem;
   }
 
-  .exp-frame {
-    width: 100%;
-    min-height: 22rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+  /* Where a pair of pop-outs sits together: a pane header, a run's submission, a
+     launch card. The links themselves are styled on the component (`Popout`); this
+     is only how two of them share a line. */
+  .exp-links {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
   }
 
   /* --- exploration: the chart and its legend --- */
