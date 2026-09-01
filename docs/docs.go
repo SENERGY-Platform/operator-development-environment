@@ -6360,6 +6360,73 @@ const docTemplate = `{
                 }
             }
         },
+        "experiments.Failure": {
+            "type": "object",
+            "properties": {
+                "exception": {
+                    "description": "Exception is the class, as Python named it: \"ValueError\",\n\"ray.exceptions.RayTaskError\". Empty when the last line of the traceback did\nnot look like one, in which case the whole line is the Message.",
+                    "type": "string"
+                },
+                "frames": {
+                    "description": "Frames are the last maxFailureFrames of the traceback, innermost last, the\nway Python prints them.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/experiments.Frame"
+                    }
+                },
+                "masked_for_tier": {
+                    "description": "MaskedFor names the exposure tier this extract has been masked for, and is\nempty on the extract as it came out of the log. Empty therefore means \"raw\",\nwhich is what the developer's own route serves — so a reader can always tell\nwhich of the two they are holding.",
+                    "type": "string"
+                },
+                "masked_literals": {
+                    "description": "MaskedLiterals counts what masking replaced, so a model reading ` + "`" + `[value]` + "`" + `\nthree times can tell that three values were withheld rather than that the\nmessage was written that way.",
+                    "type": "integer"
+                },
+                "message": {
+                    "description": "Message is the exception's own text, masked for a tier when this Failure is\nbound for a model's context (MaskedFor).",
+                    "type": "string"
+                },
+                "not_diagnosed": {
+                    "description": "NotDiagnosed is set exactly when Exception and Message are both empty.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/experiments.NotDiagnosed"
+                        }
+                    ]
+                },
+                "truncated": {
+                    "description": "Truncated says the message was longer than maxFailureMessage.",
+                    "type": "boolean"
+                }
+            }
+        },
+        "experiments.FailureReason": {
+            "type": "string",
+            "enum": [
+                "no_traceback",
+                "no_output",
+                "logs_unavailable"
+            ],
+            "x-enum-varnames": [
+                "ReasonNoTraceback",
+                "ReasonNoOutput",
+                "ReasonLogsUnavailable"
+            ]
+        },
+        "experiments.Frame": {
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string"
+                },
+                "function": {
+                    "type": "string"
+                },
+                "line": {
+                    "type": "integer"
+                }
+            }
+        },
         "experiments.InputTopic": {
             "type": "object",
             "properties": {
@@ -6511,6 +6578,20 @@ const docTemplate = `{
                 }
             }
         },
+        "experiments.NotDiagnosed": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "string"
+                },
+                "reason": {
+                    "$ref": "#/definitions/experiments.FailureReason"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
         "experiments.ResourceUsage": {
             "type": "object",
             "properties": {
@@ -6555,6 +6636,14 @@ const docTemplate = `{
                 },
                 "experiment_id": {
                     "type": "string"
+                },
+                "failure": {
+                    "description": "Failure is the last exception of a run that failed, or why there is none\n(D34). Present exactly when the status is a failure, so a summary without one\nis a run that did not fail rather than one that failed unaccountably.\n\nAs built it is **raw**, and the developer's own route serves it that way. Every\npath into a model's context goes through MaskedFor, which is where §3.2's\nladder is applied to it; failure.go says why the split is on that line.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/experiments.Failure"
+                        }
+                    ]
                 },
                 "finished": {
                     "description": "Finished says the run is in a state it will not leave, so a model can tell a\nfinal metric from a snapshot of one still moving.",
@@ -9093,6 +9182,11 @@ const docTemplate = `{
         "tools.Tier": {
             "type": "integer",
             "enum": [
+                0,
+                1,
+                2,
+                0,
+                2,
                 0,
                 1,
                 2,

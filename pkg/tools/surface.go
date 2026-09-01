@@ -1339,6 +1339,13 @@ func NewSurface(deps Deps) (*Registry, error) {
 				"recorded metrics, you do not read a training process's output. A run that " +
 				"has not finished answers with a snapshot and says so — do not report a " +
 				"mid-run metric as a result.\n\n" +
+				"A run that **failed** carries a `failure` block instead of useful metrics: " +
+				"the exception class, the innermost frames, and its message with every " +
+				"literal replaced by `[value]` below tier L2 — a value in a traceback is a " +
+				"value (§3.2). Read `masked_literals` as \"this many values were withheld\", " +
+				"not as part of the message. Where the block says `not_diagnosed`, the job " +
+				"left no traceback: say so and say that the whole output is in the " +
+				"developer's own log pane, which you cannot read and they can.\n\n" +
 				"`comparison_to_previous` carries `lower_is_better` beside each direction, " +
 				"and it is inferred from the metric's *name*. Say which way you read a metric " +
 				"when it matters rather than asserting an improvement the naming happened to " +

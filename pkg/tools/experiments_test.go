@@ -377,6 +377,69 @@ func TestTheResultsToolReturnsTheSummaryAndNeverALog(t *testing.T) {
 	}
 }
 
+// The tool result is a model's context, so a failed run's exception arrives masked.
+//
+// The mask is applied at this boundary rather than in the service, so this is the
+// test that fails if the call goes missing: the developer's own HTTP route serves
+// the same summary unmasked, and nothing in the service would notice.
+func TestTheResultsToolMasksAFailedRunsExceptionAtTheSessionsTier(t *testing.T) {
+	failed := experiments.Summary{
+		RunID:    "run-1",
+		Status:   experiments.StatusFailed,
+		Finished: true,
+		Metrics:  map[string]float64{},
+		Failure: &experiments.Failure{
+			Exception: "ValueError",
+			Message:   "Input X contains NaN in column 'power_kw' at 3 of 43200 rows",
+			Frames:    []experiments.Frame{{File: "train.py", Line: 39, Function: "train_once"}},
+		},
+	}
+
+	for _, expect := range []struct {
+		tier   Tier
+		masked bool
+	}{{L0, true}, {L1, true}, {L2, false}} {
+		fake := &fakeExperiments{summary: failed}
+		dispatcher, err := NewDispatcher(experimentSurface(t, fake), nil, &sequentialIDs{})
+		if err != nil {
+			t.Fatalf("NewDispatcher: %v", err)
+		}
+		result := dispatcher.Dispatch(context.Background(),
+			Request{Token: "Bearer t", UserSub: "user-1", SessionID: "sess-1", Tier: expect.tier},
+			Call{ID: "c1", Name: "get_experiment_results",
+				Input: json.RawMessage(`{"experiment_id": "exp-1"}`)})
+		if result.Outcome != OutcomeOK {
+			t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+		}
+		summary, ok := result.Content.(experiments.Summary)
+		if !ok {
+			t.Fatalf("content = %T, want the §5.13 summary", result.Content)
+		}
+		if summary.Failure == nil {
+			t.Fatal("the failed run's exception did not reach the tool result at all")
+		}
+		if summary.Failure.MaskedFor != expect.tier.String() {
+			t.Errorf("masked_for_tier = %q, want %s: an unmasked extract in a tool "+
+				"result is indistinguishable from a masked one to the model reading it",
+				summary.Failure.MaskedFor, expect.tier)
+		}
+		carriesValue := strings.Contains(summary.Failure.Message, "power_kw")
+		if expect.masked && carriesValue {
+			t.Errorf("%s message = %q, want the literals withheld",
+				expect.tier, summary.Failure.Message)
+		}
+		if !expect.masked && !carriesValue {
+			t.Errorf("%s message = %q, want it as raised: L2 exposes values already",
+				expect.tier, summary.Failure.Message)
+		}
+		// The class and the location are never masked, at any tier: a model told
+		// only that something failed cannot name a next step.
+		if summary.Failure.Exception != "ValueError" || len(summary.Failure.Frames) != 1 {
+			t.Errorf("%s withheld the class or the frames: %+v", expect.tier, summary.Failure)
+		}
+	}
+}
+
 // §5.8 denies a tool for every capability on its list, and nothing in M8 adds one.
 func TestM8AddsNoDeniedCapability(t *testing.T) {
 	registry := experimentSurface(t, &fakeExperiments{})

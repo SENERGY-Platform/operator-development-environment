@@ -45,6 +45,13 @@ const ProposalMarker = "NEXT STEP:"
 // run" rather than "no change", `not_computed` with a reason. Flattening it to
 // English here would be ODE interpreting the run, which is the model's job in this
 // turn and not the backend's.
+//
+// What the message says about logs is bounded to this context on purpose. It used
+// to read "there are no logs and there is no tool that would fetch them", which is
+// false about the system: Ray keeps the driver output, `GET /experiments/:id/logs`
+// serves it and the developer's own pane shows it. §5.13 keeps logs out of a
+// model's context, not out of existence — and a model told the stronger thing
+// repeated it to the developer, who had the logs open at the time.
 func injectedMessage(summary experiments.Summary, record experiments.Experiment) string {
 	encoded, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
@@ -56,9 +63,15 @@ func injectedMessage(summary experiments.Summary, record experiments.Experiment)
 		"A training run you launched from this conversation has finished.\n\n"+
 			"This is ODE's structured summary of it (§5.13). It is the whole of what "+
 			"you get about this run: params, metrics, tags, the comparison against the "+
-			"previous run and the developer's own evaluation criteria. There are no logs "+
-			"and there is no tool that would fetch them.\n\n"+
+			"previous run and the developer's own evaluation criteria. **No line of its log "+
+			"output is part of it** — a failed run's last exception is extracted into "+
+			"`failure`, and nothing else from the output travels, reaches you or could be "+
+			"fetched by any tool of yours. The developer has it, on a route of their own — "+
+			"so where this document does not explain what happened, say that the log would "+
+			"and leave the reading of it to them. Do not tell them the run produced none.\n\n"+
 			"```json\n%s\n```\n\n", encoded)
+
+	builder.WriteString(failureGuidance(summary))
 
 	builder.WriteString(
 		"Read it and answer the developer with:\n\n" +
@@ -80,6 +93,52 @@ func injectedMessage(summary experiments.Summary, record experiments.Experiment)
 
 	fmt.Fprintf(builder, "Experiment %s, MLflow run %s, commit %s.",
 		record.ID, summary.RunID, shortSHA(summary.CommitSHA))
+	return builder.String()
+}
+
+// failureGuidance is what to say about the `failure` block, or nothing.
+//
+// It is a paragraph of its own rather than part of the standing text because a run
+// that succeeded has no failure block, and a general instruction about a field that
+// is not there is how a model comes to describe one that does not exist. For a
+// failed run it is the *only* part of the summary with anything in it: no metrics,
+// criteria that could not be evaluated, an empty comparison. So the turn's whole
+// question changes, and the message says so instead of asking for a reading of
+// numbers that are not there.
+func failureGuidance(summary experiments.Summary) string {
+	failure := summary.Failure
+	if failure == nil {
+		return ""
+	}
+
+	if failure.NotDiagnosed != nil {
+		return fmt.Sprintf("This run **failed and left no readable exception** "+
+			"(`%s`: %s). So there is no cause in this document, and there is no cause "+
+			"available to you at all: say that plainly, say that the job's whole output "+
+			"is in the developer's own log pane where you cannot read it and they can, "+
+			"and make your next step something that would produce the missing evidence "+
+			"— not a guess at what failed.\n\n",
+			failure.NotDiagnosed.Reason, failure.NotDiagnosed.Detail)
+	}
+
+	builder := &strings.Builder{}
+	builder.WriteString("This run **failed**, and `failure` carries its last exception: " +
+		"the class, the innermost frames of the traceback, and the message. That is what " +
+		"there is to interpret — a failed run logs few metrics or none, and its criteria " +
+		"could not be evaluated, so read the exception rather than the empty numbers.\n\n")
+
+	if failure.MaskedLiterals > 0 {
+		fmt.Fprintf(builder, "The message has %d literal(s) replaced by `%s`, because "+
+			"exposure tier %s does not expose values and a value in a traceback is a value "+
+			"(§3.2). Read `%s` as \"a value was withheld here\" — do not guess what it was, "+
+			"and do not report the placeholder as the text the exception carried. The "+
+			"developer sees the message as it was raised, in their own pane.\n\n",
+			failure.MaskedLiterals, "[value]", failure.MaskedFor, "[value]")
+	}
+
+	builder.WriteString("The frames are the developer's own files and line numbers. Name " +
+		"them: a next step that points at a line is one they can act on, and the file " +
+		"the exception was raised in is the one thing here that says where to look.\n\n")
 	return builder.String()
 }
 

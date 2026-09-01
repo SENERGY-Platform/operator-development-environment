@@ -1086,7 +1086,9 @@ func (s *Service) Results(ctx context.Context, req Request, id string) (Summary,
 	previousRun := s.previousRun(ctx, record)
 
 	criteria, problem := s.criteriaFor(ctx, req, record)
-	return buildSummary(record, run, previousRun, criteria, problem), nil
+	summary := buildSummary(record, run, previousRun, criteria, problem)
+	summary.Failure = s.failureFor(ctx, summary, record)
+	return summary, nil
 }
 
 // Summarise builds §5.13's summary with ODE's own service credential and no
@@ -1122,7 +1124,38 @@ func (s *Service) Summarise(ctx context.Context, record Experiment) (Summary, er
 			"read on their behalf, so the criteria are applied when they are next "+
 			"connected",
 		EvaluationCriteriaPath)
-	return buildSummary(record, run, previousRun, CriteriaDocument{}, &problem), nil
+	summary := buildSummary(record, run, previousRun, CriteriaDocument{}, &problem)
+	summary.Failure = s.failureFor(ctx, summary, record)
+	return summary, nil
+}
+
+// failureFor is D34's extract, or nil for a run that did not fail.
+//
+// One Ray call, and only for a failed run: a summary of a run that worked has no
+// question this could answer, and the call would be spent on every poll of every
+// finished run to produce a nil.
+//
+// Like previousRun, every failure here is a warning rather than an error. A run's
+// metrics do not depend on its log being readable, and a summary withheld because
+// Ray would not answer for the output would be the worse trade in both directions:
+// the developer loses the numbers as well.
+func (s *Service) failureFor(ctx context.Context, summary Summary, record Experiment) *Failure {
+	if summary.Status != StatusFailed {
+		return nil
+	}
+	if record.SubmissionID == "" {
+		return notDiagnosed(ReasonLogsUnavailable,
+			"the run has no Ray submission, so there is no output to read")
+	}
+	logs, _, err := s.logTail(ctx, record.SubmissionID)
+	if err != nil {
+		slog.WarnContext(ctx, "a failed run's output could not be read for its summary",
+			"experiment", record.ID, "error", err)
+		return notDiagnosed(ReasonLogsUnavailable,
+			"the job's output could not be read from Ray. The developer's own log route "+
+				"is the same read and may answer")
+	}
+	return extractFailure(logs)
 }
 
 // previousRun is what §5.13's comparison_to_previous compares against, or nil.
@@ -1162,16 +1195,26 @@ func (s *Service) Logs(ctx context.Context, req Request, id string) (LogPage, er
 		return LogPage{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 
-	logs, err := s.ray.logs(ctx, record.SubmissionID)
+	logs, truncated, err := s.logTail(ctx, record.SubmissionID)
 	if err != nil {
 		return LogPage{}, err
 	}
-	page := LogPage{SubmissionID: record.SubmissionID, Logs: logs}
-	if len(page.Logs) > s.opts.MaxLogBytes {
-		// The tail rather than the head: a failure is at the end of a log, and a
-		// developer reading one has come for the traceback.
-		page.Logs = page.Logs[len(page.Logs)-s.opts.MaxLogBytes:]
-		page.Truncated = true
+	return LogPage{SubmissionID: record.SubmissionID, Logs: logs, Truncated: truncated}, nil
+}
+
+// logTail reads a job's output, bounded by MaxLogBytes.
+//
+// The tail rather than the head, for both of its callers: a failure is at the end
+// of a log, and a developer opening one has come for the traceback. Shared so that
+// D34's extract cannot end up reading a different window than the pane the
+// developer checks it against.
+func (s *Service) logTail(ctx context.Context, submissionID string) (string, bool, error) {
+	logs, err := s.ray.logs(ctx, submissionID)
+	if err != nil {
+		return "", false, err
 	}
-	return page, nil
+	if len(logs) > s.opts.MaxLogBytes {
+		return logs[len(logs)-s.opts.MaxLogBytes:], true, nil
+	}
+	return logs, false, nil
 }

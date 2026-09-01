@@ -144,6 +144,78 @@ explaining that `evaluation.yaml` is read on the developer's behalf. It is a fac
 about the summary rather than about the criterion, and the criteria are graded the
 moment a real token exists.
 
+## A failed run says why, and the tier decides how much of why (D34)
+
+The case §5.13's summary was worst at is the one a developer meets most: a run that
+failed. No metrics, criteria that could not be evaluated, an empty comparison — the
+document is structurally complete and materially empty, and the assistant's whole
+reading of it was "it failed". The injected message made that worse by asserting
+**"there are no logs and there is no tool that would fetch them"**, which is false
+about ODE: Ray keeps the driver output, `GET /experiments/{id}/logs` serves it, and
+the developer's pane shows it. A model told the stronger thing repeated it to
+developers who were looking at the log at the time.
+
+So a failed run's summary carries a `failure` block:
+
+```json
+"failure": {
+  "exception": "ValueError",
+  "message": "Input X contains NaN in column [value] at [value] of [value] rows",
+  "frames": [{"file": "train.py", "line": 39, "function": "train_once"},
+             {"file": "base.py", "line": 1145, "function": "wrapper"}],
+  "masked_for_tier": "L0", "masked_literals": 3
+}
+```
+
+Three properties make it not a log, and they are the whole of why this is an
+application of §5.13 rather than an exception to it:
+
+**Extracted, not excerpted.** A traceback has a shape — `File "…", line N, in f`
+frames and a `Class: message` line — and only that shape is read. What the job
+printed, what it loaded, what the cluster said about the exit code: none of it has a
+field to travel in. The last traceback in the log wins, because a chained one ends
+with the exception that actually stopped the job.
+
+**Bounded before it is built.** Three frames and four hundred characters, as
+constants rather than configuration: they are properties of what a traceback is, not
+of a deployment. Frames are cut to the innermost, because the outermost is
+`<module>` in the entrypoint and every traceback in a Ray job has it. The file is a
+base name, because the path is a Ray session directory and a package hash.
+
+**Masked below L2.** §3.2's ladder applies to the one field here that can carry a
+value, and an exception message is exactly where one appears — pandas prints the
+offending cell, numpy prints the offending number. L0 and L1 read the class, the
+frames and the words with every literal replaced by `[value]`; L2 reads the message
+as it was raised, because L2 already exposes downsampled series. L1 is on the masked
+side deliberately: "aggregates are still data" is the step L1 *is*, and a raw cell
+out of a developer's series is past it. A credential-shaped string is withheld at
+every tier, for the reason `run_code` redacts the platform token — a job that echoes
+its environment prints the credential §5.12 minted for it, and no tier makes that
+something to store in a conversation.
+
+`masked_literals` travels beside the message so a model can read `[value]` as "a
+value was withheld here" rather than as the text the exception carried, and the
+injected message says so in words. A run that left no traceback at all — killed for
+memory, dead before the interpreter started — carries `not_diagnosed` with a reason
+instead, which is D24 again: "no exception" must not read as "no reason".
+
+**Where the mask is applied, and why not earlier.** The extract is built raw and
+masked at each boundary into a model's context: `get_experiment_results` in
+`pkg/tools`, and the injected message in `pkg/interpret`. Both have a test that
+fails if the call goes missing. The alternative — masking at build time, so no
+unmasked string ever exists in a `Summary` — is the fail-closed shape and was
+rejected for one reason: the developer's own route serves this document too, the
+extract is their data read with their own token, and a pane that showed them
+`[value]` where their own log says `24,7 kWh` would be ODE withholding a developer's
+data from the developer. The cost is that a third path to a model would have to
+remember to mask; `Summary.MaskedFor` is where that is written down.
+
+**What was not built.** No tool. §5.8's table is unchanged and there is still no way
+for a model to ask for a run's output — it reads what the summary carries or
+nothing. And no extract for a run that succeeded: a summary with no `failure` block
+is a run that did not fail, and inventing an empty one would make "failed
+unaccountably" indistinguishable from "worked".
+
 ## The proposal, and the three answers
 
 The injected message asks for a reading of the numbers and **one concrete

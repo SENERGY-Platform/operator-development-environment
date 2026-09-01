@@ -452,3 +452,34 @@ redacted from what `run_code` returns, so a `print(os.environ)` while debugging
 does not put a live credential into a conversation that is persisted to Postgres.
 That is hygiene, not a boundary. Code that deliberately encodes the token defeats
 it, and nothing here pretends otherwise.
+
+## The second place the tier binds: a failed run's exception (D34)
+
+Every tool call goes through one `Dispatch`, and for eighteen tools that is the
+whole tier argument. D34 adds the one place where the ladder is applied to the
+*content* of an answer rather than to the right to ask: a failed run's summary
+carries its last exception, and an exception message is where a value out of the
+developer's own series reaches prose.
+
+`Summary.MaskedFor(tier)` is that application, and it is called at each boundary
+into a model's context — `get_experiment_results` in `pkg/tools`, the injected
+interpretation turn in `pkg/interpret`. L0 and L1 read the class, the frames and the
+words with every literal replaced by `[value]`; L2 reads the message as raised.
+Neither the class nor the frames is masked at any tier: they are the identity of
+code, and a failure whose location was withheld would be worth nothing.
+
+Two things about it are worth knowing before changing anything here.
+
+**The tier type moved.** It lives in `pkg/exposure` now, and `pkg/tools` names it
+through an alias — `type Tier = exposure.Tier` — so every existing `tools.L0` still
+compiles and there is one definition of what L1 permits. It had to move because
+`pkg/experiments` enforces it too and cannot import `pkg/tools`, which imports it.
+That cycle is the clearest argument that the tier was never a property of the tool
+layer: it is a governance concept (§3.2, D4).
+
+**The developer's own route does not mask.** `GET /experiments/{id}/results` serves
+the extract as it was raised, because it is the developer's data read with their own
+token — and the whole log is on the route beside it. So masking is a boundary rule
+rather than a build-time one, and a third path from a `Summary` to a model would
+have to call `MaskedFor` itself. Both existing paths have a test that fails if the
+call goes missing; that is the whole of what keeps this honest.

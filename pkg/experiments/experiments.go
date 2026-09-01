@@ -174,9 +174,14 @@ type LaunchResult struct {
 // Summary is §5.13's compact structured summary: what the LLM is given about a
 // finished run, and the only shape it is ever given.
 //
-// Params, metrics and tags — never logs, never an artifact, never stdout. §5.13
-// is explicit about that, and the reason is the same as §4's: an LLM reading raw
-// output is an LLM computing from raw data.
+// Params, metrics and tags — never an artifact, never stdout, and never a log.
+// §5.13 is explicit about that, and the reason is the same as §4's: an LLM reading
+// raw output is an LLM computing from raw data.
+//
+// The one thing that came out of a log is Failure, and it is not an exception to
+// that rule but an application of it: a failed run's exception class, the last few
+// frames and a message whose literals are masked below L2 (D34). No line of the log
+// itself has a field to travel in, and there is still no tool that would fetch one.
 type Summary struct {
 	RunID        string `json:"run_id"`
 	ExperimentID string `json:"experiment_id"`
@@ -224,6 +229,14 @@ type Summary struct {
 	// going, that there was nothing to compare against, that Ray and MLflow
 	// disagreed.
 	Note string `json:"note,omitempty"`
+	// Failure is the last exception of a run that failed, or why there is none
+	// (D34). Present exactly when the status is a failure, so a summary without one
+	// is a run that did not fail rather than one that failed unaccountably.
+	//
+	// As built it is **raw**, and the developer's own route serves it that way. Every
+	// path into a model's context goes through MaskedFor, which is where §3.2's
+	// ladder is applied to it; failure.go says why the split is on that line.
+	Failure *Failure `json:"failure,omitempty"`
 }
 
 // MetricDelta is one metric, this run against the previous.

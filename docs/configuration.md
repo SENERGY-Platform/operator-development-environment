@@ -277,7 +277,7 @@ A run is submitted from a commit or it is not submitted — see
 | `experiment_kafka_bootstrap` | empty | The brokers a run's deployment config carries, for an input topic replayed from Kafka rather than read from timescale. Empty leaves a run able to train from timescale-backed topics only |
 | `experiment_max_package_bytes` | `16777216` | Bounds the job archive, and exceeding it is **reported rather than truncated**: a job that ran against a partial repository fails in a way nobody could diagnose. It also bounds ODE's own memory, since the archive is held whole and travels back base64-encoded. What it catches in practice is a checked-in model file or a data directory |
 | `experiment_max_env_vars` / `experiment_max_env_value_bytes` | `32`, `4096` | A launch arrives from an HTTP body or from an LLM tool call, and neither is trusted input |
-| `experiment_max_log_bytes` | `1048576` | Bounds the developer's own log route. Logs never reach a model (§5.13) |
+| `experiment_max_log_bytes` | `1048576` | Bounds the developer's own log route, and the window D34's failure extract is read out of — the same tail, so the exception in a summary is one the pane beside it shows. No log line reaches a model (§5.13) |
 | `experiment_request_timeout` | `30s` | Bounds one Ray or MLflow API call |
 | `experiment_upload_timeout` | `300s` | Bounds the one request that moves the whole archive. Separate for the reason the profiler's two read timeouts are separate: one figure for both means either the probe hangs or the upload is cut off mid-body |
 

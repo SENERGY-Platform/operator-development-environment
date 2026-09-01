@@ -27,6 +27,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/admin"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/interpret"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 )
@@ -189,6 +190,156 @@ func TestACompletedRunProducesAnInterpretationAndAConcreteNextProposal(t *testin
 	}
 	if strings.Contains(given, "logs") && strings.Contains(given, "Traceback") {
 		t.Error("a log reached the model's context (§5.13: never raw logs)")
+	}
+}
+
+// The message ODE injects does not tell the model the run produced no output.
+//
+// §5.13 keeps logs out of a model's context. It does not make them stop existing:
+// the job's driver output is on the developer's own route, which this test reads to
+// prove it. The message used to say "there are no logs and there is no tool that
+// would fetch them", and a model passed that on to a developer who had the log pane
+// open beside the conversation — a false statement about ODE, in ODE's own voice.
+func TestTheInjectedMessageDoesNotDenyThatTheRunProducedLogs(t *testing.T) {
+	h := newHarness(t, interpretingReply)
+	h.ready()
+	launched := h.launch()
+	const output = "Traceback (most recent call last): RuntimeError: the run's own output"
+	h.ray.SetLogs(launched.SubmissionID, output)
+	h.finish(launched, map[string]float64{"rmse": 0.31})
+
+	h.poll()
+	defer h.connectDeveloper()()
+	h.deliver()
+
+	given := h.injectedText(t)
+
+	// The constraint §5.13 does state, unchanged: not a character of it in context.
+	if strings.Contains(given, output) {
+		t.Error("the job's output reached the model's context (§5.13: never raw logs)")
+	}
+
+	// And the output exists, where the developer reads it.
+	page, err := h.experiments.Logs(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("logs: %v", err)
+	}
+	if page.Logs != output {
+		t.Fatalf("logs = %q, want the job's own output on the developer's route", page.Logs)
+	}
+
+	// So the message must not deny it.
+	for _, denial := range []string{"There are no logs", "there are no logs",
+		"no logs and there is no tool"} {
+		if strings.Contains(given, denial) {
+			t.Errorf("the injected message tells the model %q, although the developer's "+
+				"own route answers with %d characters of them", denial, len(page.Logs))
+		}
+	}
+	if !strings.Contains(given, "The developer has it") {
+		t.Error("the injected message does not say who does have the run's output, so a " +
+			"model that cannot explain a run from the numbers has nowhere to point")
+	}
+}
+
+// A failed run is interpreted from its exception, and the exception is masked at
+// the session's own tier (D34).
+//
+// This is the second of the two paths a summary takes into a model's context, and
+// the mask is applied at this boundary — so this test is what fails if the call
+// goes missing here while pkg/tools keeps its own.
+func TestAFailedRunsExceptionIsInjectedMaskedAtTheSessionsTier(t *testing.T) {
+	const output = `loading 43200 rows from urn:infai:ses:export:9f2c1b7e
+Traceback (most recent call last):
+  File "/tmp/ray/session_1/runtime_resources/working_dir_files/_ray_pkg_9c1/train.py", line 39, in train_once
+    model.fit(X, y)
+ValueError: Input X contains NaN in column 'power_kw' at 3 of 43200 rows
+`
+
+	for _, expect := range []struct {
+		tier   exposure.Tier
+		masked bool
+	}{{exposure.L0, true}, {exposure.L1, true}, {exposure.L2, false}} {
+		t.Run(expect.tier.String(), func(t *testing.T) {
+			h := newHarness(t, interpretingReply)
+			h.ready()
+			if _, err := h.chat.SetTier(context.Background(), testUserSub, h.session.ID,
+				expect.tier); err != nil {
+				t.Fatalf("SetTier: %v", err)
+			}
+
+			launched := h.launch()
+			h.ray.SetLogs(launched.SubmissionID, output)
+			h.mlflow.Finish(h.t, launched.RunID, "FAILED", map[string]float64{})
+			h.ray.SetStatus(launched.SubmissionID, experiments.StatusFailed)
+
+			h.poll()
+			defer h.connectDeveloper()()
+			h.deliver()
+
+			given := h.injectedText(t)
+
+			// The exception reaches the model, because for a failed run it is the whole
+			// of what the summary has to say.
+			if !strings.Contains(given, "ValueError") ||
+				!strings.Contains(given, "Input X contains NaN") {
+				t.Fatalf("the injected message carries no exception:\n%s", given)
+			}
+			// And the frame, which is what makes a next step actionable.
+			if !strings.Contains(given, "train.py") || !strings.Contains(given, "39") {
+				t.Error("the injected message names no file and line")
+			}
+			// Never the log itself, at any tier.
+			for _, forbidden := range []string{"loading", "urn:infai:ses:export", "Traceback"} {
+				if strings.Contains(given, forbidden) {
+					t.Errorf("a log line reached the model's context: %q", forbidden)
+				}
+			}
+
+			carriesValue := strings.Contains(given, "power_kw")
+			if expect.masked {
+				if carriesValue {
+					t.Errorf("a value from the developer's series reached a %s session:\n%s",
+						expect.tier, given)
+				}
+				// And the model is told what the placeholder means, so it does not report
+				// `[value]` as the text the exception carried.
+				if !strings.Contains(given, "[value]") ||
+					!strings.Contains(given, "a value was withheld here") {
+					t.Error("the message masks literals without saying that it did")
+				}
+			} else if !carriesValue {
+				t.Errorf("L2 exposes values already, and the message was masked anyway:\n%s",
+					given)
+			}
+		})
+	}
+}
+
+// A run that failed with no traceback says so, and asks for evidence rather than a
+// guess at a cause.
+func TestAFailedRunWithNoTracebackAsksForEvidenceRatherThanACause(t *testing.T) {
+	h := newHarness(t, interpretingReply)
+	h.ready()
+	launched := h.launch()
+	h.ray.SetLogs(launched.SubmissionID,
+		"(raylet) node ran out of memory, killing worker\n")
+	h.mlflow.Finish(h.t, launched.RunID, "FAILED", map[string]float64{})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusFailed)
+
+	h.poll()
+	defer h.connectDeveloper()()
+	h.deliver()
+
+	given := h.injectedText(t)
+	if !strings.Contains(given, string(experiments.ReasonNoTraceback)) {
+		t.Errorf("the injected message does not say the run left no exception:\n%s", given)
+	}
+	if !strings.Contains(given, "log pane") {
+		t.Error("the model is not told who can read the output it cannot")
+	}
+	if strings.Contains(given, "raylet") {
+		t.Error("a log line reached the model's context")
 	}
 }
 

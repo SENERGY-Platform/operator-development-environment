@@ -2278,6 +2278,51 @@ export interface ExperimentSummary {
   started_at?: string;
   ended_at?: string;
   note?: string;
+  /** The last exception of a run that failed, or why there is none (D34).
+   *
+   * Present exactly when the status is a failure, so a summary without one is a run
+   * that did not fail rather than one that failed unaccountably. On this route it is
+   * the message as it was raised; a model reads it with its literals masked below
+   * tier L2, which is what `masked_for_tier` names when it is set. */
+  failure?: ExperimentFailure;
+}
+
+/** A failed run's last exception, extracted from its output rather than excerpted
+ * from it (D34).
+ *
+ * Exactly one half is set: an exception with its frames, or `not_diagnosed` naming
+ * why the job left none — killed for memory, stopped before the interpreter
+ * started. The whole output is on the log route beside this one. */
+export interface ExperimentFailure {
+  /** The class, as Python named it. Absent when the traceback's last line did not
+   * look like one, in which case the whole line is the message. */
+  exception?: string;
+  message?: string;
+  /** The innermost frames, in Python's own order: outermost first. */
+  frames?: ExperimentFailureFrame[];
+  /** The exposure tier this extract was masked for, and absent on the raw extract
+   * this route serves. Absent therefore means "as it was raised". */
+  masked_for_tier?: string;
+  /** How many literals masking replaced, so `[value]` in a message reads as a
+   * withheld value rather than as the exception's own words. */
+  masked_literals?: number;
+  truncated?: boolean;
+  /** Set exactly when there is no exception to carry. */
+  not_diagnosed?: ExperimentNotDiagnosed;
+}
+
+export interface ExperimentFailureFrame {
+  file: string;
+  line: number;
+  function?: string;
+}
+
+/** Why a failed run carries no exception. The same shape as a criterion's
+ * `not_computed`, for the same reason: a non-result names itself. */
+export interface ExperimentNotDiagnosed {
+  status: string;
+  reason: string;
+  detail: string;
 }
 
 /** The concrete next adjustment an interpretation proposed, or why there is none

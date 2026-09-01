@@ -966,6 +966,67 @@ definitions:
           developer's only one by then.
         type: string
     type: object
+  experiments.Failure:
+    properties:
+      exception:
+        description: |-
+          Exception is the class, as Python named it: "ValueError",
+          "ray.exceptions.RayTaskError". Empty when the last line of the traceback did
+          not look like one, in which case the whole line is the Message.
+        type: string
+      frames:
+        description: |-
+          Frames are the last maxFailureFrames of the traceback, innermost last, the
+          way Python prints them.
+        items:
+          $ref: '#/definitions/experiments.Frame'
+        type: array
+      masked_for_tier:
+        description: |-
+          MaskedFor names the exposure tier this extract has been masked for, and is
+          empty on the extract as it came out of the log. Empty therefore means "raw",
+          which is what the developer's own route serves — so a reader can always tell
+          which of the two they are holding.
+        type: string
+      masked_literals:
+        description: |-
+          MaskedLiterals counts what masking replaced, so a model reading `[value]`
+          three times can tell that three values were withheld rather than that the
+          message was written that way.
+        type: integer
+      message:
+        description: |-
+          Message is the exception's own text, masked for a tier when this Failure is
+          bound for a model's context (MaskedFor).
+        type: string
+      not_diagnosed:
+        allOf:
+        - $ref: '#/definitions/experiments.NotDiagnosed'
+        description: NotDiagnosed is set exactly when Exception and Message are both
+          empty.
+      truncated:
+        description: Truncated says the message was longer than maxFailureMessage.
+        type: boolean
+    type: object
+  experiments.FailureReason:
+    enum:
+    - no_traceback
+    - no_output
+    - logs_unavailable
+    type: string
+    x-enum-varnames:
+    - ReasonNoTraceback
+    - ReasonNoOutput
+    - ReasonLogsUnavailable
+  experiments.Frame:
+    properties:
+      file:
+        type: string
+      function:
+        type: string
+      line:
+        type: integer
+    type: object
   experiments.InputTopic:
     properties:
       filterType:
@@ -1105,6 +1166,15 @@ definitions:
       previous:
         type: number
     type: object
+  experiments.NotDiagnosed:
+    properties:
+      detail:
+        type: string
+      reason:
+        $ref: '#/definitions/experiments.FailureReason'
+      status:
+        type: string
+    type: object
   experiments.ResourceUsage:
     properties:
       duration_s:
@@ -1150,6 +1220,17 @@ definitions:
           for the same reason.
       experiment_id:
         type: string
+      failure:
+        allOf:
+        - $ref: '#/definitions/experiments.Failure'
+        description: |-
+          Failure is the last exception of a run that failed, or why there is none
+          (D34). Present exactly when the status is a failure, so a summary without one
+          is a run that did not fail rather than one that failed unaccountably.
+
+          As built it is **raw**, and the developer's own route serves it that way. Every
+          path into a model's context goes through MaskedFor, which is where §3.2's
+          ladder is applied to it; failure.go says why the split is on that line.
       finished:
         description: |-
           Finished says the run is in a state it will not leave, so a model can tell a
@@ -3258,6 +3339,11 @@ definitions:
     type: object
   tools.Tier:
     enum:
+    - 0
+    - 1
+    - 2
+    - 0
+    - 2
     - 0
     - 1
     - 2

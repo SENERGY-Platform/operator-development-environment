@@ -582,3 +582,15 @@ makes sure a developer said yes before the executor is ever reached.
 runs rather than refusing, so "how did the last one go" is one call. Called with
 one it returns the summary above — and there is no third tool, because the thing a
 model might want next is the log, and §5.13 says it does not get one.
+
+That last sentence stayed true and stopped being the whole answer with D34. A failed
+run's summary carries a bounded extract of its own last exception — class, innermost
+frames, message, with every literal masked below tier L2 — because the run's metrics
+say nothing and "it failed" is not an interpretation. The tool result is masked at
+the session's tier on the way out of the executor; the developer's own results route
+serves the extract as it was raised; the log itself still has a route and no tool.
+The reasoning, the ladder and the rejected alternatives are in
+[result-interpretation.md](result-interpretation.md).
+
+L0 is unaffected by that: the extract's class and frames are the identity of code
+rather than of data, and its message carries no literal below L2.

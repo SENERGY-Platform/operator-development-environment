@@ -684,13 +684,18 @@ Confirmations persist as session overrides, are re-injected into subsequent prof
 
 On completion, the backend pulls metrics and params from MLflow, builds a **compact structured summary** (never raw logs), injects it into chat context; the LLM interprets and proposes the next adjustment. The developer accepts, edits, or rejects.
 
+A run that **failed** carries one bounded extract of its own last exception besides — the class, the innermost frames, and the message — because its metrics say nothing and "it failed" is not an interpretation (D34). It is *extracted* rather than excerpted: a traceback has a shape and only that shape is read, so no log line has a field to travel in. A model reads the message with its literals masked below exposure tier L2, since a value in a traceback is a value (§3.2); the developer's own results route serves it as it was raised, and the log route beside it is still the only way to read the output itself. There is still no tool that reads a log.
+
 ```json
 {
   "run_id": "...", "commit_sha": "...", "status": "finished",
   "params": {}, "metrics": {},
   "comparison_to_previous": [{"metric": "...", "delta": 0.0, "direction": "better|worse"}],
   "evaluation_criteria": {"metric": "...", "threshold": 0.0, "met": false},
-  "resource_usage": {"duration_s": 0, "peak_memory_mb": 0}
+  "resource_usage": {"duration_s": 0, "peak_memory_mb": 0},
+  "failure": {"exception": "ValueError", "message": "Input X contains NaN in column [value] at [value] of [value] rows",
+              "frames": [{"file": "train.py", "line": 39, "function": "train_once"}],
+              "masked_for_tier": "L0", "masked_literals": 3}
 }
 ```
 

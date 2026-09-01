@@ -76,6 +76,7 @@ import experimentInterpretationDecided from "./experiment_interpretation_decided
 import experimentLaunch from "./experiment_launch.json";
 import experimentLogs from "./experiment_logs.json";
 import experimentResults from "./experiment_results.json";
+import experimentResultsFailed from "./experiment_results_failed.json";
 import experimentList from "./experiments.json";
 import kernelFiles from "./kernel_files.json";
 import kernelStatus from "./kernel_status.json";
@@ -184,6 +185,10 @@ export const checked = {
   experiments: experimentList.experiments satisfies Loose<Experiment[]>,
   experiment: experiment satisfies Loose<Experiment>,
   experimentResults: experimentResults satisfies Loose<ExperimentSummary>,
+  // The same type for a run that failed, which is the only one carrying D34's
+  // `failure` block: the exception, its frames, and the message as it was raised —
+  // this route serves it unmasked, and a model reads it masked below L2.
+  experimentResultsFailed: experimentResultsFailed satisfies Loose<ExperimentSummary>,
   experimentLogs: experimentLogs satisfies Loose<ExperimentLogs>,
 
   // M9. Emitted by the API test harness through the *real* poller and the real

@@ -187,14 +187,27 @@ func TestAFirstRunSaysThereIsNothingToCompareAgainst(t *testing.T) {
 	}
 }
 
-// §5.13's summary is params, metrics and tags. Nothing in it may be a log.
-func TestASummaryCarriesNoLogs(t *testing.T) {
+// §5.13's summary is params, metrics and tags. No line of a log is in it.
+//
+// This test used to read "nothing in it may be a log", and D34 narrowed that by one
+// field: a failed run carries its last exception, extracted rather than excerpted.
+// The property that did not change is the one asserted here — the summary is not a
+// window onto the output. What the job printed, what it loaded, what the cluster
+// said about the exit code: none of it has a field to travel in, and the whole of
+// it is still on the developer's own route.
+func TestASummaryCarriesNoLogLines(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
 
 	launched := h.launch()
-	const secret = "Traceback (most recent call last): RuntimeError: a raw log line"
-	h.ray.SetLogs(launched.SubmissionID, secret)
+	const output = `loading 43200 rows from urn:infai:ses:export:9f2c1b7e
+Traceback (most recent call last):
+  File "train.py", line 61, in <module>
+    frame.astype(float)
+ValueError: could not convert string to float: '24,7 kWh'
+2026-09-01 03:14:31 ERROR job_supervisor.py:196 -- Job entrypoint command failed with exit code 1
+`
+	h.ray.SetLogs(launched.SubmissionID, output)
 	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"rmse": 0.5})
 	h.ray.SetStatus(launched.SubmissionID, experiments.StatusFailed)
 
@@ -203,16 +216,22 @@ func TestASummaryCarriesNoLogs(t *testing.T) {
 		t.Fatalf("results: %v", err)
 	}
 	encoded, _ := json.Marshal(summary)
-	if strings.Contains(string(encoded), "Traceback") {
-		t.Errorf("the summary carries log output: %s", encoded)
+	for _, forbidden := range []string{
+		"loading", "urn:infai:ses:export", "job_supervisor", "exit code",
+		"Traceback", "astype",
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Errorf("the summary carries the log line with %q in it: %s", forbidden, encoded)
+		}
 	}
 
-	// The developer's own route still has them, which is the point of the split.
+	// The developer's own route still has all of them, which is the point of the
+	// split — and the reason the extract may be bounded as hard as it is.
 	page, err := h.service.Logs(context.Background(), h.request(), launched.ID)
 	if err != nil {
 		t.Fatalf("logs: %v", err)
 	}
-	if page.Logs != secret {
+	if page.Logs != output {
 		t.Errorf("logs = %q, want the job's own output on the developer's route", page.Logs)
 	}
 }

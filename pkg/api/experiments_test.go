@@ -580,6 +580,25 @@ secondary_metrics:
 	h.ray.SetLogs(second.SubmissionID,
 		"2026-08-24 09:14:02 INFO fold 5/5 rmse=0.31\n2026-08-24 09:14:02 INFO done\n")
 
+	// A third run that failed, because D34's `failure` block is only on one of these
+	// and a fixture set without it would leave the shape a frontend renders for a
+	// failed run unchecked. It is not launched from the session: the interpretation
+	// below is about the second run, and a third finished run in the same
+	// conversation would give the poller two to deliver.
+	failed := h.launch(t, map[string]any{"run_name": "narrower window"})
+	h.mlflow.SetParam(t, failed.RunID, "lookback_days", "7")
+	h.mlflow.Finish(t, failed.RunID, "FAILED", map[string]float64{})
+	h.ray.SetStatus(failed.SubmissionID, experiments.StatusFailed)
+	h.ray.SetLogs(failed.SubmissionID, `2026-08-24 09:21:44 INFO loading 43200 rows
+Traceback (most recent call last):
+  File "/tmp/ray/session_1/runtime_resources/working_dir_files/_ray_pkg_9c1/train.py", line 39, in train_once
+    model.fit(X, y)
+  File "/opt/conda/lib/python3.11/site-packages/sklearn/base.py", line 1145, in wrapper
+    return fit_method(estimator, *args, **kwargs)
+ValueError: Input X contains NaN in column 'power_kw' at 3 of 43200 rows
+2026-08-24 09:21:45 ERROR job_supervisor.py:196 -- Job entrypoint command failed with exit code 1
+`)
+
 	cases := []struct {
 		file   string
 		method string
@@ -588,6 +607,8 @@ secondary_metrics:
 		{"experiments.json", http.MethodGet, "/experiments"},
 		{"experiment.json", http.MethodGet, "/experiments/" + second.ID},
 		{"experiment_results.json", http.MethodGet, "/experiments/" + second.ID + "/results"},
+		{"experiment_results_failed.json", http.MethodGet,
+			"/experiments/" + failed.ID + "/results"},
 		{"experiment_logs.json", http.MethodGet, "/experiments/" + second.ID + "/logs"},
 	}
 	for _, tc := range cases {

@@ -183,5 +183,12 @@ func (s *surface) getExperimentResults(ctx context.Context, req Request) (any, e
 	if err != nil {
 		return nil, err
 	}
-	return summary, nil
+	// Masked at the session's tier, because this is a model's context (D34).
+	//
+	// A failed run's summary carries its last exception, and an exception message is
+	// where a value out of the developer's own series reaches prose. The developer's
+	// own HTTP route serves the extract as it was raised; everything from here on is
+	// read by a model, so §3.2's ladder applies — and it is applied at this line
+	// rather than inside the service so that the boundary is where the tier is known.
+	return summary.MaskedFor(req.Tier), nil
 }

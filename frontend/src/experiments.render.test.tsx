@@ -19,7 +19,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { EvaluationCriterion, Experiment, Session } from "./api";
+import type { EvaluationCriterion, Experiment, ExperimentFailure, Session } from "./api";
 
 /**
  * The two claims the run document makes that are wrong in a way nothing crashes on.
@@ -47,6 +47,8 @@ vi.mock("./keycloak", () => ({
 /** The criteria the mocked results route answers with. Set by each test. */
 let primary: EvaluationCriterion = met(true);
 let secondary: EvaluationCriterion[] = [];
+/** The failure block the mocked results route answers with, or none. */
+let failure: ExperimentFailure | undefined;
 /** The comparison the mocked results route answers with. Set by each test. */
 let comparison: { metric: string; previous: number; current: number; delta: number; direction: "better" | "worse" | "unchanged"; lower_is_better: boolean }[] = [];
 
@@ -125,6 +127,7 @@ vi.mock("./api", async (importOriginal) => {
         evaluation_criteria: primary,
         secondary_criteria: secondary,
         resource_usage: { duration_s: 90 },
+        failure,
       }),
       // Never settles: the interpretation is not what these two tests are about, and
       // a pending read keeps its section out of the text being asserted on.
@@ -162,6 +165,7 @@ beforeEach(() => {
   listing = [EXPERIMENT];
   listingReads = 0;
   byId = [];
+  failure = undefined;
 });
 
 afterEach(async () => {
@@ -262,6 +266,78 @@ it("a criterion the run logged no value for does not show one", async () => {
  * `comparison_to_previous` is the first run of an experiment; drawn as an empty
  * table it reads as "nothing moved", which is the opposite claim.
  */
+// --- why a run failed (D34) ---
+
+/*
+ * A failed run's metrics are empty, and everything the pane leads with is about
+ * metrics: the comparison, the criteria, the numbers. A developer opening one has a
+ * single question, and before D34 the pane's answer to it was "SUCCEEDED" crossed
+ * out — the exception was in the log pane and nowhere else.
+ */
+it("a failed run leads with the exception it raised, and names the file and line", async () => {
+  primary = met({ status: "not_computed", reason: "metric_not_reported", detail: "no rmse" });
+  secondary = [];
+  comparison = [];
+  failure = {
+    exception: "ValueError",
+    message: "Input X contains NaN in column 'power_kw' at 3 of 43200 rows",
+    frames: [
+      { file: "train.py", line: 39, function: "train_once" },
+      { file: "base.py", line: 1145, function: "wrapper" },
+    ],
+  };
+
+  const host = await open();
+  const message = host.querySelector(".exp-failure-message");
+  expect(message, "the run's exception is nowhere in the pane").not.toBeNull();
+  // As it was raised: this route is the developer's own, and the value in the
+  // message is their own data.
+  expect(message?.textContent).toContain("Input X contains NaN in column 'power_kw'");
+  expect(host.textContent).toContain("ValueError");
+
+  // The frames, because a line number is what makes it actionable.
+  const frames = [...(host.querySelectorAll(".exp-frames li") ?? [])].map((f) => f.textContent);
+  expect(frames).toHaveLength(2);
+  expect(frames[0]).toContain("train.py:39");
+  expect(frames[0]).toContain("train_once");
+
+  // And what the assistant sees instead, said rather than left to be discovered: a
+  // developer who cannot tell masking from guessing cannot read its answer.
+  expect(host.textContent).toContain("[value]");
+  expect(host.textContent).toContain("L2");
+});
+
+it("a run that left no readable exception says so rather than showing an empty section", async () => {
+  primary = met({ status: "not_computed", reason: "metric_not_reported", detail: "no rmse" });
+  secondary = [];
+  comparison = [];
+  failure = {
+    not_diagnosed: {
+      status: "not_diagnosed",
+      reason: "no_traceback",
+      detail: "the job's output holds no Python traceback",
+    },
+  };
+
+  const host = await open();
+  const said = host.querySelector(".exp-failure-none");
+  expect(said, "a failure with no exception rendered as nothing at all").not.toBeNull();
+  expect(said?.textContent).toContain("no traceback");
+  expect(said?.textContent).toContain("no Python traceback");
+  expect(host.querySelector(".exp-failure-message")).toBeNull();
+});
+
+it("a run that did not fail has no failure section at all", async () => {
+  primary = met(true);
+  secondary = [];
+  comparison = [];
+
+  const host = await open();
+  expect(host.querySelector(".exp-failure-message")).toBeNull();
+  expect(host.querySelector(".exp-failure-none")).toBeNull();
+  expect(host.textContent).not.toContain("Why it failed");
+});
+
 it("an empty comparison is the first run and says so, rather than reading as no change", async () => {
   primary = met(true);
   secondary = [];

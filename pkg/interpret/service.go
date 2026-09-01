@@ -478,6 +478,21 @@ func (s *Service) runTurn(ctx context.Context, item *held, token chat.TokenSourc
 	// That is the honest degradation: the criterion then says why it has no verdict,
 	// which is exactly what it is for, and the developer still gets an interpretation
 	// of the metrics.
+	// Ownership, and that the session still exists. A conversation the developer
+	// deleted is not an error worth retrying, so it retires the run.
+	//
+	// Read before the summary rather than after it, because the session carries the
+	// exposure tier D34's extract is masked at, and a summary built for one tier and
+	// injected at another would be the one bug this whole path is about.
+	session, err := s.chat.Session(ctx, record.UserSub, record.SessionID)
+	if err != nil {
+		if errors.Is(err, chat.ErrNoSuchSession) {
+			s.retire(record.ID)
+			return nil
+		}
+		return err
+	}
+
 	if graded, err := s.experiments.Results(ctx, experiments.Request{
 		Bearer:    token(),
 		UserSub:   record.UserSub,
@@ -488,16 +503,6 @@ func (s *Service) runTurn(ctx context.Context, item *held, token chat.TokenSourc
 		slog.WarnContext(ctx, "the developer's evaluation criteria could not be read for "+
 			"an interpretation; the summary is injected with the criterion left unevaluated",
 			"experiment", record.ID, "error", err)
-	}
-
-	// Ownership, and that the session still exists. A conversation the developer
-	// deleted is not an error worth retrying, so it retires the run.
-	if _, err := s.chat.Session(ctx, record.UserSub, record.SessionID); err != nil {
-		if errors.Is(err, chat.ErrNoSuchSession) {
-			s.retire(record.ID)
-			return nil
-		}
-		return err
 	}
 
 	messages, err := s.chat.Messages(ctx, record.UserSub, record.SessionID)
@@ -532,7 +537,12 @@ func (s *Service) runTurn(ctx context.Context, item *held, token chat.TokenSourc
 		// chat.Engine.start — so the conversation is untouched and the run is retried.
 		exchange, err := s.chat.SendInjected(ctx, token, record.UserSub, record.SessionID,
 			chat.InjectedMessage{
-				Text:    injectedMessage(summary, record),
+				// Masked at the session's own tier (D34). The extract as built is what a
+				// failed run raised, values and all, and this turn is the other of the two
+				// paths a summary takes into a model's context — pkg/tools is the first.
+				// Both mask at the boundary, and both have a test that fails if the call
+				// goes missing.
+				Text:    injectedMessage(summary.MaskedFor(session.Tier), record),
 				Subject: record.ID,
 			})
 		if err != nil {

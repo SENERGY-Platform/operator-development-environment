@@ -21,6 +21,7 @@ import {
   type EvaluationCriterion,
   type Experiment,
   type ExperimentCredential,
+  type ExperimentFailure,
   type ExperimentLaunch,
   type ExperimentLogs,
   type ExperimentStatus,
@@ -673,6 +674,13 @@ function Results({ experiment }: { experiment: Experiment }) {
 
   return (
     <>
+      {/*
+        First, and only for a run that failed. A developer opening a failed run has
+        one question, and the comparison against the previous run is not an answer to
+        it — there are no metrics to compare.
+      */}
+      {summary.failure && <WhyItFailed failure={summary.failure} />}
+
       <Section
         title="Against the previous run"
         note={summary.previous_run_id ? `vs ${shortId(summary.previous_run_id)}` : undefined}
@@ -735,6 +743,55 @@ function Results({ experiment }: { experiment: Experiment }) {
         <Pairs title="Tags" entries={Object.entries(summary.tags)} />
       </Section>
     </>
+  );
+}
+
+/**
+ * The exception a failed run raised, which is the one thing its metrics cannot say.
+ *
+ * The block is extracted from the job's output rather than excerpted from it (D34),
+ * and this pane serves it as it was raised: it is the developer's own data on their
+ * own token, and the whole log is under Logs beside it. What the assistant reads is
+ * the same block with its literals masked below exposure tier L2 — which is said
+ * here rather than left to be discovered, because a developer who cannot see the
+ * difference cannot tell whether an assistant that failed to name a value was
+ * withholding it or guessing.
+ */
+function WhyItFailed({ failure }: { failure: ExperimentFailure }) {
+  if (failure.not_diagnosed) {
+    return (
+      <Section title="Why it failed">
+        <p className="exp-failure-none">
+          The job left no readable exception — {failure.not_diagnosed.reason.replace(/_/g, " ")}.{" "}
+          {failure.not_diagnosed.detail}
+        </p>
+      </Section>
+    );
+  }
+
+  return (
+    <Section title="Why it failed" note={failure.exception}>
+      <p className="exp-failure-message font-mono text-sm break-words">{failure.message}</p>
+      {failure.frames && failure.frames.length > 0 && (
+        <ol className="exp-frames mt-2 space-y-0.5 text-xs text-muted-foreground">
+          {/* Python's own order: outermost call first, where it raised last. */}
+          {failure.frames.map((frame) => (
+            <li key={`${frame.file}:${frame.line}:${frame.function ?? ""}`}>
+              <code>
+                {frame.file}:{frame.line}
+              </code>
+              {frame.function ? ` in ${frame.function}` : ""}
+            </li>
+          ))}
+        </ol>
+      )}
+      <p className="advisory mt-2 text-xs text-muted-foreground">
+        The last exception out of the job's own output, as it was raised. The assistant reads the
+        same block with every literal replaced by <code>[value]</code> below exposure tier L2 — a
+        value in a traceback is a value. The whole output is under Logs, which has a route and no
+        tool: only you can read it.
+      </p>
+    </Section>
   );
 }
 
