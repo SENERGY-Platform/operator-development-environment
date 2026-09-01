@@ -2363,8 +2363,15 @@ function TurnView({
         <MessageContent>
           <MessageHeader className="turn-origin px-0">ODE</MessageHeader>
           <Bubble variant="outline" className="max-w-full">
-            <BubbleContent className="turn-body border-dashed whitespace-pre-wrap">
-              {text}
+            <BubbleContent className="border-dashed">
+              {/*
+                Markdown, because ODE writes markdown here. §5.13's run summary goes
+                in as a fenced `json` block with a numbered list around it, and under
+                `whitespace-pre-wrap` the developer read the backticks and the
+                asterisks — the one turn in the conversation that is a document
+                arrived as the only one rendered as characters.
+              */}
+              <Markdown className="turn-body" text={text} />
             </BubbleContent>
           </Bubble>
         </MessageContent>
@@ -2373,8 +2380,8 @@ function TurnView({
   }
   // The developer's own turn stays verbatim, and on the right. What they typed is
   // what they meant to send, and an ontology path with underscores in it should come
-  // back looking the way it went out — hence `whitespace-pre-wrap` here and markdown
-  // only on the assistant's side.
+  // back looking the way it went out — hence `whitespace-pre-wrap` here, and markdown
+  // only for the turns that were written as markdown: the assistant's and ODE's.
   return (
     <Message align="end" className={`turn ${message.role}`}>
       <MessageContent>

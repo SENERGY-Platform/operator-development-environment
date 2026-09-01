@@ -1942,6 +1942,40 @@ it("shows the note the move leaves, in ODE's voice and not the developer's", asy
   expect(theirs.some((text) => text.includes("moved this conversation"))).toBe(false);
 });
 
+/**
+ * ODE's own turn is markdown, because ODE writes markdown into it.
+ *
+ * §5.13's run summary is the longest thing in the conversation and the only one that
+ * is a document: prose around a fenced `json` block, then a numbered list. It was
+ * rendered under `whitespace-pre-wrap` with everything else the developer typed, so
+ * the summary arrived as three backticks, a wall of unindented JSON and a pair of
+ * asterisks around every heading — the turn most in need of structure was the one
+ * turn that got none.
+ */
+it("renders ODE's turn as markdown, so a run summary is a code block and not backticks", async () => {
+  benches = [workbench("wb-1")];
+  listed = [{ ...listed[0], workbench_id: "wb-1" }];
+  notes = [
+    "A training run you launched from this conversation has finished.\n\n" +
+      '```json\n{\n  "run_id": "r-1",\n  "status": "FAILED"\n}\n```\n\n' +
+      "1. **What the numbers say.** Compare against the previous run.\n",
+  ];
+
+  const host = await openPaired();
+
+  const injected = host.querySelector(".turn.ode");
+  if (!injected) throw new Error("the injected summary is not in the conversation");
+
+  const block = injected.querySelector(".md-code");
+  expect(block, "the summary's json fence arrived as characters").not.toBeNull();
+  expect(block?.querySelector("code")?.textContent).toContain('"run_id": "r-1"');
+  expect(block?.querySelector(".md-code-language")?.textContent).toBe("json");
+  // The markup is gone from the text, which is the developer-visible half of it.
+  expect(injected.textContent).not.toContain("```");
+  expect(injected.querySelector("strong")?.textContent).toContain("What the numbers say");
+  expect(injected.querySelector("ol")).not.toBeNull();
+});
+
 it("offers no move where there is nowhere to move to", async () => {
   // One workbench: an unassigned conversation already acts in it, and clearing the
   // assignment would change nothing.
