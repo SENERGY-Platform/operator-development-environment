@@ -1,0 +1,61 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}",
+      "cwd": "${workspaceFolder}",
+      "args": ["-config", "config.json"],
+      // Anything machine-specific or secret — the Hub URL and its token —
+      // belongs in .env, which is untracked. Copy .env.example to get it.
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "DEBUG": "true",
+        "API_PORT": "8080",
+        "CLAUDE_CLI_ENABLED": "true",
+      }
+    },
+    {
+      "name": "Frontend",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev",
+      "cwd": "${workspaceFolder}/frontend",
+      "envFile": "${workspaceFolder}/.env", 
+    },
+    {
+      "name": "Frontend in Chrome",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/frontend",
+      "preLaunchTask": "frontend: dev server",
+      "postDebugTask": "frontend: stop dev server",
+      "sourceMapPathOverrides": {
+        "/@fs/*": "/*",
+        "/src/*": "${workspaceFolder}/frontend/src/*"
+      }
+    },
+    {
+      "name": "Backend tests",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}/...",
+      "args": ["-test.v"]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "ODE (backend + frontend)",
+      "configurations": ["Backend", "Frontend"],
+      "stopAll": true,
+      "presentation": {
+        "order": 1
+      }
+    }
+  ]
+}

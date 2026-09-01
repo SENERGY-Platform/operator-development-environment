@@ -1,0 +1,85 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // Background task for the "Frontend in Chrome" launch config. The
+      // problem matcher exists only so VS Code knows when Vite is ready to
+      // serve; without an endsPattern the browser launches against a port
+      // that is not listening yet.
+      "label": "frontend: dev server",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend",
+        "envFile": "${workspaceFolder}/.env",
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "fileLocation": ["relative", "${workspaceFolder}/frontend"],
+        "pattern": {
+          "regexp": "^\\s*(ERROR|error)\\s+(.*)$",
+          "severity": 1,
+          "message": 2
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE\\s+v",
+          "endsPattern": "Local:\\s+http"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "ode"
+      }
+    },
+    {
+      "label": "frontend: stop dev server",
+      "type": "shell",
+      "command": "echo 'dev server terminated with the debug session'",
+      "presentation": { "reveal": "never" },
+      "problemMatcher": []
+    },
+    {
+      "label": "frontend: install",
+      "type": "shell",
+      "command": "npm install",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "problemMatcher": []
+    },
+    {
+      "label": "frontend: build",
+      "type": "shell",
+      "command": "npm run build",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "group": "build",
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "backend: build",
+      "type": "shell",
+      "command": "go build ./...",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$go"]
+    },
+    {
+      // -race matches CI, so a data race fails here rather than in the
+      // pipeline. See .github/workflows/tests.yml.
+      "label": "backend: test",
+      "type": "shell",
+      "command": "go test -race ./...",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "verify: everything",
+      "dependsOrder": "sequence",
+      "dependsOn": ["backend: build", "backend: test", "frontend: build"],
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

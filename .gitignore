@@ -20,8 +20,5 @@ frontend/.vite/
 .idea/
 *.iml
 
-# Editor configuration is per-developer, including the run configurations: they
-# carry paths, hosts and env choices that belong to one machine.
-.vscode/
 frontend/*.tsbuildinfo
 frontend/.env.local
