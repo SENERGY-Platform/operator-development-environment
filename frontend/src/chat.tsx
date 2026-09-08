@@ -23,10 +23,12 @@ import {
   type ChatEvent,
   type ChatMessage,
   type ChatSession,
+  type Limits,
   type PendingConfirmation,
   type ProviderInfo,
   type Session,
   type SessionActivity,
+  type SessionSpend,
   type Tier,
   type ToolResult,
   type ToolSurface,
@@ -39,7 +41,17 @@ import { Badge } from "@/components/ui/badge";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -65,7 +77,7 @@ import { LaunchedRunsCard, launchedExperimentId, useLaunchedRuns } from "./exper
 import { Markdown } from "./markdown";
 import { Cancelled, odeSocket, type SocketState } from "./ws";
 import { setParam, useParam } from "./router";
-import { Busy, Muted, Pane, Section, dateTime, describe, num, shortId } from "./ui";
+import { Busy, Muted, Pane, Section, dateTime, describe, num, shortId, useLoad } from "./ui";
 import { useConversationPairing, useWorkbenches } from "./workbench";
 
 /**
@@ -867,6 +879,8 @@ export function ChatView({
           onAnswered={answered}
           maxTier={session.max_exposure_tier ?? "L2"}
           surface={surface}
+          providers={providers}
+          limits={session.limits}
           draft={drafts[current.id] ?? ""}
           onDraftChange={setDraft}
           onOpenChart={onOpenChart}
@@ -1091,6 +1105,8 @@ function Conversation({
   onAnswered,
   maxTier,
   surface,
+  providers,
+  limits,
   draft,
   onDraftChange,
   onSessionChange,
@@ -1106,6 +1122,11 @@ function Conversation({
   onAnswered: (sessionId: string) => void;
   maxTier: Tier;
   surface: ToolSurface | null;
+  /** What the model control may offer. Empty in a deployment with no LLM. */
+  providers: ProviderInfo[];
+  /** The admin policy for this developer, which narrows what the control offers
+   * and what the route would accept. Absent where §3.3's surface is not configured. */
+  limits?: Limits;
   /** What is in the composer, held above this component's key. */
   draft: string;
   onDraftChange: (sessionId: string, text: string) => void;
@@ -1144,6 +1165,21 @@ function Conversation({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
+  /**
+   * What this conversation has cost, from the accounting rather than from what this
+   * window happened to watch arrive.
+   *
+   * Two sources, and the order between them is what keeps it honest. Every read of
+   * the session carries the stored total and *replaces* this; a `usage` event during
+   * a turn *adds* to it, so the figure moves while an answer is streaming. Since the
+   * end of every turn reloads the session, the added deltas are always superseded by
+   * the store before they can drift.
+   *
+   * Null is "there is nothing to say" — a deployment with no accounting — and stays
+   * null, because a zero and an unknown are different facts and the second one has
+   * no number to show.
+   */
+  const [spend, setSpend] = useState<SessionSpend | null>(null);
   const controller = useRef<AbortController | null>(null);
 
   // Read here rather than handed down from the session list: this is the list the
@@ -1192,6 +1228,7 @@ function Conversation({
         if (cancelled || arrived.current !== before) return;
         setTurns(replay(detail.messages));
         syncPending(detail.pending_confirmations);
+        setSpend(detail.spend ?? null);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(describe(e));
@@ -1288,7 +1325,30 @@ function Conversation({
         setPending((existing) => existing.filter((entry) => entry.id !== settled));
       }
       if (event.type === "error") failure.current = event.error ?? "Something failed.";
-      if (event.type === "usage" && event.usage) setUsage(event.usage);
+      if (event.type === "usage" && event.usage) {
+        const spent = event.usage;
+        setUsage(spent);
+        setSpend((existing) => {
+          // Only ever added to what the accounting already reported. Null means there
+          // is no accounting to add to, and inventing a total from what one window
+          // watched would be a different number wearing the same label.
+          if (existing === null) return null;
+          return {
+            ...existing,
+            tokens:
+              existing.tokens +
+              spent.input_tokens +
+              spent.output_tokens +
+              (spent.cached_input_tokens ?? 0),
+            cost: existing.cost + (spent.cost_eur ?? 0),
+            // `requests` is deliberately left alone: this event carries the whole
+            // exchange, and the store holds one row per provider call inside it. The
+            // reload at the end of the turn is what puts the count right, and it is
+            // not on screen in between.
+            cost_complete: existing.cost_complete && (spent.cost_estimated ?? false),
+          };
+        });
+      }
     },
     [session.title],
   );
@@ -1387,6 +1447,10 @@ function Conversation({
             }
             syncPending(detail.pending_confirmations);
             onSessionChange(detail.session);
+            // The accounting's own total, which supersedes what the stream added to
+            // it: this one counts every provider call the turn made, including the
+            // ones inside a tool loop.
+            setSpend(detail.spend ?? null);
             waiting = detail.pending_confirmations.length > 0;
           } catch {
             // A reload failure leaves the streamed view in place, which is still
@@ -1531,6 +1595,20 @@ function Conversation({
     [onSessionChange, session.id],
   );
 
+  const setModel = useCallback(
+    async (provider: string, model: string) => {
+      setError(null);
+      try {
+        onSessionChange(await api.setSessionModel(session.id, provider, model));
+      } catch (e: unknown) {
+        // In the pane's error line rather than beside the control: a refusal here is
+        // an admin policy or a provider that has gone, and both are sentences.
+        setError(describe(e));
+      }
+    },
+    [onSessionChange, session.id],
+  );
+
   const move = useCallback(
     async (workbenchId: string) => {
       setError(null);
@@ -1551,7 +1629,7 @@ function Conversation({
   return (
     <Pane
       title={session.title || "Assistant"}
-      subtitle={`${session.provider} · ${session.model}`}
+      subtitle={sessionModelLabel(session)}
       actions={<WorkbenchControl session={session} benches={benches} busy={busy} onMove={move} />}
     >
       {/*
@@ -1747,6 +1825,11 @@ function Conversation({
         input={input}
         busy={busy}
         usage={usage}
+        spend={spend}
+        session={session}
+        providers={providers}
+        limits={limits}
+        onModelChange={setModel}
         onInput={setInput}
         onSend={submit}
         onStop={() => {
@@ -1845,6 +1928,11 @@ function Composer({
   input,
   busy,
   usage,
+  spend,
+  session,
+  providers,
+  limits,
+  onModelChange,
   onInput,
   onSend,
   onStop,
@@ -1852,6 +1940,11 @@ function Composer({
   input: string;
   busy: boolean;
   usage: Usage | null;
+  spend: SessionSpend | null;
+  session: ChatSession;
+  providers: ProviderInfo[];
+  limits?: Limits;
+  onModelChange: (provider: string, model: string) => void;
   onInput: (text: string) => void;
   onSend: (text: string) => void;
   onStop: () => void;
@@ -1890,25 +1983,32 @@ function Composer({
         // concerned, and two nested rings read as a mistake.
         className="resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
       />
-      <div className="composer-actions flex items-center gap-3 border-t px-3 py-2">
+      <div className="composer-actions flex flex-wrap items-center gap-x-3 gap-y-2 border-t px-3 py-2">
         {/*
-          The running total first, the action last, and the action pushed to the
-          far edge by `ml-auto` — which holds whether or not there is a total to
-          put beside it, so the button does not move when the first reply lands.
+          Which model is answering, then what it has cost, then the action — and
+          the action pushed to the far edge by `ml-auto`, which holds whether or
+          not either of the other two is there, so the button does not move when
+          the first reply lands.
 
-          Reordering these costs nothing in the tab order: the usage is a `span`
-          and never takes focus, so the submit is still the first thing reached
-          from the textarea.
+          Here rather than in the pane header, which is where the model used to be
+          named and only named. This is the row a developer looks at while
+          deciding what to send, and the choice of model is part of that decision
+          — the same argument that puts it beside the prompt in Claude Code. The
+          header still says which model, because that is what a header is for.
+
+          Reordering costs nothing in the tab order: the totals are a `span` and
+          never take focus, and the model control comes before the textarea's
+          natural next stop only in the DOM. The submit is still the first
+          *button* reached from the textarea.
         */}
-        {usage && (
-          <span
-            className="usage text-xs text-muted-foreground"
-            title="Estimated from configured prices, not an invoice"
-          >
-            {num(usage.input_tokens + usage.output_tokens)} tokens
-            {usage.cost_eur ? ` · ~${usage.cost_eur.toFixed(4)}` : ""}
-          </span>
-        )}
+        <ModelControl
+          session={session}
+          providers={providers}
+          limits={limits}
+          busy={busy}
+          onChange={onModelChange}
+        />
+        <SpendSummary usage={usage} spend={spend} session={session} providers={providers} />
         {busy ? (
           <Button
             type="button"
@@ -1927,6 +2027,433 @@ function Composer({
         )}
       </div>
     </form>
+  );
+}
+
+/**
+ * sessionModelLabel names what is answering, in one place.
+ *
+ * The model is empty for a provider that has one of its own and was configured with
+ * no list — §5.7's CLI, before `claude_cli_models` is filled in. The header used to
+ * interpolate it anyway and read "claude-cli · ", a separator with nothing after it,
+ * which said the model was missing rather than that the provider chooses.
+ */
+export function sessionModelLabel(session: { provider: string; model: string }): string {
+  return session.model ? `${session.provider} · ${session.model}` : session.provider;
+}
+
+/** The sentinel for the entry that is where the session *is* rather than somewhere
+ * it can be sent — the provider or model it names having gone from the deployment
+ * or from this developer's allow-list. Same device as CLOSED_WORKBENCH. */
+const UNOFFERED_MODEL = " unoffered";
+
+/** One entry of the model control. */
+interface ModelChoice {
+  provider: string;
+  model: string;
+  /** What the entry says. The model, or a word for the provider's own default. */
+  label: string;
+  /** Set when the entry is on screen to be seen rather than chosen, with the
+   * reason as its title. */
+  disabled?: boolean;
+  reason?: string;
+}
+
+/**
+ * modelChoices flattens the providers into what the control offers.
+ *
+ * Three shapes come out of Capabilities, and they are three different facts rather
+ * than degrees of the same one:
+ *
+ *   - a declared list — the deployment's allow-list, one entry per model;
+ *   - no list and no requirement — the provider has a default of its own, which is
+ *     one entry naming exactly that;
+ *   - no list but a model *required* — an OpenAI-compatible server serving whatever
+ *     it was started with, which ODE cannot enumerate. Shown disabled with the
+ *     reason, because a silently absent provider reads as a broken picker.
+ *
+ * The admin allow-lists disable rather than hide. A developer who cannot see why a
+ * model is missing asks whether ODE is broken; one who can see it greyed out with
+ * the reason asks their administrator, which is the conversation that helps.
+ */
+export function modelChoices(providers: ProviderInfo[], limits?: Limits): ModelChoice[] {
+  const allowedProviders = limits?.allowed_providers ?? [];
+  const allowedModels = limits?.allowed_models ?? [];
+
+  const out: ModelChoice[] = [];
+  for (const provider of providers) {
+    const forbidden =
+      allowedProviders.length > 0 && !allowedProviders.includes(provider.name)
+        ? `An administrator has not permitted ${provider.name} for you.`
+        : "";
+    const models = provider.capabilities.models ?? [];
+
+    if (models.length === 0) {
+      if (provider.capabilities.model_required) {
+        out.push({
+          provider: provider.name,
+          model: "",
+          label: "no models configured",
+          disabled: true,
+          reason:
+            `${provider.name} needs a model to be named and this deployment lists ` +
+            "none, so there is nothing to choose between.",
+        });
+        continue;
+      }
+      out.push({
+        provider: provider.name,
+        model: "",
+        label: "the provider's own default",
+        disabled: forbidden !== "",
+        reason: forbidden || undefined,
+      });
+      continue;
+    }
+
+    for (const model of models) {
+      // Mirrors CheckProviderModel: an empty model is never matched against the
+      // model allow-list, because it names nothing to match.
+      const notAllowed =
+        allowedModels.length > 0 && !allowedModels.includes(model)
+          ? `An administrator has not permitted ${model} for you.`
+          : "";
+      out.push({
+        provider: provider.name,
+        model,
+        label: model,
+        disabled: forbidden !== "" || notAllowed !== "",
+        reason: forbidden || notAllowed || undefined,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * ModelControl is the developer's choice of what answers, on a conversation that is
+ * already under way.
+ *
+ * Both halves of it were fixed at creation before this, and choosing them wrong is
+ * ordinary — a developer opens a conversation on the cheap model, works out that
+ * the problem is harder than it looked, and had no way out but a new session, which
+ * threw away the history that established what the problem was. The workbench
+ * control two paragraphs down exists for the same reason and is the pattern this
+ * follows.
+ *
+ * Provider *and* model in the one control, grouped, because in ODE the provider is
+ * the transport and the model is what runs on it: they are one answer to "what is
+ * answering", and two controls would ask the developer to hold the relationship in
+ * their head.
+ *
+ * Disabled while a turn is running, because the backend refuses it then — that turn
+ * is being answered by the provider this would move away from. A disabled control
+ * that says why is a better answer than a 400 in the error line.
+ */
+function ModelControl({
+  session,
+  providers,
+  limits,
+  busy,
+  onChange,
+}: {
+  session: ChatSession;
+  providers: ProviderInfo[];
+  limits?: Limits;
+  busy: boolean;
+  onChange: (provider: string, model: string) => void;
+}) {
+  const choices = useMemo(() => modelChoices(providers, limits), [providers, limits]);
+
+  // Index rather than a composed string, because a model name may contain any
+  // character a provider likes — `meta-llama/Llama-3` is an ordinary name on an
+  // OpenAI-compatible server — and every separator that would encode the pair is
+  // one a name may legitimately hold. The index is derived from `choices` and is
+  // read back through it, so nothing has to be parsed.
+  const at = choices.findIndex(
+    (choice) => choice.provider === session.provider && choice.model === session.model,
+  );
+  // What the session names is not on offer: the provider has gone from the
+  // deployment, or an administrator has narrowed the list under a live conversation.
+  // Its own entry, so the control tells the truth about what is answering rather
+  // than silently displaying the first model as though it were the one.
+  const unoffered = at < 0;
+  const value = unoffered ? UNOFFERED_MODEL : String(at);
+
+  if (choices.length === 0 && !unoffered) return null;
+
+  return (
+    <Select
+      value={value}
+      disabled={busy}
+      onValueChange={(picked) => {
+        if (picked === null || picked === UNOFFERED_MODEL) return;
+        const choice = choices[Number(picked)];
+        if (!choice) return;
+        if (choice.provider === session.provider && choice.model === session.model) return;
+        onChange(choice.provider, choice.model);
+      }}
+    >
+      <SelectTrigger
+        size="sm"
+        className="model-control w-auto min-w-44 border-0 shadow-none"
+        aria-label="The provider and model answering this conversation"
+        title={
+          busy
+            ? "A turn is running in this conversation. It is being answered by the " +
+              "provider below, so the change waits for it to finish."
+            : "Which provider and model answer. The conversation carries over."
+        }
+      >
+        {/*
+          The trigger formats the value itself rather than echoing the chosen item's
+          markup, for the reason the provider select on a new session does: the
+          options live in a popup that is not mounted until the listbox is opened,
+          and a trigger waiting for one to hand it a label shows the raw value —
+          here an array index — until the developer has opened the control once.
+        */}
+        <SelectValue>{() => sessionModelLabel(session)}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        {unoffered && (
+          <SelectItem value={UNOFFERED_MODEL} disabled>
+            {sessionModelLabel(session)} — no longer offered
+          </SelectItem>
+        )}
+        {providers.map((provider) => {
+          const group = choices
+            .map((choice, index) => ({ choice, index }))
+            .filter((entry) => entry.choice.provider === provider.name);
+          if (group.length === 0) return null;
+          return (
+            <SelectGroup key={provider.name}>
+              <SelectLabel>
+                {provider.name}
+                {provider.capabilities.degraded ? " (degraded)" : ""}
+              </SelectLabel>
+              {group.map(({ choice, index }) => (
+                <SelectItem
+                  key={index}
+                  value={String(index)}
+                  disabled={choice.disabled}
+                  title={choice.reason}
+                >
+                  {choice.label}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          );
+        })}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/**
+ * SpendSummary is what the conversation has cost, with the rest of the answer one
+ * click away.
+ *
+ * On the strip: the conversation's own total, because that is the figure a developer
+ * weighing a model change actually wants — the last exchange alone said nothing
+ * about whether the conversation is expensive. In the popover: that last exchange,
+ * the period the admin caps are computed over, and what the provider came up as.
+ *
+ * Every part is omitted rather than zeroed when its data is not there. A deployment
+ * with no accounting, a user with no cap, a provider that declares nothing: in each
+ * case the honest answer is silence, and a zero would read as a measurement.
+ */
+function SpendSummary({
+  usage,
+  spend,
+  session,
+  providers,
+}: {
+  usage: Usage | null;
+  spend: SessionSpend | null;
+  session: ChatSession;
+  providers: ProviderInfo[];
+}) {
+  const provider = providers.find((entry) => entry.name === session.provider) ?? null;
+  // Nothing measured and nothing declared: no trigger at all, rather than a control
+  // that opens on an empty card.
+  if (spend === null && usage === null && provider === null) return null;
+
+  const total = spend
+    ? `${num(spend.tokens)} tokens`
+    : usage
+      ? `${num(usage.input_tokens + usage.output_tokens)} tokens`
+      : "";
+
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className="session-spend rounded text-xs text-muted-foreground underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+          />
+        }
+      >
+        {total || "Details"}
+      </PopoverTrigger>
+      <PopoverContent className="session-spend-detail w-80 space-y-3 text-xs">
+        {spend && (
+          <div className="spend-session space-y-0.5">
+            <p className="font-medium text-foreground">This conversation</p>
+            <p className="text-muted-foreground">
+              {num(spend.tokens)} tokens over {num(spend.requests)}{" "}
+              {spend.requests === 1 ? "request" : "requests"}
+              {spend.cost > 0 && (
+                <>
+                  {" · "}
+                  {spend.cost_complete ? "~" : "at least ~"}
+                  {spend.cost.toFixed(4)}
+                </>
+              )}
+            </p>
+            {!spend.cost_complete && (
+              <p className="text-muted-foreground">
+                A turn here ran on a model with no configured price, so the cost is a
+                floor rather than a total.
+              </p>
+            )}
+          </div>
+        )}
+        {usage && (
+          <div className="spend-exchange space-y-0.5">
+            <p className="font-medium text-foreground">Last exchange</p>
+            <p className="text-muted-foreground">
+              {num(usage.input_tokens)} in, {num(usage.output_tokens)} out
+              {usage.cached_input_tokens
+                ? `, ${num(usage.cached_input_tokens)} from cache`
+                : ""}
+              {usage.cost_eur ? ` · ~${usage.cost_eur.toFixed(4)}` : ""}
+            </p>
+          </div>
+        )}
+        <PeriodSpend />
+        {provider && <ProviderState provider={provider} />}
+        <p className="spend-caveat text-muted-foreground">
+          Costs are ODE's own estimate from configured prices, not an invoice.
+        </p>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * PeriodSpend is §3.3's figure: what this developer has used over the window their
+ * caps are computed on, and how close that is to the cap.
+ *
+ * Read here rather than taken from the bootstrap the SPA loaded at startup. The
+ * bootstrap's copy is as old as the tab, and the one moment this is on screen is the
+ * moment it has to be current — a developer opening it is asking how much is left.
+ * The popover's content is not mounted until it is opened, so the read happens then
+ * and only then.
+ */
+function PeriodSpend() {
+  // Stable, so useLoad's effect does not re-run on every render of the popover.
+  const load = useCallback(() => api.session(), []);
+  const { data, loading } = useLoad(load);
+
+  if (loading) return <Busy>Reading your usage…</Busy>;
+  const spend = data?.spend;
+  const limits = data?.limits;
+  if (!spend) return null;
+
+  const period = limits?.period ? ` over ${limits.period}` : "";
+  const tokenCap = limits?.token_cap ?? 0;
+  const costCap = limits?.cost_cap ?? 0;
+  const warnAt = limits?.soft_warn_fraction ?? 0;
+
+  return (
+    <div className="spend-period space-y-1">
+      <p className="font-medium text-foreground">Your usage{period}</p>
+      {tokenCap > 0 ? (
+        <CapBar
+          label="Tokens"
+          spent={spend.tokens}
+          cap={tokenCap}
+          warnAt={warnAt}
+          render={num}
+        />
+      ) : (
+        <p className="text-muted-foreground">{num(spend.tokens)} tokens, no cap set</p>
+      )}
+      {costCap > 0 ? (
+        <CapBar
+          label="Cost"
+          spent={spend.cost}
+          cap={costCap}
+          warnAt={warnAt}
+          render={(value) => `~${value.toFixed(2)}`}
+        />
+      ) : (
+        spend.cost > 0 && (
+          <p className="text-muted-foreground">~{spend.cost.toFixed(4)} spent, no cap set</p>
+        )
+      )}
+    </div>
+  );
+}
+
+/** CapBar is one cap and what is left of it. The warning threshold is the admin's
+ * own soft_warn_fraction rather than a number chosen here, so what the bar calls
+ * close is what the backend will warn about. */
+function CapBar({
+  label,
+  spent,
+  cap,
+  warnAt,
+  render,
+}: {
+  label: string;
+  spent: number;
+  cap: number;
+  warnAt: number;
+  render: (value: number) => string;
+}) {
+  const fraction = cap > 0 ? spent / cap : 0;
+  const warning = warnAt > 0 && fraction >= warnAt;
+
+  return (
+    <div className="cap space-y-1">
+      <p className={cn("text-muted-foreground", warning && "text-foreground")}>
+        {label}: {render(spent)} of {render(cap)}
+        {warning ? " — close to the cap" : ""}
+      </p>
+      <Progress value={Math.min(100, Math.round(fraction * 100))} />
+    </div>
+  );
+}
+
+/**
+ * ProviderState is what the transport came up as. §5.7 requires a degraded provider
+ * to be visible rather than inferred from tools never being called, and until now
+ * that was only said on the form that starts a conversation — which is not where a
+ * developer is when they notice nothing is being read.
+ */
+function ProviderState({ provider }: { provider: ProviderInfo }) {
+  const capabilities = provider.capabilities;
+  const tools = !capabilities.tools
+    ? "no tools — this provider can only advise"
+    : capabilities.tools_out_of_band
+      ? "tools over MCP, run by the provider itself"
+      : "tools natively";
+
+  return (
+    <div className="provider-state space-y-0.5">
+      <p className="font-medium text-foreground">{provider.name}</p>
+      <p className="text-muted-foreground">
+        {tools}
+        {capabilities.max_tokens ? ` · up to ${num(capabilities.max_tokens)} tokens` : ""}
+      </p>
+      {capabilities.degraded && (
+        <p className="text-muted-foreground">
+          Degraded: {capabilities.degraded_reason || "no reason given"}
+        </p>
+      )}
+    </div>
   );
 }
 

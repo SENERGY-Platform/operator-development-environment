@@ -162,7 +162,7 @@ chat, tool and admin routes are not served. Keys belong in the environment.
 | `compatible_name` | `openai-compatible` (this repo's `config.json` ships `local`) | Display name of the OpenAI-compatible provider |
 | `compatible_base_url` / `compatible_api_key` / `compatible_models` | empty | An OpenAI-compatible server: vLLM, Ollama, Azure |
 | `compatible_tools` | `false` | Declares whether that server implements function calling. ODE cannot find out without trying, and a wrong assumption means tools that silently never fire |
-| `claude_cli_enabled` / `claude_cli_binary` / `claude_cli_models` | `false`, `claude`, none | The local `claude` CLI, for working without an API key. It reaches ODE's tools over MCP, so it needs `public_url` |
+| `claude_cli_enabled` / `claude_cli_binary` / `claude_cli_models` | `false`, `claude`, `opus, fable, sonnet, haiku` | The local `claude` CLI, for working without an API key. It reaches ODE's tools over MCP, so it needs `public_url`. The models are what the picker offers and what `--model` is given; empty leaves the CLI to choose, which the picker can then only name as the provider's default |
 | `public_url` | none | ODE's own externally reachable base URL. Used by the CLI provider's MCP endpoint and to derive the GitHub callback |
 
 ## LLM behaviour and cost

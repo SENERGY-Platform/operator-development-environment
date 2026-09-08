@@ -1018,6 +1018,10 @@ export interface Capabilities {
   system: boolean;
   max_tokens?: number;
   models?: string[];
+  /** The provider cannot answer without a named model. Distinct from an empty
+   * `models`: "ODE holds no allow-list" is not "the provider has no default", and
+   * the model control has to tell the two apart to know whether it can offer one. */
+  model_required?: boolean;
   tools_out_of_band?: boolean;
   degraded?: boolean;
   degraded_reason?: string;
@@ -1220,6 +1224,21 @@ export interface ChatSessionDetail {
   session: ChatSession;
   messages: ChatMessage[];
   pending_confirmations: PendingConfirmation[];
+  /** What this conversation has cost since it was opened. Absent where the
+   * deployment has no accounting to read it from — the pane then leaves the
+   * figure off the screen rather than showing a zero that is not true. */
+  spend?: SessionSpend;
+}
+
+/** What one conversation has cost. No window, unlike {@link Spend}: a
+ * conversation's cost is its whole life, not a billing period. */
+export interface SessionSpend {
+  tokens: number;
+  cost: number;
+  requests: number;
+  /** False when a turn ran on a model ODE has no price for. The cost beside it is
+   * then a floor rather than a total. */
+  cost_complete: boolean;
 }
 
 export interface TierChange {
@@ -2504,6 +2523,15 @@ export const api = {
     put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/workbench`, {
       workbench_id: workbenchId,
     }),
+  /**
+   * Re-points a live conversation at another provider or model, keeping its
+   * history. Either field may be left empty to hold it as it is; an empty model
+   * against a *changed* provider takes that provider's default. Refused while a
+   * turn is running, because that turn is being answered by the provider the
+   * change would move away from.
+   */
+  setSessionModel: (id: string, provider: string, model: string) =>
+    put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/model`, { provider, model }),
   /** The developer's tier control (§3.2). There is no LLM tool for this. */
   setTier: (id: string, tier: Tier) =>
     put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/tier`, { exposure_tier: tier }),

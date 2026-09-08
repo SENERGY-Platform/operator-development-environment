@@ -364,6 +364,69 @@ browsers and not others — so an edit is marked settled when it ends, and the s
 delivery finds nothing left to send. `chat.render.test.tsx` dispatches the key and
 the `focusout` in one batch, which is the order where that matters.
 
+### The model is picked beside the prompt, not in the header
+
+The composer's action strip carries three things now, left to right: which provider
+and model are answering, what the conversation has cost, and Send. The pane header
+still *names* the model, because that is what a header is for; what moved into the
+strip is the choice of it. That row is where a developer is looking while deciding
+what to send, and which model answers is part of that decision — the same argument
+that puts it beside the prompt in Claude Code.
+
+**One control for both halves.** In ODE the provider is the transport and the model
+is what runs on it, so the picker groups models under their provider rather than
+asking the developer to hold the relationship between two selects in their head.
+Its value is the *index* into the flattened list, not a composed `provider/model`
+string: a model name may contain any character a provider likes —
+`meta-llama/Llama-3` is ordinary on an OpenAI-compatible server — and every
+separator that would encode the pair is one a name may legitimately hold.
+
+**Three shapes come out of `Capabilities`, and they are three facts.** A declared
+list is one entry per model. No list and no requirement is a provider with a default
+of its own, shown as *the provider's own default* — §5.7's CLI, before
+`claude_cli_models` is filled in, which is where the header used to read the provider
+name followed by a separator with nothing after it. No list but `model_required` is a
+server ODE cannot enumerate, shown disabled with the reason, because a provider that
+silently vanishes from the picker reads as a broken picker.
+
+**The admin allow-lists disable rather than hide**, the same way the tier buttons
+above the ceiling do. A developer who cannot see why a model is missing asks whether
+ODE is broken; one who sees it greyed out with the reason asks their administrator,
+which is the conversation that helps. What the session names but the deployment no
+longer offers gets its own disabled entry, so the control tells the truth about what
+is answering rather than displaying the first model as though it were the one — the
+same device `WorkbenchControl` uses for a closed workbench.
+
+### What a conversation has cost, and what is left off the screen
+
+The figure beside the picker is the *conversation's* total, from the accounting, not
+the last exchange — which said nothing about whether the conversation is expensive,
+and is the question a developer weighing a model change actually has. It has two
+sources and the order between them is what keeps it honest: every read of the
+session replaces it with the stored total, and a `usage` event during a turn adds to
+it so it moves while an answer is streaming. Since every turn ends by reloading the
+session, the added deltas are always superseded before they can drift — which also
+covers the one thing the stream cannot know, that a tool loop is several provider
+calls inside the single exchange the event reports.
+
+The popover holds the rest: that last exchange, §3.3's per-period usage against the
+cap, and what the provider came up as. Three notes.
+
+**The period figure is read when the popover opens**, not taken from the bootstrap
+the tab loaded with. The popover's content is not mounted until it is opened, so a
+`useLoad` inside it fetches then and only then — and the one moment this is on screen
+is the moment a developer is asking how much is left, which a copy as old as the tab
+is the wrong answer to.
+
+**The warning threshold is the admin's own `soft_warn_fraction`**, so what the bar
+calls close is what the backend will actually warn about, rather than a number
+chosen in the SPA.
+
+**Every block is omitted rather than zeroed when its data is missing.** No
+accounting, no cap, a provider that declares nothing: in each case the honest answer
+is silence. A zero reads as a measurement, and the whole point of showing spend
+beside the model is that the number can be trusted.
+
 ### Two runs on one conversation: the later one owns the view
 
 `run` in `frontend/src/chat.tsx` is what watches a turn — a send, a confirmation or

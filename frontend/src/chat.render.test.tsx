@@ -19,7 +19,13 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { workbenchLabel, type ChatSession, type Session, type Workbench } from "./api";
+import {
+  workbenchLabel,
+  type ChatSession,
+  type ProviderInfo,
+  type Session,
+  type Workbench,
+} from "./api";
 import sessionDetail from "./__contract__/chat_session.json";
 import sessionList from "./__contract__/chat_sessions.json";
 import toolSurface from "./__contract__/chat_tools.json";
@@ -102,6 +108,16 @@ let listingReads = 0;
 let byId: Record<string, unknown>[] = [];
 /** The workbenches the developer has open, for the pairing test. */
 let benches: Workbench[] = [];
+/** What the deployment offers the model control. Empty in most tests, because
+ *  most of them are not about it. */
+let offered: ProviderInfo[] = [];
+/** Every model change the pane sent, as [id, provider, model]. */
+let repointed: [string, string, string][] = [];
+/** Whether the session read carries a spend. Off is a deployment with no
+ *  accounting, which the pane has to render without inventing a zero. */
+let accounted = true;
+/** What /session answers with, for the usage the popover reads on open. */
+let bootstrap: Partial<Session> = {};
 /** How many session watches the panel has opened. Counted apart from `streamed`,
  *  because that list is about the conversation's own streams and one test asserts
  *  its exact contents. */
@@ -290,7 +306,16 @@ vi.mock("./api", async (importOriginal) => {
         };
       },
       toolSurface: async () => toolSurface as unknown as ReturnType<typeof actual.api.toolSurface>,
-      providers: async () => ({ providers: [], default: "stub" }),
+      providers: async () => ({ providers: offered, default: offered[0]?.name ?? "stub" }),
+      session: async () => ({ ...SESSION, ...bootstrap }),
+      setSessionModel: async (id: string, provider: string, model: string) => {
+        repointed.push([id, provider, model]);
+        const entry = listed.find((session) => session.id === id);
+        if (!entry) throw new Error(`re-pointed a session that is not listed: ${id}`);
+        const updated = { ...entry, provider: provider || entry.provider, model };
+        listed = listed.map((session) => (session.id === id ? updated : session));
+        return updated;
+      },
       setAutoRun: async (id: string, on: boolean) => {
         autoRunSet.push([id, on]);
         const entry = listed.find((candidate) => candidate.id === id);
@@ -310,6 +335,9 @@ vi.mock("./api", async (importOriginal) => {
         const stored = listed.find((entry) => entry.id === detail.session.id);
         if (stored) detail.session = JSON.parse(JSON.stringify(stored));
         detail.pending_confirmations = JSON.parse(JSON.stringify(pending));
+        // A deployment with no accounting answers without the field at all, which
+        // is a different thing from answering with zeros.
+        if (!accounted) delete detail.spend;
         for (const text of sent) {
           detail.messages.push({
             session_id: detail.session.id,
@@ -426,6 +454,10 @@ beforeEach(() => {
   runs = [];
   byId = [];
   listingReads = 0;
+  offered = [];
+  repointed = [];
+  accounted = true;
+  bootstrap = {};
 });
 
 afterEach(async () => {
@@ -456,6 +488,30 @@ async function open(): Promise<HTMLElement> {
   const root = createRoot(host);
   mounted.push(root);
   await act(async () => root.render(<ChatView session={SESSION} />));
+  await settle(3);
+  return host;
+}
+
+/**
+ * openWithLimits mounts the pane for a developer an administrator has narrowed.
+ *
+ * The policy reaches the conversation through the bootstrap the shell already
+ * holds, rather than through a read of its own: §3.3's limits are per user and do
+ * not change while a tab is open, and the model control only needs them to know
+ * what to grey out.
+ */
+async function openWithLimits(limits: Record<string, unknown>): Promise<HTMLElement> {
+  window.history.replaceState({}, "", "/tools/chat?session=id-1");
+  vi.resetModules();
+  const { ChatView } = await import("./chat");
+
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  mounted.push(root);
+  await act(async () =>
+    root.render(<ChatView session={{ ...SESSION, limits } as unknown as Session} />),
+  );
   await settle(3);
   return host;
 }
@@ -2103,4 +2159,256 @@ it("a launch made through the CLI provider's own loop shows the same card", asyn
   expect(card?.querySelector(".exp-popout")?.getAttribute("href")).toBe(
     "http://ray.test/#/jobs/sub-e-1",
   );
+});
+
+// --- the model control (§5.7) ---
+
+/*
+ * Which model is answering, and the way out of a wrong choice.
+ *
+ * Provider and model were fixed when the session was created, and the pane named
+ * them in its header and nowhere else — so on the deployment shape that runs
+ * §5.7's CLI with no configured model list, the header read "claude-cli · ", a
+ * separator with nothing after it. What was missing was not the label but the
+ * control: a developer who started cheap and found the problem harder had no way
+ * out but a new session, which threw away the history that established what the
+ * problem was.
+ */
+
+/** A provider as /llm/providers describes one. */
+function provider(
+  name: string,
+  models: string[],
+  extra: Record<string, unknown> = {},
+): ProviderInfo {
+  return {
+    name,
+    default: false,
+    capabilities: { tools: true, streaming: true, system: true, models, ...extra },
+  } as ProviderInfo;
+}
+
+/** The model control's trigger, which is the only part of a listbox on the page at
+ *  rest — its options live in a popup that is not mounted until it is opened. */
+function modelPicker(host: HTMLElement): HTMLElement | null {
+  return host.querySelector(".model-control");
+}
+
+/** pickModel chooses an entry the way a developer does: open, then click. */
+async function pickModel(host: HTMLElement, label: string) {
+  const trigger = modelPicker(host);
+  if (!trigger) throw new Error("the conversation has no model picker");
+  await act(async () => trigger.click());
+  const option = [...document.querySelectorAll("[role='option']")].find(
+    (entry) => entry.textContent === label,
+  );
+  if (!option) {
+    const shown = [...document.querySelectorAll("[role='option']")].map((e) => e.textContent);
+    throw new Error(`no model option named ${label}; the picker offers ${shown.join(", ")}`);
+  }
+  await act(async () => (option as HTMLElement).click());
+  await settle(5);
+}
+
+it("names the model beside the prompt, and moves the conversation to another one", async () => {
+  offered = [provider("stub", ["stub-model", "stub-model-large"])];
+
+  const host = await open();
+  await settle(3);
+
+  const trigger = modelPicker(host);
+  expect(trigger, "no model control in the composer").not.toBeNull();
+  expect(trigger?.textContent, "the control does not say what is answering").toContain(
+    "stub · stub-model",
+  );
+  // In the composer strip, where the decision is being made — not back in the header.
+  expect(
+    trigger?.closest(".composer-actions"),
+    "the model control is not in the composer's action strip",
+  ).not.toBeNull();
+
+  await pickModel(host, "stub-model-large");
+
+  expect(repointed).toEqual([["id-1", "stub", "stub-model-large"]]);
+  expect(modelPicker(host)?.textContent).toContain("stub-model-large");
+});
+
+/*
+ * The transport is part of the choice. In ODE a provider is how the model is
+ * reached — the API, or the local CLI over MCP — and the model is what runs on it,
+ * so the two are one answer to "what is answering" and one control offers both.
+ */
+it("offers the models of every provider, grouped under it", async () => {
+  offered = [provider("stub", ["stub-model"]), provider("claude-cli", ["opus", "sonnet"])];
+
+  const host = await open();
+  await settle(3);
+
+  await act(async () => modelPicker(host)?.click());
+  const options = [...document.querySelectorAll("[role='option']")].map((e) => e.textContent);
+  expect(options).toContain("opus");
+  expect(options).toContain("sonnet");
+  // The provider is named once, over its own models, rather than repeated on each.
+  const popup = document.querySelector("[role='listbox']");
+  expect(popup?.textContent, "the second provider is not named").toContain("claude-cli");
+});
+
+/*
+ * A provider with no configured model list and a default of its own — §5.7's CLI
+ * before `claude_cli_models` is filled in. There is exactly one thing to choose,
+ * and the honest name for it is not an empty string.
+ */
+it("names the provider's own default where the deployment lists no models", async () => {
+  offered = [provider("stub", ["stub-model"]), provider("claude-cli", [])];
+
+  const host = await open();
+  await settle(3);
+
+  await act(async () => modelPicker(host)?.click());
+  const options = [...document.querySelectorAll("[role='option']")].map((e) => e.textContent);
+  expect(options).toContain("the provider's own default");
+});
+
+/*
+ * The picker filters, the route enforces, and a developer who cannot see why a
+ * model is missing asks whether ODE is broken. Greyed out with the reason is the
+ * version of that answer they can act on.
+ */
+it("shows a model an administrator has withheld, disabled and with the reason", async () => {
+  offered = [provider("stub", ["stub-model", "stub-model-large"])];
+  const host = await openWithLimits({ allowed_models: ["stub-model"] });
+  await settle(3);
+
+  await act(async () => modelPicker(host)?.click());
+  const withheld = [...document.querySelectorAll("[role='option']")].find(
+    (entry) => entry.textContent === "stub-model-large",
+  );
+  expect(withheld, "the withheld model is hidden rather than shown as withheld").not.toBeNull();
+  expect(withheld?.getAttribute("data-disabled")).not.toBeNull();
+  expect(withheld?.getAttribute("title")).toContain("not permitted");
+});
+
+/*
+ * Refused by the backend while a turn is running: that turn is being answered by
+ * the provider the change would move away from. Disabled here, so the refusal is
+ * not something the developer has to read out of an error line.
+ */
+it("cannot change the model while a turn is running", async () => {
+  offered = [provider("stub", ["stub-model", "stub-model-large"])];
+
+  const host = await open();
+  await ask(host);
+  await act(async () => openSocket());
+  await settle(3);
+
+  expect(modelPicker(host)?.hasAttribute("disabled")).toBe(true);
+
+  await act(async () => finishSend?.());
+  await settle();
+  expect(modelPicker(host)?.hasAttribute("disabled")).toBe(false);
+});
+
+/*
+ * What the session names is not on offer — the provider has gone from the
+ * deployment, or an administrator narrowed the list under a live conversation. The
+ * control has to say what is answering rather than silently showing the first
+ * entry as though it were the one.
+ */
+it("says so when what the session runs on is no longer offered", async () => {
+  offered = [provider("claude-cli", ["opus"])];
+
+  const host = await open();
+  await settle(3);
+
+  expect(modelPicker(host)?.textContent).toContain("stub · stub-model");
+  await act(async () => modelPicker(host)?.click());
+  const popup = document.querySelector("[role='listbox']");
+  expect(popup?.textContent).toContain("no longer offered");
+});
+
+// --- what a conversation has cost ---
+
+it("shows the conversation's own total, not only the last exchange", async () => {
+  offered = [provider("stub", ["stub-model"])];
+
+  const host = await open();
+  await settle(3);
+
+  // 173 tokens, from the contract fixture's own accounting.
+  const summary = host.querySelector(".session-spend");
+  expect(summary, "no spend summary beside the composer").not.toBeNull();
+  expect(summary?.textContent).toContain("173");
+});
+
+/*
+ * The fallback that matters: a deployment with no accounting answers the session
+ * read without a spend at all. Zero tokens and an unknown are different facts, and
+ * only one of them has a number — so the block is left off the screen rather than
+ * showing a total that was never measured.
+ */
+it("shows no total where there is no accounting to read one from", async () => {
+  offered = [provider("stub", ["stub-model"])];
+  accounted = false;
+
+  const host = await open();
+  await settle(3);
+
+  expect(
+    host.querySelector(".session-spend")?.textContent ?? "",
+    "a figure appeared with nothing behind it",
+  ).not.toContain("tokens");
+});
+
+/*
+ * §3.3's per-period figure, read when the popover opens rather than taken from the
+ * bootstrap the tab loaded with. The one moment it is on screen is the moment a
+ * developer is asking how much is left, and a copy as old as the tab is the wrong
+ * answer to that question.
+ */
+it("reads the period's usage against the cap when the detail is opened", async () => {
+  offered = [provider("stub", ["stub-model"])];
+  bootstrap = {
+    limits: { period: "720h", token_cap: 1000, soft_warn_fraction: 0.8 },
+    spend: { tokens: 900, cost: 0.5, requests: 4, from: "", to: "" },
+  } as Partial<Session>;
+
+  const host = await open();
+  await settle(3);
+
+  const summary = host.querySelector(".session-spend") as HTMLElement;
+  await act(async () => summary.click());
+  await settle(5);
+
+  const detail = document.querySelector(".session-spend-detail");
+  expect(detail, "the detail did not open").not.toBeNull();
+  const cap = detail?.querySelector(".spend-period");
+  expect(cap?.textContent, "the period's usage is not shown").toContain("of 1,000");
+  // The admin's own threshold decides what counts as close, not a number chosen here.
+  expect(cap?.textContent).toContain("close to the cap");
+});
+
+/*
+ * §5.7 requires a degraded provider to be visible rather than inferred from tools
+ * never being called — and until now that was said only on the form that starts a
+ * conversation, which is not where a developer is when they notice nothing is
+ * being read.
+ */
+it("says what the provider came up as, in the conversation that is using it", async () => {
+  offered = [
+    provider("stub", ["stub-model"], {
+      tools_out_of_band: true,
+      degraded: true,
+      degraded_reason: "the claude binary could not be run",
+    }),
+  ];
+
+  const host = await open();
+  await settle(3);
+
+  await act(async () => (host.querySelector(".session-spend") as HTMLElement).click());
+  await settle(5);
+
+  const state = document.querySelector(".provider-state");
+  expect(state?.textContent).toContain("tools over MCP");
+  expect(state?.textContent).toContain("the claude binary could not be run");
 });
