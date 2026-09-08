@@ -259,10 +259,18 @@ func TestWithoutAConnectionTheRoutesSayWhatIsMissing(t *testing.T) {
 	var connection struct {
 		Connected       bool     `json:"connected"`
 		ScopesRequested []string `json:"scopes_requested"`
+		GrantURL        string   `json:"grant_url"`
 	}
 	h.decode(t, response, &connection)
 	if connection.Connected || len(connection.ScopesRequested) != 2 {
 		t.Errorf("connection = %+v, want disconnected and the two scopes", connection)
+	}
+	// Where an organisation's access is extended, reported before anything has gone
+	// wrong: the picker offers it beside a list that is missing an organisation, and
+	// a developer who has not connected yet is one step from that list.
+	if !strings.Contains(connection.GrantURL, "/settings/") {
+		t.Errorf("grant_url = %q, want the GitHub settings page that grants access",
+			connection.GrantURL)
 	}
 
 	response = h.call(t, http.MethodGet, "/repo/repositories", nil, "developer")

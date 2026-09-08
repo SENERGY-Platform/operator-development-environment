@@ -1851,6 +1851,16 @@ export interface GitHubIdentity {
 export interface RepoConnection {
   connected: boolean;
   scopes_requested: string[];
+  /**
+   * Where the developer extends what ODE may reach on GitHub.
+   *
+   * An organisation's repositories are invisible until that organisation approves
+   * the app, and ODE cannot ask for that on their behalf: it is granted per
+   * organisation on GitHub's own settings page, and the credential ODE already
+   * holds picks it up without being reconnected. Empty when the deployment has no
+   * GitHub app configured.
+   */
+  grant_url?: string;
   identity?: GitHubIdentity;
   /** Present only when asked for: see RepoVerification. */
   verification?: RepoVerification;

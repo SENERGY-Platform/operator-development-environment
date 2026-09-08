@@ -70,6 +70,10 @@ func repoRequest(c *gin.Context) repo.Request {
 // @Description	and whether the grant actually carries the scopes §5.11 item 1 needs.
 // @Description	Never the credential itself.
 // @Description
+// @Description	`grant_url` is where the developer extends what ODE may reach — an
+// @Description	organisation's repositories are visible only once that organisation has
+// @Description	approved the app, and that approval is given on GitHub rather than here.
+// @Description
 // @Description	`?verify=true` additionally asks GitHub whether the stored credential
 // @Description	still works, and reports what it said: the status, GitHub's own message,
 // @Description	the scopes it reports for the token, and the token's *kind* — its public
@@ -92,7 +96,15 @@ func handleRepoConnection(svc *repo.Service) gin.HandlerFunc {
 			respondRepo(c, err)
 			return
 		}
-		body := gin.H{"connected": connected, "scopes_requested": svc.Scopes()}
+		// grant_url travels with every answer, connected or not: the pane that offers
+		// it is the repository picker, and a developer meets the problem it solves —
+		// an organisation's repositories missing from the list — before anything has
+		// gone wrong enough to ask a second question.
+		body := gin.H{
+			"connected":        connected,
+			"scopes_requested": svc.Scopes(),
+			"grant_url":        svc.GrantURL(),
+		}
 		if connected {
 			body["identity"] = identity
 		}

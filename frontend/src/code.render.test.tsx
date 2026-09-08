@@ -114,6 +114,8 @@ let pushRefusals = 1;
 let statusRejects: { status: number; message: string; body: Record<string, unknown> } | null = null;
 /** Whether the repository list refuses for a lapsed credential. */
 let repositoriesRefuse = false;
+/** What the repository listing answers with. Empty unless a test cares. */
+let repositoryList: { full_name: string; name: string; owner: string; private: boolean; default_branch: string; clone_url: string; html_url: string; can_push: boolean; empty: boolean }[] = [];
 /** What GitHub is reported to say about the credential when asked. */
 let verification: RepoVerification = {
   valid: false,
@@ -155,6 +157,7 @@ vi.mock("./api", async (importOriginal) => {
       repoConnection: async (verify = false) => ({
         connected: true,
         scopes_requested: ["repo", "workflow"],
+        grant_url: "https://github.com/settings/connections/applications/client",
         // Only when asked for, exactly as the route behaves: the pane's poll must not
         // spend a GitHub round trip.
         verification: verify ? verification : undefined,
@@ -191,7 +194,7 @@ vi.mock("./api", async (importOriginal) => {
             },
           );
         }
-        return { repositories: [] };
+        return { repositories: repositoryList };
       },
       repoDisconnect: async () => {
         calls.push("repoDisconnect");
@@ -325,6 +328,7 @@ beforeEach(() => {
   pushRejects = null;
   statusRejects = null;
   repositoriesRefuse = false;
+  repositoryList = [];
   verification = {
     valid: false,
     code: 401,
@@ -861,10 +865,88 @@ it("offers the repair on the account card, beside disconnecting rather than inst
     (pane.textContent ?? "").includes("GitHub account"),
   );
   expect(account).toBeTruthy();
+  // Folded, which is how it starts: which credential is stored is reference, and the
+  // repository list above it is what the visit was for. The one line it shows folded
+  // names the account, so the fold does not hide *whose* credential this is.
+  expect(account?.textContent).toContain("franzmueller");
+  await act(async () => button(account as HTMLElement, "GitHub account").click());
+
   // Both. Replacing a credential is not a smaller version of throwing it away, and
   // Disconnect was the only thing on offer.
   expect(account?.textContent).toContain("Reconnect GitHub");
   expect(account?.textContent).toContain("Disconnect");
+});
+
+/*
+ * The rarer errand, out of the way of the common one.
+ *
+ * Creating an operator is four controls and a paragraph about the first commit, and
+ * it sat above the filter — so a developer coming back to a repository they already
+ * have scrolled past the whole form to reach the list, every time.
+ */
+it("folds the create form away until it is asked for", async () => {
+  statusRejects = NO_REPOSITORY;
+
+  const host = await open();
+  const picker = [...host.querySelectorAll(".pane")].find(
+    (pane) => pane.getAttribute("aria-label") === "Repository",
+  );
+  expect(picker).toBeTruthy();
+
+  // Not on screen, and nothing about creating is either.
+  expect(() => button(host, "Create and scaffold")).toThrow();
+  expect(picker?.querySelector('input[placeholder="new-operator-name"]')).toBeNull();
+  // The list is, which is what the pane is for.
+  expect(picker?.querySelector('input[placeholder="Filter your repositories"]')).toBeTruthy();
+
+  await act(async () => button(picker as HTMLElement, "Create a repository").click());
+  expect(picker?.querySelector('input[placeholder="new-operator-name"]')).toBeTruthy();
+  expect(button(host, "Create and scaffold")).toBeTruthy();
+});
+
+/*
+ * The organisation case, which is not a fault and has no error to hang a repair off.
+ *
+ * A repository that is not in the list looks exactly like a repository that does not
+ * exist, and the one thing that would fix it — the organisation approving the app —
+ * happens on GitHub. Reconnecting, which is what a developer reaches for, changes
+ * nothing: GitHub skips the consent screen for an authorisation it already holds.
+ */
+it("says where an organisation's repositories are granted, and re-lists once they are", async () => {
+  statusRejects = NO_REPOSITORY;
+  repositoryList = [
+    {
+      full_name: "franzmueller/operator-test-2",
+      name: "operator-test-2",
+      owner: "franzmueller",
+      private: false,
+      default_branch: "main",
+      clone_url: "https://github.com/franzmueller/operator-test-2.git",
+      html_url: "https://github.com/franzmueller/operator-test-2",
+      can_push: true,
+      empty: false,
+    },
+  ];
+
+  const host = await open();
+  const picker = [...host.querySelectorAll(".pane")].find(
+    (pane) => pane.getAttribute("aria-label") === "Repository",
+  );
+  expect(picker).toBeTruthy();
+
+  const grant = picker?.querySelector<HTMLAnchorElement>('a[href*="/settings/"]');
+  expect(grant?.href).toContain("github.com/settings/connections/applications/");
+  // Said out loud, because reconnecting is the obvious wrong move here.
+  expect(picker?.textContent).toContain("Missing an organisation?");
+  expect(picker?.textContent).toContain("takes an owner's approval");
+
+  // The listing names what it reached, which is what makes a missing organisation
+  // visible as an absence rather than as nothing at all.
+  expect(picker?.textContent).toContain("from franzmueller");
+
+  const before = calls.filter((call) => call === "repoRepositories").length;
+  await act(async () => button(host, "read the list again").click());
+  expect(calls.filter((call) => call === "repoRepositories")).toHaveLength(before + 1);
 });
 
 it("shows the lapsed card rather than a picker that cannot list anything", async () => {

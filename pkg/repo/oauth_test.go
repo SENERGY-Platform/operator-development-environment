@@ -54,6 +54,17 @@ func TestAuthorizeAsksForWhatItNeedsAndSaysWhereItReturns(t *testing.T) {
 	}
 }
 
+// The repair for an organisation ODE cannot see is a page on GitHub, and this is
+// the only thing in ODE that knows where it is.
+func TestGrantURLPointsAtWhereAccessIsActuallyExtended(t *testing.T) {
+	h := newHarness(t)
+
+	grant := h.service.GrantURL()
+	if want := h.github.URL() + "/settings/connections/applications/client"; grant != want {
+		t.Errorf("grant url = %q, want %q", grant, want)
+	}
+}
+
 func TestConnectRefusesACodeWithoutAMatchingState(t *testing.T) {
 	h := newHarness(t)
 

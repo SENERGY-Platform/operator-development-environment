@@ -30,7 +30,7 @@ import {
 import { Abandoned, reconnect } from "./github";
 import { monaco, monacoLanguage } from "./monaco";
 import { setParam, useParam } from "./router";
-import { Busy, Muted, Pane, bytes, clock, dateTime, describe, shortSHA } from "./ui";
+import { Busy, KV, Muted, Pane, Popout, Row, Section, bytes, clock, dateTime, describe, shortSHA } from "./ui";
 import { WorkbenchBar } from "./workbench";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -214,7 +214,7 @@ export function CodeView({ session }: { session: Session }) {
       )}
       {!error && needs === "repository" && connection?.connected && (
         <>
-          <RepositoryPicker onSelected={() => void reload(true)} />
+          <RepositoryPicker connection={connection} onSelected={() => void reload(true)} />
           <ConnectedPane
             connection={connection}
             onDisconnected={() => void reload()}
@@ -343,17 +343,34 @@ function ConnectedPane({
   return (
     <Pane
       title="GitHub account"
-      subtitle="Stored encrypted, separately from your platform session"
+      // The login rather than the encryption note, because folded this line is all
+      // there is: which account ODE is acting as is the fact worth reading at a
+      // glance, and where the token lives is a sentence for the body.
+      subtitle={`Connected as ${identity.login}`}
       className="account"
+      // Folded by default. A developer comes to this pane to pick a repository or
+      // to work in one; the stored credential is reference, read once, and open it
+      // pushed the repository list down by a card's worth of prose.
+      collapsible
+      defaultOpen={false}
     >
-      <dl className="kv">
-        <dt>Account</dt>
-        <dd>{identity.login}</dd>
-        <dt>Connected</dt>
-        <dd>{dateTime(identity.connected_at)}</dd>
-        <dt>Scopes</dt>
-        <dd>{(identity.scopes ?? []).join(", ") || "—"}</dd>
-      </dl>
+      <KV>
+        <Row label="Account">{identity.login}</Row>
+        <Row label="Connected" hint="When this token was stored, not when it was last accepted">
+          {dateTime(identity.connected_at)}
+        </Row>
+        <Row label="Scopes">
+          {(identity.scopes ?? []).length > 0 ? (
+            <span className="flex flex-wrap gap-1">
+              {(identity.scopes ?? []).map((scope) => (
+                <code key={scope}>{scope}</code>
+              ))}
+            </span>
+          ) : (
+            "—"
+          )}
+        </Row>
+      </KV>
       {identity.missing_scopes && identity.missing_scopes.length > 0 && (
         <p className="warn text-foreground">
           The grant is missing {identity.missing_scopes.join(", ")}. A push that touches{" "}
@@ -361,12 +378,14 @@ function ConnectedPane({
         </p>
       )}
       <p className="muted text-muted-foreground">
+        The token is stored encrypted and separately from your platform session.
         Reconnecting replaces the stored token, which is what a credential GitHub has
         stopped accepting needs — the date above is when this one was stored, not proof
         that it still works. Disconnecting forgets it instead. Either way your working
         copy stays where it is: it is on your own storage, and ODE does not delete your
         work.
       </p>
+      <OrganisationAccess connection={connection} />
       <div className="account-actions">
         <ReconnectButton onDone={onReconnected} />
         <Button variant="outline" onClick={() => void disconnect()} disabled={pending}>
@@ -430,13 +449,69 @@ function ReconnectButton({
   );
 }
 
+/**
+ * The way out of "the repository I want is not in this list".
+ *
+ * A developer authorises ODE against their own account, and the consent screen's
+ * organisation half is easy to walk past — where they are not an owner it is a
+ * *request* rather than a grant, so walking past it is often the only thing that
+ * can be done at that moment. Afterwards nothing in ODE says what happened: an
+ * organisation whose repositories ODE may not see is indistinguishable from an
+ * organisation with no repositories, and the list simply does not have them.
+ *
+ * Reconnecting does not repair it, which is the part worth saying out loud on
+ * screen. GitHub skips the consent screen for an authorisation it already holds, so
+ * the flow that looks like the obvious repair changes nothing; and it does not need
+ * to, because an OAuth app's organisation access attaches to the authorisation
+ * rather than to the token. The credential ODE already holds starts seeing the
+ * organisation the moment access is granted, so listing again is the whole repair.
+ *
+ * Rendered only where a deployment has a GitHub app at all: `grant_url` is empty
+ * when none is configured, and the repo routes are unserved then anyway.
+ */
+function OrganisationAccess({
+  connection,
+  onRecheck,
+}: {
+  connection: RepoConnection | null;
+  /** Re-reads whatever list this is sitting under, once access has been granted. */
+  onRecheck?: () => void;
+}) {
+  const grantUrl = connection?.grant_url;
+  if (!grantUrl) return null;
+
+  return (
+    <p className="muted mt-2 text-muted-foreground">
+      <strong className="text-foreground">Missing an organisation?</strong> Its
+      repositories reach this list only once it has approved ODE.{" "}
+      <Popout href={grantUrl}>Grant or request access on GitHub</Popout>
+      {onRecheck ? (
+        <>
+          , then{" "}
+          <Button variant="link" className="h-auto p-0 align-baseline" onClick={onRecheck}>
+            read the list again
+          </Button>
+        </>
+      ) : null}
+      . An organisation you do not own takes an owner's approval first, so the grant
+      can sit as a request for a while.
+    </p>
+  );
+}
+
 /** Whether a refusal is the stored GitHub credential having lapsed. */
 function isCredentialLapse(e: unknown): boolean {
   return e instanceof ApiError && e.needs === "github_connection";
 }
 
 /** Pick an existing repository, or create one and have it scaffolded. */
-function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
+function RepositoryPicker({
+  connection,
+  onSelected,
+}: {
+  connection: RepoConnection | null;
+  onSelected: () => void;
+}) {
   const [repositories, setRepositories] = useState<GitHubRepository[] | null>(null);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -507,39 +582,52 @@ function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
 
   return (
     <Pane title="Repository" subtitle="Work on one of yours, or create one from the operator template">
-      <form
-        className="repo-create"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (name.trim()) void create();
-        }}
-      >
-        <Input
-          placeholder="new-operator-name"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <Input
-          placeholder="What it does (optional)"
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-        />
-        <label className="checkbox flex items-center gap-2 text-sm">
-          <Checkbox checked={isPrivate} onCheckedChange={(checked) => setPrivate(checked)} />
-          Private
-        </label>
-        <Button variant="default"
-          className={pending === "create" ? "primary busy animate-pulse" : "primary"}
-          type="submit"
-          disabled={!name.trim() || pending === "create"}
+      {/*
+        Folded, and above the list rather than below it.
+
+        Scaffolding a new operator is the rarer errand: a developer opens this pane to
+        get back into a repository they already have, and the form, the description,
+        the checkbox and the note about the first commit stood between them and the
+        filter every time. Folded it is one line, so the list starts at the top of the
+        pane — and it stays *above* the list because the failure it can produce is
+        reported at the top of the pane too, where a form at the bottom would put the
+        answer to "Create and scaffold" off screen.
+      */}
+      <Section title="Create a repository" note="from the operator template" defaultOpen={false}>
+        <form
+          className="repo-create"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (name.trim()) void create();
+          }}
         >
-          {pending === "create" ? "Creating…" : "Create and scaffold"}
-        </Button>
-      </form>
-      <p className="muted text-muted-foreground">
-        A created repository starts empty and the template is written into your working
-        copy — the first commit is yours to make and review.
-      </p>
+          <Input
+            placeholder="new-operator-name"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+          <Input
+            placeholder="What it does (optional)"
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+          />
+          <label className="checkbox flex items-center gap-2 text-sm">
+            <Checkbox checked={isPrivate} onCheckedChange={(checked) => setPrivate(checked)} />
+            Private
+          </label>
+          <Button variant="default"
+            className={pending === "create" ? "primary busy animate-pulse" : "primary"}
+            type="submit"
+            disabled={!name.trim() || pending === "create"}
+          >
+            {pending === "create" ? "Creating…" : "Create and scaffold"}
+          </Button>
+        </form>
+        <p className="muted text-muted-foreground">
+          A created repository starts empty and the template is written into your working
+          copy — the first commit is yours to make and review.
+        </p>
+      </Section>
 
       {error && <p className="error text-destructive">{error}</p>}
       {/*
@@ -582,8 +670,39 @@ function RepositoryPicker({ onSelected }: { onSelected: () => void }) {
           </li>
         ))}
       </ul>
+      {/*
+        Which accounts the listing actually reached, which is the only way an absent
+        organisation is visible at all. A repository GitHub did not return looks
+        exactly like a repository that does not exist, so a developer who has just
+        granted access has nothing on screen to tell "the grant has not taken" from
+        "I am looking in the wrong place". Naming the owners answers it: the
+        organisation is in this line or the grant did not reach ODE.
+      */}
+      {repositories && repositories.length > 0 && (
+        <p className="muted mt-3 text-sm text-muted-foreground">
+          {repositories.length} repositor{repositories.length === 1 ? "y" : "ies"}, from{" "}
+          {owners(repositories)}.
+        </p>
+      )}
+      <OrganisationAccess connection={connection} onRecheck={() => void load()} />
     </Pane>
   );
+}
+
+/**
+ * owners names the accounts a listing came from, longest-owned first and capped.
+ *
+ * Capped because the point is recognition rather than an inventory: a developer is
+ * looking for one name, and twenty of them would hide it as effectively as none.
+ */
+function owners(repositories: GitHubRepository[]): string {
+  const counted = new Map<string, number>();
+  for (const repository of repositories) {
+    counted.set(repository.owner, (counted.get(repository.owner) ?? 0) + 1);
+  }
+  const sorted = [...counted.entries()].sort((a, b) => b[1] - a[1]).map(([owner]) => owner);
+  if (sorted.length <= 6) return sorted.join(", ");
+  return `${sorted.slice(0, 6).join(", ")} and ${sorted.length - 6} more`;
 }
 
 /** The working copy: the tree and the editor, with the repository's state under them. */

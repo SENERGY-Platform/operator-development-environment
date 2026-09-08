@@ -6112,6 +6112,10 @@ paths:
         and whether the grant actually carries the scopes §5.11 item 1 needs.
         Never the credential itself.
 
+        `grant_url` is where the developer extends what ODE may reach — an
+        organisation's repositories are visible only once that organisation has
+        approved the app, and that approval is given on GitHub rather than here.
+
         `?verify=true` additionally asks GitHub whether the stored credential
         still works, and reports what it said: the status, GitHub's own message,
         the scopes it reports for the token, and the token's *kind* — its public

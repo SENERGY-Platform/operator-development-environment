@@ -141,6 +141,42 @@ func (s *Service) Authorize(userSub string) (AuthorizeRequest, error) {
 	}, nil
 }
 
+// GrantURL is where a developer manages what ODE may reach on GitHub.
+//
+// The route out of the case §5.11 item 1 has no other answer for: a developer
+// authorised ODE against their own account and now wants an organisation's
+// repositories too. Nothing in ODE can widen that — an organisation's approval is
+// the organisation's to give — and re-running the flow does not ask again, because
+// GitHub skips the consent screen for an authorisation it already holds. The
+// settings page is where the grant is actually extended, per organisation, with a
+// Grant button where the developer is an owner and a Request button where they are
+// not.
+//
+// Nothing has to be reconnected afterwards. An OAuth app's org access attaches to
+// the authorisation rather than to the token, so the credential ODE already holds
+// starts seeing the organisation's repositories as soon as it is granted; listing
+// them again is the whole repair.
+//
+// Empty when no client id is configured, which is the same condition under which
+// none of these routes is served.
+func (s *Service) GrantURL() string {
+	if s.opts.ClientID == "" {
+		return ""
+	}
+	base := strings.TrimSuffix(s.opts.WebURL, "/")
+	// A GitHub App is installed rather than authorised, so its access is managed on
+	// the installations page and not on the OAuth application's. The two are told
+	// apart by the client id's own prefix, which GitHub gives every App client id
+	// and no OAuth app client id — the same public-prefix reasoning verify.go reads
+	// a token's kind with. Guessed wrong, the developer lands on a GitHub settings
+	// page that is one click from the right one, which is why this is worth doing at
+	// all rather than linking the account index.
+	if strings.HasPrefix(s.opts.ClientID, "Iv") {
+		return base + "/settings/installations"
+	}
+	return base + "/settings/connections/applications/" + url.PathEscape(s.opts.ClientID)
+}
+
 // Connect completes the flow: exchange the code, read who it belongs to, store it
 // sealed.
 //

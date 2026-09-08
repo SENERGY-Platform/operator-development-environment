@@ -452,3 +452,48 @@ of it.
 `Connection` reads that row and never asks GitHub, which is why the pane can say
 "connected" about a credential that has since been revoked — and why the answer to
 a failed push has to come from the failed push.
+
+## An organisation ODE cannot see is not a fault, and has no error to repair
+
+The third authorisation state, after "no connection" and "the credential lapsed":
+the credential works, the account is right, and an organisation's repositories are
+simply not in the list. GitHub scopes an OAuth app's reach per organisation, and an
+organisation that has not approved the app is invisible rather than refused — so
+there is no failure to hang a repair off, and a repository that was never granted
+looks exactly like a repository that does not exist.
+
+Three things follow, and the pane says all three:
+
+**ODE cannot widen it.** Approval is the organisation's to give. Where the
+developer owns the organisation it is a button on GitHub; where they do not, it
+sends a request to whoever does. Nothing in `/repo` can stand in for either.
+
+**Reconnecting is the wrong move, and it is the move a developer reaches for.**
+GitHub skips the consent screen for an authorisation it already holds, so the flow
+that looks like the repair changes nothing — and the developer concludes the
+organisation is unreachable rather than unasked.
+
+**Nothing has to be reconnected.** An OAuth app's organisation access attaches to
+the *authorisation*, not to the token, so the credential ODE already holds starts
+seeing the organisation the moment access is granted. Listing again is the whole
+repair, and the picker offers exactly that beside the link.
+
+**A grant that has not taken is usually a request.** On the settings page the
+button says Grant for an organisation the developer owns and Request for one they
+do not, and a request waits on an owner — from ODE's side the two are
+indistinguishable, because both leave `/user/repos` answering exactly as before.
+So the picker names the accounts the listing *did* reach ("12 repositories, from
+franzmueller, acme"). An organisation missing from that line is the answer: the
+approval has not landed yet, and nothing on ODE's side is going to change that.
+Without it a developer who has just granted access has an absence to interpret and
+nothing to interpret it with.
+
+`GET /repo/connection` carries `grant_url` for it — connected or not, because the
+developer meets the problem in the repository picker, which is one step from a fresh
+connection. It is `…/settings/connections/applications/<client_id>` for an OAuth app
+and `…/settings/installations` for a GitHub App, told apart by the `Iv` prefix
+GitHub puts on an App's client id: an App is *installed* per account rather than
+authorised, so its reach is managed on a different page. The prefix is a public
+convention rather than a documented contract, and being wrong costs one click on a
+neighbouring settings page — which is still better than linking the settings index
+and leaving the developer to find it.
