@@ -66,6 +66,17 @@ commented where it lives:
   The folds are last on purpose: `@container` adds no specificity, so a rule
   written below them that names the same selector silently wins.
 
+  The folded stack needs `grid-auto-rows: max-content` and the reason is not
+  obvious. `height: auto` on a folded `.panes` does not take: it is a grid item in
+  `.split-side`, which stretches it to the side's full height, so its implicit rows
+  are `auto` tracks in a container with a definite height and get stretched to share
+  it — two stacked panes, two half-height rows. With `align-items: start` the panes
+  keep their own heights, so a pane taller than its half overflows the row and
+  *paints over the pane below it*: the resolved series across the intent's function
+  list, the profile across the candidate table. `align-content` does not fix it —
+  there is no free space left to distribute — and only a track sizing that is never
+  stretched does.
+
 Four components carry surfaces that had no equivalent before:
 [`Message`](https://ui.shadcn.com/docs/components/base/message) and
 [`MessageScroller`](https://ui.shadcn.com/docs/components/base/message-scroller)

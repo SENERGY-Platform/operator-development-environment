@@ -70,15 +70,46 @@ function TreeNode({ node }: { node: AspectTreeNode }) {
 
   return (
     <li>
+      {/*
+        The same row the code pane's file tree uses, and for the same reasons: the
+        whole row is the control, so the hit target is a row rather than a glyph, and
+        the arrow is a mark inside it rather than a bordered button of its own. It was
+        an outline `Button` around the arrow, which drew a box at every branch and
+        pushed the name of a branch out of line with the name of a leaf.
+      */}
       <div className="tree-row">
         {hasChildren ? (
-          <Button variant="outline" className="twisty inline-block w-3 shrink-0 text-center text-xs text-muted-foreground" onClick={() => setOpen(!open)} aria-expanded={open}>
-            {open ? "▾" : "▸"}
+          <Button
+            variant="ghost"
+            size="sm"
+            // `aria-expanded:bg-transparent`: the ghost variant fills an expanded
+            // button with `--muted`, and every branch of this tree starts expanded —
+            // which shaded the whole hierarchy and read as a selection.
+            className="tree-dir h-auto flex-1 justify-start py-1 font-normal aria-expanded:bg-transparent"
+            onClick={() => setOpen(!open)}
+            aria-expanded={open}
+          >
+            <span
+              className="twisty inline-block w-3 shrink-0 text-center text-xs text-muted-foreground"
+              aria-hidden="true"
+            >
+              {open ? "▾" : "▸"}
+            </span>
+            <span className="tree-name">{node.name || node.id}</span>
           </Button>
         ) : (
-          <span className="twisty leaf inline-block w-3 shrink-0 text-center text-xs text-muted-foreground">·</span>
+          // A leaf is not a control — nothing in this pane opens an aspect — so it is
+          // a row of the same shape rather than a button that does nothing.
+          <span className="tree-file">
+            <span
+              className="twisty leaf inline-block w-3 shrink-0 text-center text-xs text-muted-foreground"
+              aria-hidden="true"
+            >
+              ·
+            </span>
+            <span className="tree-name">{node.name || node.id}</span>
+          </span>
         )}
-        <span>{node.name || node.id}</span>
       </div>
       {hasChildren && open && (
         <ul>

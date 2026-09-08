@@ -34,7 +34,6 @@ import {
 } from "./api";
 import { Markdown } from "./markdown";
 import { Link, setParam, useParam } from "./router";
-import { ExternalLinkIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
@@ -46,6 +45,7 @@ import {
   Muted,
   NotComputedTag,
   Pane,
+  Popout,
   Row,
   Section,
   bytes,
@@ -1395,30 +1395,6 @@ function DashboardLinks({ session }: { session: Session }) {
   );
 }
 
-/**
- * Popout is every link that leaves ODE, drawn as one.
- *
- * It has to *look* like a link. These sat as bare anchors carrying a class with no
- * rule behind it, and the preset's reset had already taken the colour and the
- * underline off every `a` — so "Ray job" and "MLflow run" read as two words of
- * prose beside a status, and nobody would think to click them. The underline and
- * the colour say it is a link; the arrow says it opens elsewhere, and the screen
- * reader is told the same thing in words rather than left with an icon.
- */
-function Popout({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <a
-      className="exp-popout inline-flex items-center gap-1 text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
-      href={href}
-      target="_blank"
-      rel="noreferrer noopener"
-    >
-      {children}
-      <ExternalLinkIcon className="size-3" aria-hidden="true" />
-      <span className="sr-only">(opens in a new tab)</span>
-    </a>
-  );
-}
 
 /**
  * rayJobUrl and mlflowRunUrl build the deep links D6 replaced the frames with.

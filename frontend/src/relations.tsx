@@ -124,6 +124,22 @@ export function RelationsView() {
   const loadTree = useCallback(() => api.aspectTree().then((r) => r.tree), []);
   const tree = useLoad(loadTree);
 
+  /*
+   * The picker's value is an aspect id and its label is the aspect's name, and the
+   * two have to be handed over separately: the trigger renders the *value* unless the
+   * select is given the mapping, which would put `urn:infai:ses:aspect:…` in the
+   * field once anything was chosen.
+   */
+  const aspectLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+    const walk = (node: AspectTreeNode) => {
+      labels[node.id] = node.name || node.id;
+      (node.children ?? []).forEach(walk);
+    };
+    (tree.data ?? []).forEach(walk);
+    return labels;
+  }, [tree.data]);
+
   const propose = useAction((_signal: AbortSignal, request: { aspectId: string; includeDescendants: boolean }) =>
     api.candidateSets(request),
   );
@@ -237,7 +253,7 @@ export function RelationsView() {
         subtitle="Device sets proposed from the hierarchy — ontology only, no values read, tier L0"
       >
         <form className="filters flex flex-wrap items-center gap-2" onSubmit={submitAspect}>
-          <Select value={aspect} onValueChange={(value) => setAspect(value ?? "")}>
+          <Select items={aspectLabels} value={aspect} onValueChange={(value) => setAspect(value ?? "")}>
             <SelectTrigger size="sm" aria-label="Aspect" className="w-auto min-w-52">
               <SelectValue placeholder="Choose an aspect…" />
             </SelectTrigger>
@@ -1173,13 +1189,28 @@ function ContingencyTable({ a, b, table }: { a: string; b: string; table: Contin
   );
 }
 
-/** aspectOptions flattens the tree into indented options, so the picker shows depth. */
+/**
+ * aspectOptions flattens the tree into indented items, so the picker shows depth.
+ *
+ * `SelectItem` and not `<option>`. These were options while the control was a native
+ * `<select>`, and they survived the move to the shadcn one — where an `<option>` is
+ * a plain element inside a popup rather than a choice. It drew as unstyled text and
+ * could not be picked, so every aspect under the placeholder was inert and the pane
+ * could not be used at all. The depth moved with them, from two leading spaces to a
+ * padding, because a popup item is not a line of a monospaced list.
+ */
 function aspectOptions(node: AspectTreeNode, depth: number): React.ReactNode[] {
-  const label = `${"  ".repeat(depth)}${node.name || node.id}`;
   return [
-    <option key={node.id} value={node.id}>
-      {label}
-    </option>,
+    <SelectItem
+      key={node.id}
+      value={node.id}
+      // The indent belongs to the item, not to its text: the trigger renders the
+      // chosen item's label, and an indent inside it would be carried up into the
+      // closed field.
+      style={{ paddingLeft: `calc(0.5rem + ${depth} * 0.85rem)` }}
+    >
+      {node.name || node.id}
+    </SelectItem>,
     ...(node.children ?? []).flatMap((child) => aspectOptions(child, depth + 1)),
   ];
 }

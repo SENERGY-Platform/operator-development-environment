@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { ChevronRightIcon } from "lucide-react";
+import { ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardAction, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
@@ -164,6 +164,8 @@ export function Pane({
   subtitle,
   actions,
   className,
+  collapsible = false,
+  defaultOpen = true,
   children,
 }: {
   title: string;
@@ -176,27 +178,96 @@ export function Pane({
    * rules; this is for what is inside one.
    */
   className?: string;
+  /**
+   * Whether the header folds the pane away.
+   *
+   * For a pane that is reference rather than work: the account card states which
+   * credential is stored, which a developer reads once and then scrolls past on
+   * every visit. Folded it is one line, and the pane it sits under — the
+   * repository list, which is what the visit was for — starts that much higher.
+   */
+  collapsible?: boolean;
+  /** Whether a collapsible pane starts open. Ignored when it cannot fold. */
+  defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
-  return (
-    <Card
-      // `Card` renders a div, and this is a landmark: the panes are the page's
-      // top-level regions and a screen reader should be able to jump between
-      // them. `role="region"` with a name is what `<section aria-label>` means,
-      // and it avoids wrapping the card in a second box just to get the tag.
-      role="region"
-      aria-label={title}
-      className={cn("pane min-h-0 gap-0 overflow-hidden py-0", className)}
-    >
-      <CardHeader className="grid-cols-[1fr_auto] gap-2 border-b px-4 py-3">
-        <div className="min-w-0">
+  const [open, setOpen] = useState(defaultOpen);
+  const folded = collapsible && !open;
+
+  // `Card` renders a div, and this is a landmark: the panes are the page's
+  // top-level regions and a screen reader should be able to jump between them.
+  // `role="region"` with a name is what `<section aria-label>` means, and it
+  // avoids wrapping the card in a second box just to get the tag.
+  const card = {
+    role: "region",
+    "aria-label": title,
+    className: cn("pane min-h-0 gap-0 overflow-hidden py-0", className),
+  } as const;
+
+  const header = (
+    // The rule under the header is the line between a title and a body. Folded
+    // there is no body, and drawing it anyway reads as an empty pane.
+    <CardHeader className={cn("grid-cols-[1fr_auto] gap-2 px-4 py-3", !folded && "border-b")}>
+      <div className="min-w-0">
+        {collapsible ? (
+          /*
+           * A button inside the heading rather than a heading inside a button: the
+           * accordion pattern. The other way round is the shape that comes to hand
+           * first, and it costs the `h2` — a heading nested in a button is not
+           * phrasing content, and a screen reader's heading list loses the pane.
+           */
+          <h2 className="min-w-0 text-sm leading-none font-semibold">
+            <CollapsibleTrigger
+              className={cn(
+                "pane-toggle flex w-full min-w-0 items-center gap-2 text-left",
+                "focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
+              )}
+            >
+              <ChevronRightIcon
+                aria-hidden
+                className="twisty size-3.5 shrink-0 text-muted-foreground transition-transform data-[open]:rotate-90"
+                data-open={open ? "" : undefined}
+              />
+              <span className="truncate">{title}</span>
+            </CollapsibleTrigger>
+          </h2>
+        ) : (
           <h2 className="truncate text-sm leading-none font-semibold">{title}</h2>
-          <CardDescription className="pane-subtitle mt-1 text-xs">{subtitle}</CardDescription>
-        </div>
-        {actions && <CardAction className="pane-actions flex items-center gap-2">{actions}</CardAction>}
-      </CardHeader>
-      <CardContent className="pane-body min-h-0 flex-1 overflow-auto px-4 py-3">{children}</CardContent>
-    </Card>
+        )}
+        <CardDescription
+          // Indented past the twisty when there is one, so the subtitle reads as a
+          // second line of the title rather than as the first line of the body.
+          className={cn("pane-subtitle mt-1 text-xs", collapsible && "pl-[1.375rem]")}
+        >
+          {subtitle}
+        </CardDescription>
+      </div>
+      {actions && <CardAction className="pane-actions flex items-center gap-2">{actions}</CardAction>}
+    </CardHeader>
+  );
+
+  if (!collapsible) {
+    return (
+      <Card {...card}>
+        {header}
+        <CardContent className="pane-body min-h-0 flex-1 overflow-auto px-4 py-3">
+          {children}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} render={<Card {...card} />}>
+      {header}
+      <CollapsibleContent
+        render={
+          <CardContent className="pane-body min-h-0 flex-1 overflow-auto px-4 py-3" />
+        }
+      >
+        {children}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -301,6 +372,35 @@ export function Row({ label, hint, children }: { label: string; hint?: string; c
       </dt>
       <dd className="min-w-0">{children}</dd>
     </>
+  );
+}
+
+/**
+ * Popout is every link that leaves ODE, drawn as one.
+ *
+ * Shared rather than the experiments pane's own: the Code pane sends a developer to
+ * GitHub to extend an organisation grant, and a second spelling of "this leaves ODE"
+ * is a second thing to keep in step with the first.
+ *
+ * It has to *look* like a link. These sat as bare anchors carrying a class with no
+ * rule behind it, and the preset's reset had already taken the colour and the
+ * underline off every `a` — so "Ray job" and "MLflow run" read as two words of
+ * prose beside a status, and nobody would think to click them. The underline and
+ * the colour say it is a link; the arrow says it opens elsewhere, and the screen
+ * reader is told the same thing in words rather than left with an icon.
+ */
+export function Popout({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      className="exp-popout inline-flex items-center gap-1 text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+    >
+      {children}
+      <ExternalLinkIcon className="size-3" aria-hidden="true" />
+      <span className="sr-only">(opens in a new tab)</span>
+    </a>
   );
 }
 

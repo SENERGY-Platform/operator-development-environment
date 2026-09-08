@@ -717,6 +717,28 @@
     grid-template-columns: minmax(0, 1fr);
     align-items: start;
     height: auto;
+    /*
+     * Each row is as tall as the pane in it, and the stack scrolls.
+     *
+     * `height: auto` above says what is wanted and does not get it: this grid is
+     * itself a grid item in `.split-side`, which stretches it to the side's whole
+     * height, so the height resolves to that whatever is written here. The implicit
+     * rows are then `auto` in a container with a definite height and are stretched
+     * to share it — two stacked panes became two rows of half the height each —
+     * while `align-items: start` keeps each pane at its own content height. A pane
+     * taller than its half is neither clipped nor scrolled: it overflows its row and
+     * paints over the pane below. That is the resolved series drawn across the
+     * intent's function list, and the profile drawn across the candidate table.
+     *
+     * `max-content` rows are not stretched, so each row is its pane and the grid is
+     * as tall as the stack — which `.panes`' own `overflow: auto` then scrolls.
+     * `align-content` does not fix this and was tried: it distributes free space,
+     * and with tracks already stretched to fill there is none to distribute.
+     *
+     * The chat layout below restates `grid-template-rows`, so it keeps its own
+     * explicit rows and none of this applies to it.
+     */
+    grid-auto-rows: max-content;
   }
 
   /*
@@ -887,12 +909,76 @@
     box-shadow: var(--shadow-md, 0 4px 12px rgb(0 0 0 / 0.08));
   }
 
+  /*
+   * The picker's two halves, neither of which had a rule.
+   *
+   * The create form's fields sat flush against one another — a name box and a
+   * description box touching, with the Private checkbox against that — because
+   * preflight takes the margins off and nothing put them back. A form is a column
+   * of fields with air between them, and that is the whole of this.
+   */
+  .repo-create {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .repo-filter {
+    margin: 0.75rem 0 0.5rem;
+  }
+
+  /*
+   * The list takes the room the pane has, rather than a fixed 16rem of it.
+   *
+   * `max-height` was a guess at how much space there would be, and it is wrong in
+   * both directions: on a laptop the pane runs to the bottom of the window with the
+   * list scrolling inside its own sixth of it and dead space underneath, and 300
+   * repositories are read six at a time. Shrink rather than grow — `flex: 0 1 auto`
+   * gives the list its content height while it fits, so five repositories keep the
+   * "300 repositories, from …" line directly under them instead of pushing it to
+   * the floor of an empty box, and hands it the remaining space the moment it does
+   * not. The floor is there for a pane too short to divide: below it the body
+   * scrolls instead, which is the one case where the list must not eat the line
+   * that says how to reach a missing organisation.
+   */
   .repo-list {
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
-    max-height: 16rem;
+    flex: 0 1 auto;
+    min-height: 8rem;
     overflow: auto;
+  }
+
+  /* The name and its badges take the row; the action stays at the right edge
+     rather than wrapping under the description. */
+  .repo-list > li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-width: 0;
+    padding: 0.2rem 0;
+  }
+
+  .repo-list > li > div {
+    min-width: 0;
+  }
+
+  /*
+   * The indent, for the aspect tree as well as the code pane's.
+   *
+   * `.file-tree ul` above says the same thing for the file tree; the ontology pane's
+   * `ul.tree` had nothing, and Tailwind's preflight strips a list's own padding — so
+   * every level started in the same column and a leaf two levels down was
+   * indistinguishable from a sibling of its grandparent. The hierarchy is the whole
+   * content of that pane.
+   */
+  .tree ul {
+    margin-left: 0.6rem;
+    padding-left: 0.85rem;
+    border-left: 1px solid var(--border);
   }
 
   .tree-row {

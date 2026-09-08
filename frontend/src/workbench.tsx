@@ -444,9 +444,18 @@ export function WorkbenchBar({ onSwitched }: { onSwitched?: () => void }) {
           onSwitched?.();
         }}
       >
-        <TabsList variant="line" className="workbench-list flex-wrap">
+        {/*
+          One row, and the tabs share it. `flex-wrap` was the obvious way to fit a
+          third workbench in a narrow pane and the wrong one: the list is `h-9`, so a
+          wrapped row is not a taller strip but a row of tabs painted over whatever
+          the bar sits above — with the active tab's underline, which this variant
+          draws five pixels below the tab, landing in the pane's first line of text.
+          `min-w-0` is what lets a tab give way instead: the label already truncates,
+          and a flex item will not shrink below its content without it.
+        */}
+        <TabsList variant="line" className="workbench-list">
           {all.map((bench) => (
-            <TabsTrigger key={bench.id} value={bench.id} className="workbench max-w-56">
+            <TabsTrigger key={bench.id} value={bench.id} className="workbench max-w-56 min-w-0">
               <span className="truncate">{workbenchLabel(bench)}</span>
             </TabsTrigger>
           ))}
