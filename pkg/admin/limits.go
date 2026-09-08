@@ -302,6 +302,23 @@ type Spend struct {
 	To       time.Time `json:"to"`
 }
 
+// SessionSpend is what one conversation has cost since it was opened.
+//
+// No window, unlike Spend: a conversation's cost is its whole life, and a
+// developer asking what this one has cost is not asking about a billing period.
+// The caps are not computed from this — Spend is what they are enforced against —
+// so this is a report and never an input to a refusal.
+type SessionSpend struct {
+	Tokens   int64   `json:"tokens"`
+	Cost     float64 `json:"cost"`
+	Requests int64   `json:"requests"`
+	// CostComplete is false when at least one request here ran on a model ODE has
+	// no price for. The figure beside it is then a floor rather than a total, and
+	// saying so is the same honesty constraint the package comment states for caps:
+	// an unpriced model accrues zero and would otherwise read as free.
+	CostComplete bool `json:"cost_complete"`
+}
+
 // LimitError is §3.3's structured refusal on cap breach.
 //
 // A typed error rather than a message, because three different surfaces have to

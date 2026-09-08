@@ -337,6 +337,13 @@ func (s *Service) Spend(ctx context.Context, subject string, period time.Duratio
 	return s.store.SpendSince(ctx, subject, s.now().Add(-period))
 }
 
+// SessionSpend is what one conversation has cost, for the developer looking at it
+// rather than for a cap. Scoped to the subject as well as the session, so a session
+// id on its own does not open someone else's total.
+func (s *Service) SessionSpend(ctx context.Context, subject, sessionID string) (SessionSpend, error) {
+	return s.store.SessionSpend(ctx, subject, sessionID)
+}
+
 // Pricing exposes the configured table for the admin surface, which needs to show
 // which models a cost cap can actually bind on.
 func (s *Service) Pricing() *llm.Pricing { return s.pricing }

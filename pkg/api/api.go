@@ -273,7 +273,7 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		sessions := secured.Group("/chat/sessions")
 		sessions.POST("", handleCreateChatSession(deps.Chat))
 		sessions.GET("", handleListChatSessions(deps.Chat))
-		sessions.GET("/:id", handleGetChatSession(deps.Chat))
+		sessions.GET("/:id", handleGetChatSession(deps.Chat, deps.Admin))
 		sessions.DELETE("/:id", handleDeleteChatSession(deps.Chat))
 		// The developer's own name for a conversation. Its own sub-resource for the
 		// same reason the tier is: a PUT of the whole session would be a second way

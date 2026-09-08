@@ -19,6 +19,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -131,6 +132,10 @@ func handleListChatSessions(engine *chat.Engine) gin.HandlerFunc {
 }
 
 // @Summary		One session, its messages and anything awaiting confirmation
+// @Description	`spend` is what this conversation has cost since it was opened, and
+// @Description	is absent where there is no accounting to read it from. It is a
+// @Description	report rather than a cap: §3.3's limits are enforced against the
+// @Description	per-period figure on /session, not against this one.
 // @Tags			chat
 // @Produce		json
 // @Security		Bearer
@@ -139,7 +144,7 @@ func handleListChatSessions(engine *chat.Engine) gin.HandlerFunc {
 // @Failure		401	{object}	map[string]string
 // @Failure		404	{object}	map[string]string	"no such session, or it belongs to another user"
 // @Router			/chat/sessions/{id} [get]
-func handleGetChatSession(engine *chat.Engine) gin.HandlerFunc {
+func handleGetChatSession(engine *chat.Engine, limits *admin.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := auth.MustFromContext(c)
 		session, err := engine.Session(c.Request.Context(), token.Sub, c.Param("id"))
@@ -162,11 +167,25 @@ func handleGetChatSession(engine *chat.Engine) gin.HandlerFunc {
 			described = append(described, confirmation.Describe())
 		}
 
-		c.JSON(http.StatusOK, gin.H{
+		body := gin.H{
 			"session":               session,
 			"messages":              messages,
 			"pending_confirmations": described,
-		})
+		}
+		// Left out rather than zeroed when it cannot be read. A conversation that has
+		// cost something and a conversation whose accounting is unavailable are
+		// different facts, and "0 tokens" is the wrong answer to the second — the pane
+		// leaves the figure off the screen instead of showing one that is not true.
+		if limits != nil {
+			if spend, err := limits.SessionSpend(c.Request.Context(), token.Sub, session.ID); err == nil {
+				body["spend"] = spend
+			} else {
+				slog.WarnContext(c.Request.Context(), "could not read what a session has cost",
+					"session", session.ID, "error", err)
+			}
+		}
+
+		c.JSON(http.StatusOK, body)
 	}
 }
 

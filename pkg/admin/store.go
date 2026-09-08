@@ -38,6 +38,11 @@ type Store interface {
 	// SpendSince is the accounting query the caps are enforced against. An empty
 	// subject means every user, which is how the global cap is computed.
 	SpendSince(ctx context.Context, subject string, since time.Time) (Spend, error)
+	// SessionSpend is what one conversation has cost over its whole life, for the
+	// developer's own view of it. Unlike SpendSince the subject is required and is
+	// part of the match: a session id is not a capability, and a total read out by
+	// id alone would report another user's conversation to whoever guessed it.
+	SessionSpend(ctx context.Context, subject, sessionID string) (SessionSpend, error)
 	// UsageSince lists the individual records, for the admin surface.
 	UsageSince(ctx context.Context, subject string, since time.Time, limit int) ([]Record, error)
 	// UnpricedModelsSince names models used with no price, so a cost cap that
@@ -129,6 +134,29 @@ func (s *MemoryStore) SpendSince(_ context.Context, subject string, since time.T
 		spend.Tokens += record.Tokens()
 		spend.Cost += record.Cost
 		spend.Requests++
+	}
+	return spend, nil
+}
+
+func (s *MemoryStore) SessionSpend(_ context.Context, subject, sessionID string) (SessionSpend, error) {
+	s.mux.RLock()
+	defer s.mux.RUnlock()
+	// True until a record says otherwise, so a session with nothing in it reads as
+	// complete rather than as incomplete-and-empty.
+	spend := SessionSpend{CostComplete: true}
+	if subject == "" || sessionID == "" {
+		return spend, nil
+	}
+	for _, record := range s.usage {
+		if record.UserSub != subject || record.SessionID != sessionID {
+			continue
+		}
+		spend.Tokens += record.Tokens()
+		spend.Cost += record.Cost
+		spend.Requests++
+		if !record.CostEstimated {
+			spend.CostComplete = false
+		}
 	}
 	return spend, nil
 }
@@ -296,6 +324,27 @@ func (s *PostgresStore) SpendSince(ctx context.Context, subject string, since ti
 	spend := Spend{From: since, To: time.Now().UTC()}
 	if err := row.Scan(&spend.Tokens, &spend.Cost, &spend.Requests); err != nil {
 		return Spend{}, err
+	}
+	return spend, nil
+}
+
+func (s *PostgresStore) SessionSpend(ctx context.Context, subject, sessionID string) (SessionSpend, error) {
+	spend := SessionSpend{CostComplete: true}
+	if subject == "" || sessionID == "" {
+		return spend, nil
+	}
+	// COALESCE for the same reason SpendSince has it, and bool_and over no rows is
+	// NULL too: a conversation whose first turn has not finished has no rows at all.
+	row := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(input_tokens + output_tokens + cached_input_tokens), 0),
+		       COALESCE(SUM(cost), 0),
+		       COUNT(*),
+		       COALESCE(bool_and(cost_estimated), TRUE)
+		FROM ode_usage
+		WHERE user_sub = $1 AND session_id = $2`, subject, sessionID)
+
+	if err := row.Scan(&spend.Tokens, &spend.Cost, &spend.Requests, &spend.CostComplete); err != nil {
+		return SessionSpend{}, err
 	}
 	return spend, nil
 }

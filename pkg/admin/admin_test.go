@@ -514,3 +514,89 @@ func TestUnpricedCachedInputDoesNotUnderstate(t *testing.T) {
 		t.Errorf("cost = %v, want 100", usage.CostEUR)
 	}
 }
+
+// TestSessionSpendIsScopedToItsOwner is the access check, not the arithmetic one:
+// a session id in a URL must not be enough to read what someone else's
+// conversation cost, so the subject is part of the match rather than trusted from
+// the caller having named the id.
+func TestSessionSpendIsScopedToItsOwner(t *testing.T) {
+	service, store := testService(t)
+	ctx := context.Background()
+
+	if err := store.AppendUsage(ctx, Record{
+		UserSub: testUser, SessionID: "s-1", Model: "test-model",
+		InputTokens: 100, OutputTokens: 50, Cost: 1.5, CostEstimated: true,
+	}); err != nil {
+		t.Fatalf("AppendUsage: %v", err)
+	}
+	// Another conversation of the same developer, which must not be counted in.
+	if err := store.AppendUsage(ctx, Record{
+		UserSub: testUser, SessionID: "s-2", Model: "test-model",
+		InputTokens: 999, CostEstimated: true,
+	}); err != nil {
+		t.Fatalf("AppendUsage: %v", err)
+	}
+
+	mine, err := service.SessionSpend(ctx, testUser, "s-1")
+	if err != nil {
+		t.Fatalf("SessionSpend: %v", err)
+	}
+	if mine.Tokens != 150 || mine.Requests != 1 || mine.Cost != 1.5 {
+		t.Errorf("spend = %+v, want 150 tokens over 1 request at 1.5", mine)
+	}
+	if !mine.CostComplete {
+		t.Error("a priced session reports its cost as incomplete")
+	}
+
+	theirs, err := service.SessionSpend(ctx, "sub-mallory", "s-1")
+	if err != nil {
+		t.Fatalf("SessionSpend: %v", err)
+	}
+	if theirs.Requests != 0 || theirs.Tokens != 0 {
+		t.Errorf("another user read the session's spend: %+v", theirs)
+	}
+}
+
+// TestSessionSpendReportsAnUnpricedTurn: one turn on a model with no price makes
+// the cost a floor rather than a total, and the figure must say so instead of
+// reading as though the turn were free.
+func TestSessionSpendReportsAnUnpricedTurn(t *testing.T) {
+	service, store := testService(t)
+	ctx := context.Background()
+
+	for _, record := range []Record{
+		{UserSub: testUser, SessionID: "s-1", Model: "test-model",
+			OutputTokens: 1_000_000, Cost: 50, CostEstimated: true},
+		{UserSub: testUser, SessionID: "s-1", Model: "unpriced-model",
+			OutputTokens: 1_000_000, CostEstimated: false},
+	} {
+		if err := store.AppendUsage(ctx, record); err != nil {
+			t.Fatalf("AppendUsage: %v", err)
+		}
+	}
+
+	spend, err := service.SessionSpend(ctx, testUser, "s-1")
+	if err != nil {
+		t.Fatalf("SessionSpend: %v", err)
+	}
+	if spend.CostComplete {
+		t.Error("a session holding an unpriced turn reports a complete cost")
+	}
+	if spend.Tokens != 2_000_000 {
+		t.Errorf("tokens = %d, want both turns counted", spend.Tokens)
+	}
+}
+
+// TestSessionSpendOfAnEmptySessionIsComplete: nothing spent is a known total, not
+// an unknown one. The pane shows a zero here; it must not warn about a floor.
+func TestSessionSpendOfAnEmptySessionIsComplete(t *testing.T) {
+	service, _ := testService(t)
+
+	spend, err := service.SessionSpend(context.Background(), testUser, "s-fresh")
+	if err != nil {
+		t.Fatalf("SessionSpend: %v", err)
+	}
+	if !spend.CostComplete || spend.Requests != 0 {
+		t.Errorf("spend = %+v, want an empty but complete total", spend)
+	}
+}

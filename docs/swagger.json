@@ -947,6 +947,7 @@
         },
         "/chat/sessions/{id}": {
             "get": {
+                "description": "`spend` is what this conversation has cost since it was opened, and\nis absent where there is no accounting to read it from. It is a\nreport rather than a cap: §3.3's limits are enforced against the\nper-period figure on /session, not against this one.",
                 "produces": [
                     "application/json"
                 ],

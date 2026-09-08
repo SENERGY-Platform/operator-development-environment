@@ -279,6 +279,14 @@ CREATE TABLE IF NOT EXISTS ode_usage (
 		sql:  `CREATE INDEX IF NOT EXISTS ode_usage_at_idx ON ode_usage (at DESC)`,
 	},
 	{
+		// What one conversation has cost, which the chat pane reads on every open.
+		// The user_sub is in the index as well as the query because the total is
+		// scoped to its owner: a session id is not a capability.
+		name: "ode_usage_by_session",
+		sql: `CREATE INDEX IF NOT EXISTS ode_usage_session_idx
+              ON ode_usage (user_sub, session_id)`,
+	},
+	{
 		name: "ode_tool_calls",
 		sql: `
 CREATE TABLE IF NOT EXISTS ode_tool_calls (

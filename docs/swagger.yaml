@@ -4061,6 +4061,11 @@ paths:
       tags:
       - chat
     get:
+      description: |-
+        `spend` is what this conversation has cost since it was opened, and
+        is absent where there is no accounting to read it from. It is a
+        report rather than a cap: §3.3's limits are enforced against the
+        per-period figure on /session, not against this one.
       parameters:
       - description: session id
         in: path
