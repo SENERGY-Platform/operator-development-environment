@@ -203,6 +203,63 @@ On the way out and not in the store, for the reason the tool-call repair gives: 
 stored history is the record of what happened, and what the provider sees is a
 reading of it that the protocol accepts.
 
+### A conversation can change provider or model, and unlike the workbench it needs no note
+
+`PUT /chat/sessions/{id}/model` re-points a live conversation. Both halves were
+fixed at creation and choosing them wrong is ordinary — a developer opens a session
+on the cheap model, works out that the problem is harder than it looked, and before
+this had no way out but a new session, which threw away the history that established
+what the problem was.
+
+The empty string means two different things, and the difference is deliberate.
+Against the *same* provider it means "leave the model alone", because a request
+naming only the provider is not asking for anything to change. Against a *changed*
+provider it means "take the new one's default", because the model the session holds
+belongs to the provider it is leaving — `ResolveModel` answers it with that
+provider's first entry, or with the empty string again for a provider that has a
+default of its own and declares no list. That last case is §5.7's CLI: it is handed
+no `--model` flag at all and chooses for itself, which is why `ModelRequired` exists
+separately from an empty `Models` — "ODE holds no allow-list" is not "the provider
+has no default", and conflating them would refuse a legitimate request.
+
+**It is refused while an exchange is running**, for the reason the workbench move is:
+the turn read the session once and is being answered by the provider the change would
+move away from. Same error, same 400, same disabled control in the SPA.
+
+**It is not audited and puts no note in the history.** §3.2's trail is about
+exposure, and which model answers decides nothing about what the assistant may see —
+the tier does, and it is untouched. Nor does the history need telling: unlike a
+workbench move, nothing above the change has become false.
+
+What does carry over is the history itself, and that it survives a change of
+*transport* is not luck. It is stored as content blocks rather than as one provider's
+wire format, and `run()` already writes a tool result beside every tool call an
+out-of-band provider made over MCP — precisely so that a session moved to a native
+provider does not arrive there with a `tool_use` nothing answered, which both native
+protocols reject with a 400 on every subsequent turn.
+
+### What a conversation has cost is on the session read
+
+`GET /chat/sessions/{id}` carries a `spend`: tokens, requests and estimated cost over
+the whole life of that conversation, from `ode_usage` rather than from anything the
+SPA accumulated. It is a report and never an input to a refusal — §3.3's caps are
+enforced against the per-period figure, which is a different query.
+
+Three things about it.
+
+**The subject is part of the match**, not merely of the caller's claim to have named
+the id. A session id is not a capability, and a total read out by id alone would
+report another user's conversation to whoever guessed it.
+
+**It is absent rather than zero when it cannot be read.** A deployment with no
+accounting and a conversation that has cost nothing are different facts, and only one
+of them has a number. The SPA leaves the figure off the screen for the first.
+
+**`cost_complete` is false when a turn ran on a model with no configured price.** The
+same honesty constraint §3.3 states for caps: an unpriced model accrues zero, so the
+figure beside it is a floor rather than a total, and saying so is the difference
+between a cheap conversation and an unmeasured one.
+
 ### `time.Duration` marshals as nanoseconds
 
 A field named `duration_ms` carrying a

@@ -394,6 +394,58 @@ func handleSetAutoRun(engine *chat.Engine) gin.HandlerFunc {
 	}
 }
 
+// handleSetModel re-points a live conversation at another provider or model.
+//
+// Its own sub-resource for the reason the tier and the title are: a PUT of the
+// whole session would be a second way to move a tier, and that one would not audit
+// it.
+//
+// @Summary		Change a session's provider or model
+// @Description	Both are fixed when a session is created, and choosing them wrong is
+// @Description	ordinary — the way out used to be a new session, which threw away the
+// @Description	history. Either field may be omitted to leave it as it is; an omitted
+// @Description	model against a *changed* provider takes that provider's default.
+// @Description	Refused while an exchange is running on the session, because the turn
+// @Description	is being answered by the provider the change would move away from.
+// @Description	Unlike the tier this is not audited: which model answers decides
+// @Description	nothing about what the assistant may see.
+// @Tags			chat
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			id		path		string								true	"session id"
+// @Param			request	body		object{provider=string,model=string}	true	"the provider and model to move to"
+// @Success		200		{object}	chat.Session
+// @Failure		400		{object}	map[string]string	"an exchange is running on this session"
+// @Failure		401		{object}	map[string]string
+// @Failure		403		{object}	map[string]string	"an unknown provider or model, or one the admin limits do not permit"
+// @Failure		404		{object}	map[string]string
+// @Router			/chat/sessions/{id}/model [put]
+func handleSetModel(engine *chat.Engine) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		// Both empty is not refused: it resolves to the session as it stands, which
+		// is what a re-selection of the current entry sends and is a no-op rather
+		// than a malformed request.
+
+		token := auth.MustFromContext(c)
+		session, err := engine.SetModel(
+			c.Request.Context(), token.Sub, c.Param("id"), body.Provider, body.Model)
+		if err != nil {
+			respondChatError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, session)
+	}
+}
+
 // @Summary		A session's exposure-tier history
 // @Description	§3.2 requires every tier change to be logged. This is that record.
 // @Tags			chat

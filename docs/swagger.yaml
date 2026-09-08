@@ -4149,6 +4149,73 @@ paths:
       summary: Turn auto mode on or off for a session
       tags:
       - chat
+  /chat/sessions/{id}/model:
+    put:
+      consumes:
+      - application/json
+      description: |-
+        Both are fixed when a session is created, and choosing them wrong is
+        ordinary — the way out used to be a new session, which threw away the
+        history. Either field may be omitted to leave it as it is; an omitted
+        model against a *changed* provider takes that provider's default.
+        Refused while an exchange is running on the session, because the turn
+        is being answered by the provider the change would move away from.
+        Unlike the tier this is not audited: which model answers decides
+        nothing about what the assistant may see.
+      parameters:
+      - description: session id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: the provider and model to move to
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            model:
+              type: string
+            provider:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/chat.Session'
+        "400":
+          description: an exchange is running on this session
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: an unknown provider or model, or one the admin limits do not
+            permit
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Change a session's provider or model
+      tags:
+      - chat
   /chat/sessions/{id}/tier:
     put:
       consumes:

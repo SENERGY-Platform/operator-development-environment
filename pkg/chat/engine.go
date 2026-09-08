@@ -631,6 +631,98 @@ func (e *Engine) SetTier(ctx context.Context, sub, id string, tier tools.Tier) (
 	return session, nil
 }
 
+// SetModel re-points a conversation at another provider, another model, or both.
+//
+// Both were fixed when the session was created, and choosing them wrong is
+// ordinary: a developer opens a conversation on the cheap model, finds the problem
+// is harder than it looked, and had no way out but a new session — which threw away
+// the history that established what the problem was.
+//
+// Empty means "leave this one alone", so a model change on the current provider is
+// a request naming only the model. An empty model against a *changed* provider is
+// not a gap but a question the new provider answers: ResolveModel returns its
+// default, or the empty string for a provider that has one of its own (the CLI).
+//
+// Refused while an exchange is running, for the reason MoveSession is: a turn reads
+// the session once and carries what it read through every iteration of its tool
+// loop, so a swap underneath it would have one turn half on each provider. A turn is
+// seconds, and the refusal says to wait for it.
+//
+// Unlike a tier change there is no audit record and no note in the history. §3.2's
+// trail is about exposure, and which model answers decides nothing about what the
+// assistant may see — the tier does, and it is untouched here. The history itself
+// carries over: it is stored as content blocks rather than as one provider's wire
+// format, and run() already stores a tool result beside every tool call precisely so
+// that a session moved to another provider does not arrive there with a `tool_use`
+// nothing answered.
+func (e *Engine) SetModel(ctx context.Context, sub, id, provider, model string) (Session, error) {
+	// From the store rather than through Session, for the reason RenameSession reads
+	// unclamped: Session reports the *effective* tier, and writing that back would
+	// persist the admin clamp — silently lowering the developer's stored tier because
+	// they changed model.
+	stored, found, err := e.store.Session(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if !found || stored.UserSub != sub {
+		// Not-found rather than forbidden, as everywhere else: whether a session id
+		// exists is itself information about another user.
+		return Session{}, ErrNoSuchSession
+	}
+
+	name := strings.TrimSpace(provider)
+	if name == "" {
+		name = stored.Provider
+	}
+	target, err := e.providers.Get(name)
+	if err != nil {
+		return Session{}, err
+	}
+	wanted := strings.TrimSpace(model)
+	if wanted == "" && target.Name() == stored.Provider {
+		// Same provider and no model named: the developer is not asking for the
+		// provider's default, they are asking for nothing to change. Only a *changed*
+		// provider gets to answer the empty string with its own default, because the
+		// model the session holds belongs to the provider it is leaving.
+		wanted = stored.Model
+	}
+	resolved, err := llm.ResolveModel(target, wanted)
+	if err != nil {
+		return Session{}, err
+	}
+	if err := e.limits.CheckProviderModel(ctx, sub, target.Name(), resolved); err != nil {
+		return Session{}, err
+	}
+
+	if stored.Provider == target.Name() && stored.Model == resolved {
+		// Nothing moved. Answered like any other read rather than refused: this is the
+		// shape a re-selection of the current entry sends.
+		stored.Tier = e.effectiveTier(ctx, sub, stored.Tier)
+		return stored, nil
+	}
+
+	if _, running := e.Attach(id); running {
+		return Session{}, fmt.Errorf("%w: an exchange is already running on this session, "+
+			"and it is being answered by the provider this would move away from", ErrInvalidRequest)
+	}
+
+	previousProvider, previousModel := stored.Provider, stored.Model
+	stored.Provider = target.Name()
+	stored.Model = resolved
+	stored.UpdatedAt = e.now()
+	if err := e.store.UpdateSession(ctx, stored); err != nil {
+		return Session{}, err
+	}
+
+	slog.InfoContext(ctx, "session moved to another model",
+		"session", id, "user", sub,
+		"from_provider", previousProvider, "from_model", previousModel,
+		"to_provider", stored.Provider, "to_model", stored.Model)
+
+	stored.Tier = e.effectiveTier(ctx, sub, stored.Tier)
+	return stored, nil
+}
+
 func (e *Engine) TierChanges(ctx context.Context, sub, id string) ([]TierChange, error) {
 	if _, err := e.Session(ctx, sub, id); err != nil {
 		return nil, err

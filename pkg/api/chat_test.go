@@ -52,7 +52,12 @@ type stubProvider struct {
 
 func (s *stubProvider) Name() string { return "stub" }
 func (s *stubProvider) Capabilities() llm.Capabilities {
-	return llm.Capabilities{Tools: true, Streaming: true, System: true, Models: []string{"stub-model"}}
+	// Two models, so there is somewhere for the model route to move a session to.
+	// The first is the default, as everywhere else.
+	return llm.Capabilities{
+		Tools: true, Streaming: true, System: true,
+		Models: []string{"stub-model", "stub-model-large"},
+	}
 }
 
 func (s *stubProvider) Stream(ctx context.Context, _ llm.Request) (<-chan llm.Event, error) {
@@ -277,6 +282,96 @@ func TestSetTierAndReadItsAudit(t *testing.T) {
 	}
 	if last["user_sub"] == nil || last["at"] == nil {
 		t.Error("the audit entry lacks the user or timestamp §3.2 requires")
+	}
+}
+
+// --- the model control ---
+
+func TestSetModelOverHTTP(t *testing.T) {
+	h := newChatHarness(t)
+	id := h.createSession(t, "")
+
+	recorder := h.do(t, http.MethodPut, "/chat/sessions/"+id+"/model",
+		map[string]any{"model": "stub-model-large"}, "developer")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("set model: %d %s", recorder.Code, recorder.Body.String())
+	}
+	body := decodeBody(t, recorder)
+	if body["model"] != "stub-model-large" || body["provider"] != "stub" {
+		t.Errorf("session is on %v/%v, want stub/stub-model-large", body["provider"], body["model"])
+	}
+
+	// And the read that the pane does on open reports the same thing.
+	recorder = h.do(t, http.MethodGet, "/chat/sessions/"+id, nil, "developer")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("read session: %d", recorder.Code)
+	}
+	session := decodeBody(t, recorder)["session"].(map[string]any)
+	if session["model"] != "stub-model-large" {
+		t.Errorf("the stored model is %v, want stub-model-large", session["model"])
+	}
+}
+
+// TestSetModelRejectsAnUnknownModel: 403, the same answer creating a session with
+// one gives — the request is refused rather than ODE failing.
+func TestSetModelRejectsAnUnknownModel(t *testing.T) {
+	h := newChatHarness(t)
+	id := h.createSession(t, "")
+	if got := h.do(t, http.MethodPut, "/chat/sessions/"+id+"/model",
+		map[string]any{"model": "not-a-model"}, "developer").Code; got != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", got)
+	}
+}
+
+// TestSetModelRefusesAnotherUsersSession is the ownership check on the route: a
+// session id must not be enough. 404 rather than 403, as everywhere else — whether
+// an id exists is itself information about another user.
+func TestSetModelRefusesAnotherUsersSession(t *testing.T) {
+	h := newChatHarness(t)
+	id := h.createSession(t, "")
+
+	body, err := json.Marshal(map[string]any{"model": "stub-model-large"})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	request := httptest.NewRequest(
+		http.MethodPut, "/chat/sessions/"+id+"/model", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	// The same realm role, a different subject.
+	request.Header.Set("Authorization",
+		"Bearer "+mintTokenAs("sub-mallory", "n-1", []string{"developer"}))
+	recorder := httptest.NewRecorder()
+	h.router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestSessionDetailReportsWhatItCost: the figure the pane shows beside the picker,
+// and the reason it is on the session read rather than accumulated in the browser
+// — a reload must not reset it to zero.
+func TestSessionDetailReportsWhatItCost(t *testing.T) {
+	h := newChatHarness(t)
+	id := h.createSession(t, "")
+
+	h.admin.RecordUsage(context.Background(), "user-123", id, llm.Usage{
+		InputTokens: 120, OutputTokens: 45, Provider: "stub", Model: "stub-model",
+	})
+
+	recorder := h.do(t, http.MethodGet, "/chat/sessions/"+id, nil, "developer")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("read session: %d %s", recorder.Code, recorder.Body.String())
+	}
+	spend, present := decodeBody(t, recorder)["spend"].(map[string]any)
+	if !present {
+		t.Fatal("the session read reports no spend")
+	}
+	if spend["tokens"] != float64(165) {
+		t.Errorf("tokens = %v, want 165", spend["tokens"])
+	}
+	if spend["requests"] != float64(1) {
+		t.Errorf("requests = %v, want 1", spend["requests"])
 	}
 }
 

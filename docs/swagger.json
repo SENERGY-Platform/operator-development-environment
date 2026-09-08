@@ -1121,6 +1121,96 @@
                 ]
             }
         },
+        "/chat/sessions/{id}/model": {
+            "put": {
+                "description": "Both are fixed when a session is created, and choosing them wrong is\nordinary — the way out used to be a new session, which threw away the\nhistory. Either field may be omitted to leave it as it is; an omitted\nmodel against a *changed* provider takes that provider's default.\nRefused while an exchange is running on the session, because the turn\nis being answered by the provider the change would move away from.\nUnlike the tier this is not audited: which model answers decides\nnothing about what the assistant may see.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chat"
+                ],
+                "summary": "Change a session's provider or model",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "session id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "the provider and model to move to",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "model": {
+                                    "type": "string"
+                                },
+                                "provider": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/chat.Session"
+                        }
+                    },
+                    "400": {
+                        "description": "an exchange is running on this session",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "an unknown provider or model, or one the admin limits do not permit",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
         "/chat/sessions/{id}/tier": {
             "put": {
                 "description": "The developer's control from §3.2. No LLM tool exists for this\n(tools.Denied), so this route is the only way a tier changes. Every\nchange is written to the session's audit trail.",

@@ -290,6 +290,10 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		//
 		// The developer's tier control (§3.2). No LLM tool exists for this.
 		sessions.PUT("/:id/tier", handleSetTier(deps.Chat))
+		// Which provider and model answer, changed after the fact. Its own
+		// sub-resource for the same reason the tier is, and unaudited for the
+		// opposite one: it decides nothing about what the assistant may see.
+		sessions.PUT("/:id/model", handleSetModel(deps.Chat))
 		sessions.PUT("/:id/auto-run", handleSetAutoRun(deps.Chat))
 		sessions.GET("/:id/tier-changes", handleTierAudit(deps.Chat))
 	}
