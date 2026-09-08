@@ -18,6 +18,7 @@ package experiments
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"sync"
@@ -62,6 +63,25 @@ type Store interface {
 	// one acts as the right developer.
 	Running(ctx context.Context, limit int) ([]Experiment, error)
 
+	// PutSummary keeps a finished run's summary, and GetSummary reads it back.
+	//
+	// The one thing in this package that *is* recomputable and is stored anyway, so
+	// it is worth saying why the rule bends here rather than letting the exception
+	// look like an oversight. Recomputing costs an MLflow round trip, a `git show`
+	// in the developer's own pod for `evaluation.yaml`, and — for a run that failed
+	// — Ray's driver log; the Experiments pane pays all three every time a developer
+	// clicks a run, for a document that cannot change again. A finished run's
+	// summary is fixed by its commit and its metrics, which is what makes it safe to
+	// keep: this is a cache with no invalidation problem rather than a second source
+	// of truth.
+	//
+	// Only a *settled* summary is worth keeping, and settled is narrower than
+	// finished — see summarySettled. A summary whose criteria could not be graded
+	// yet says so in the criterion, and storing that would freeze a non-result that
+	// the next read would have answered.
+	PutSummary(ctx context.Context, userSub, experimentID string, summary Summary) error
+	GetSummary(ctx context.Context, userSub, experimentID string) (Summary, bool, error)
+
 	// RecentlyTerminal is every developer's experiments that finished after `since`
 	// and belong to a chat session, newest first, capped.
 	//
@@ -79,12 +99,13 @@ type Store interface {
 // so at startup: a restart loses every developer's experiment history, and the
 // runs themselves carry on in Ray and MLflow with nothing left pointing at them.
 type MemoryStore struct {
-	mux     sync.RWMutex
-	records map[string]Experiment
+	mux       sync.RWMutex
+	records   map[string]Experiment
+	summaries map[string][]byte
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{records: map[string]Experiment{}}
+	return &MemoryStore{records: map[string]Experiment{}, summaries: map[string][]byte{}}
 }
 
 func (s *MemoryStore) Put(_ context.Context, record Experiment) error {
@@ -102,6 +123,53 @@ func (s *MemoryStore) Get(_ context.Context, userSub, id string) (Experiment, bo
 		return Experiment{}, false, nil
 	}
 	return record, true, nil
+}
+
+// PutSummary and GetSummary keep the encoded document rather than the struct.
+//
+// Two reasons, and the second is the one that would otherwise bite. A Summary holds
+// maps and a pointer, so handing the same value out twice would let one caller's
+// change to a metric or a masked failure message reach the next reader — a cache
+// that answers differently depending on who read it last. And encoding is what the
+// database does, so a deployment with Postgres and one without put the same
+// document through the same round trip, rather than differing in exactly the way a
+// test on the memory store would not catch.
+func (s *MemoryStore) PutSummary(
+	_ context.Context, userSub, experimentID string, summary Summary,
+) error {
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		return err
+	}
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	// Keyed by the pair, so a summary is never handed to a subject the run does not
+	// belong to — the same reason Get puts the subject in its lookup rather than
+	// checking it afterwards.
+	s.summaries[summaryKey(userSub, experimentID)] = encoded
+	return nil
+}
+
+func (s *MemoryStore) GetSummary(
+	_ context.Context, userSub, experimentID string,
+) (Summary, bool, error) {
+	s.mux.RLock()
+	encoded, found := s.summaries[summaryKey(userSub, experimentID)]
+	s.mux.RUnlock()
+	if !found {
+		return Summary{}, false, nil
+	}
+	var summary Summary
+	if err := json.Unmarshal(encoded, &summary); err != nil {
+		return Summary{}, false, nil
+	}
+	return summary, true, nil
+}
+
+// summaryKey pairs the subject with the run. The separator is a byte no id
+// contains, so two keys cannot run together into a third.
+func summaryKey(userSub, experimentID string) string {
+	return userSub + "\x00" + experimentID
 }
 
 func (s *MemoryStore) BySubmission(
@@ -275,6 +343,48 @@ func (s *PostgresStore) Get(
 		`SELECT `+experimentColumns+` FROM ode_experiments WHERE id = $1 AND user_sub = $2`,
 		id, userSub)
 	return scanExperiment(row)
+}
+
+func (s *PostgresStore) PutSummary(
+	ctx context.Context, userSub, experimentID string, summary Summary,
+) error {
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		return err
+	}
+	// Upsert rather than insert-if-absent: a settled summary read again is the same
+	// document, and a rebuild that produced a *better* one — criteria graded where
+	// the held copy could not grade them — should replace what is there.
+	_, err = s.db.Pool().Exec(ctx, `
+INSERT INTO ode_experiment_summaries (experiment_id, user_sub, record, built_at)
+VALUES ($1, $2, $3, now())
+ON CONFLICT (experiment_id) DO UPDATE
+    SET record = EXCLUDED.record, built_at = EXCLUDED.built_at
+    WHERE ode_experiment_summaries.user_sub = EXCLUDED.user_sub`,
+		experimentID, userSub, encoded)
+	return err
+}
+
+func (s *PostgresStore) GetSummary(
+	ctx context.Context, userSub, experimentID string,
+) (Summary, bool, error) {
+	var raw []byte
+	err := s.db.Pool().QueryRow(ctx,
+		`SELECT record FROM ode_experiment_summaries
+WHERE experiment_id = $1 AND user_sub = $2`, experimentID, userSub).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Summary{}, false, nil
+	}
+	if err != nil {
+		return Summary{}, false, err
+	}
+	var summary Summary
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		// A row this process cannot read is not a reason to refuse the request: the
+		// summary is recomputable, which is the whole premise of caching it.
+		return Summary{}, false, nil
+	}
+	return summary, true, nil
 }
 
 func (s *PostgresStore) BySubmission(

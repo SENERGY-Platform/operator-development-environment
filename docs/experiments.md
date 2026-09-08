@@ -502,6 +502,30 @@ reads SUCCEEDED. The rule: Ray decides whether the run is *over*, because only R
 sees the process end — and MLflow's FAILED wins over Ray's SUCCEEDED, because a job
 that recorded its own failure knew something the exit code did not.
 
+### A settled summary is built once
+
+Every read of that route used to rebuild the document: an MLflow round trip, a
+`git show <commit>:evaluation.yaml` in the developer's own pod, and — for a run
+that failed — a fetch of Ray's driver log. The Experiments pane asks for it every
+time a developer clicks a run in the list, and for a run that has finished the
+answer cannot change: the metrics are final, the criteria are read at a commit that
+does not move, and the traceback is whatever the job left behind. So it is kept in
+`ode_experiment_summaries` and served from there.
+
+This bends §5.4.3 — a recomputable artifact staying out of the database — and the
+bend is deliberate and narrow. It is a cache with no invalidation problem rather
+than a second source of truth: nothing recomputes into a different document, and
+losing the table costs the rebuild that used to happen anyway.
+
+What is kept is narrower than "the run finished". Two of D24's seven criterion
+reasons are facts about the *read* rather than about the criterion —
+`no_developer_credential`, which is the poller's copy built while nobody was
+connected, and `criteria_unreadable`, which is a checkout that was not there yet —
+and both answer differently on the next read. Keeping either would leave a
+developer looking at "the criteria could not be evaluated" for criteria sitting in
+their own working copy, so a summary carrying one is rebuilt until it settles.
+`summarySettled` is that rule, and `settled_test.go` walks all seven reasons.
+
 ## Linking a job and a run, rather than framing them
 
 D6 says the Ray and MLflow UIs are linked and never embedded. There is no framing

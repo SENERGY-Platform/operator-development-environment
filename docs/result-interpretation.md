@@ -269,13 +269,22 @@ would (D21, D28).
 
 ## What is stored, and what is not
 
-The one table M9 adds is `ode_proposal_decisions`. Everything else is recomputed:
-the summary from MLflow, the interpretation from the conversation the assistant
-wrote it in, the proposal from that text. It is the split §5.4.3 makes — a
-recomputable artifact stays out of the database, and a record of human judgement
-goes in — and it is why a second copy of the interpretation was not kept: two
-records of one exchange diverge, and the conversation is the one the developer
-actually reads.
+The table M9 adds is `ode_proposal_decisions`, and it is the one that carries a
+human judgement: nothing can regenerate a developer's answer to a proposal.
+
+The interpretation itself is still not stored, and that is the decision worth
+keeping. It is already durable — it is chat messages in `ode_chat_messages`, in the
+conversation where the developer read it and argued with it — and a second copy
+would be two records of one exchange that can disagree. `Interpretation()` reads
+them back and re-derives the proposal, which costs nothing.
+
+The **summary** is the one that changed. It is recomputable and it is now kept
+anyway, in `ode_experiment_summaries`, because recomputing it is an MLflow round
+trip plus a git command in the developer's pod plus — for a failed run — a Ray log
+fetch, paid every time the pane opens a run whose answer cannot change any more.
+[experiments.md](experiments.md) has the rule for when a summary has settled enough
+to keep, and it is stricter than "the run finished": the poller's own copy, whose
+criteria carry `no_developer_credential`, is deliberately never the one kept.
 
 Without Postgres the decisions are in memory, and the startup warning now says what
 that costs: a proposal the developer rejected comes back after a restart as though

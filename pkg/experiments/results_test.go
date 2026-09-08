@@ -236,6 +236,81 @@ ValueError: could not convert string to float: '24,7 kWh'
 	}
 }
 
+// The pane re-reads a run every time a developer clicks it in the list, and a
+// finished run's summary cannot change again — so it is built once and kept.
+//
+// The rebuild it saves is not cheap: an MLflow round trip, a git command in the
+// developer's own pod to read evaluation.yaml at the run's commit, and, for a run
+// that failed, a fetch of Ray's driver log.
+//
+// Nothing legitimate changes a finished run's metrics; logging one here is how the
+// test observes whether MLflow was asked a second time.
+func TestASettledSummaryIsKeptRatherThanRebuiltOnEveryRead(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	launched := h.launch()
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"rmse": 0.31})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	first, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	if first.Metrics["rmse"] != 0.31 {
+		t.Fatalf("rmse = %v, want the metric the run logged", first.Metrics["rmse"])
+	}
+
+	h.mlflow.LogMetric(t, launched.RunID, "rmse", 9.9, 2)
+
+	second, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	if second.Metrics["rmse"] != 0.31 {
+		t.Errorf("rmse = %v on the second read, want the kept summary rather than a "+
+			"rebuild", second.Metrics["rmse"])
+	}
+	// And it is the whole document, not a metrics cache with the rest rebuilt.
+	if second.CommitSHA != first.CommitSHA || second.Status != first.Status {
+		t.Errorf("second read = %+v, want the summary that was kept", second)
+	}
+}
+
+// A run still going has a summary that changes with every metric the job logs, so
+// there is nothing to keep: this is where the cache would be wrong rather than
+// merely stale.
+func TestARunStillGoingIsNotKept(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	launched := h.launch()
+	h.mlflow.LogMetric(t, launched.RunID, "rmse", 0.9, 1)
+
+	running, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	if running.Finished {
+		t.Fatalf("status = %q, want a run that has not settled", running.Status)
+	}
+
+	// A later step, because a metric's latest value is the one at the highest step
+	// rather than the last one written.
+	h.mlflow.LogMetric(t, launched.RunID, "rmse", 0.2, 3)
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", nil)
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	final, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	if !final.Finished || final.Metrics["rmse"] != 0.2 {
+		t.Errorf("summary = %+v, want the finished run rather than the snapshot taken "+
+			"while it was still going", final)
+	}
+}
+
 // MLflow's status is written by the job's own code and Ray's by the process, so
 // they disagree in both directions. A job the cluster reports as succeeded while
 // the run recorded its own failure is the case that matters.

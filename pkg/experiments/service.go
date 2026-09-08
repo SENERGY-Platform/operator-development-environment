@@ -1078,6 +1078,19 @@ func (s *Service) Results(ctx context.Context, req Request, id string) (Summary,
 			"%w: %s has no MLflow run, so there is nothing to summarise", ErrInvalidRequest, id)
 	}
 
+	// The kept copy, before anything is read. A settled summary cannot change again
+	// — see summarySettled — so this is the whole of what the pane used to spend an
+	// MLflow round trip, a git command in the developer's pod and, for a failed run,
+	// a Ray log fetch on, every time a developer clicked the same run.
+	if kept, found, err := s.store.GetSummary(ctx, record.UserSub, record.ID); err != nil {
+		// Not a refusal. The document is recomputable, which is the premise the
+		// whole cache rests on, so a store that cannot answer costs a rebuild.
+		slog.WarnContext(ctx, "reading a kept run summary failed; rebuilding it",
+			"experiment_id", record.ID, "error", err)
+	} else if found {
+		return kept, nil
+	}
+
 	run, err := s.mlflow.run(ctx, record.RunID)
 	if err != nil {
 		return Summary{}, err
@@ -1088,7 +1101,62 @@ func (s *Service) Results(ctx context.Context, req Request, id string) (Summary,
 	criteria, problem := s.criteriaFor(ctx, req, record)
 	summary := buildSummary(record, run, previousRun, criteria, problem)
 	summary.Failure = s.failureFor(ctx, summary, record)
+
+	if summarySettled(summary) {
+		if err := s.store.PutSummary(ctx, record.UserSub, record.ID, summary); err != nil {
+			slog.WarnContext(ctx, "keeping a run summary failed; it will be rebuilt on the "+
+				"next read", "experiment_id", record.ID, "error", err)
+		}
+	}
 	return summary, nil
+}
+
+// summarySettled reports whether a summary is worth keeping, which is narrower
+// than "the run finished".
+//
+// A finished run's metrics are final and its criteria are read at a commit that
+// does not move, so the document cannot change again — that is what makes keeping
+// it a cache rather than a second source of truth. Two of D24's reasons break that
+// property, and both say something about the *read* rather than about the
+// criterion:
+//
+//   - `no_developer_credential` — the summary was built by the poller with ODE's
+//     own credential, and evaluation.yaml is read on the developer's behalf. The
+//     next read by the developer grades it properly.
+//   - `criteria_unreadable` — no checkout yet, a workbench still cloning, a git
+//     command that failed. All of them resolve on their own.
+//
+// Keeping either would freeze a non-result that the next read would have answered,
+// and a developer would be looking at "the criteria could not be evaluated" for a
+// run whose criteria are sitting in their working copy. Every other reason —
+// no file, nothing stated, no threshold, the metric was never logged, the file did
+// not parse — is a fact about what was committed, and committed is what a run's
+// commit means.
+func summarySettled(summary Summary) bool {
+	if !summary.Finished {
+		return false
+	}
+	if !criterionSettled(summary.EvaluationCriteria) {
+		return false
+	}
+	for _, criterion := range summary.SecondaryCriteria {
+		if !criterionSettled(criterion) {
+			return false
+		}
+	}
+	return true
+}
+
+func criterionSettled(criterion Criterion) bool {
+	if criterion.Met.Known() {
+		return true
+	}
+	switch criterion.Met.Status().Reason {
+	case ReasonNoDeveloperCredential, ReasonCriteriaUnreadable:
+		return false
+	default:
+		return true
+	}
 }
 
 // Summarise builds §5.13's summary with ODE's own service credential and no

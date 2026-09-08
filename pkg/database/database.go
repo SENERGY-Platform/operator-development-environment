@@ -699,4 +699,37 @@ CREATE TABLE IF NOT EXISTS ode_proposal_decisions (
               CREATE INDEX IF NOT EXISTS ode_experiments_previous_idx
               ON ode_experiments (user_sub, mlflow_experiment_id, submitted_at DESC)`,
 	},
+	{
+		name: "ode_experiment_summaries",
+		sql: `
+-- A settled run's §5.13 summary, and the one place §5.4.3's rule is bent on
+-- purpose: this document *is* recomputable, and it is stored anyway.
+--
+-- What recomputing costs is the reason. Every read of a run's results is an MLflow
+-- round trip, a git show of evaluation.yaml at the run's commit in the developer's
+-- own pod, and —
+-- for a run that failed — Ray's driver log; the Experiments pane pays all three
+-- every time a developer clicks a run in the list. For a run that has finished,
+-- every one of those inputs is fixed: the metrics are final, the criteria are read
+-- at the run's commit and that commit does not move, and the traceback is whatever
+-- the job left behind. So this is a cache with no invalidation problem rather than
+-- a second source of truth that could come to disagree with one.
+--
+-- Only a settled summary is written, and settled is narrower than finished: a
+-- summary whose criteria could not be graded — no developer credential when it was
+-- built, or a checkout that could not be read — says so in the criterion, and
+-- freezing that non-result would answer a question the next read would have
+-- answered properly. See summarySettled in pkg/experiments.
+--
+-- Losing the table costs a rebuild, which is what the pane did before it existed.
+CREATE TABLE IF NOT EXISTS ode_experiment_summaries (
+    experiment_id TEXT PRIMARY KEY,
+    -- In the WHERE clause of every read rather than checked after it, the way
+    -- ode_experiments is read: a route cannot forget the subject, and another
+    -- developer's summary is never in memory.
+    user_sub      TEXT NOT NULL,
+    record        JSONB NOT NULL,
+    built_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+	},
 }
