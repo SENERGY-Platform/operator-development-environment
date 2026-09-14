@@ -577,7 +577,7 @@ func TestACumulativeCounterIsDifferencedByTheServer(t *testing.T) {
 		{Ref: ovenRef(), Kind: profiler.KindCumulativeCounter},
 		{Ref: lightsRef(), Kind: profiler.KindInstantaneous},
 	}
-	frame, err := h.service.Align(context.Background(), "token", requests, fixtureWindow(), 900)
+	frame, err := h.service.Align(context.Background(), "token", requests, fixtureWindow(), 900, nil)
 	if err != nil {
 		t.Fatalf("Align: %v", err)
 	}
@@ -608,7 +608,7 @@ func TestAMissingRowLeavesItsBucketUnobservedRatherThanShiftingTheRest(t *testin
 	frame, err := h.service.Align(context.Background(), "token", []alignRequest{
 		{Ref: ovenRef(), Kind: profiler.KindInstantaneous},
 		{Ref: lightsRef(), Kind: profiler.KindInstantaneous},
-	}, fixtureWindow(), 900)
+	}, fixtureWindow(), 900, nil)
 	if err != nil {
 		t.Fatalf("Align: %v", err)
 	}

@@ -50,6 +50,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"sort"
 )
 
@@ -149,6 +150,12 @@ type Request struct {
 	// tool that shapes its own answer by tier rather than being all-or-nothing;
 	// it is *not* where the gate lives, and an executor must not re-check it.
 	Tier Tier
+	// Split is the session's data split, or nil when it has none (D36). Read once
+	// per call from the session, the way Tier is, and forwarded by every executor
+	// that reads values or names a window into the reader that clamps to it. Nil
+	// is the common case and every clamp is nil-safe, so an executor passes it
+	// without a branch.
+	Split *exposure.Split
 	// AutoRun is the session's standing answer to a confirmation it recognises.
 	//
 	// Set from chat.Session.AutoRun by whoever builds the request, the same way
@@ -301,6 +308,7 @@ func Denied() map[string]string { return deniedSet() }
 func deniedSet() map[string]string {
 	return map[string]string{
 		"set_exposure_tier":      "the exposure tier is the developer's control over what the LLM may see; a tool to raise it would defeat the control entirely",
+		"set_data_split":         "the data split (D36) is the developer's bound on what the assistant may observe in time and on what a launch trains on; a tool to set, move or clear it would let the model choose its own test data",
 		"set_auto_run":           "auto mode is the developer's standing answer to a run_code confirmation; a tool to turn it on would let the model stop itself being asked, which is the confirmation it exists to be subject to",
 		"set_admin_limits":       "admin limits bound the LLM's own spend, so the LLM must not be able to move them",
 		"write_profile_override": "a ProfileOverride is a human confirmation of derived semantics and an empirical record; an LLM-written one would be fabricated ground truth",

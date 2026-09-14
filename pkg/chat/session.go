@@ -33,6 +33,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
@@ -57,6 +58,12 @@ type Session struct {
 
 	// Tier is the exposure tier (§3.2). Default L0.
 	Tier tools.Tier `json:"exposure_tier"`
+
+	// Split is the session's data split (D36), or nil when there is none. The tier
+	// bounds *what kind* of data the assistant observes; the split bounds *up to
+	// when*. Set and cleared through Engine.SetSplit, never through a tool
+	// (set_data_split is denied), and audited the same way the tier is.
+	Split *exposure.Split `json:"data_split,omitempty"`
 
 	// WorkbenchID is the working context this conversation acts in: which checkout
 	// write_file writes into, and which kernel run_code runs in. Two sessions may
@@ -147,6 +154,19 @@ type TierChange struct {
 	From      tools.Tier `json:"from"`
 	To        tools.Tier `json:"to"`
 	At        time.Time  `json:"at"`
+}
+
+// SplitChange is one entry of D36's audit trail, the same way TierChange is for
+// §3.2: the pre-registration evidence that a scoring script can compare a run's
+// recorded bounds against, rather than trust that the split held. From and To are
+// nil for "no split" on that side, so setting, changing and clearing a split are
+// all the same shape of row.
+type SplitChange struct {
+	SessionID string          `json:"session_id"`
+	UserSub   string          `json:"user_sub"`
+	From      *exposure.Split `json:"from"`
+	To        *exposure.Split `json:"to"`
+	At        time.Time       `json:"at"`
 }
 
 // Confirmation is a held tool call awaiting the developer's decision (D11).

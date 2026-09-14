@@ -23,6 +23,7 @@ import {
   type ChatEvent,
   type ChatMessage,
   type ChatSession,
+  type DataSplit,
   type Limits,
   type PendingConfirmation,
   type ProviderInfo,
@@ -102,6 +103,48 @@ const CLOSED_WORKBENCH = "\u0000closed";
  * input simply refusing the next character.
  */
 const MAX_TITLE = 200;
+
+/**
+ * Format an RFC 3339 ISO timestamp as YYYY-MM-DD HH:MM UTC.
+ *
+ * Never render a split bound as date only; slicing to 10 characters drops the
+ * time, so a training end at 12:00 UTC reads as midnight.
+ */
+function formatUTC(iso: string): string {
+  const date = new Date(iso);
+  return date.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+
+/**
+ * A `datetime-local` value read as UTC rather than as the browser's own zone.
+ *
+ * `new Date("2026-06-01T00:00")` parses a zoneless string as *local* time, so a
+ * developer in Berlin asking for midnight would have sent 22:00 the previous day
+ * and trained on two hours the split was meant to exclude -- silently, because
+ * the shifted pair still validates and the bound is only wrong by an amount
+ * nothing reports. The rest of this control reads and writes UTC, which is what
+ * the audit and a run's own tags carry, so the instant is assembled from the
+ * input's parts instead of parsed out of its string.
+ */
+export function utcFromLocalInput(value: string): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+  const at = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second ?? "0"),
+  );
+  return new Date(at).toISOString();
+}
+
+/** The inverse: an instant as the `datetime-local` value that means it in UTC. */
+export function localInputFromUTC(iso: string): string {
+  return new Date(iso).toISOString().slice(0, 16);
+}
 
 /**
  * The chat pane of §2, and the surface where §3.2's exposure tier becomes
@@ -1595,6 +1638,18 @@ function Conversation({
     [onSessionChange, session.id],
   );
 
+  const setSplit = useCallback(
+    async (split: DataSplit | null) => {
+      setError(null);
+      try {
+        onSessionChange(await api.setSplit(session.id, split));
+      } catch (e: unknown) {
+        setError(describe(e));
+      }
+    },
+    [onSessionChange, session.id],
+  );
+
   const setModel = useCallback(
     async (provider: string, model: string) => {
       setError(null);
@@ -1652,6 +1707,11 @@ function Conversation({
         onChange={setTier}
         autoRun={session.auto_run}
         onAutoRunChange={setAutoRun}
+      />
+
+      <SplitControl
+        split={session.data_split}
+        onChange={setSplit}
       />
 
       {error && <Muted>{error}</Muted>}
@@ -2685,7 +2745,12 @@ function TierControl({
         every control in it.
       */}
       {surface && <RaiseHint tier={tier} surface={surface} />}
-      {showAudit && <TierAudit sessionId={sessionId} />}
+      {showAudit && (
+        <>
+          <TierAudit sessionId={sessionId} />
+          <SplitAudit sessionId={sessionId} />
+        </>
+      )}
     </div>
   );
 }
@@ -2742,6 +2807,154 @@ function TierAudit({ sessionId }: { sessionId: string }) {
         </li>
       ))}
     </ol>
+  );
+}
+
+/** SplitAudit is the log of split changes, showing from/to and when. */
+function SplitAudit({ sessionId }: { sessionId: string }) {
+  const [changes, setChanges] = useState<any[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .splitChanges(sessionId)
+      .then((result) => {
+        if (!cancelled) setChanges(result.changes);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(describe(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  if (error) return <Muted>{error}</Muted>;
+  if (!changes) return <Busy>Loading…</Busy>;
+
+  return (
+    <ol className="split-audit flex w-full flex-col gap-1">
+      {changes.map((change, index) => (
+        <li key={index} className="flex items-center justify-end gap-1.5 text-xs">
+          <span>
+            {change.from
+              ? `${formatUTC(change.from.training_end)} → ${formatUTC(change.from.test_end)}`
+              : "—"}
+          </span>
+          <span aria-hidden>→</span>
+          <span>
+            {change.to
+              ? `${formatUTC(change.to.training_end)} → ${formatUTC(change.to.test_end)}`
+              : "—"}
+          </span>
+          <span className="muted text-muted-foreground">{dateTime(change.at)}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/**
+ * SplitControl is the developer's interface to set the training/test data split.
+ *
+ * A strip like TierControl, with datetime inputs, Apply and Clear buttons.
+ * The audit list appears under the same "how it got here" toggle as TierAudit.
+ */
+function SplitControl({
+  split,
+  onChange,
+}: {
+  split?: DataSplit | null;
+  onChange: (split: DataSplit | null) => void;
+}) {
+  // Pre-filled from the current split, so changing one bound is one change and
+  // one audit row rather than a clear followed by a set -- the audit is the
+  // pre-registration evidence for the evaluation protocol, and a clear that
+  // never conceptually happened does not belong in it.
+  const [trainingEnd, setTrainingEnd] = useState<string>(
+    split ? localInputFromUTC(split.training_end) : "",
+  );
+  const [testEnd, setTestEnd] = useState<string>(
+    split ? localInputFromUTC(split.test_end) : "",
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const handleApply = () => {
+    setError(null);
+    if (!trainingEnd || !testEnd) {
+      setError("Both training end and test end must be set");
+      return;
+    }
+    const training = utcFromLocalInput(trainingEnd);
+    const test = utcFromLocalInput(testEnd);
+    if (training === null || test === null) {
+      setError("Both bounds must be a full date and time");
+      return;
+    }
+    if (new Date(test) <= new Date(training)) {
+      setError("Test end must be after training end");
+      return;
+    }
+    onChange({ training_end: training, test_end: test });
+  };
+
+  const handleClear = () => {
+    setError(null);
+    onChange(null);
+    setTrainingEnd("");
+    setTestEnd("");
+  };
+
+  const displaySplit = (): string => {
+    if (!split) return "No data split";
+    return `Training data ends ${formatUTC(split.training_end)} \u00b7 test window to ${formatUTC(split.test_end)}`;
+  };
+
+  return (
+    <div className="split-control -mx-4 shrink-0 border-b px-4 pb-2">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <p className="split-state min-w-0 flex-1 text-xs text-muted-foreground">
+          {displaySplit()}
+        </p>
+      </div>
+      <div className="mt-2 space-y-2">
+        <div className="flex gap-2">
+          <input
+            type="datetime-local"
+            value={trainingEnd}
+            onChange={(e) => setTrainingEnd(e.target.value)}
+            placeholder="Training end"
+            className="flex h-9 rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+            title="When training data ends. Read as UTC, not as this browser's zone."
+          />
+          <input
+            type="datetime-local"
+            value={testEnd}
+            onChange={(e) => setTestEnd(e.target.value)}
+            placeholder="Test end"
+            className="flex h-9 rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+            title="When the test window ends. Read as UTC, not as this browser's zone."
+          />
+        </div>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="default"
+            onClick={handleApply}
+            disabled={!trainingEnd || !testEnd}
+          >
+            {split ? "Change split" : "Apply"}
+          </Button>
+          {split && (
+            <Button size="sm" variant="outline" onClick={handleClear}>
+              Clear split
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

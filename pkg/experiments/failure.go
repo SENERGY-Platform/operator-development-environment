@@ -271,7 +271,13 @@ const maskPlaceholder = "[value]"
 // HTTP route deliberately does not call it: the extract is their data, on their own
 // token, and the log it came from is on the route beside it.
 //
-// The ladder is §3.2's, applied to the one field that can carry a value:
+// It does two things that used to be one, because the second used to be skipped
+// whenever the first had nothing to do: a run without a Failure returned early,
+// before ever reaching the metric filter below. A successful run is the common
+// case and the one the metric filter is for, so there is no early return any more.
+//
+// **The exception, masked by tier.** The ladder is §3.2's, applied to the one
+// field of Failure that can carry a value:
 //
 //   - **L0 and L1 mask.** A value in a traceback is a value, not an aggregate, and
 //     §3.2 puts values at L2 — "aggregates are still data" is the step L1 is, and a
@@ -284,28 +290,260 @@ const maskPlaceholder = "[value]"
 // The class and the frames are not masked at any tier: they are the identity of
 // code, not of data, and a failure whose location was withheld would be worth
 // nothing at all.
+//
+// **The metric filter, the same at every tier.** Metrics and comparison_to_previous
+// are cut down to what the run declared plus what its own timestamps clear (D37) —
+// see filterMetrics and filterDeltas. This half does not depend on tier because it
+// is not about what a value reveals; it is about whether the run said this metric
+// is one a model may read at all.
 func (s Summary) MaskedFor(tier exposure.Tier) Summary {
-	if s.Failure == nil {
-		return s
-	}
-	masked := *s.Failure
-	masked.MaskedFor = tier.String()
-	masked.Message = credentialLike.ReplaceAllString(masked.Message, "[credential]")
+	if s.Failure != nil {
+		masked := *s.Failure
+		masked.MaskedFor = tier.String()
+		masked.Message = credentialLike.ReplaceAllString(masked.Message, "[credential]")
 
-	if tier < exposure.L2 {
-		count := 0
-		replace := func(string) string { count++; return maskPlaceholder }
-		masked.Message = quotedLiteral.ReplaceAllStringFunc(masked.Message, replace)
-		masked.Message = numberLiteral.ReplaceAllStringFunc(masked.Message, replace)
-		masked.MaskedLiterals = count
+		if tier < exposure.L2 {
+			count := 0
+			replace := func(string) string { count++; return maskPlaceholder }
+			masked.Message = quotedLiteral.ReplaceAllStringFunc(masked.Message, replace)
+			masked.Message = numberLiteral.ReplaceAllStringFunc(masked.Message, replace)
+			masked.MaskedLiterals = count
+		}
+
+		// The second cut, because masking can lengthen: `'x'` is shorter than the
+		// placeholder that replaces it. extractFailure applies the first.
+		if len(masked.Message) > maxFailureMessage {
+			masked.Message = strings.TrimSpace(masked.Message[:maxFailureMessage])
+			masked.Truncated = true
+		}
+		s.Failure = &masked
 	}
 
-	// The second cut, because masking can lengthen: `'x'` is shorter than the
-	// placeholder that replaces it. extractFailure applies the first.
-	if len(masked.Message) > maxFailureMessage {
-		masked.Message = strings.TrimSpace(masked.Message[:maxFailureMessage])
-		masked.Truncated = true
+	// Never mutate what came in: Metrics, ComparisonToPrevious and MetricTimes are
+	// maps and a slice, and s is a copy of the caller's Summary that still shares
+	// their backing storage. Every assignment below replaces s's own field with a
+	// freshly built map or slice rather than writing through the shared one, so the
+	// developer's own copy — reached through the same Results call, never through
+	// this method — cannot end up holding whatever the last model was allowed to see.
+	allowed := permittedMetricNames(s)
+	// Read from ODE's own record of the launch, never from the run: it is the one
+	// input to this filter that the job cannot write.
+	split := s.Split != nil
+	cutoff, hasCutoff := trainingEndedAt(s)
+	metrics, withheld := filterMetrics(s.Metrics, s.MetricTimes, allowed, cutoff, hasCutoff, split)
+	s.Metrics = metrics
+	s.ComparisonToPrevious = filterDeltas(
+		s.ComparisonToPrevious, s.MetricTimes, allowed, cutoff, hasCutoff, split)
+	if split {
+		s.Params = evaluationParamsOnly(s.Params)
 	}
-	s.Failure = &masked
+	s.WithheldMetrics = withheld
+	// A model never reads a timestamp back — only the count above says anything
+	// was withheld, which is all this field exists to carry.
+	s.MetricTimes = nil
+	if withheld > 0 {
+		s.Note = strings.TrimSpace(s.Note + fmt.Sprintf(
+			" %d metric(s) were withheld from this summary: a model reads only a "+
+				"metric the developer declared in evaluation.yaml (as their evaluation "+
+				"criterion or a secondary one) that was also logged before training "+
+				"ended.", withheld))
+	}
 	return s
+}
+
+// --- the metric allowlist (§5.13, D37) ---
+//
+// **This is hygiene, not a boundary, and the comments in this section say so
+// rather than claiming more.** A name on the list is not evidence of what produced
+// the value under it: `infer()` can log a test-window number under the exact
+// metric name the developer's own evaluation.yaml declares, and nothing here would
+// tell the two apart. What actually stands in the way of that is D37's phase
+// filter below, which withholds by *when* a metric was written rather than by what
+// it is called — and even that filter is named, not closed: see trainingEndedAt.
+// The allowlist on top only makes the model's view of the *undisputed* metrics
+// declared rather than arbitrary, and gives WithheldMetrics something to count.
+// Full reasoning in docs/experiments.md and D37.
+//
+// Summary.Params is cut too, but only for a run that had a data split.
+//
+// The claim that used to stand here — that the phase boundary keeps infer() away
+// from this run's params — is false, and was shown to be false by execution. The
+// boundary stops a *fluent* write; it does not stop
+// `MlflowClient().log_param(RUN, ...)` with a run id the operator read at import
+// time. MLflow params carry no timestamp, so there is nothing for the phase filter
+// to test them against either. So under a split the only params a model reads are
+// the four evaluation.* names the replay itself reports, and everything the job
+// configured stays on the developer's own route. Without a split there is no
+// replay, nothing ran against a test window, and params pass as they always did.
+//
+// ResourceUsage.PeakMemoryMB is derived before MaskedFor runs from whichever
+// memory metric the job reported (resourceUsage in summary.go) and is not
+// filtered either — a residual channel, named in docs/experiments.md rather than
+// closed here, because it is one number under a name ODE chose, not the job.
+
+// permittedMetricNames is the developer's own declared allowlist: the criterion
+// metrics evaluation.yaml named (already graded onto this Summary by the time
+// MaskedFor runs), plus the four evaluation.* params Operator Lib's replay writes
+// — matched by exact name, never a prefix, so "evaluation.something_else" is not
+// a way in. Empty names are not entries: a run whose criteria named no metric
+// declares nothing here, and a repository with no evaluation.yaml at all ends up
+// with only the four fixed names — which withholds every metric a job actually
+// reports, because none of them is named "evaluation.messages". That is the
+// intended reading of "declared": nothing declared means nothing a model may read.
+func permittedMetricNames(s Summary) map[string]struct{} {
+	allowed := make(map[string]struct{})
+	add := func(name string) {
+		if name != "" {
+			allowed[name] = struct{}{}
+		}
+	}
+	add(s.EvaluationCriteria.Metric)
+	for _, criterion := range s.SecondaryCriteria {
+		add(criterion.Metric)
+	}
+	add(paramEvaluationMessages)
+	add(paramEvaluationResults)
+	add(paramEvaluationWindowStart)
+	add(paramEvaluationWindowEnd)
+	return allowed
+}
+
+// trainingEndedAt reads Operator Lib's own operator_lib.training_ended_at tag —
+// Unix milliseconds, the base a metric's own timestamp uses — and says whether it
+// was there to read at all.
+//
+// Absent is not reported here a second time: a terminal run under a data split
+// that carries no such tag is exactly what splitReport already calls "not
+// confirmed by the run" in the data_split block (a cluster image whose Operator
+// Lib predates v1.7.0), and a run with no split was never going to carry it. In
+// both cases the phase filter simply has nothing to filter by, and MaskedFor falls
+// back to the name allowlist alone.
+func trainingEndedAt(s Summary) (cutoff int64, usable bool) {
+	raw := strings.TrimSpace(s.Tags[operatorTrainingEndedAtTag])
+	if raw == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	// Bounded by the run's own clock. A cutoff outside the window the run existed
+	// in is not a phase transition that happened, so it is not one this filter
+	// will act on -- and under a split an unusable cutoff withholds everything
+	// rather than nothing (see keepMetric), which is why a rewritten tag cannot be
+	// used to switch the filter off.
+	if s.StartedAt != nil && value < s.StartedAt.UnixMilli() {
+		return 0, false
+	}
+	if s.EndedAt != nil && value > s.EndedAt.UnixMilli() {
+		return 0, false
+	}
+	return value, true
+}
+
+// keepMetric is the one predicate both filterMetrics and filterDeltas apply: a
+// name off the allowlist is withheld regardless of when it was logged, and a name
+// on the allowlist is withheld anyway if the run's own history for it reaches or
+// passes the training-ended cutoff — a declared name logged from the test window
+// is still a test-window value (D37).
+//
+// **What this does not catch, stated rather than hidden**: `times` is the
+// *maximum* timestamp MLflow recorded for this key (latestMetrics), which defeats
+// a write that piggybacks a high step onto a real, earlier point — but if the
+// key's only point forges its own timestamp to before the cutoff, there is no
+// second, honest point to compare it against, and it passes. Nothing in MLflow
+// stamps a metric server-side; the timestamp in the store is whatever the caller
+// sent. docs/experiments.md and D37 state that limit in full, beside the other two
+// things ODE names as limits rather than as closed: the exception text,
+// tier-governed under D34, and egress from the Ray cluster on the developer's own
+// credential.
+func keepMetric(
+	name string, allowed map[string]struct{}, times map[string]int64,
+	cutoff int64, hasCutoff, split bool,
+) bool {
+	if _, ok := allowed[name]; !ok {
+		return false
+	}
+	if hasCutoff {
+		// Fail closed on a metric whose timestamp is missing: a usable cutoff means
+		// this run reported a phase transition, so every metric it carries was
+		// reduced by latestMetrics and has a time. A key without one disagrees with
+		// that, and a control degrading quietly is worse than one refusing loudly.
+		at, timed := times[name]
+		if !timed || at >= cutoff {
+			return false
+		}
+		return true
+	}
+	// No usable cutoff. Where a split ran, that is decisive: the operator's code
+	// was handed test-window values, the phase is the only thing separating what
+	// it computed from what the training did, and there is nothing to separate
+	// them by -- so nothing is shown. Falling back to the name alone here would
+	// make "switch the filter off" something a write to the run could arrange,
+	// since the cutoff lives on the run and the run is writable by whoever holds
+	// its id. Whether a split ran is read from ODE's own experiment record, which
+	// is the one input the job cannot touch.
+	return !split
+}
+
+// filterMetrics keeps only what keepMetric allows, in a freshly built map so the
+// caller's own Metrics is never written through (see the comment in MaskedFor).
+func filterMetrics(
+	metrics map[string]float64, times map[string]int64, allowed map[string]struct{},
+	cutoff int64, hasCutoff, split bool,
+) (map[string]float64, int) {
+	kept := make(map[string]float64, len(metrics))
+	withheld := 0
+	for name, value := range metrics {
+		if keepMetric(name, allowed, times, cutoff, hasCutoff, split) {
+			kept[name] = value
+			continue
+		}
+		withheld++
+	}
+	return kept, withheld
+}
+
+// filterDeltas applies the same predicate to comparison_to_previous, which
+// carries a metric's value in its own Current field — filtering Metrics alone
+// would still let a withheld value return through the delta block.
+//
+// Every Metric named in deltas is also a key of the Metrics this run's own
+// latestMetrics reduction produced (compare only emits a delta for a key present
+// in both runs' metrics), so this never withholds a name filterMetrics did not
+// already count — there is nothing here to add to WithheldMetrics a second time.
+func filterDeltas(
+	deltas []MetricDelta, times map[string]int64, allowed map[string]struct{},
+	cutoff int64, hasCutoff, split bool,
+) []MetricDelta {
+	kept := make([]MetricDelta, 0, len(deltas))
+	for _, delta := range deltas {
+		if keepMetric(delta.Metric, allowed, times, cutoff, hasCutoff, split) {
+			kept = append(kept, delta)
+		}
+	}
+	return kept
+}
+
+// evaluationParamsOnly keeps the four params Operator Lib's replay reports and
+// drops everything else a run recorded.
+//
+// Only for a run that had a data split, and not because the others are
+// uninteresting: a param is as writable as a metric by an operator holding the
+// run id, and unlike a metric it carries no timestamp, so there is no phase for
+// the filter above to test it against. Under a split the job saw test-window
+// values, so the safe set is the one the library writes about the replay itself.
+// The developer's own route is unfiltered and still carries what the training was
+// configured with.
+func evaluationParamsOnly(params map[string]string) map[string]string {
+	kept := make(map[string]string, 4)
+	for _, name := range []string{
+		paramEvaluationMessages, paramEvaluationResults,
+		paramEvaluationWindowStart, paramEvaluationWindowEnd,
+	} {
+		if value, ok := params[name]; ok {
+			kept[name] = value
+		}
+	}
+	return kept
 }

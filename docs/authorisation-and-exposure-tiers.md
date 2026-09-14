@@ -138,7 +138,8 @@ curl -s -H "Authorization: Bearer $TOKEN" $BASE/llm/tools | jq '{
 
 `denied` is §5.8's "no tool exists" list — changing the exposure tier, changing
 admin limits, writing a `ProfileOverride`, promoting a recommendation, deciding a
-relational rule (M6's addition, by the same reasoning as the override). They are
+relational rule (M6's addition, by the same reasoning as the override), and since
+D36 setting, moving or clearing the data split. They are
 absent from the registry rather than refused at dispatch, and `NewRegistry` refuses
 to register one. A refusal would still advertise the capability and invite the model
 to argue with it.
@@ -200,6 +201,67 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/j
 # Every change is logged with its time and its user (§3.2).
 curl -s -H "Authorization: Bearer $TOKEN" $BASE/chat/sessions/$SID/tier-changes | jq .
 ```
+
+## The data split: a bound in time beside the bound in kind
+
+The tier says what *kind* of data the model observes. It says nothing about *when*
+that data ends, and for an evaluation that is the bound that matters: a run whose
+training may read up to the moment of launch has no data it has not seen, and two
+arms launched on different days have trained on different history. D36 adds a
+second session bound for that, the **data split** — a training end and a test end
+— and gives it exactly the tier's standing: set by the developer on the session,
+visible in the chat pane at all times, audited with its time and its user, and
+denied to the model as a tool.
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"training_end":"2026-06-01T00:00:00Z","test_end":"2026-06-08T00:00:00Z"}' \
+  $BASE/chat/sessions/$SID/split
+
+# Clearing is permitted and audited like lowering the tier: the body is null.
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d 'null' $BASE/chat/sessions/$SID/split
+
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/chat/sessions/$SID/split-changes | jq .
+```
+
+Pinning only the training a launch performs would leave the split porous at L1
+and L2: a profile or a preview over the test window shows the model what the
+training may not see. So the training end binds the model's reads too, at every
+tier. It travels the way the tier does — read once per call from the session into
+`tools.Request.Split` at the four places that build a request — and it is enforced
+below the tools, in one place: `timeseries.Query` takes the split in its options,
+lowers every element's end to the training end and refuses an element whose start
+is at or after it with a structured error the model can read. Every reader the
+model can reach forwards it: the profiler clamps its data window in the prologue
+so the analysis and the raw pass inherit it, a chart's window is clamped when the
+chart is created, `preview_series` anchors its default week on the training end,
+and the metadata that names a window — `probe_availability`, `estimate_read_cost`,
+QuickProfile's availability — is clamped as well, so the model reasons about one
+world rather than being told a series reaches into a range it may not read.
+
+The refusal is deliberate where a clamp would have been quieter. A window that
+starts past the training end has nothing left after clamping, and returning an
+empty result would let the model conclude that the series is empty there. The
+error names both instants and says to ask the developer; the system prompt says
+the same, so the model does not retry with another window.
+
+What the split does **not** bind is stated rather than implied. The developer's own
+reads — the profile routes the UI calls, the charts they open — are not clamped,
+for the reason the tier binds the model and not the person. `run_code` in the
+developer's pod keeps the developer's credential and is outside the bound, as it
+is outside the tier; the protocol's confirmation policy covers it. Inside a run,
+Operator Lib bounds every read that goes through `provide_historic_data`, and a
+read in operator code that bypasses it is visible in the committed code. A
+per-token time bound in timescale-wrapper would be the hard boundary and is out of
+scope.
+
+The training end may lie in the future when the split is set. That is a legitimate
+pre-registration — the bound is decided before the data exists — and the only
+thing it refuses is a launch, until it has passed: a test window with no data in
+it is not an evaluation. How the split reaches a run, and what the run records so
+that the split can be checked rather than trusted, is in
+[experiments.md](experiments.md).
 
 ## Auto mode: a standing answer, not a weaker gate
 
@@ -274,6 +336,15 @@ set. A third-party Python parser was priced against the same corpus and moves it
 to 14.6% — four cells — so it was rejected. `TestCorpusProbe` carries those
 numbers and the dated list of every gate change behind them.
 
+Three parsers were looked at before that number closed the question, and they are
+named so nobody prices them again. `go-python/gpython` targets a grammar of
+Python 3.5 or older — no f-strings, no walrus, no `match`, no `async` — and would
+*lower* recognition. `tree-sitter/go-tree-sitter` needs CGO, and the image builds
+with `CGO_ENABLED=0`. `odvcencio/gotreesitter` (MIT, pure Go, Python among its
+embedded grammars) is the one to reach for if a parser is ever wanted — for
+indexing the developer's module, never on the gate path, where a wrong parse would
+decide whether a person is asked.
+
 `kernel_contain_cells` changes the question. Instead of asking whether the code is
 recognisably an inspection, ODE withholds the platform token: a `run_code` call
 that did not ask for one runs in a kernel that has none, and is not confirmed. A
@@ -303,6 +374,13 @@ the singleuser pod and not something this repository enforces, which is why the
 option is off by default. A confirmed cell can also stash the token in a variable
 that later contained cells can read — the same standing as the redaction below,
 and conceded for the same reason.
+
+It is one kernel, deliberately. A second kernel for contained cells would put the
+dataframe a confirmed cell fetched into a namespace the inspecting cell cannot
+see, and inspecting fetched data afterwards without a second confirmation is the
+case containment exists for. Contained is also not read-only: 49 of the 218
+contained cells in the corpus write into the workspace, and that is how a
+developer's work persists, so workspace writes stay.
 
 ### What the deployed policy actually leaves open
 

@@ -31,6 +31,7 @@ import {
   type Proposal,
   type ProposalDecisionKind,
   type Session,
+  type SplitReport,
 } from "./api";
 import { Markdown } from "./markdown";
 import { Link, setParam, useParam } from "./router";
@@ -56,6 +57,17 @@ import {
   shortId,
   useAction,
 } from "./ui";
+
+/**
+ * Format an RFC 3339 ISO timestamp as YYYY-MM-DD HH:MM UTC.
+ *
+ * Never render a split bound as date only; slicing to 10 characters drops the
+ * time, so a training end at 12:00 UTC reads as midnight.
+ */
+function formatUTC(iso: string): string {
+  const date = new Date(iso);
+  return date.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
 
 /**
  * Ray jobs, their MLflow runs, and what the assistant made of the ones that
@@ -700,6 +712,8 @@ function Results({ experiment }: { experiment: Experiment }) {
         </p>
       </Section>
 
+      {summary.data_split && <DataSplitBlock split={summary.data_split} />}
+
       <Section title="Metrics and params" defaultOpen={false}>
         <KV>
           <Row label="Run">
@@ -798,6 +812,43 @@ function WhyItFailed({ failure }: { failure: ExperimentFailure }) {
 function criteriaNote(summary: ExperimentSummary): string {
   const count = 1 + (summary.secondary_criteria?.length ?? 0);
   return count === 1 ? "1 criterion" : `${count} criteria`;
+}
+
+/** DataSplitBlock shows the evaluation window and confirmation status. */
+function DataSplitBlock({ split }: { split: SplitReport }) {
+  const confirmedVariant = split.confirmed === "confirmed" ? "default" : split.confirmed === "pending" ? "secondary" : "outline";
+
+  return (
+    <Section title="Data split">
+      <KV>
+        <Row label="Window">
+          {split.window_start && split.window_end ? (
+            <>
+              {formatUTC(split.window_start)} to {formatUTC(split.window_end)}
+            </>
+          ) : (
+            "—"
+          )}
+        </Row>
+        <Row label="Status">
+          <Badge variant={confirmedVariant as any} className="font-normal">
+            {split.confirmed}
+          </Badge>
+        </Row>
+        {split.messages !== undefined && split.results !== undefined && (
+          <>
+            <Row label="Messages">{split.messages}</Row>
+            <Row label="Results">{split.results}</Row>
+          </>
+        )}
+        {split.note && (
+          <Row label="Note">
+            <p className="text-xs">{split.note}</p>
+          </Row>
+        )}
+      </KV>
+    </Section>
+  );
 }
 
 /**
@@ -1710,6 +1761,11 @@ function LaunchedRunRow({
       <span className="muted-inline text-xs text-muted-foreground" title={run.commit_sha}>
         {run.commit_sha.slice(0, 7)}
       </span>
+      {run.data_split && (
+        <span className="muted-inline text-xs text-muted-foreground">
+          Split: {formatUTC(run.data_split.training_end)} → {formatUTC(run.data_split.test_end)}
+        </span>
+      )}
       <RunLinks experiment={run} urls={urls} />
       {/*
         The third link is ODE's own, and it is deliberately not a pop-out: the run

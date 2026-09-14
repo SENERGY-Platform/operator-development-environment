@@ -130,7 +130,7 @@ func TestStartM8DegradesWithoutARayClusterAndRefusesHalfAConfiguration(t *testin
 
 			// No kernel and no repo service: the surface cannot be built either way, and
 			// the point here is which branch answers first.
-			service, err := startM8(config, nil, nil, nil)
+			service, err := startM8(config, nil, nil, nil, nil)
 
 			if tc.wantError == "" {
 				if err != nil {
@@ -170,7 +170,7 @@ func TestStartM8NeedsAKernelAndARepositoryButDoesNotRefuseWithoutThem(t *testing
 	}
 	configuration.HandleEnvironmentVars(config)
 
-	service, err := startM8(config, nil, nil, nil)
+	service, err := startM8(config, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("err = %v, want a degraded start", err)
 	}

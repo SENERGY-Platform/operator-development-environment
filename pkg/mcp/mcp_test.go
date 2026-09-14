@@ -30,6 +30,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
@@ -41,6 +42,7 @@ import (
 type fakeSessions struct {
 	mux         sync.RWMutex
 	tiers       map[string]tools.Tier
+	splits      map[string]*exposure.Split
 	owner       map[string]string
 	workbenches map[string]string
 	autoRun     map[string]bool
@@ -57,7 +59,8 @@ type fakeSessions struct {
 
 func newFakeSessions() *fakeSessions {
 	return &fakeSessions{
-		tiers: map[string]tools.Tier{}, owner: map[string]string{},
+		tiers: map[string]tools.Tier{}, splits: map[string]*exposure.Split{},
+		owner:       map[string]string{},
 		workbenches: map[string]string{}, autoRun: map[string]bool{},
 	}
 }
@@ -121,19 +124,27 @@ func (s *fakeSessions) setWork(sessionID, workbench string, autoRun bool) {
 	s.autoRun[sessionID] = autoRun
 }
 
+// setSplit records the session's data split (D36), which the transport has to
+// carry exactly as faithfully as the tier — see TestMCPCarriesTheSessionsSplit.
+func (s *fakeSessions) setSplit(sessionID string, split *exposure.Split) {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	s.splits[sessionID] = split
+}
+
 func (s *fakeSessions) State(_ context.Context, userSub, sessionID string) (
-	tools.Tier, string, bool, error,
+	tools.Tier, *exposure.Split, string, bool, error,
 ) {
 	s.mux.RLock()
 	defer s.mux.RUnlock()
 	if s.owner[sessionID] != userSub {
-		return tools.DefaultTier, "", false, errors.New("no such session for this user")
+		return tools.DefaultTier, nil, "", false, errors.New("no such session for this user")
 	}
 	tier, found := s.tiers[sessionID]
 	if !found {
-		return tools.DefaultTier, "", false, errors.New("no such session")
+		return tools.DefaultTier, nil, "", false, errors.New("no such session")
 	}
-	return tier, s.workbenches[sessionID], s.autoRun[sessionID], nil
+	return tier, s.splits[sessionID], s.workbenches[sessionID], s.autoRun[sessionID], nil
 }
 
 type ran struct {
@@ -146,11 +157,19 @@ func (r *ran) executor(name string) tools.Executor {
 		r.mux.Lock()
 		defer r.mux.Unlock()
 		r.called = append(r.called, name)
+		// Reported as the empty string when there is none, so a test can tell "no
+		// split" from "the field was never carried" the same way it does for the
+		// workbench.
+		trainingEnd := ""
+		if req.Split != nil {
+			trainingEnd = req.Split.TrainingEnd.UTC().Format(time.RFC3339)
+		}
 		return map[string]any{
 			"ran": name, "tier": req.Tier.String(), "session": req.SessionID,
 			// Reported so a test can see what the transport carried, rather than only
 			// that the call arrived.
 			"workbench": req.WorkbenchID, "auto_run": req.AutoRun,
+			"split_training_end": trainingEnd,
 		}, nil
 	}
 }
@@ -502,6 +521,34 @@ func TestMCPCarriesTheAbsenceOfBothToo(t *testing.T) {
 	text := callText(t, result)
 	if !strings.Contains(text, `"workbench":""`) || !strings.Contains(text, `"auto_run":false`) {
 		t.Errorf("result = %s, want an empty workbench and no standing answer", text)
+	}
+}
+
+// TestMCPCarriesTheSessionsSplit is D36's twin of
+// TestMCPCarriesTheSessionsWorkbenchAndStandingAnswer: a client of this transport
+// must not be able to reach past the training end merely because the handler
+// forgot to carry the session's split, the same way it must not be able to name
+// its own tier.
+func TestMCPCarriesTheSessionsSplit(t *testing.T) {
+	h := newHarness(t)
+	h.sessions.add("sess-l0", "alice", tools.L0)
+	trainingEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	h.sessions.setSplit("sess-l0", &exposure.Split{
+		TrainingEnd: trainingEnd,
+		TestEnd:     trainingEnd.AddDate(0, 0, 7),
+	})
+	session := h.connect(t, "alice", "sess-l0")
+
+	result, err := session.CallTool(context.Background(), &sdk.CallToolParams{
+		Name: "l0_tool", Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	text := callText(t, result)
+	want := `"split_training_end":"` + trainingEnd.Format(time.RFC3339) + `"`
+	if !strings.Contains(text, want) {
+		t.Errorf("result = %s, want %s", text, want)
 	}
 }
 

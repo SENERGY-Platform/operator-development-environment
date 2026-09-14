@@ -68,6 +68,20 @@ Data exposure tier. This session is at %s. %s
 
 `, session.Tier, session.Tier.Exposes())
 
+	fmt.Fprintf(builder, `Data split. %s
+`, session.Split.Exposes())
+	if session.Split != nil {
+		// Said once, plainly, rather than left for the model to infer from a refusal:
+		// the split is the developer's bound the same way the tier is, and the tool
+		// result already says as much (*exposure.BeyondTrainingEndError) — but saying
+		// it here means the first read past the training end is where it stops, not
+		// the fifth attempt with a narrower window.
+		builder.WriteString(`A read that starts at or after the training end is refused for this
+session; do not retry with another window, ask the developer.
+`)
+	}
+	builder.WriteString("\n")
+
 	if toolsAvailable {
 		beyond := registry.Beyond(session.Tier)
 		if len(beyond) > 0 {

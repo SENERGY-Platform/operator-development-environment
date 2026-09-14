@@ -40,7 +40,7 @@ The distribution matters. The pin the developer can see in the Code pane
 only. The two environments they actually work in — the kernel and the Ray
 cluster — are both deployment-wide and neither consults it.
 
-As of 2026-09-01 the library is at `v1.6.1` and pins:
+As of 2026-09-10 the library is at `v1.7.0` and pins:
 
 ```text
 ray[data]==2.55.0
@@ -56,6 +56,18 @@ ODE run keeps the name the launch gave it. That makes step 6 of the runbook belo
 — the Ray cluster's own image — the only step that decides whether the fix is in
 effect; the singleuser image carries it for consistency, not because a cell reaches
 that code.
+
+`v1.7.0` moves none of them either, and again only the experiment path changes:
+`Config` gains the optional `training_end` and `test_end`, every history reader
+takes its end from a clock the config sets, and `MLOperator.init()` runs the
+evaluation phase of D36 when `test_end` is present
+([experiments.md](experiments.md)). Step 6 is once more the step that decides.
+The failure of an image left behind is silent in the job — `simple_struct` reads
+declared keys only, so an older library ignores both fields, trains up to the
+launch and skips the evaluation — and visible in one place: the run's summary says
+`"not confirmed by the run"` under `data_split`, because the tags the library
+would have written are missing. A summary saying that after a launch under a split
+is the runbook telling you it was not run.
 
 ## Why only the latest is supported
 

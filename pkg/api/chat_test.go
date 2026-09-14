@@ -285,6 +285,83 @@ func TestSetTierAndReadItsAudit(t *testing.T) {
 	}
 }
 
+// --- the data split (D36) ---
+
+// TestSetSplitAndReadItsAudit is D36's twin of TestSetTierAndReadItsAudit: set,
+// change and clear all round-trip through the session and are all audited, unlike
+// the tier's trail there is no creation-time entry, because a new session starts
+// with no split and nothing needs pre-registering until a developer sets one.
+func TestSetSplitAndReadItsAudit(t *testing.T) {
+	h := newChatHarness(t)
+	id := h.createSession(t, "")
+
+	recorder := h.do(t, http.MethodPut, "/chat/sessions/"+id+"/split", map[string]any{
+		"training_end": "2026-06-01T00:00:00Z", "test_end": "2026-06-08T00:00:00Z",
+	}, "developer")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("set split: %d %s", recorder.Code, recorder.Body.String())
+	}
+	split, ok := decodeBody(t, recorder)["data_split"].(map[string]any)
+	if !ok {
+		t.Fatalf("response has no data_split: %s", recorder.Body.String())
+	}
+	if split["training_end"] != "2026-06-01T00:00:00Z" || split["test_end"] != "2026-06-08T00:00:00Z" {
+		t.Errorf("data_split = %v, want the bounds just set", split)
+	}
+
+	// A change.
+	recorder = h.do(t, http.MethodPut, "/chat/sessions/"+id+"/split", map[string]any{
+		"training_end": "2026-07-01T00:00:00Z", "test_end": "2026-07-08T00:00:00Z",
+	}, "developer")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("change split: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Cleared with the literal JSON null the frontend sends for
+	// JSON.stringify(null), not an empty body.
+	recorder = h.do(t, http.MethodPut, "/chat/sessions/"+id+"/split", json.RawMessage("null"), "developer")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear split: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if cleared := decodeBody(t, recorder)["data_split"]; cleared != nil {
+		t.Errorf("data_split = %v after clearing, want absent", cleared)
+	}
+
+	recorder = h.do(t, http.MethodGet, "/chat/sessions/"+id+"/split-changes", nil, "developer")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("audit: %d", recorder.Code)
+	}
+	changes := decodeBody(t, recorder)["changes"].([]any)
+	if len(changes) != 3 {
+		t.Fatalf("audit entries = %d, want set, change and clear", len(changes))
+	}
+	first := changes[0].(map[string]any)
+	if first["from"] != nil {
+		t.Errorf("first entry from = %v, want nil", first["from"])
+	}
+	last := changes[2].(map[string]any)
+	if last["to"] != nil {
+		t.Errorf("last entry to = %v, want nil (cleared)", last["to"])
+	}
+	if last["user_sub"] == nil || last["at"] == nil {
+		t.Error("the audit entry lacks the user or timestamp D36 requires")
+	}
+}
+
+// TestSetSplitRefusesReversedBounds is Validate's refusal reaching the API as 400,
+// the way an unparseable tier does.
+func TestSetSplitRefusesReversedBounds(t *testing.T) {
+	h := newChatHarness(t)
+	id := h.createSession(t, "")
+
+	recorder := h.do(t, http.MethodPut, "/chat/sessions/"+id+"/split", map[string]any{
+		"training_end": "2026-06-08T00:00:00Z", "test_end": "2026-06-01T00:00:00Z",
+	}, "developer")
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 // --- the model control ---
 
 func TestSetModelOverHTTP(t *testing.T) {

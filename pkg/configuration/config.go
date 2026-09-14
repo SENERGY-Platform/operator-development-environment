@@ -486,6 +486,12 @@ type ConfigStruct struct {
 	// ExperimentMaxLogBytes bounds a log read. Logs go to the developer's own route
 	// and never to a model (§5.13).
 	ExperimentMaxLogBytes int64 `json:"experiment_max_log_bytes"`
+	// ExperimentMaxEvaluationRows bounds a data split's test window (D36). The
+	// replay is sequential infer() calls in the driver, so an unbounded window is
+	// an unbounded driver loop (risk register); a launch whose window is estimated
+	// to exceed this is refused before anything is submitted, naming the estimate
+	// and the cap.
+	ExperimentMaxEvaluationRows int64 `json:"experiment_max_evaluation_rows"`
 
 	// ExperimentRequestTimeout bounds one Ray or MLflow API call;
 	// ExperimentUploadTimeout bounds the one request that moves the whole archive,
@@ -824,6 +830,9 @@ func applyDefaults(config Config) {
 	}
 	if config.ExperimentMaxLogBytes <= 0 {
 		config.ExperimentMaxLogBytes = 1048576
+	}
+	if config.ExperimentMaxEvaluationRows <= 0 {
+		config.ExperimentMaxEvaluationRows = 1_000_000
 	}
 	if config.ExperimentRequestTimeout == "" {
 		config.ExperimentRequestTimeout = "30s"

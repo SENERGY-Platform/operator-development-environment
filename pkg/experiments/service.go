@@ -31,6 +31,7 @@ import (
 	"github.com/SENERGY-Platform/analytics-flow-engine/lib/access"
 	servicejwt "github.com/SENERGY-Platform/service-commons/pkg/jwt"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 )
@@ -128,6 +129,20 @@ type Options struct {
 	// to a model (§5.13).
 	MaxLogBytes int
 
+	// Usage estimates a device's stored bytes per day, the same figure
+	// estimate_read_cost already reads (pkg/tools/executors.go). Launch uses it to
+	// size a data split's test window before submitting anything: the replay is
+	// sequential infer() calls in the driver, so an unbounded window is an
+	// unbounded driver loop (D36, risk register). Nil is a supported deployment —
+	// a configuration without a timescale-wrapper URL has no usage reader to begin
+	// with — and skips the check; the launch result carries a warning saying the
+	// window was not sized rather than refusing every split launch outright.
+	Usage UsageReader
+	// MaxEvaluationRows bounds the estimate above. A launch whose test window is
+	// estimated to exceed it is refused before the package is built, naming the
+	// estimate and the cap.
+	MaxEvaluationRows int64
+
 	// RequestTimeout bounds one Ray or MLflow API call, and UploadTimeout the one
 	// request that moves the whole archive.
 	RequestTimeout time.Duration
@@ -208,13 +223,20 @@ const (
 	// checked-in model file or a data directory, and 16 MiB is where that becomes
 	// obvious without refusing anything reasonable. It also bounds memory here: the
 	// archive is held whole, and base64 through the kernel costs a third more again.
-	defaultMaxPackageBytes   = 16 << 20
-	defaultMaxEnvVars        = 32
-	defaultMaxEnvValueBytes  = 4096
-	defaultMaxLogBytes       = 1 << 20
-	defaultRequestTimeout    = 30 * time.Second
-	defaultUploadTimeout     = 5 * time.Minute
-	defaultCommandTimeout    = 5 * time.Minute
+	defaultMaxPackageBytes  = 16 << 20
+	defaultMaxEnvVars       = 32
+	defaultMaxEnvValueBytes = 4096
+	defaultMaxLogBytes      = 1 << 20
+	defaultRequestTimeout   = 30 * time.Second
+	defaultUploadTimeout    = 5 * time.Minute
+	defaultCommandTimeout   = 5 * time.Minute
+	// defaultMaxEvaluationRows bounds a data split's test window when a deployment
+	// does not set experiment_max_evaluation_rows. A million rows is a generous
+	// ceiling for a sequential driver-side replay (D36, risk register) — a window
+	// that size is already hours of one-second-resolution data — while still
+	// catching the mistake the cap exists for: a training end and a test end
+	// months apart.
+	defaultMaxEvaluationRows = 1_000_000
 )
 
 // New builds the service.
@@ -288,6 +310,9 @@ func New(deps Deps) (*Service, error) {
 	}
 	if opts.JobTokenLifetime <= 0 {
 		opts.JobTokenLifetime = defaultJobTokenLifetime
+	}
+	if opts.MaxEvaluationRows <= 0 {
+		opts.MaxEvaluationRows = defaultMaxEvaluationRows
 	}
 
 	client := deps.HTTPClient
@@ -380,6 +405,12 @@ type LaunchRequest struct {
 	// reads. They travel in the deployment config rather than as loose variables,
 	// because that is where Operator Lib looks for them.
 	InputTopics []InputTopic
+	// Split is the session's data split (D36), or nil for an ordinary launch.
+	// Read once from the session the way tools.Request.Split already is, and
+	// carried through to deploymentEnvironment and the stored record unchanged
+	// beyond normalisation — this package trusts it rather than re-deriving it,
+	// because the session is where it is set, audited and denied to the model.
+	Split *exposure.Split
 }
 
 // envNamePattern is what a variable name may look like. Stricter than POSIX
@@ -434,6 +465,16 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 	if err := requireInputTopics(req.InputTopics); err != nil {
 		return LaunchResult{}, err
 	}
+	// The split is validated and its test window sized here: after
+	// requireInputTopics, because the sizing reads the same topics that check
+	// requires to be present, and before access.CheckTopics, for the reason
+	// above — everything past that point spends something, and a split is the
+	// developer's own bound (D36), cheaper to refuse on than a cluster call.
+	split, splitWarnings, err := s.resolveSplit(ctx, req)
+	if err != nil {
+		return LaunchResult{}, err
+	}
+	warnings := splitWarnings
 	// Before the package is built, for the reason above: this is the check that
 	// refuses, and everything past it spends something. Shared with the flow
 	// engine, which applies the same rule when it deploys a pipeline -- Operator
@@ -516,6 +557,10 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 		Status:               StatusPending,
 		SubmittedAt:          submittedAt,
 		UpdatedAt:            submittedAt,
+		// Set before deploymentEnvironment, which reads it off the record rather
+		// than off req: the record is what is stored, and the two must never say
+		// different things about what this run's bounds were.
+		Split: split,
 	}
 
 	// The run is ODE's, created before the job and tagged in the same request. That
@@ -529,8 +574,12 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 	}
 	record.RunID = runID
 
-	credential, warnings := s.jobToken(ctx, req.Bearer)
+	credential, tokenWarnings := s.jobToken(ctx, req.Bearer)
 	record.ScopedCredential = credential.Source == credentialExchanged
+	// Appended rather than replacing splitWarnings: a launch can carry both an
+	// unsized test window and a session-token credential warning, and a developer
+	// reading only the last one would miss whichever came first.
+	warnings = append(warnings, tokenWarnings...)
 
 	deployment, err := s.deploymentEnvironment(
 		record, pipelineID, operatorIdentifier, req.InputTopics, runID)

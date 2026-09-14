@@ -309,7 +309,9 @@ set; a launch against such a repository runs the deployment default and fails on
 
 `train.py` needs Operator Lib **v1.5.0 or newer**, and that floor is the one for
 `operator_lib_ref` and for the singleuser image's `OPERATOR_LIB_REF`. It is *not* a
-requirement on the Ray image, for the reason the next section gives.
+requirement on the Ray image, for the reason the next section gives. A session
+with a data split needs **v1.7.0** on the Ray image, and that one *is* a
+requirement on the cluster — see the evaluation phase below.
 
 Two releases matter, and they fail differently. v1.4.0 made `train_once()` public;
 an image below it raises `AttributeError` at the end of a run, which is late but
@@ -319,6 +321,194 @@ developer's own permission (SNRGY-4637), and an image below it does not know the
 field, ignores it, and falls back to the built-in DSN. Nothing in the run says so.
 That is why the floor is stated as v1.5.0 rather than as the release that
 introduced the call the code makes.
+
+## The evaluation phase: a run under a data split
+
+Without a split, a run is what the section above describes: `init()`, a training
+pass, exit. Its MLflow record holds training metrics and nothing about how the
+operator behaves on data it has not seen, because there is no inference phase at
+all. With a split on the session (D36, [authorisation-and-exposure-tiers.md](authorisation-and-exposure-tiers.md)),
+the launch copies both bounds onto the experiment record and into the deployment
+config as `config.training_end` and `config.test_end`, and Operator Lib v1.7.0
+turns `init()` into an evaluation:
+
+1. it trains **unconditionally**, whatever the model registry holds — a registered
+   production model from an earlier run was trained on some other split — with
+   its clock at the training end, so every `provide_historic_data` inside `train()`
+   ends there;
+2. it reads every input topic over `[training_end, test_end)` through the same
+   bounded readers, merges the rows by time, and for each row sets the clock to
+   the row's time and calls `infer()` directly — not `run()`, so `need_retraining()`
+   is never consulted: retraining inside the test window would train on test data,
+   which is the thing the split forbids;
+3. it records on the run the bounds it actually applied as tags
+   (`operator_lib.history_end`, `operator_lib.test_end`), the counts as params
+   (`evaluation.messages`, `evaluation.results`, `evaluation.window_start`,
+   `evaluation.window_end`), and one artifact: `evaluation/predictions.csv`, a row
+   per `infer()` call with message time, selector, device id, result time and the
+   result as JSON.
+
+The phase lives in the library rather than in `train.py` because the repository is
+what the assistant writes. A phase sequence in a committed file is a phase sequence
+the model can edit; one inside `MLOperator.init()`, triggered by a config the launch
+owns, is not. The scaffold's `train.py` only stops asking for its own
+`train_once()` when the config carries `test_end`, since `init()` has already
+trained; an older `train.py` trains twice, equally bounded, so wasteful rather than
+wrong.
+
+There is deliberately no second artifact. An `inputs.csv` beside the predictions
+would be the obvious convenience — the scoring script needs the actuals to judge a
+forecast against — and it would also be a file of platform measurements from the
+test window sitting in MLflow, which the singleuser pod reaches **without a
+token**. With `kernel_contain_cells` on, a cell that asks for no credential runs
+unconfirmed, and downloading that file is such a cell. So the actuals are not
+shipped: the scoring script fetches them through timescale-wrapper on its own
+credential, which is the same read under the same permission check, one step
+further from the assistant.
+
+Nothing here grades. The library computes no metric — what the target is and how
+far ahead the forecast looks are the protocol's to declare, and the library does
+not read `evaluation.yaml` — and ODE never reads the artifact into a tool
+response. It reaches the developer through MLflow and the results route, the way
+D34 serves the unmasked exception.
+
+## The way back out, which is the harder half
+
+The split bounds what goes *into* the model's view. The replay hands `infer()` the
+test window's values by construction, so the question that follows is what the
+operator's own code — which the assistant wrote — can send back. A number out of
+the test window that reaches a tool response has been observed by a model the
+session says observes no values at all, so this defeats the tier itself and not
+merely the statistics.
+
+Three things stand in the way, and they are not three filters. They are a
+boundary, a check that survives the boundary being sidestepped, and hygiene on top
+of both. Each is worth exactly what it is worth, which is why they are described
+separately.
+
+**The phase boundary.** `MLOperator` used to replay while ODE's run was still the
+active fluent run, adopted through `MLFLOW_RUN_ID`, so `mlflow.log_metric()`
+inside `infer()` landed in exactly the run `get_experiment_results` reads back.
+The training run is now ended before the first `infer()` — unconditionally,
+including the case where `train()` returned `None` and nothing else would have
+closed it — `MLFLOW_RUN_ID` is removed from the environment, and the evaluation's
+own tags, params and artifact are written afterwards through `MlflowClient`
+against an explicit run id. A fluent call from operator code then has no run to
+adopt and opens one of its own in the same experiment, which nothing in ODE reads.
+That last clause is load-bearing: `searchRuns` has no caller outside tests and must
+keep none, because a search across the experiment is precisely what would catch
+that foreign run again and undo the separation.
+
+**The phase filter, because the boundary can be sidestepped.** Unsetting an
+environment variable takes nothing from code that has already read it, and `op.py`
+is imported before `init()` runs. An operator can keep
+
+```python
+RUN = os.environ.get("MLFLOW_RUN_ID")
+```
+
+at module level and call `MlflowClient().log_metric(RUN, ...)` from inside
+`infer()`, writing into ODE's run with the boundary fully in place. So the library
+stamps the transition itself: at the moment training ends and before the first
+`infer()` line, it sets `operator_lib.training_ended_at` on the run, in the Unix
+milliseconds MLflow stamps metrics with. `MaskedFor` then withholds every metric
+one of whose points is stamped at or after that instant, **whatever the metric is
+called**. `latestMetrics` already reduces a metric's history keyed on step and then
+timestamp; it now keeps the timestamps it used to discard.
+
+The maximum over the history rather than the timestamp of the point that wins the
+reduction, and that is not pedantry. `MlflowClient.log_metric` takes both `step`
+and `timestamp` from its caller, and the reduction resolves ties by step first, so
+a write carrying a high step and a backdated timestamp is exactly the point an
+inspection of "the latest value" would look at. Reading the whole history instead
+means a metric written during training *and* again during the replay is withheld
+even when the second write is disguised.
+
+This is the filter that matches the claim being made. The claim is about a phase —
+everything written after training may have come from the test window — and the
+phase is a fact about the write, not about its name.
+
+**The cutoff itself lives on the run, and the run is writable by whoever holds its
+id.** That is not a detail: one `set_tag(RUN, "operator_lib.training_ended_at",
+"not-a-number")` from inside `infer()` would otherwise switch the whole filter off,
+and a cutoff rewritten far into the future would leave every metric before it. So
+the filter is not anchored on the tag alone. Whether a split ran at all is read
+from **ODE's own experiment record**, which the job cannot write, and under a split
+a cutoff that is missing, unreadable, or outside the run's own start and end
+withholds *every* metric rather than falling back to the name allowlist. The fall
+back to names alone happens only where no split ran, and there no replay happened
+either.
+
+Where the tag is missing while a split was set, the cluster image is running an
+Operator Lib older than v1.7.0; that is already what the `data_split` block reports
+as `"not confirmed by the run"`, and it is not reported twice. The consequence for
+that run is that it shows a model no metrics, which is the correct reading of a
+run that cannot say when its training ended.
+
+The same reasoning cuts two more fields. **Params** are not filtered by name or by
+phase — MLflow params carry no timestamp — so under a split a model reads only the
+four `evaluation.*` params the replay reports, and everything the job configured
+stays on the developer's route. And the `data_split` block's own echo of what the
+run recorded is re-rendered from the parsed instant rather than passed through:
+a tag that is not a timestamp does not travel at all, because an operator that
+wrote prose into it wrote prose a model would otherwise read.
+
+**The name allowlist, which is hygiene.** What a model reads of a run's metrics is
+also declared rather than arbitrary: `MaskedFor` keeps the metric named by the
+developer's `evaluation.yaml` criterion, the metrics of every secondary criterion,
+and the four `evaluation.*` params, and removes every other key from `metrics` and
+from `comparison_to_previous` — the delta block is filtered against the same list,
+or the value simply returns by another door. A repository with no `evaluation.yaml`
+therefore shows a model no metrics at all, which is the intended reading of
+"declared", and the note says what the developer would have to do about it.
+
+**This third part is not a boundary, and the code says so where it is
+implemented.** A declared name can be logged from a test-window value, and a name
+carries no evidence of what produced it — which is the same argument
+[authorisation-and-exposure-tiers.md](authorisation-and-exposure-tiers.md) makes
+about recognising an inspection from Python source. It is worth having for what it
+makes visible and not worth mistaking for the thing that holds.
+
+What is withheld, by either rule, is reported as `withheld_metrics`: a count, never
+a name, and with no distinction between the two reasons. A name is already
+information the run produced, and which rule caught it says something about how the
+run was written.
+
+### What is left, named rather than closed
+
+The two rules above cover what an operator writes into the run. They do not cover
+everything, and the remainder is worth stating plainly rather than leaving to be
+found:
+
+- **A forged metric timestamp.** Nothing stamps a metric server-side: the value in
+  the store is the one the client sent, `timestamp` included. An operator whose
+  only write for a key carries a backdated timestamp, inside the window the run
+  existed in, passes the phase filter. What the filter does catch is every write
+  that does not forge one, which is the whole remembered-`MLFLOW_RUN_ID` route in
+  its natural form, and every attempt to disable the filter by rewriting the cutoff
+  — so this raises the cost from "a line of code" to "a line of code written to
+  defeat a named control", and it does not eliminate it. The durable fix is
+  per-run write authorization, which MLflow as deployed does not offer; until
+  then, a run under a split is a document its own operator can write into, and
+  what ODE shows a model of it is bounded rather than trusted.
+- **The exception text.** A failed run's summary carries a bounded extract of its
+  last exception (D34), masked at L0 and L1 and **verbatim at L2**. An operator
+  that raises with a test-window value in the message has put it where the tier
+  decides, which is the answer D34 already gives for values in tracebacks — at L2
+  the model is looking at downsampled series anyway. At L0 and L1 the literals are
+  masked, so this is a channel the tier governs rather than an open one.
+- **Egress from the Ray cluster.** The job runs the developer's committed code with
+  the developer's own credential and reaches the network. Nothing in ODE bounds
+  what it sends where, and nothing here pretends to; that is the same limit
+  `run_code` has in the developer's pod, and it is the developer's own authority
+  being used either way.
+- **`ResourceUsage.PeakMemoryMB`** is derived before `MaskedFor` and survives it.
+  One number, from a metric name the job chose, named here rather than left to be
+  discovered.
+
+Both rules stop at the developer. `MaskedFor` is called on the two paths that hand
+a summary to a model and on neither of the routes the developer's own browser uses,
+which is D34's split applied to a second field.
 
 ## `uv run`, and why the cluster image carries none of this
 

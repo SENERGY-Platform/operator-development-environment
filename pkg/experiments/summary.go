@@ -21,6 +21,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 )
 
 // §5.13's compact structured summary.
@@ -62,6 +65,34 @@ const (
 	tagEvaluationGoal = "evaluation_goal"
 )
 
+// operatorLibSplitTags are the two tags Operator Lib v1.7.0 sets on the active run
+// once the evaluation replay finishes (op_ml.py's __evaluate, in a `finally`): the
+// bound the training actually read under and the test window's end. Operator
+// Lib's own names, not ODE's — read, never written here — because they are what a
+// scoring script and this confirmation both check the run against.
+const (
+	operatorHistoryEndTag = "operator_lib.history_end"
+	operatorTestEndTag    = "operator_lib.test_end"
+)
+
+// operatorTrainingEndedAtTag is the tag Operator Lib v1.7.0 sets at the moment
+// training ends and the replay begins — before the first `infer()` line, so it
+// is on the run before anything the replay could write is. The value is the
+// Unix milliseconds MLflow itself stamps a metric with, which is what lets
+// MaskedFor compare the two directly (D37). Read here, never written: the
+// library's own name, the same as the two tags above.
+const operatorTrainingEndedAtTag = "operator_lib.training_ended_at"
+
+// evaluationParams are the four params the same replay logs beside the tags:
+// how many rows it saw and produced a result for, and the window it replayed.
+// Also Operator Lib's own names.
+const (
+	paramEvaluationMessages    = "evaluation.messages"
+	paramEvaluationResults     = "evaluation.results"
+	paramEvaluationWindowStart = "evaluation.window_start"
+	paramEvaluationWindowEnd   = "evaluation.window_end"
+)
+
 // memoryMetrics are the metric names a job may use to report peak memory, in the
 // order they are looked for. Absent is absent: §5.4.6's rule against a null read
 // as a zero applies here too, so ResourceUsage.PeakMemoryMB stays out of the JSON
@@ -93,7 +124,7 @@ func buildSummary(
 ) Summary {
 	params := pairs(run.Data.Params)
 	tags := pairs(run.Data.Tags)
-	metrics := latestMetrics(run)
+	metrics, metricTimes := latestMetrics(run)
 
 	// ODE's own user_sub tag is dropped on the way into the summary.
 	//
@@ -115,6 +146,7 @@ func buildSummary(
 		Status:       reconcile(record.Status, run.Info.Status),
 		Params:       params,
 		Metrics:      metrics,
+		MetricTimes:  metricTimes,
 		Tags:         tags,
 		StartedAt:    mlflowTime(run.Info.StartTime),
 		EndedAt:      mlflowTime(run.Info.EndTime),
@@ -129,6 +161,18 @@ func buildSummary(
 	summary.EvaluationCriteria, summary.SecondaryCriteria = criteria.ApplyTo(
 		metrics, tags, record.CommitSHA, problem)
 
+	// Read from the same tags map EvaluationCriteria was just graded against,
+	// after TagUserSub was dropped and before anything else touches it — the split
+	// confirmation is step 16's guard against a cluster image whose Operator Lib
+	// is older than v1.7.0, and it reads the run exactly the way a criterion tag
+	// does: as what the job itself reported, not as what ODE asked for.
+	summary.Split = splitReport(record.Split, tags, params, summary.Finished)
+	if summary.Split != nil && summary.Split.Confirmed == splitNotConfirmed {
+		summary.Note = strings.TrimSpace(summary.Note +
+			" This run's data split was not confirmed by its own tags; see the " +
+			"data_split block before treating it as an evaluation.")
+	}
+
 	if previous == nil {
 		summary.ComparisonToPrevious = []MetricDelta{}
 		if summary.Note == "" {
@@ -139,7 +183,8 @@ func buildSummary(
 	}
 
 	summary.PreviousRunID = previous.runID()
-	summary.ComparisonToPrevious = compare(metrics, latestMetrics(*previous))
+	previousMetrics, _ := latestMetrics(*previous)
+	summary.ComparisonToPrevious = compare(metrics, previousMetrics)
 	return summary
 }
 
@@ -170,20 +215,38 @@ func reconcile(rayStatus, mlflowStatus string) string {
 	}
 }
 
-// latestMetrics reduces MLflow's metric history to one value per key.
+// latestMetrics reduces MLflow's metric history to one value per key, and
+// separately to the *maximum* timestamp logged for that key over its whole
+// history — not only the timestamp of the point the first reduction selects.
 //
 // MLflow returns the last logged value per key from runs/get already, but
-// runs/search on some versions returns every step — so the reduction is done here
-// rather than trusted, keyed on step first and timestamp second, which is the
-// order MLflow itself defines "latest" by.
-func latestMetrics(run mlflowRun) map[string]float64 {
+// runs/search on some versions returns every step — so the value reduction is
+// done here rather than trusted, keyed on step first and timestamp second,
+// which is the order MLflow itself defines "latest" by.
+//
+// The timestamp reduction is kept apart from the value reduction on purpose
+// (D37). `MlflowClient.log_metric` takes both step and timestamp from its
+// caller, and the value reduction resolves ties by step first — so a write
+// carrying a high step and a backdated timestamp is exactly the point that
+// reduction would select, and reading only its timestamp would miss that the
+// same key was also written for real, later, under a lower step. Taking the
+// maximum over the whole history instead means a key touched during training
+// and again from the replay reads as touched after training even when the
+// replay's own point is the one disguised as earlier. It does not catch a
+// write whose only point forges its own timestamp — see MaskedFor and
+// docs/experiments.md for the limit that leaves.
+func latestMetrics(run mlflowRun) (map[string]float64, map[string]int64) {
 	type point struct {
 		value     float64
 		step      int64
 		timestamp int64
 	}
 	newest := make(map[string]point, len(run.Data.Metrics))
+	latestTimestamp := make(map[string]int64, len(run.Data.Metrics))
 	for _, metric := range run.Data.Metrics {
+		if metric.Timestamp > latestTimestamp[metric.Key] {
+			latestTimestamp[metric.Key] = metric.Timestamp
+		}
 		current, seen := newest[metric.Key]
 		if seen && (metric.Step < current.step ||
 			(metric.Step == current.step && metric.Timestamp < current.timestamp)) {
@@ -197,7 +260,7 @@ func latestMetrics(run mlflowRun) map[string]float64 {
 	for key, value := range newest {
 		out[key] = value.value
 	}
-	return out
+	return out, latestTimestamp
 }
 
 // compare produces §5.13's comparison_to_previous, in metric-name order.
@@ -344,4 +407,107 @@ func pairs(list []mlflowTag) map[string]string {
 		out[item.Key] = item.Value
 	}
 	return out
+}
+
+// The three answers splitReport's Confirmed field carries. Constants rather than
+// literals scattered across this file and its test, so a rename cannot desync them.
+const (
+	splitConfirmed    = "confirmed"
+	splitNotConfirmed = "not confirmed by the run"
+	splitPending      = "pending"
+)
+
+// splitReport is step 16's confirmation, built from a run's own tags and params
+// rather than trusted from what ODE asked the run to do.
+//
+// Absence of the two tags is not, by itself, evidence that Operator Lib ignored
+// the split: a run still in progress has not written them yet either, which is
+// why an unfinished run reads "pending" rather than "not confirmed". Only a
+// *terminal* run without matching tags means the split was silently dropped —
+// simple_struct reads declared keys only, so an Operator Lib older than v1.7.0
+// has no training_end or test_end attribute on Config at all and trains
+// unbounded, exactly as if no split had been set.
+func splitReport(split *exposure.Split, tags, params map[string]string, finished bool) *SplitReport {
+	if split == nil {
+		return nil
+	}
+	report := &SplitReport{TrainingEnd: split.TrainingEnd, TestEnd: split.TestEnd}
+
+	historyEnd := strings.TrimSpace(tags[operatorHistoryEndTag])
+	testEnd := strings.TrimSpace(tags[operatorTestEndTag])
+	// Echoed back only once they parse, and re-rendered from the parsed instant
+	// rather than passed through as the run wrote them.
+	//
+	// Everything on a run is writable by whoever holds its id, and the operator's
+	// own code can hold it: op.py is imported before init(), so
+	// `RUN = os.environ.get("MLFLOW_RUN_ID")` survives the unset, and an atexit
+	// handler registered from infer() writes after the evaluation's own finally
+	// block has run. A raw tag string reaching these fields is therefore a string
+	// the operator chose, in a document a model reads — so a value that is not a
+	// timestamp does not travel at all, and Confirmed below already carries the
+	// verdict that something was wrong with it.
+	report.RunHistoryEnd = renderedTime(historyEnd)
+	report.RunTestEnd = renderedTime(testEnd)
+
+	switch runSplit, ok := parseTaggedSplit(historyEnd, testEnd); {
+	case ok && runSplit.Equal(*split):
+		report.Confirmed = splitConfirmed
+	case !finished:
+		report.Confirmed = splitPending
+	default:
+		report.Confirmed = splitNotConfirmed
+		report.Note = "the run recorded no split bounds, or different ones; a cluster " +
+			"image with an Operator Lib older than v1.7.0 drops both fields silently " +
+			"and the run then trained unbounded and skipped the evaluation; see " +
+			"docs/operator-lib-versions.md"
+	}
+
+	if value, err := strconv.ParseInt(params[paramEvaluationMessages], 10, 64); err == nil {
+		report.Messages = &value
+	}
+	if value, err := strconv.ParseInt(params[paramEvaluationResults], 10, 64); err == nil {
+		report.Results = &value
+	}
+	// Same rule as the two tags above: these are the run's own account of the
+	// window it replayed, and a param the operator wrote first is a param that
+	// reaches a model. Only a parseable instant travels.
+	report.WindowStart = renderedTime(params[paramEvaluationWindowStart])
+	report.WindowEnd = renderedTime(params[paramEvaluationWindowEnd])
+
+	return report
+}
+
+// renderedTime echoes a timestamp a run wrote only if it is one, re-rendered from
+// the parsed instant so that nothing of the original string's own shape survives.
+// Anything else becomes empty: the field is read by a model, and the run is not a
+// trustworthy writer (see splitReport).
+func renderedTime(raw string) string {
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return parsed.UTC().Format(time.RFC3339)
+}
+
+// parseTaggedSplit reads the two tags Operator Lib's evaluation replay writes
+// back into a Split, so it can be compared with Equal.
+//
+// time.RFC3339 rather than time.RFC3339Nano: Go's time.Parse accepts an optional
+// fractional-second field even when the layout does not show one, so this reads
+// both "...+00:00" and "...123456+00:00" — which is what Python's
+// datetime.isoformat() produces for a UTC instant either with or without
+// microseconds.
+func parseTaggedSplit(historyEnd, testEnd string) (exposure.Split, bool) {
+	if historyEnd == "" || testEnd == "" {
+		return exposure.Split{}, false
+	}
+	trainingEnd, err := time.Parse(time.RFC3339, historyEnd)
+	if err != nil {
+		return exposure.Split{}, false
+	}
+	end, err := time.Parse(time.RFC3339, testEnd)
+	if err != nil {
+		return exposure.Split{}, false
+	}
+	return exposure.Split{TrainingEnd: trainingEnd, TestEnd: end}, true
 }

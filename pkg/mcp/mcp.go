@@ -52,6 +52,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
@@ -66,12 +67,15 @@ type Sessions interface {
 	// session, and a transport that fetched only the one it remembered to ask for is
 	// how two of them came to be missing here — a tool call arriving with no
 	// workbench, and auto mode never applying to a provider that runs its own tool
-	// loop.
+	// loop. The split (D36) is read the same way and for the same reason: a client
+	// of this transport must not be able to reach past the training end merely
+	// because this handler forgot to carry it, the same way it must not name its
+	// own tier.
 	// Primitives rather than a struct of this package's: the engine implements
 	// this, and a transport's type in the engine's signature is the wrong way round
 	// for a dependency — which is why TierFor never took one either.
 	State(ctx context.Context, userSub, sessionID string) (
-		tier tools.Tier, workbench string, autoRun bool, err error)
+		tier tools.Tier, split *exposure.Split, workbench string, autoRun bool, err error)
 
 	// Hold dispatches a call needing confirmation (D11) and waits for the
 	// developer to decide, returning the outcome as an ordinary tool result.
@@ -106,6 +110,11 @@ func New(dispatcher *tools.Dispatcher, sessions Sessions, version string) (*Serv
 type sessionState struct {
 	// Tier is the exposure tier every dispatched call is gated at.
 	Tier tools.Tier
+	// Split is the session's data split (D36), or nil when it has none. Carried
+	// whole into every dispatched Request, the same way Tier is, so a read that
+	// reaches past the training end is refused here exactly as it is on the native
+	// tool loop.
+	Split *exposure.Split
 	// WorkbenchID is the checkout and kernel the session acts in (D32). Without it
 	// a developer with two workbenches open gets "the request has to name the one
 	// it means" from the repository tools, and run_code lands in whichever kernel
@@ -166,9 +175,11 @@ func (s *Server) Handler(authenticate func(*http.Request) (userSub, token string
 		// Read from the session, on every request. Not from a header, and not cached:
 		// a client that could name its own tier would be choosing its own data
 		// exposure, which is precisely what §3.2 gives to the developer — and the same
-		// argument covers the other two fields, since a client that could name its own
-		// workbench could write into an operator the developer is not working on.
-		tier, workbench, autoRun, err := s.sessions.State(request.Context(), userSub, sessionID)
+		// argument covers the other three fields, since a client that could name its
+		// own workbench could write into an operator the developer is not working on,
+		// and one that could name its own split (D36) could choose what history it is
+		// allowed to see.
+		tier, split, workbench, autoRun, err := s.sessions.State(request.Context(), userSub, sessionID)
 		if err != nil {
 			writeJSONError(writer, http.StatusNotFound, "no such chat session for this user")
 			return
@@ -176,7 +187,7 @@ func (s *Server) Handler(authenticate func(*http.Request) (userSub, token string
 
 		who := caller{
 			token: token, userSub: userSub, sessionID: sessionID,
-			session: sessionState{Tier: tier, WorkbenchID: workbench, AutoRun: autoRun},
+			session: sessionState{Tier: tier, Split: split, WorkbenchID: workbench, AutoRun: autoRun},
 		}
 		streamable.ServeHTTP(writer, request.WithContext(
 			context.WithValue(request.Context(), callerKey{}, who)))
@@ -232,6 +243,7 @@ func (s *Server) addTool(server *sdk.Server, definition tools.Definition, who ca
 			UserSub:   who.userSub,
 			SessionID: who.sessionID,
 			Tier:      who.session.Tier,
+			Split:     who.session.Split,
 			// Carried whole, so this transport gates exactly as the native tool loop
 			// does. Every field left out here is a gate reading a zero value: an
 			// unnamed workbench, and a standing answer the developer gave that never

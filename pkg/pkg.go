@@ -288,7 +288,7 @@ func Start(ctx context.Context, config configuration.Config) (*sync.WaitGroup, e
 	// get_experiment_results are registered inside startM3 and need the service to
 	// exist by then. It sits after M7 because it needs the repo surface — a run is
 	// submitted from a commit, not from a working copy.
-	experimentService, err := startM8(config, db, kernelService, repoService)
+	experimentService, err := startM8(config, db, kernelService, repoService, timeseriesClient)
 	if err != nil {
 		return nil, err
 	}
@@ -783,6 +783,7 @@ func startM8(
 	db *database.DB,
 	kernelService *kernel.Service,
 	repoService *repo.Service,
+	timeseriesClient *timeseries.Client,
 ) (*experiments.Service, error) {
 	if config.RayUrl == "" && config.MlflowUrl == "" {
 		slog.Warn("no ray_url or mlflow_url configured: the experiment routes are not " +
@@ -837,6 +838,17 @@ func startM8(
 		return nil, err
 	}
 
+	// A *timeseries.Client, even a nil one, is not a nil experiments.UsageReader:
+	// assigning the pointer straight into an interface field wraps it in a
+	// non-nil interface, and Options.Usage == nil (Launch's "no reader
+	// configured" check) would never be true. Guarded here rather than trusted
+	// to the field assignment below, the same way deps.Timeseries is only ever
+	// set inside the "if config.TimescaleWrapperUrl != \"\"" block above.
+	var usageReader experiments.UsageReader
+	if timeseriesClient != nil {
+		usageReader = timeseriesClient
+	}
+
 	service, err := experiments.New(experiments.Deps{
 		Workspace: kernelService,
 		Repo:      repoService,
@@ -871,9 +883,16 @@ func startM8(
 			MaxEnvVars:          int(config.ExperimentMaxEnvVars),
 			MaxEnvValueBytes:    int(config.ExperimentMaxEnvValueBytes),
 			MaxLogBytes:         int(config.ExperimentMaxLogBytes),
-			RequestTimeout:      requestTimeout,
-			UploadTimeout:       uploadTimeout,
-			CommandTimeout:      commandTimeout,
+			// The window-size check a data split's launch runs before submitting
+			// anything (D36). Usage is nil wherever deps.Timeseries is, which is the
+			// same "no timescale-wrapper configured" degradation the rest of ODE
+			// applies — a launch is not refused for it, it just is not sized, and the
+			// launch result says so.
+			Usage:             usageReader,
+			MaxEvaluationRows: config.ExperimentMaxEvaluationRows,
+			RequestTimeout:    requestTimeout,
+			UploadTimeout:     uploadTimeout,
+			CommandTimeout:    commandTimeout,
 
 			KeycloakURL:          config.KeycloakUrl,
 			KeycloakRealm:        config.KeycloakRealm,

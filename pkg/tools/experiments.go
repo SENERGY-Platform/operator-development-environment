@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 )
 
 // ---- launch_experiment (L0, confirmed) and get_experiment_results (L0) ----
@@ -66,7 +67,11 @@ type LaunchExperimentResult struct {
 	// and what it means if it does not.
 	Credential experiments.Credential `json:"credential"`
 	Warnings   []string               `json:"warnings,omitempty"`
-	Hint       string                 `json:"hint"`
+	// DataSplit is the session's data split (D36) this run was launched under, or
+	// nil for an ordinary launch — the same field the stored Experiment carries,
+	// so the model reads it back exactly as get_experiment_results will.
+	DataSplit *exposure.Split `json:"data_split,omitempty"`
+	Hint      string          `json:"hint"`
 }
 
 func (s *surface) launchExperiment(ctx context.Context, req Request) (any, error) {
@@ -87,9 +92,23 @@ func (s *surface) launchExperiment(ctx context.Context, req Request) (any, error
 		EnvVars:     in.EnvVars,
 		RunName:     in.RunName,
 		InputTopics: in.InputTopics,
+		// Read once from the session, the way Tier already is (§5.8): there is no
+		// tool input for this, because a tool that could set it would let the model
+		// choose what it trains on and what it is tested against.
+		Split: req.Split,
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	hint := "the job is queued; read it back with get_experiment_results, which " +
+		"answers with a snapshot while it is still running and with the result once " +
+		"it has finished"
+	if result.Split != nil {
+		hint += ". This session has a data split, so the run is an evaluation: it " +
+			"trains on history before the training end and then replays inference " +
+			"over the test window; get_experiment_results will show whether the run " +
+			"confirmed the bounds"
 	}
 
 	return LaunchExperimentResult{
@@ -102,9 +121,8 @@ func (s *surface) launchExperiment(ctx context.Context, req Request) (any, error
 		Status:       result.Status,
 		Credential:   result.Credential,
 		Warnings:     result.Warnings,
-		Hint: "the job is queued; read it back with get_experiment_results, which " +
-			"answers with a snapshot while it is still running and with the result once " +
-			"it has finished",
+		DataSplit:    result.Split,
+		Hint:         hint,
 	}, nil
 }
 

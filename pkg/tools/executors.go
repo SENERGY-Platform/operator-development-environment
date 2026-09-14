@@ -29,6 +29,7 @@ import (
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/charts"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/relations"
@@ -257,7 +258,16 @@ func (s *surface) probeAvailability(ctx context.Context, req Request) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+
+	// D36: this reports no value, but a window past the training end is exactly
+	// the shape of claim the split exists to keep out of the assistant's reach, so
+	// it is clamped the same way a value read would be. An entry whose own To is
+	// past the training end is lowered to it; one whose From is at or after it
+	// holds nothing observable at all and is dropped rather than shown with a
+	// from past its own to.
+	available, clamped, dropped := clampAvailabilityElements(available, req.Split)
+
+	out := map[string]any{
 		"device_id":    in.DeviceID,
 		"availability": available,
 		"reads": map[string]int{
@@ -265,7 +275,53 @@ func (s *surface) probeAvailability(ctx context.Context, req Request) (any, erro
 			// substantive, and it is checkable from the answer.
 			"values": 0,
 		},
-	}, nil
+	}
+	if req.Split != nil {
+		out["data_split"] = map[string]any{
+			"training_end":     req.Split.TrainingEnd.UTC().Format(time.RFC3339),
+			"elements_clamped": clamped,
+			"elements_dropped": dropped,
+			"note": "this session's data split ends the observable history at training_end; an " +
+				"availability window reaching past it was lowered, and one starting at or after it " +
+				"was left out entirely rather than shown with nothing before its own end",
+		}
+	}
+	return out, nil
+}
+
+// clampAvailabilityElements bounds a data-availability response to the training
+// end (D36). It reports no value, but the window it names is still a claim the
+// split exists to bound: an entry whose To reaches past the training end is
+// lowered to it; one whose From is at or after it has nothing observable in this
+// session at all and is dropped rather than reported with a from past its own to.
+func clampAvailabilityElements(
+	entries []timeseries.Availability, split *exposure.Split,
+) (out []timeseries.Availability, clamped, dropped int) {
+	if split == nil {
+		return entries, 0, 0
+	}
+	out = make([]timeseries.Availability, 0, len(entries))
+	for _, entry := range entries {
+		var from, to time.Time
+		if entry.From != nil {
+			from = *entry.From
+		}
+		if entry.To != nil {
+			to = *entry.To
+		}
+		_, newTo, err := split.ClampWindow(from, to)
+		if err != nil {
+			dropped++
+			continue
+		}
+		if entry.To == nil || !newTo.Equal(to) {
+			bound := newTo
+			entry.To = &bound
+			clamped++
+		}
+		out = append(out, entry)
+	}
+	return out, clamped, dropped
 }
 
 // ---- probe_export_data (L0) ----
@@ -304,6 +360,7 @@ func (s *surface) probeExportData(ctx context.Context, req Request) (any, error)
 		ExportID: in.ExportID,
 		Window:   window,
 		Progress: func(phase profiler.Phase) { req.Progress(phase.Stage, phase.Detail) },
+		Split:    req.Split,
 	})
 	if err != nil {
 		return nil, err
@@ -360,6 +417,15 @@ func (s *surface) estimateReadCost(ctx context.Context, req Request) (any, error
 	}
 
 	window, err := parseWindow(in.From, in.To)
+	if err != nil {
+		return nil, err
+	}
+	// D36: no value is read here, but estimated_window_bytes below names a window
+	// and a figure for it, and both are exactly the kind of claim about the test
+	// window the split exists to keep out of reach — so the window is clamped the
+	// same way a value read's would be, and one starting at or after the training
+	// end is refused rather than estimated.
+	window.From, window.To, err = req.Split.ClampWindow(window.From, window.To)
 	if err != nil {
 		return nil, err
 	}
@@ -492,6 +558,7 @@ func (s *surface) quickProfile(ctx context.Context, req Request) (any, error) {
 		Devices:            listed.Devices,
 		Window:             window,
 		IncludeUnqueryable: in.IncludeUnqueryable,
+		Split:              req.Split,
 	})
 	if err != nil {
 		return nil, err
@@ -565,6 +632,7 @@ func (s *surface) profileSeries(ctx context.Context, req Request) (any, error) {
 			AnalysisWindow: window,
 			GroupTime:      in.GroupTime,
 			Progress:       progress,
+			Split:          req.Split,
 		})
 	} else {
 		// Execute: this is about to read the device's data.
@@ -579,6 +647,7 @@ func (s *surface) profileSeries(ctx context.Context, req Request) (any, error) {
 			AnalysisWindow: window,
 			GroupTime:      in.GroupTime,
 			Progress:       progress,
+			Split:          req.Split,
 		})
 	}
 	if err != nil {
@@ -845,6 +914,7 @@ func (s *surface) relateSeries(ctx context.Context, req Request) (any, error) {
 		Members:        members,
 		Window:         window,
 		CandidateSetID: in.CandidateSetID,
+		Split:          req.Split,
 		Params: relations.RuleParams{
 			MinConfidence: in.MinConfidence,
 			MinLift:       in.MinLift,
@@ -946,7 +1016,19 @@ func (s *surface) previewSeries(ctx context.Context, req Request) (any, error) {
 		return nil, err
 	}
 	if !window.Valid() {
-		window = profiler.Window{From: time.Now().UTC().AddDate(0, 0, -7), To: time.Now().UTC()}
+		// D36: the default seven days is anchored on the training end when this
+		// session has a split, rather than on now — anchoring on now would show a
+		// window straddling the boundary by default, on a tool that has not even
+		// asked for one.
+		to := time.Now().UTC()
+		if horizon := req.Split.Horizon(); horizon != nil {
+			to = *horizon
+		}
+		window = profiler.Window{From: to.AddDate(0, 0, -7), To: to}
+	}
+	window.From, window.To, err = req.Split.ClampWindow(window.From, window.To)
+	if err != nil {
+		return nil, err
 	}
 
 	maxPoints := in.MaxPoints
@@ -986,7 +1068,7 @@ func (s *surface) previewSeries(ctx context.Context, req Request) (any, error) {
 	}
 
 	results, err := s.deps.Timeseries.Query(ctx, req.Token, []timeseries.QueryElement{element},
-		timeseries.QueryOptions{})
+		timeseries.QueryOptions{Split: req.Split})
 	if err != nil {
 		return nil, err
 	}
@@ -1213,6 +1295,7 @@ func (s *surface) renderChart(ctx context.Context, req Request) (any, error) {
 		YAxis:       charts.YAxis{Unit: in.YAxis.Unit, UnitSource: in.YAxis.UnitSource},
 		Window:      window,
 		GroupTime:   in.GroupTime,
+		Split:       req.Split,
 	})
 	if err != nil {
 		return nil, err

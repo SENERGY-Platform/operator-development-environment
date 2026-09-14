@@ -28,6 +28,7 @@ import (
 
 	"github.com/SENERGY-Platform/models/go/models"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -224,6 +225,11 @@ type ExportFillRequest struct {
 	// and the answer says which window it used either way.
 	Window   Window
 	Progress func(Phase)
+	// Split is the session's data split (D36), or nil when it has none. The count
+	// is metadata rather than a value, but it still names how much the test window
+	// holds, so it is clamped the same way a value read is: the window is lowered
+	// to the training end, and one that starts at or after it is refused.
+	Split *exposure.Split
 }
 
 // ExportFill is the answer, and its shape is the point: every claim it makes is
@@ -338,6 +344,14 @@ func (p *Profiler) exportFill(
 		to := p.now()
 		window = Window{From: to.AddDate(0, 0, -DefaultExportProbeDays), To: to}
 	}
+	// D36: the default lookback is silently truncated at the training end, the way
+	// the profiler's own dataWindow is; a window the caller named explicitly, and
+	// which starts at or after it, is refused with the structured error instead.
+	from, to, err := req.Split.ClampWindow(window.From, window.To)
+	if err != nil {
+		return ExportFill{}, err
+	}
+	window.From, window.To = from, to
 	fill.Window = window
 
 	// Usage first, because it is the cheaper of the two and because it is the one
@@ -371,7 +385,7 @@ func (p *Profiler) exportFill(
 
 	report(req.Progress, PhaseExportCount, fmt.Sprintf(
 		"counting rows per column at %s over %s, no values read", bucket, window))
-	counted, err := p.countRows(ctx, token, fill.ExportID, countable, window, bucket, &fill.Reads)
+	counted, err := p.countRows(ctx, token, fill.ExportID, countable, window, bucket, &fill.Reads, req.Split)
 	if err != nil {
 		slog.WarnContext(ctx, "the row count for an export failed; its fill state stays unknown",
 			"export_id", fill.ExportID, "columns", len(countable), "error", err)
@@ -493,7 +507,7 @@ type rowCount struct {
 // nothing was written to from one whose every column is null.
 func (p *Profiler) countRows(
 	ctx context.Context, token, exportID string,
-	variables []Variable, window Window, bucket string, reads *ReadCounts,
+	variables []Variable, window Window, bucket string, reads *ReadCounts, split *exposure.Split,
 ) (rowCount, error) {
 	columns := make([]timeseries.QueryColumn, 0, len(variables))
 	for _, variable := range variables {
@@ -510,7 +524,7 @@ func (p *Profiler) countRows(
 	}
 
 	results, err := p.ts.Query(ctx, token, []timeseries.QueryElement{element},
-		timeseries.QueryOptions{Timeout: p.opts.ReadTimeout})
+		timeseries.QueryOptions{Timeout: p.opts.ReadTimeout, Split: split})
 	// Counted under Values because it is a POST /queries/v2, which is the read a
 	// reader of ReadCounts is asking about. What it returns carries no value, and
 	// the tool that publishes it says so in its own answer.
@@ -649,6 +663,11 @@ type ExportProfileRequest struct {
 	RawWindow      Window
 	SessionParams  *SessionParams
 	GroupTime      string
+	// Split is the session's data split (D36), or nil. Forwarded into the counting
+	// probe that stands in for the device path's /data-availability, so the window
+	// this pass ends up profiling is clamped there before runPass ever sees it, and
+	// forwarded again into every value read the pass makes.
+	Split *exposure.Split
 }
 
 // ProfileExport computes a full SeriesProfile per readable column of one export.
@@ -708,6 +727,7 @@ func (p *Profiler) ProfileExport(ctx context.Context, token string, req ExportPr
 		ExportID: exportID,
 		Window:   req.AnalysisWindow,
 		Progress: req.Progress,
+		Split:    req.Split,
 	})
 	if err != nil {
 		return ProfileResult{}, err
@@ -756,5 +776,6 @@ func (p *Profiler) ProfileExport(ctx context.Context, token string, req ExportPr
 		groupTime:     req.GroupTime,
 		sessionParams: req.SessionParams,
 		progress:      req.Progress,
+		split:         req.Split,
 	})
 }

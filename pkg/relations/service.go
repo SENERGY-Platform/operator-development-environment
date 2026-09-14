@@ -30,6 +30,7 @@ import (
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/selection"
@@ -202,6 +203,13 @@ type Request struct {
 	// a developer can show that a multi-minute operation is alive. Optional; called
 	// from the goroutine running the pass and must not block.
 	Progress func(Phase)
+
+	// Split is the session's data split (D36), or nil when it has none. Forwarded
+	// into every member's profile pass and into Align's own value read, so both
+	// halves of a relational pass are bounded — profiling refuses per member
+	// rather than failing the whole pass, so Align's clamp is what actually
+	// enforces the refusal end to end.
+	Split *exposure.Split
 }
 
 // Phase is one step of a relational pass, for Progress. Same shape as the
@@ -303,7 +311,7 @@ func (s *Service) Relate(ctx context.Context, token string, req Request) (Relati
 
 	req.report(PhaseProfiles, fmt.Sprintf("profiling %d series across %d service(s)",
 		len(members), distinctServices(members)))
-	resolved, reads, deviceReads, notes, err := s.profileMembers(ctx, token, members, window)
+	resolved, reads, deviceReads, notes, err := s.profileMembers(ctx, token, members, window, req.Split)
 	if err != nil {
 		return RelationProfile{}, err
 	}
@@ -367,7 +375,7 @@ func (s *Service) Relate(ctx context.Context, token string, req Request) (Relati
 	}
 
 	req.report(PhaseAlign, fmt.Sprintf("one batched read at a %gs bucket", gridSeconds))
-	frame, err := s.Align(ctx, token, requests, window, gridSeconds)
+	frame, err := s.Align(ctx, token, requests, window, gridSeconds, req.Split)
 	if err != nil {
 		return RelationProfile{}, err
 	}
@@ -487,7 +495,7 @@ func (s *Service) validate(req Request) ([]SeriesMember, error) {
 // in no rule. Failing the whole pass would be the wrong trade: the oven-and-lights
 // finding does not depend on the third device having usable data.
 func (s *Service) profileMembers(
-	ctx context.Context, token string, members []SeriesMember, window profiler.Window,
+	ctx context.Context, token string, members []SeriesMember, window profiler.Window, split *exposure.Split,
 ) ([]resolvedMember, int, int, []string, error) {
 	type serviceKey struct{ device, service string }
 
@@ -529,6 +537,7 @@ func (s *Service) profileMembers(
 			Device:         device,
 			ServiceID:      key.service,
 			AnalysisWindow: window,
+			Split:          split,
 		})
 		if err != nil {
 			if ctx.Err() != nil {

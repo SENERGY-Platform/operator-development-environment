@@ -54,7 +54,11 @@
 // pkg/kernel, so neither Ray nor MLflow adds a dependency to this repository.
 package experiments
 
-import "time"
+import (
+	"time"
+
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
+)
 
 // Status is a Ray job's state, in Ray's own vocabulary.
 //
@@ -133,6 +137,11 @@ type Experiment struct {
 	UpdatedAt        time.Time  `json:"updated_at"`
 	StartedAt        *time.Time `json:"started_at,omitempty"`
 	EndedAt          *time.Time `json:"ended_at,omitempty"`
+	// Split is the session's data split (D36) this run was launched under, or nil
+	// for an ordinary run. Set once at launch and never moved: deploymentEnvironment
+	// reads it to write the bounds into the deployment config, and the summary reads
+	// it to check that the run's own tags confirm them.
+	Split *exposure.Split `json:"data_split,omitempty"`
 }
 
 // Credential describes what the job will authenticate to the platform with, and
@@ -225,6 +234,25 @@ type Summary struct {
 	PreviousRunID string     `json:"previous_run_id,omitempty"`
 	StartedAt     *time.Time `json:"started_at,omitempty"`
 	EndedAt       *time.Time `json:"ended_at,omitempty"`
+	// WithheldMetrics counts what MaskedFor removed from Metrics and from
+	// ComparisonToPrevious before handing the summary to a model: a name off the
+	// developer's own declared allowlist, or a value written after the run's
+	// training phase ended (D37) — one number, never which, and no distinction
+	// between the two reasons, because a name is already information out of the
+	// run and which rule caught it says something about how the run was written.
+	// Zero on the developer's own route, which MaskedFor never touches.
+	WithheldMetrics int `json:"withheld_metrics,omitempty"`
+	// MetricTimes is the maximum MLflow timestamp logged for each key in Metrics
+	// (Unix milliseconds, over the metric's whole history — not only the point
+	// latestMetrics selects as latest). MaskedFor needs it to tell a value
+	// written during training from one written after (D37), and it has to be an
+	// exported, JSON-tagged field rather than something recomputed at read time:
+	// a finished run's summary is persisted as encoded JSON (store.go's
+	// PutSummary/GetSummary) and reloaded on every later read, so an unexported
+	// field would silently stop carrying the timestamps for exactly the cached
+	// runs. MaskedFor clears it on the copy it returns — a model never reads a
+	// timestamp back, only the count above.
+	MetricTimes map[string]int64 `json:"metric_times,omitempty"`
 	// Note carries what a reader would otherwise have to infer: that a run is still
 	// going, that there was nothing to compare against, that Ray and MLflow
 	// disagreed.
@@ -237,6 +265,50 @@ type Summary struct {
 	// path into a model's context goes through MaskedFor, which is where §3.2's
 	// ladder is applied to it; failure.go says why the split is on that line.
 	Failure *Failure `json:"failure,omitempty"`
+	// Split is present exactly when the run was launched under a data split (D36).
+	// It carries no values — only bounds, counts and a confirmation string — so
+	// MaskedFor need not touch it: masking exists for what a traceback can smuggle
+	// out of a developer's series, and nothing here can.
+	Split *SplitReport `json:"data_split,omitempty"`
+}
+
+// SplitReport is step 16's confirmation: the bounds ODE told the run to train
+// and evaluate under, and whether the run's own tags say it actually did.
+//
+// Confirmed is read from the run rather than assumed from what ODE sent, because
+// what ODE sent is not what necessarily ran — an Operator Lib older than v1.7.0
+// reads no training_end or test_end from the deployment config at all
+// (simple_struct reads declared keys only) and trains unbounded, silently. A run
+// that does not carry both tags is the only sign of that from the outside.
+type SplitReport struct {
+	TrainingEnd time.Time `json:"training_end"`
+	TestEnd     time.Time `json:"test_end"`
+	// Confirmed is "confirmed" when the run's own tags equal these bounds,
+	// "not confirmed by the run" when the run is finished and they do not, and
+	// "pending" while the run is still going — a run that has not finished simply
+	// has not logged the tags yet, which is not evidence of anything.
+	Confirmed string `json:"confirmed"`
+	// RunHistoryEnd and RunTestEnd are the run's own operator_lib.history_end and
+	// operator_lib.test_end tags, verbatim, so a mismatch is something a developer
+	// can see rather than only being told about.
+	RunHistoryEnd string `json:"run_history_end,omitempty"`
+	RunTestEnd    string `json:"run_test_end,omitempty"`
+	// Messages and Results are the run's own evaluation.messages and
+	// evaluation.results params: how many input rows the replay saw, and how many
+	// of them produced a non-nil result. Pointers because zero is a real answer —
+	// an evaluation whose selector matched nothing — and the run not having logged
+	// them yet is a different thing (§5.4.6, D24).
+	Messages *int64 `json:"messages,omitempty"`
+	Results  *int64 `json:"results,omitempty"`
+	// WindowStart and WindowEnd are the run's own evaluation.window_start and
+	// evaluation.window_end params, which should equal TrainingEnd and TestEnd
+	// when Confirmed is "confirmed" — carried separately rather than assumed equal,
+	// so a reader can see the run's own account of it.
+	WindowStart string `json:"window_start,omitempty"`
+	WindowEnd   string `json:"window_end,omitempty"`
+	// Note explains an unconfirmed or pending report. Empty when Confirmed is
+	// "confirmed": a matching run needs no explanation.
+	Note string `json:"note,omitempty"`
 }
 
 // MetricDelta is one metric, this run against the previous.
@@ -308,4 +380,3 @@ type LogPage struct {
 	Logs         string `json:"logs"`
 	Truncated    bool   `json:"truncated"`
 }
-

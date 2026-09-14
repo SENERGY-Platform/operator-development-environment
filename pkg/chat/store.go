@@ -28,9 +28,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/database"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
+
+// copySplit returns a split holding the same two bounds as s, so a caller handed
+// this copy cannot reach back into what a store holds by mutating what it points
+// at. nil in, nil out.
+func copySplit(s *exposure.Split) *exposure.Split {
+	if s == nil {
+		return nil
+	}
+	copied := *s
+	return &copied
+}
 
 // Store persists sessions, their messages, the tier audit trail and the pending
 // confirmations.
@@ -47,6 +59,11 @@ type Store interface {
 
 	AppendTierChange(ctx context.Context, change TierChange) error
 	TierChanges(ctx context.Context, sessionID string) ([]TierChange, error)
+
+	// AppendSplitChange and SplitChanges are D36's audit trail, the same shape as
+	// the tier's: append-only, and readable per session.
+	AppendSplitChange(ctx context.Context, change SplitChange) error
+	SplitChanges(ctx context.Context, sessionID string) ([]SplitChange, error)
 
 	PutConfirmation(ctx context.Context, confirmation Confirmation) error
 	Confirmation(ctx context.Context, id string) (Confirmation, bool, error)
@@ -72,6 +89,7 @@ type MemoryStore struct {
 	sessions      map[string]Session
 	messages      map[string][]StoredMessage
 	tierChanges   map[string][]TierChange
+	splitChanges  map[string][]SplitChange
 	confirmations map[string]Confirmation
 	creations     map[string][]tools.Creation
 }
@@ -81,6 +99,7 @@ func NewMemoryStore() *MemoryStore {
 		sessions:      map[string]Session{},
 		messages:      map[string][]StoredMessage{},
 		tierChanges:   map[string][]TierChange{},
+		splitChanges:  map[string][]SplitChange{},
 		confirmations: map[string]Confirmation{},
 		creations:     map[string][]tools.Creation{},
 	}
@@ -92,6 +111,8 @@ func (s *MemoryStore) CreateSession(_ context.Context, session Session) error {
 	if _, exists := s.sessions[session.ID]; exists {
 		return errors.New("chat: session already exists")
 	}
+	// A private copy, not the caller's pointer: see copySplit.
+	session.Split = copySplit(session.Split)
 	s.sessions[session.ID] = session
 	return nil
 }
@@ -102,6 +123,9 @@ func (s *MemoryStore) Session(_ context.Context, id string) (Session, bool, erro
 	session, found := s.sessions[id]
 	if found {
 		session.MessageCount = len(s.messages[id])
+		// Handed out as a copy, so a caller mutating what it points at cannot reach
+		// back into the stored session — see copySplit.
+		session.Split = copySplit(session.Split)
 	}
 	return session, found, nil
 }
@@ -115,6 +139,7 @@ func (s *MemoryStore) Sessions(_ context.Context, userSub string, limit int) ([]
 			continue
 		}
 		session.MessageCount = len(s.messages[session.ID])
+		session.Split = copySplit(session.Split)
 		out = append(out, session)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
@@ -130,6 +155,7 @@ func (s *MemoryStore) UpdateSession(_ context.Context, session Session) error {
 	if _, exists := s.sessions[session.ID]; !exists {
 		return ErrNoSuchSession
 	}
+	session.Split = copySplit(session.Split)
 	s.sessions[session.ID] = session
 	return nil
 }
@@ -140,6 +166,7 @@ func (s *MemoryStore) DeleteSession(_ context.Context, id string) error {
 	delete(s.sessions, id)
 	delete(s.messages, id)
 	delete(s.tierChanges, id)
+	delete(s.splitChanges, id)
 	// The creation log goes with the session deliberately, unlike in Postgres where
 	// it is kept: a deleted session can no longer reach a delete tool, so what the
 	// entry would authorise is unreachable either way, and holding platform ids in
@@ -202,6 +229,23 @@ func (s *MemoryStore) TierChanges(_ context.Context, sessionID string) ([]TierCh
 	return append([]TierChange{}, s.tierChanges[sessionID]...), nil
 }
 
+func (s *MemoryStore) AppendSplitChange(_ context.Context, change SplitChange) error {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	if change.At.IsZero() {
+		change.At = time.Now().UTC()
+	}
+	change.From, change.To = copySplit(change.From), copySplit(change.To)
+	s.splitChanges[change.SessionID] = append(s.splitChanges[change.SessionID], change)
+	return nil
+}
+
+func (s *MemoryStore) SplitChanges(_ context.Context, sessionID string) ([]SplitChange, error) {
+	s.mux.RLock()
+	defer s.mux.RUnlock()
+	return append([]SplitChange{}, s.splitChanges[sessionID]...), nil
+}
+
 func (s *MemoryStore) PutConfirmation(_ context.Context, confirmation Confirmation) error {
 	s.mux.Lock()
 	defer s.mux.Unlock()
@@ -257,19 +301,23 @@ func (s *PostgresStore) CreateSession(ctx context.Context, session Session) erro
 	if err != nil {
 		return err
 	}
+	trainingEnd, testEnd := splitColumns(session.Split)
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO ode_chat_sessions (id, user_sub, title, provider, model, tier, selection,
-		                               workbench_id, auto_run, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())`,
+		                               workbench_id, auto_run, split_training_end, split_test_end,
+		                               created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), now())`,
 		session.ID, session.UserSub, session.Title, session.Provider, session.Model,
-		session.Tier.String(), selection, session.WorkbenchID, session.AutoRun)
+		session.Tier.String(), selection, session.WorkbenchID, session.AutoRun,
+		trainingEnd, testEnd)
 	return err
 }
 
 func (s *PostgresStore) Session(ctx context.Context, id string) (Session, bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT s.id, s.user_sub, s.title, s.provider, s.model, s.tier, s.selection,
-		       s.workbench_id, s.auto_run, s.created_at, s.updated_at,
+		       s.workbench_id, s.auto_run, s.split_training_end, s.split_test_end,
+		       s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM ode_chat_messages m WHERE m.session_id = s.id)
 		FROM ode_chat_sessions s WHERE s.id = $1`, id)
 
@@ -289,7 +337,8 @@ func (s *PostgresStore) Sessions(ctx context.Context, userSub string, limit int)
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT s.id, s.user_sub, s.title, s.provider, s.model, s.tier, s.selection,
-		       s.workbench_id, s.auto_run, s.created_at, s.updated_at,
+		       s.workbench_id, s.auto_run, s.split_training_end, s.split_test_end,
+		       s.created_at, s.updated_at,
 		       (SELECT COUNT(*) FROM ode_chat_messages m WHERE m.session_id = s.id)
 		FROM ode_chat_sessions s
 		WHERE s.user_sub = $1 AND s.archived_at IS NULL
@@ -316,13 +365,16 @@ func (s *PostgresStore) UpdateSession(ctx context.Context, session Session) erro
 	if err != nil {
 		return err
 	}
+	trainingEnd, testEnd := splitColumns(session.Split)
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE ode_chat_sessions
 		SET title = $2, provider = $3, model = $4, tier = $5, selection = $6,
-		    workbench_id = $7, auto_run = $8, updated_at = now()
+		    workbench_id = $7, auto_run = $8, split_training_end = $9, split_test_end = $10,
+		    updated_at = now()
 		WHERE id = $1`,
 		session.ID, session.Title, session.Provider, session.Model,
-		session.Tier.String(), selection, session.WorkbenchID, session.AutoRun)
+		session.Tier.String(), selection, session.WorkbenchID, session.AutoRun,
+		trainingEnd, testEnd)
 	if err != nil {
 		return err
 	}
@@ -417,6 +469,28 @@ func (s *PostgresStore) Messages(ctx context.Context, sessionID string) ([]Store
 	return out, rows.Err()
 }
 
+// splitColumns is what a split becomes on the way to the two nullable columns:
+// both nil when there is no split, both set otherwise. A *time.Time each, the way
+// ode_confirmations.resolved_at already scans and binds a nullable timestamp,
+// rather than a database/sql.NullTime wrapper this codebase does not otherwise use.
+func splitColumns(split *exposure.Split) (trainingEnd, testEnd *time.Time) {
+	if split == nil {
+		return nil, nil
+	}
+	trainingEnd, testEnd = &split.TrainingEnd, &split.TestEnd
+	return
+}
+
+// splitFromColumns is splitColumns read backwards. Both present ⇔ a split; either
+// column alone (which application code never writes) reads as no split, the same
+// fail-closed direction Tier's unparseable-value fallback takes below.
+func splitFromColumns(trainingEnd, testEnd *time.Time) *exposure.Split {
+	if trainingEnd == nil || testEnd == nil {
+		return nil
+	}
+	return &exposure.Split{TrainingEnd: *trainingEnd, TestEnd: *testEnd}
+}
+
 func (s *PostgresStore) AppendTierChange(ctx context.Context, change TierChange) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO ode_tier_changes (session_id, user_sub, from_tier, to_tier)
@@ -443,6 +517,42 @@ func (s *PostgresStore) TierChanges(ctx context.Context, sessionID string) ([]Ti
 		}
 		change.From, _ = tools.ParseTier(from)
 		change.To, _ = tools.ParseTier(to)
+		out = append(out, change)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) AppendSplitChange(ctx context.Context, change SplitChange) error {
+	fromTrainingEnd, fromTestEnd := splitColumns(change.From)
+	toTrainingEnd, toTestEnd := splitColumns(change.To)
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO ode_split_changes (session_id, user_sub, from_training_end, from_test_end,
+		                               to_training_end, to_test_end)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		change.SessionID, change.UserSub, fromTrainingEnd, fromTestEnd, toTrainingEnd, toTestEnd)
+	return err
+}
+
+func (s *PostgresStore) SplitChanges(ctx context.Context, sessionID string) ([]SplitChange, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id, user_sub, from_training_end, from_test_end,
+		       to_training_end, to_test_end, at
+		FROM ode_split_changes WHERE session_id = $1 ORDER BY at`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []SplitChange{}
+	for rows.Next() {
+		var change SplitChange
+		var fromTrainingEnd, fromTestEnd, toTrainingEnd, toTestEnd *time.Time
+		if err := rows.Scan(&change.SessionID, &change.UserSub,
+			&fromTrainingEnd, &fromTestEnd, &toTrainingEnd, &toTestEnd, &change.At); err != nil {
+			return nil, err
+		}
+		change.From = splitFromColumns(fromTrainingEnd, fromTestEnd)
+		change.To = splitFromColumns(toTrainingEnd, toTestEnd)
 		out = append(out, change)
 	}
 	return out, rows.Err()
@@ -512,8 +622,10 @@ func scanSession(row scanner) (Session, error) {
 	var session Session
 	var tier string
 	var selection []byte
+	var splitTrainingEnd, splitTestEnd *time.Time
 	if err := row.Scan(&session.ID, &session.UserSub, &session.Title, &session.Provider,
 		&session.Model, &tier, &selection, &session.WorkbenchID, &session.AutoRun,
+		&splitTrainingEnd, &splitTestEnd,
 		&session.CreatedAt, &session.UpdatedAt, &session.MessageCount); err != nil {
 		return Session{}, err
 	}
@@ -524,6 +636,7 @@ func scanSession(row scanner) (Session, error) {
 		parsed = tools.DefaultTier
 	}
 	session.Tier = parsed
+	session.Split = splitFromColumns(splitTrainingEnd, splitTestEnd)
 	if len(selection) > 0 {
 		var proposed tools.ProposedSelection
 		if err := json.Unmarshal(selection, &proposed); err == nil {

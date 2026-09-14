@@ -27,6 +27,7 @@ import (
 	"github.com/SENERGY-Platform/models/go/models"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -175,6 +176,11 @@ type QuickRequest struct {
 	// result, ranked last. Default false, since the common caller wants
 	// candidates rather than an inventory.
 	IncludeUnqueryable bool
+	// Split is the session's data split (D36), or nil when it has none. No value
+	// is ever read here (D20), but the availability window still names a range,
+	// and a range past the training end is exactly what the split exists to keep
+	// the assistant from reasoning about — so it is clamped here too.
+	Split *exposure.Split
 }
 
 type SkippedDevice struct {
@@ -259,7 +265,7 @@ func (p *Profiler) QuickProfiles(ctx context.Context, token string, req QuickReq
 				continue
 			}
 			result.Candidates = append(result.Candidates,
-				p.quickProfile(device, variable, availability[device.Id], usage[device.Id], window, index))
+				p.quickProfile(device, variable, availability[device.Id], usage[device.Id], window, index, req.Split))
 		}
 	}
 
@@ -341,6 +347,7 @@ func (p *Profiler) quickProfile(
 	usage timeseries.Usage,
 	window Window,
 	index *OntologyIndex,
+	split *exposure.Split,
 ) QuickProfile {
 	prov := Provenance{}
 	semantics := ResolveUnits(variable, index, prov)
@@ -373,7 +380,7 @@ func (p *Profiler) quickProfile(
 		Provenance: prov,
 	}
 
-	profile.Availability = serviceAvailability(availability, variable.ServiceID, prov)
+	profile.Availability = clampAvailability(serviceAvailability(availability, variable.ServiceID, prov), split)
 	profile.Volume = estimateVolume(usage, *device.DeviceType, prov)
 	profile.Liveness = liveness(device.ConnectionState, profile.Availability, p.now(), prov)
 	profile.OntologyCompleteness = completeness(variable, semantics)
@@ -433,6 +440,41 @@ func serviceAvailability(entries []timeseries.Availability, serviceID string, pr
 		return window.Aggregates[i].GroupTime < window.Aggregates[j].GroupTime
 	})
 	prov.FromAPI("availability", "timescale-wrapper:/data-availability")
+	return Computed(window)
+}
+
+// clampAvailability bounds a service's availability window to the training end
+// (D36). QuickProfile reads no value (D20), but the window it reports is still a
+// claim about a range, and a range reaching into the test window is exactly what
+// the split exists to keep the assistant from reasoning about — so it is bounded
+// here the same way a value read is bounded in Query, one level up from where any
+// value could be read.
+//
+// A nil split, or a window that is already not computed, passes through
+// unchanged. Otherwise To is lowered to the training end and SpanDays is
+// recomputed; a window whose From is at or after the training end has nothing
+// before the split left in it at all and is reported not_computed instead, with
+// the reason carrying the explanation a value's own refusal would carry.
+func clampAvailability(availability Value[AvailabilityWindow], split *exposure.Split) Value[AvailabilityWindow] {
+	if split == nil {
+		return availability
+	}
+	window, ok := availability.Get()
+	if !ok {
+		return availability
+	}
+	from, to, err := split.ClampWindow(window.From, window.To)
+	if err != nil {
+		return Uncomputablef[AvailabilityWindow](ReasonOutOfScope,
+			"this session's data split ends the observable history at %s; this service's earliest "+
+				"data starts at %s, which is at or after it, so no availability is reported for this "+
+				"session", split.TrainingEnd.UTC().Format(time.RFC3339), window.From.UTC().Format(time.RFC3339))
+	}
+	if to.Equal(window.To) {
+		return availability
+	}
+	window.From, window.To = from, to
+	window.SpanDays = window.To.Sub(window.From).Hours() / 24
 	return Computed(window)
 }
 

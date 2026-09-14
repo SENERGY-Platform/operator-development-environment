@@ -18,6 +18,7 @@ package experiments
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -27,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/database"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 )
 
 // What ODE stores about an experiment, and why it is a table rather than a cache.
@@ -313,24 +315,51 @@ func NewPostgresStore(db *database.DB) *PostgresStore { return &PostgresStore{db
 const experimentColumns = `id, user_sub, submission_id, mlflow_run_id, mlflow_experiment_id,
        mlflow_experiment_name, session_id, workbench_id, repository, commit_sha, branch,
        entrypoint, package_uri, package_bytes, package_reused, status, message,
-       scoped_credential, submitted_at, updated_at, started_at, ended_at`
+       scoped_credential, submitted_at, updated_at, started_at, ended_at,
+       split_training_end, split_test_end`
 
 func (s *PostgresStore) Put(ctx context.Context, record Experiment) error {
+	trainingEnd, testEnd := splitColumns(record.Split)
 	_, err := s.db.Pool().Exec(ctx, `
 INSERT INTO ode_experiments (`+experimentColumns+`)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-        $21, $22)
+        $21, $22, $23, $24)
 ON CONFLICT (id) DO UPDATE SET
     status = EXCLUDED.status, message = EXCLUDED.message, updated_at = EXCLUDED.updated_at,
     started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at,
     mlflow_run_id = EXCLUDED.mlflow_run_id`,
+		// split_training_end and split_test_end are not in the DO UPDATE SET: a
+		// split is set once at launch (Launch stores record.Split before this is
+		// ever called) and Put's other callers only refresh status and timing, so
+		// there is nothing that would ever need to change them on conflict.
 		record.ID, record.UserSub, record.SubmissionID, record.RunID, record.MLflowExperimentID,
 		record.MLflowExperimentName, record.SessionID, record.WorkbenchID, record.Repository,
 		record.CommitSHA,
 		record.Branch, record.Entrypoint, record.PackageURI, record.PackageBytes,
 		record.PackageReused, record.Status, record.Message, record.ScopedCredential,
-		record.SubmittedAt, record.UpdatedAt, record.StartedAt, record.EndedAt)
+		record.SubmittedAt, record.UpdatedAt, record.StartedAt, record.EndedAt,
+		trainingEnd, testEnd)
 	return err
+}
+
+// splitColumns is a Split's two nullable columns, or two unset ones for no split
+// — the same "both non-NULL or neither" invariant chat.Session's own pair keeps
+// (pkg/chat/store.go), so a partially-written split can never be read back.
+func splitColumns(split *exposure.Split) (sql.NullTime, sql.NullTime) {
+	if split == nil {
+		return sql.NullTime{}, sql.NullTime{}
+	}
+	return sql.NullTime{Time: split.TrainingEnd, Valid: true},
+		sql.NullTime{Time: split.TestEnd, Valid: true}
+}
+
+// splitFromColumns is splitColumns' inverse: a split exists exactly when both
+// columns came back non-NULL.
+func splitFromColumns(trainingEnd, testEnd sql.NullTime) *exposure.Split {
+	if !trainingEnd.Valid || !testEnd.Valid {
+		return nil
+	}
+	return &exposure.Split{TrainingEnd: trainingEnd.Time, TestEnd: testEnd.Time}
 }
 
 func (s *PostgresStore) Get(
@@ -486,6 +515,7 @@ type scanner interface {
 
 func scanExperiment(row scanner) (Experiment, bool, error) {
 	var record Experiment
+	var trainingEnd, testEnd sql.NullTime
 	err := row.Scan(
 		&record.ID, &record.UserSub, &record.SubmissionID, &record.RunID,
 		&record.MLflowExperimentID, &record.MLflowExperimentName, &record.SessionID,
@@ -493,13 +523,14 @@ func scanExperiment(row scanner) (Experiment, bool, error) {
 		&record.Entrypoint,
 		&record.PackageURI, &record.PackageBytes, &record.PackageReused, &record.Status,
 		&record.Message, &record.ScopedCredential, &record.SubmittedAt, &record.UpdatedAt,
-		&record.StartedAt, &record.EndedAt)
+		&record.StartedAt, &record.EndedAt, &trainingEnd, &testEnd)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Experiment{}, false, nil
 	}
 	if err != nil {
 		return Experiment{}, false, err
 	}
+	record.Split = splitFromColumns(trainingEnd, testEnd)
 	return record, true, nil
 }
 

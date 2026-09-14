@@ -383,6 +383,16 @@ type DataRequest struct {
 // on. render_chart therefore sits at L1 and returns no values (§5.8): the model
 // says what to draw, and this — behind the developer's token, on their request —
 // is what draws it.
+//
+// The data split (D36) is not applied again here, and that is deliberate rather
+// than an omission: it binds the model's tools and the launches from the
+// session, not the developer's own reads (PLAN.md's Assumptions, matching how
+// the tier already binds the model and not the person). Service.normalise
+// clamped spec.Window once, at creation, from the request that carried the
+// model's split — so a chart the model proposed cannot itself reach the test
+// window — but a developer who later pans this same chart with req.Window
+// reads with their own token, on their own request, the same as any other
+// developer-initiated read in this package.
 func (s *Service) Data(ctx context.Context, token string, req DataRequest) (Data, error) {
 	spec, err := s.Get(req.ChartID, req.UserSub)
 	if err != nil {

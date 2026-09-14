@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	pipe "github.com/SENERGY-Platform/analytics-pipeline/lib"
 )
@@ -85,6 +86,15 @@ type operatorSettings struct {
 	// A deployed operator keeps the DSN: the flow engine sets one and gives it no
 	// token, and its code is a reviewed image rather than a working copy.
 	TsWrapperURL string `json:"ts_wrapper_url,omitempty"`
+	// TrainingEnd and TestEnd are the session's data split (D36), RFC 3339 UTC, or
+	// both empty for an ordinary launch. Operator Lib v1.7.0 reads both: the clock
+	// starts at TrainingEnd, and a TestEnd set at all switches MLOperator.init()
+	// into its evaluation mode. An older library has no `training_end` or
+	// `test_end` attribute on Config at all — simple_struct reads declared keys
+	// only — and silently ignores both, which is what the summary's confirmation
+	// (buildSummary, splitReport) exists to catch.
+	TrainingEnd string `json:"training_end,omitempty"`
+	TestEnd     string `json:"test_end,omitempty"`
 }
 
 // modelID is the key Operator Lib registers a model under, built in
@@ -142,6 +152,16 @@ func operatorID(repository string) string { return sanitiseSegment(repository) }
 func (s *Service) deploymentEnvironment(
 	record Experiment, pipelineID, operatorID string, topics []InputTopic, runID string,
 ) (map[string]string, error) {
+	// Formatted off record.Split rather than a parameter of its own: the record is
+	// what Launch already stored, so the deployment config and the stored row can
+	// never say different things about this run's bounds. Empty for an ordinary
+	// launch, which is Operator Lib's own "no split" — the omitempty tags drop the
+	// keys entirely rather than sending them empty.
+	var trainingEnd, testEnd string
+	if record.Split != nil {
+		trainingEnd = record.Split.TrainingEnd.UTC().Format(time.RFC3339)
+		testEnd = record.Split.TestEnd.UTC().Format(time.RFC3339)
+	}
 	config := operatorConfig{
 		Config: operatorSettings{
 			LoggerLevel: "info",
@@ -152,6 +172,8 @@ func (s *Service) deploymentEnvironment(
 			// connection back into the cluster it is in.
 			RayURL:       s.opts.RayClientURL,
 			TsWrapperURL: s.opts.TimescaleWrapperURL,
+			TrainingEnd:  trainingEnd,
+			TestEnd:      testEnd,
 		},
 		// Never nil: Operator Lib iterates it without checking, and a null here is a
 		// TypeError inside the job rather than a refusal the developer can read.

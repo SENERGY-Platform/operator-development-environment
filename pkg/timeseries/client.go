@@ -51,6 +51,8 @@ import (
 	"time"
 
 	twmodel "github.com/SENERGY-Platform/timescale-wrapper/pkg/model"
+
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 )
 
 // Wire types, aliased so callers need not import timescale-wrapper directly.
@@ -211,6 +213,14 @@ type QueryOptions struct {
 	// materially longer than an availability probe — while a probe that hangs should
 	// still fail fast. One shared timeout cannot serve both.
 	Timeout time.Duration
+	// Split is the session's data split (D36), or nil when it has none. Query is the
+	// one place a value read is bounded: every element's Time.End is lowered to the
+	// training end and an element whose Time.Start is at or after it is refused,
+	// before anything is sent upstream. Every caller — present or future — inherits
+	// the clamp merely by forwarding the session's split here; nothing downstream
+	// needs to remember to check it again, which is the property that keeps a new
+	// reader from becoming the one that leaks the test window.
+	Split *exposure.Split
 }
 
 // Query issues one batched POST /queries/v2. Batching is not an optimisation
@@ -225,6 +235,20 @@ func (c *Client) Query(ctx context.Context, token string, elements []QueryElemen
 	if len(elements) == 0 {
 		return nil, fmt.Errorf("timeseries: queries/v2: %w: no elements", ErrInvalidRequest)
 	}
+
+	// D36, applied to a copy of the caller's elements rather than in place: a caller
+	// that reuses its slice across a retry, or across another Query call on a
+	// different session, must not discover its own window silently narrowed by a
+	// split that belongs to a call it never made. A nil split is the common case and
+	// costs nothing beyond the nil check.
+	if opts.Split != nil {
+		clamped, err := clampElements(elements, opts.Split)
+		if err != nil {
+			return nil, err
+		}
+		elements = clamped
+	}
+
 	for i := range elements {
 		if !elements[i].Valid() {
 			return nil, fmt.Errorf("timeseries: queries/v2: %w: element %d rejected by the shared schema: %s",
@@ -244,6 +268,101 @@ func (c *Client) Query(ctx context.Context, token string, elements []QueryElemen
 		"time_format": []string{layout},
 	}
 	return post[[]QueryResult](ctx, c, token, "/queries/v2", query, elements, opts.Timeout)
+}
+
+// clampElements applies a data split to a copy of elements, leaving the caller's
+// slice and its structs untouched.
+//
+// This is the one place a value read is bounded (D36): every element's Time.End is
+// lowered to the training end, and one whose Time.Start is at or after it is
+// refused outright with the structured, model-readable error. A profiler pass, a
+// chart render and a preview all funnel through Query, so setting Split here once
+// is what makes it impossible for a new reader to forget the clamp — there is
+// nothing to remember, because there is no second place it could be applied.
+func clampElements(elements []QueryElement, split *exposure.Split) ([]QueryElement, error) {
+	out := make([]QueryElement, len(elements))
+	copy(out, elements)
+	for i := range out {
+		clamped, err := clampElement(out[i], split)
+		if err != nil {
+			return nil, fmt.Errorf("timeseries: queries/v2: element %d: %w", i, err)
+		}
+		out[i] = clamped
+	}
+	return out, nil
+}
+
+// clampElement bounds one element's time window to the training end.
+//
+// A relative window (time.last / time.ahead) is refused rather than passed
+// through: it is resolved against the platform's own clock at query time, which
+// ODE does not control, so lowering an absolute End here would not bound it at
+// all — the server would still answer with whatever "now" turns out to be. No
+// caller in this codebase builds one today (every element sets Start and End),
+// so this is a closed door rather than a rewritten path.
+func clampElement(element QueryElement, split *exposure.Split) (QueryElement, error) {
+	if element.Time != nil && (element.Time.Last != nil || element.Time.Ahead != nil) {
+		return element, fmt.Errorf(
+			"%w: this session's data split cannot bound a relative time window (last/ahead); it is "+
+				"resolved against the platform's own clock rather than a bound ODE applies — give an "+
+				"absolute start and end instead", ErrInvalidRequest)
+	}
+
+	var start, end time.Time
+	if element.Time != nil {
+		var err error
+		if start, err = parseElementTime(element.Time.Start); err != nil {
+			return element, fmt.Errorf("start %w", err)
+		}
+		if end, err = parseElementTime(element.Time.End); err != nil {
+			return element, fmt.Errorf("end %w", err)
+		}
+	}
+
+	_, clampedEnd, err := split.ClampWindow(start, end)
+	if err != nil {
+		return element, err
+	}
+
+	unchanged := element.Time != nil && element.Time.End != nil && clampedEnd.Equal(end)
+	if unchanged {
+		return element, nil
+	}
+
+	newTime := QueryTime{}
+	if element.Time != nil {
+		newTime = *element.Time
+	}
+	// The wire schema requires Start together with End in absolute mode —
+	// QueriesRequestElementTime.Valid() refuses one without the other — and
+	// ClampWindow never lowers Start, so an element that had no Time at all is
+	// given the zero time here: "no lower bound" in a shape the schema accepts
+	// rather than one it refuses. No caller in this codebase omits Start today
+	// (every element sets both), so this only matters for a future one.
+	if newTime.Start == nil {
+		zero := start.UTC().Format(time.RFC3339)
+		newTime.Start = &zero
+	}
+	formatted := clampedEnd.UTC().Format(time.RFC3339)
+	newTime.End = &formatted
+	element.Time = &newTime
+	return element, nil
+}
+
+// parseElementTime reads one of an element's Time.Start/Time.End pointers. A nil
+// pointer is unbounded and returns the zero time with no error, which is what lets
+// ClampWindow treat "no time filter at all" and "no upper bound given" the same way.
+func parseElementTime(value *string) (time.Time, error) {
+	if value == nil {
+		return time.Time{}, nil
+	}
+	if parsed, err := time.Parse(time.RFC3339, *value); err == nil {
+		return parsed, nil
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, *value); err == nil {
+		return parsed, nil
+	}
+	return time.Time{}, fmt.Errorf("%w: %q is not RFC3339", ErrInvalidRequest, *value)
 }
 
 // describeElement names an element in an error without dumping the payload.

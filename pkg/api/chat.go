@@ -17,6 +17,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -30,6 +31,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/admin"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/auth"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/chat"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
@@ -487,6 +489,81 @@ func handleTierAudit(engine *chat.Engine) gin.HandlerFunc {
 	}
 }
 
+// handleSetSplit is the developer's control over the data split (D36). There is
+// deliberately no LLM tool for this (tools.Denied), so this route is the only way
+// it changes.
+//
+// @Summary		Set a session's data split
+// @Description	The developer's bound (D36) on what the assistant may observe in
+// @Description	time and on what a launched run trains on. No LLM tool exists for
+// @Description	this (tools.Denied), so this route is the only way it changes. A
+// @Description	`null` body clears it. Every change, including clearing, is written
+// @Description	to the session's own audit trail — the pre-registration evidence a
+// @Description	scoring script can check a run's recorded bounds against.
+// @Tags			chat
+// @Accept			json
+// @Produce		json
+// @Security		Bearer
+// @Param			id		path		string											true	"session id"
+// @Param			request	body		object{training_end=string,test_end=string}	true	"the split to move to (RFC 3339), or null to clear it"
+// @Success		200		{object}	chat.Session
+// @Failure		400		{object}	map[string]string	"malformed JSON, or test_end not after training_end"
+// @Failure		401		{object}	map[string]string
+// @Failure		404		{object}	map[string]string
+// @Router			/chat/sessions/{id}/split [put]
+func handleSetSplit(engine *chat.Engine) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Decoded by hand rather than through ShouldBindJSON. The wire shape is a
+		// Split object or the literal `null`, and decoding null into a *Split (which
+		// decoding into a struct cannot represent) is what tells "clear it" apart from
+		// "no field was sent" — but gin's struct validator panics walking a nil
+		// pointer nested this way (reflect.Value.Interface on a zero Value), so this
+		// route reads the body itself and lets Validate, below, be the one check.
+		raw, err := c.GetRawData()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		var split *exposure.Split
+		if err := json.Unmarshal(raw, &split); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		token := auth.MustFromContext(c)
+		session, err := engine.SetSplit(c.Request.Context(), token.Sub, c.Param("id"), split)
+		if err != nil {
+			respondChatError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, session)
+	}
+}
+
+// @Summary		A session's data-split history
+// @Description	D36 requires every split change to be logged, the way §3.2 requires
+// @Description	it for the tier. This is that record, including when the split was
+// @Description	cleared (`to` is null).
+// @Tags			chat
+// @Produce		json
+// @Security		Bearer
+// @Param			id	path		string	true	"session id"
+// @Success		200	{object}	map[string]interface{}
+// @Failure		401	{object}	map[string]string
+// @Failure		404	{object}	map[string]string
+// @Router			/chat/sessions/{id}/split-changes [get]
+func handleSplitAudit(engine *chat.Engine) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := auth.MustFromContext(c)
+		changes, err := engine.SplitChanges(c.Request.Context(), token.Sub, c.Param("id"))
+		if err != nil {
+			respondChatError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"changes": changes})
+	}
+}
+
 // handleListTools publishes §5.8's table.
 //
 // Served to the SPA and to anyone auditing the surface: every declared tool with its
@@ -592,7 +669,8 @@ func respondChatError(c *gin.Context, err error) {
 	case errors.Is(err, chat.ErrAlreadyResolved):
 		c.JSON(http.StatusConflict, gin.H{"error": "this confirmation was already resolved"})
 	case errors.Is(err, chat.ErrInvalidRequest),
-		errors.Is(err, tools.ErrInvalidTier):
+		errors.Is(err, tools.ErrInvalidTier),
+		errors.Is(err, exposure.ErrInvalidSplit):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	default:
 		// Everything else here is a policy refusal or a provider misconfiguration —

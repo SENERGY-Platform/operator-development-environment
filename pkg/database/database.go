@@ -195,6 +195,18 @@ ALTER TABLE ode_chat_sessions
     ADD COLUMN IF NOT EXISTS auto_run BOOLEAN NOT NULL DEFAULT FALSE`,
 	},
 	{
+		// The session's data split (D36): the training end the assistant's reads are
+		// clamped to and a launch trains under, and the test end a launch runs
+		// inference up to. Two nullable columns rather than a JSON blob, so the
+		// bounds are comparable in SQL and NULL is unambiguously "no split" — which
+		// is what every existing session has and what clearing one restores.
+		name: "ode_chat_sessions_split",
+		sql: `
+ALTER TABLE ode_chat_sessions
+    ADD COLUMN IF NOT EXISTS split_training_end TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS split_test_end TIMESTAMPTZ`,
+	},
+	{
 		name: "ode_chat_messages",
 		sql: `
 CREATE TABLE IF NOT EXISTS ode_chat_messages (
@@ -249,6 +261,29 @@ CREATE TABLE IF NOT EXISTS ode_tier_changes (
 		name: "ode_tier_changes_by_session",
 		sql: `CREATE INDEX IF NOT EXISTS ode_tier_changes_session_idx
               ON ode_tier_changes (session_id, at DESC)`,
+	},
+	{
+		// Every change to a session's data split, with its time and its user, the
+		// way ode_tier_changes records the tier: the audit is the pre-registration
+		// evidence for the evaluation protocol. NULL bounds on a side mean "no
+		// split" on that side, so setting, changing and clearing are all one row.
+		name: "ode_split_changes",
+		sql: `
+CREATE TABLE IF NOT EXISTS ode_split_changes (
+    id                BIGSERIAL PRIMARY KEY,
+    session_id        TEXT NOT NULL,
+    user_sub          TEXT NOT NULL,
+    from_training_end TIMESTAMPTZ,
+    from_test_end     TIMESTAMPTZ,
+    to_training_end   TIMESTAMPTZ,
+    to_test_end       TIMESTAMPTZ,
+    at                TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+	},
+	{
+		name: "ode_split_changes_by_session",
+		sql: `CREATE INDEX IF NOT EXISTS ode_split_changes_session_idx
+              ON ode_split_changes (session_id, at DESC)`,
 	},
 	{
 		name: "ode_usage",
@@ -629,6 +664,17 @@ CREATE TABLE IF NOT EXISTS ode_experiments (
 		sql: `
 ALTER TABLE ode_experiments
     ADD COLUMN IF NOT EXISTS workbench_id TEXT NOT NULL DEFAULT ''`,
+	},
+	{
+		// The split a launch was made under (D36), copied from the session at launch
+		// so that what the run was told is on the record even after the session's
+		// split changes. NULL is a launch without one, which is every run before
+		// this migration and every run from a session that set none.
+		name: "ode_experiments_split",
+		sql: `
+ALTER TABLE ode_experiments
+    ADD COLUMN IF NOT EXISTS split_training_end TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS split_test_end TIMESTAMPTZ`,
 	},
 	{
 		name: "ode_proposal_decisions",

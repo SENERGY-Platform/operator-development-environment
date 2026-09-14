@@ -1164,6 +1164,7 @@ export interface ChatSession {
    */
   workbench_id?: string;
   selection?: ProposedSelection;
+  data_split?: DataSplit | null;
   created_at: string;
   updated_at: string;
   message_count: number;
@@ -1246,6 +1247,19 @@ export interface TierChange {
   user_sub: string;
   from: Tier;
   to: Tier;
+  at: string;
+}
+
+export interface DataSplit {
+  training_end: string;
+  test_end: string;
+}
+
+export interface SplitChange {
+  session_id: string;
+  user_sub: string;
+  from: DataSplit | null;
+  to: DataSplit | null;
   at: string;
 }
 
@@ -2144,6 +2158,7 @@ export interface Experiment {
    * developer's session token. False is a supported deployment and a stated
    * limitation, not a fault — see `ExperimentCredential`. */
   scoped_credential: boolean;
+  data_split?: DataSplit | null;
   submitted_at: string;
   updated_at: string;
   started_at?: string;
@@ -2275,6 +2290,20 @@ export interface ExperimentResourceUsage {
  * Params, metrics and tags. **Never logs**, never stdout, never an artifact: an
  * LLM reading a training process's raw output is the same category of mistake as
  * an LLM reading a raw series (§4). Logs have their own route. */
+export interface SplitReport {
+  training_end: string;
+  test_end: string;
+  // Confirmed is "confirmed", "not confirmed by the run" or "pending".
+  confirmed: string;
+  run_history_end?: string;
+  run_test_end?: string;
+  messages?: number;
+  results?: number;
+  window_start?: string;
+  window_end?: string;
+  note?: string;
+}
+
 export interface ExperimentSummary {
   run_id: string;
   experiment_id: string;
@@ -2304,6 +2333,7 @@ export interface ExperimentSummary {
   resource_usage: ExperimentResourceUsage;
   /** What the comparison is against, so a claim about an improvement is checkable. */
   previous_run_id?: string;
+  data_split?: SplitReport;
   started_at?: string;
   ended_at?: string;
   note?: string;
@@ -2543,6 +2573,11 @@ export const api = {
     put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/auto-run`, { auto_run: on }),
   tierChanges: (id: string) =>
     get<{ changes: TierChange[] }>(`/chat/sessions/${encodeURIComponent(id)}/tier-changes`),
+  /** Set the data split for a session. Pass null to clear it. */
+  setSplit: (id: string, split: DataSplit | null) =>
+    put<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/split`, split),
+  splitChanges: (id: string) =>
+    get<{ changes: SplitChange[] }>(`/chat/sessions/${encodeURIComponent(id)}/split-changes`),
 
   adminLimits: () => get<LimitsSurface>("/admin/limits"),
   adminSubjectLimits: (sub: string) =>

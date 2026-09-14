@@ -296,6 +296,11 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		sessions.PUT("/:id/model", handleSetModel(deps.Chat))
 		sessions.PUT("/:id/auto-run", handleSetAutoRun(deps.Chat))
 		sessions.GET("/:id/tier-changes", handleTierAudit(deps.Chat))
+		// The developer's control over the data split (D36), the same reason as the
+		// tier: no LLM tool exists for this (set_data_split is denied), so this route
+		// is the only way it changes.
+		sessions.PUT("/:id/split", handleSetSplit(deps.Chat))
+		sessions.GET("/:id/split-changes", handleSplitAudit(deps.Chat))
 	}
 
 	// M4. The developer's own pod (§5.6). Executing is on the WebSocket, because a

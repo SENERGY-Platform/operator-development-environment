@@ -1278,7 +1278,19 @@ func NewSurface(deps Deps) (*Registry, error) {
 				"MLflow run, connects to Ray, calls train() and registers the model — so what " +
 				"it does is what the deployed operator does when it first comes up. It needs " +
 				"input_topics for that: without them the run reads no history and fails inside " +
-				"train(), so the launch is refused instead.",
+				"train(), so the launch is refused instead.\n\n" +
+				"If this session has a data split, the run is an **evaluation** rather than an " +
+				"ordinary training run: Operator Lib trains on history strictly before the " +
+				"training end, then replays infer() over [training_end, test_end) with its " +
+				"clock advanced to each message's own time, and records " +
+				"`evaluation/predictions.csv` and `evaluation/inputs.csv` on the run along with " +
+				"the bounds it applied as tags — no metric is computed here, the scoring is the " +
+				"developer's protocol to run afterwards. There is no tool that sets, moves or " +
+				"clears the split — it is the developer's own bound, in the session, denied to " +
+				"you the way the exposure tier is. A launch is refused while the training end " +
+				"still lies in the future (a test window with no data in it is not an " +
+				"evaluation) or while the test window is estimated to exceed the configured row " +
+				"cap, since the replay is one infer() call per input row in the driver.",
 			Effect:  "submit Ray job",
 			MinTier: L0,
 			Confirm: true,
@@ -1349,7 +1361,15 @@ func NewSurface(deps Deps) (*Registry, error) {
 				"`comparison_to_previous` carries `lower_is_better` beside each direction, " +
 				"and it is inferred from the metric's *name*. Say which way you read a metric " +
 				"when it matters rather than asserting an improvement the naming happened to " +
-				"produce.",
+				"produce.\n\n" +
+				"A run launched under a data split carries a `data_split` block: the training " +
+				"end and test end, the message and result counts the replay logged, and a " +
+				"`confirmed` field — \"confirmed\", \"pending\" while the run is still going, or " +
+				"\"not confirmed by the run\". The last one means the run's own tags do not show " +
+				"it applied the bounds ODE sent — most often a cluster image whose Operator Lib " +
+				"is older than the version this feature needs — so treat its metrics as an " +
+				"ordinary training run rather than as an evaluation, and say why rather than " +
+				"reporting them as one.",
 			Effect:  "read MLflow",
 			MinTier: L0,
 			Schema: json.RawMessage(`{

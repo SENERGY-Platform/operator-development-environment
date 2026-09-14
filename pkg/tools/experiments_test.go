@@ -340,6 +340,10 @@ func TestTheResultsToolReturnsTheSummaryAndNeverALog(t *testing.T) {
 		Metrics:   map[string]float64{"rmse": 0.31},
 		Params:    map[string]string{"folds": "5"},
 		Tags:      map[string]string{"commit_sha": "0123456789abcdef"},
+		// Declared, because since D37 a model reads only the metrics the
+		// developer's evaluation.yaml names and this test is about what the
+		// summary carries, not about the allowlist.
+		EvaluationCriteria: experiments.Criterion{Metric: "rmse"},
 		ComparisonToPrevious: []experiments.MetricDelta{{
 			Metric: "rmse", Previous: 0.42, Current: 0.31, Delta: -0.11,
 			Direction: "better", LowerIsBetter: true,

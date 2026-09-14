@@ -33,6 +33,7 @@ import (
 
 	"github.com/SENERGY-Platform/models/go/models"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -231,6 +232,11 @@ type ProfileRequest struct {
 	// GroupTime overrides the aggregation bucket. Empty means derived from the
 	// detected sampling interval and the window length.
 	GroupTime string
+	// Split is the session's data split (D36), or nil when it has none. Clamped
+	// into the prologue's dataWindow before runPass, so the analysis and raw
+	// windows both inherit it, and forwarded into every value read this pass
+	// makes so Query bounds it a second time regardless.
+	Split *exposure.Split
 }
 
 // Phase is one step of a profile pass, for Progress.
@@ -368,6 +374,10 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 			ErrInvalidRequest, req.ServiceID)
 	}
 
+	if err := clampDataWindow(&dataWindow, req.AnalysisWindow, req.Split); err != nil {
+		return ProfileResult{}, err
+	}
+
 	return p.runPass(ctx, token, passInput{
 		source:          deviceSource(device.Id, req.ServiceID),
 		variables:       variables,
@@ -382,6 +392,7 @@ func (p *Profiler) ProfileService(ctx context.Context, token string, req Profile
 		rawOverride:     req.RawWindow,
 		groupTime:       req.GroupTime,
 		sessionParams:   req.SessionParams,
+		split:           req.Split,
 		progress:        req.Progress,
 	})
 }
@@ -421,6 +432,35 @@ type passInput struct {
 	groupTime     string
 	sessionParams *SessionParams
 	progress      func(Phase)
+	// split is the session's data split (D36), or nil. dataWindow has already been
+	// clamped to it by the caller before this is built; it is carried here as well
+	// so the raw and aggregated reads set it on every QueryOptions they build, and
+	// Query bounds them a second time regardless of what this pass computed.
+	split *exposure.Split
+}
+
+// clampDataWindow lowers a service's known data window to the training end (D36)
+// and refuses outright if the requested analysis window starts at or after it.
+//
+// The refusal is checked here, ahead of intersect() inside runPass, because
+// intersecting an already-clamped dataWindow against a requested window that
+// starts past the training end would just produce an empty overlap and the
+// generic "requested window does not overlap the available data" — true, but it
+// hides why. Checking the requested window against the split directly surfaces
+// the structured, model-readable BeyondTrainingEndError instead.
+func clampDataWindow(dataWindow *Window, requested Window, split *exposure.Split) error {
+	from, to, err := split.ClampWindow(dataWindow.From, dataWindow.To)
+	if err != nil {
+		return err
+	}
+	dataWindow.From, dataWindow.To = from, to
+
+	if requested.Valid() {
+		if _, _, err := split.ClampWindow(requested.From, requested.To); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *Profiler) runPass(ctx context.Context, token string, in passInput) (ProfileResult, error) {
@@ -466,7 +506,7 @@ func (p *Profiler) runPass(ctx context.Context, token string, in passInput) (Pro
 	var rawTruncated bool
 	for {
 		rawSet, rawTruncated, err = p.readRaw(ctx, token, in.source, in.variables, raw,
-			rowLimit, &result.Reads)
+			rowLimit, &result.Reads, in.split)
 		if err == nil {
 			break
 		}
@@ -531,7 +571,7 @@ func (p *Profiler) runPass(ctx context.Context, token string, in passInput) (Pro
 
 	report(in.progress, PhaseAggregated, fmt.Sprintf(
 		"reading aggregates at %s over %s", groupTime, analysis))
-	aggregated, err := p.readAggregated(ctx, token, in.source, in.variables, analysis, groupTime, &result.Reads)
+	aggregated, err := p.readAggregated(ctx, token, in.source, in.variables, analysis, groupTime, &result.Reads, in.split)
 	if err != nil {
 		err = p.describeReadFailure(err, "aggregated", numericCount(in.variables), analysis,
 			fmt.Sprintf("bucket %s, three elements for mean, minimum and maximum", groupTime),
@@ -635,7 +675,7 @@ func (p *Profiler) rawWindow(analysis Window, override Window) RawWindow {
 // DecodeResults sorts back into ascending order.
 func (p *Profiler) readRaw(
 	ctx context.Context, token string, src seriesSource,
-	variables []Variable, raw RawWindow, rowLimit int, reads *ReadCounts,
+	variables []Variable, raw RawWindow, rowLimit int, reads *ReadCounts, split *exposure.Split,
 ) (timeseries.ResultSet, bool, error) {
 	columns := make([]timeseries.QueryColumn, 0, len(variables))
 	for _, variable := range variables {
@@ -656,7 +696,7 @@ func (p *Profiler) readRaw(
 	}
 
 	results, err := p.ts.Query(ctx, token, []timeseries.QueryElement{element},
-		timeseries.QueryOptions{Timeout: p.opts.ReadTimeout})
+		timeseries.QueryOptions{Timeout: p.opts.ReadTimeout, Split: split})
 	reads.Values++
 	if err != nil {
 		return timeseries.ResultSet{}, false, err
@@ -687,7 +727,7 @@ func (p *Profiler) readRaw(
 // ColumnNames.
 func (p *Profiler) readAggregated(
 	ctx context.Context, token string, src seriesSource,
-	variables []Variable, analysis Window, groupTime string, reads *ReadCounts,
+	variables []Variable, analysis Window, groupTime string, reads *ReadCounts, split *exposure.Split,
 ) (map[string]aggregatedSeries, error) {
 	numeric := make([]Variable, 0, len(variables))
 	for _, variable := range variables {
@@ -719,7 +759,7 @@ func (p *Profiler) readAggregated(
 	}
 
 	results, err := p.ts.Query(ctx, token, elements,
-		timeseries.QueryOptions{Timeout: p.opts.ReadTimeout})
+		timeseries.QueryOptions{Timeout: p.opts.ReadTimeout, Split: split})
 	reads.Values++
 	if err != nil {
 		return nil, err

@@ -1212,6 +1212,140 @@
                 ]
             }
         },
+        "/chat/sessions/{id}/split": {
+            "put": {
+                "description": "The developer's bound (D36) on what the assistant may observe in\ntime and on what a launched run trains on. No LLM tool exists for\nthis (tools.Denied), so this route is the only way it changes. A\n`null` body clears it. Every change, including clearing, is written\nto the session's own audit trail — the pre-registration evidence a\nscoring script can check a run's recorded bounds against.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chat"
+                ],
+                "summary": "Set a session's data split",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "session id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "the split to move to (RFC 3339), or null to clear it",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "test_end": {
+                                    "type": "string"
+                                },
+                                "training_end": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/chat.Session"
+                        }
+                    },
+                    "400": {
+                        "description": "malformed JSON, or test_end not after training_end",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
+        "/chat/sessions/{id}/split-changes": {
+            "get": {
+                "description": "D36 requires every split change to be logged, the way §3.2 requires\nit for the tier. This is that record, including when the split was\ncleared (`to` is null).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chat"
+                ],
+                "summary": "A session's data-split history",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "session id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
         "/chat/sessions/{id}/tier": {
             "put": {
                 "description": "The developer's control from §3.2. No LLM tool exists for this\n(tools.Denied), so this route is the only way a tier changes. Every\nchange is written to the session's audit trail.",
@@ -6262,6 +6396,14 @@
                 "created_at": {
                     "type": "string"
                 },
+                "data_split": {
+                    "description": "Split is the session's data split (D36), or nil when there is none. The tier\nbounds *what kind* of data the assistant observes; the split bounds *up to\nwhen*. Set and cleared through Engine.SetSplit, never through a tool\n(set_data_split is denied), and audited the same way the tier is.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/exposure.Split"
+                        }
+                    ]
+                },
                 "exposure_tier": {
                     "description": "Tier is the exposure tier (§3.2). Default L0.",
                     "allOf": [
@@ -6374,6 +6516,14 @@
                 },
                 "commit_sha": {
                     "type": "string"
+                },
+                "data_split": {
+                    "description": "Split is the session's data split (D36) this run was launched under, or nil\nfor an ordinary run. Set once at launch and never moved: deploymentEnvironment\nreads it to write the bounds into the deployment config, and the summary reads\nit to check that the run's own tags confirm them.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/exposure.Split"
+                        }
+                    ]
                 },
                 "ended_at": {
                     "type": "string"
@@ -6544,6 +6694,14 @@
                 "credential": {
                     "$ref": "#/definitions/experiments.Credential"
                 },
+                "data_split": {
+                    "description": "Split is the session's data split (D36) this run was launched under, or nil\nfor an ordinary run. Set once at launch and never moved: deploymentEnvironment\nreads it to write the bounds into the deployment config, and the summary reads\nit to check that the run's own tags confirm them.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/exposure.Split"
+                        }
+                    ]
+                },
                 "ended_at": {
                     "type": "string"
                 },
@@ -6691,6 +6849,46 @@
                 }
             }
         },
+        "experiments.SplitReport": {
+            "type": "object",
+            "properties": {
+                "confirmed": {
+                    "description": "Confirmed is \"confirmed\" when the run's own tags equal these bounds,\n\"not confirmed by the run\" when the run is finished and they do not, and\n\"pending\" while the run is still going — a run that has not finished simply\nhas not logged the tags yet, which is not evidence of anything.",
+                    "type": "string"
+                },
+                "messages": {
+                    "description": "Messages and Results are the run's own evaluation.messages and\nevaluation.results params: how many input rows the replay saw, and how many\nof them produced a non-nil result. Pointers because zero is a real answer —\nan evaluation whose selector matched nothing — and the run not having logged\nthem yet is a different thing (§5.4.6, D24).",
+                    "type": "integer"
+                },
+                "note": {
+                    "description": "Note explains an unconfirmed or pending report. Empty when Confirmed is\n\"confirmed\": a matching run needs no explanation.",
+                    "type": "string"
+                },
+                "results": {
+                    "type": "integer"
+                },
+                "run_history_end": {
+                    "description": "RunHistoryEnd and RunTestEnd are the run's own operator_lib.history_end and\noperator_lib.test_end tags, verbatim, so a mismatch is something a developer\ncan see rather than only being told about.",
+                    "type": "string"
+                },
+                "run_test_end": {
+                    "type": "string"
+                },
+                "test_end": {
+                    "type": "string"
+                },
+                "training_end": {
+                    "type": "string"
+                },
+                "window_end": {
+                    "type": "string"
+                },
+                "window_start": {
+                    "description": "WindowStart and WindowEnd are the run's own evaluation.window_start and\nevaluation.window_end params, which should equal TrainingEnd and TestEnd\nwhen Confirmed is \"confirmed\" — carried separately rather than assumed equal,\nso a reader can see the run's own account of it.",
+                    "type": "string"
+                }
+            }
+        },
         "experiments.Summary": {
             "type": "object",
             "properties": {
@@ -6703,6 +6901,14 @@
                     "items": {
                         "$ref": "#/definitions/experiments.MetricDelta"
                     }
+                },
+                "data_split": {
+                    "description": "Split is present exactly when the run was launched under a data split (D36).\nIt carries no values — only bounds, counts and a confirmation string — so\nMaskedFor need not touch it: masking exists for what a traceback can smuggle\nout of a developer's series, and nothing here can.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/experiments.SplitReport"
+                        }
+                    ]
                 },
                 "ended_at": {
                     "type": "string"
@@ -6732,6 +6938,14 @@
                 "finished": {
                     "description": "Finished says the run is in a state it will not leave, so a model can tell a\nfinal metric from a snapshot of one still moving.",
                     "type": "boolean"
+                },
+                "metric_times": {
+                    "description": "MetricTimes is the maximum MLflow timestamp logged for each key in Metrics\n(Unix milliseconds, over the metric's whole history — not only the point\nlatestMetrics selects as latest). MaskedFor needs it to tell a value\nwritten during training from one written after (D37), and it has to be an\nexported, JSON-tagged field rather than something recomputed at read time:\na finished run's summary is persisted as encoded JSON (store.go's\nPutSummary/GetSummary) and reloaded on every later read, so an unexported\nfield would silently stop carrying the timestamps for exactly the cached\nruns. MaskedFor clears it on the copy it returns — a model never reads a\ntimestamp back, only the count above.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer",
+                        "format": "int64"
+                    }
                 },
                 "metrics": {
                     "type": "object",
@@ -6785,6 +6999,10 @@
                     "additionalProperties": {
                         "type": "string"
                     }
+                },
+                "withheld_metrics": {
+                    "description": "WithheldMetrics counts what MaskedFor removed from Metrics and from\nComparisonToPrevious before handing the summary to a model: a name off the\ndeveloper's own declared allowlist, or a value written after the run's\ntraining phase ended (D37) — one number, never which, and no distinction\nbetween the two reasons, because a name is already information out of the\nrun and which rule caught it says something about how the run was written.\nZero on the developer's own route, which MaskedFor never touches.",
+                    "type": "integer"
                 }
             }
         },
@@ -6801,6 +7019,19 @@
         },
         "experiments.Verdict": {
             "type": "object"
+        },
+        "exposure.Split": {
+            "type": "object",
+            "properties": {
+                "test_end": {
+                    "description": "TestEnd closes the window a launched run runs inference over:\n[TrainingEnd, TestEnd). Strictly after TrainingEnd.",
+                    "type": "string"
+                },
+                "training_end": {
+                    "description": "TrainingEnd is the first instant the assistant may not observe and the\nbound a launched run trains under. It may be in the future when set, in\nwhich case a launch is refused until it has passed.",
+                    "type": "string"
+                }
+            }
         },
         "interpret.Interpretation": {
             "type": "object",

@@ -200,6 +200,26 @@ func TestTheEvaluationFileSaysItIsTheDevelopers(t *testing.T) {
 	}
 }
 
+// D36: under a data split, init() has already trained by the time train.py would
+// otherwise ask for a second pass, because Operator Lib v1.7.0's evaluation mode
+// trains unconditionally. A second train_once() would be wasteful rather than
+// wrong, and the scaffold avoids it rather than documenting around it.
+func TestTrainPySkipsItsOwnTrainingPassUnderADataSplit(t *testing.T) {
+	trainPy := renderTestScaffold(t)["train.py"]
+	if !strings.Contains(trainPy, `getattr(typed_config, "test_end", None)`) {
+		t.Errorf("train.py does not check the config's test_end before asking for a "+
+			"second training pass:\n%s", trainPy)
+	}
+	if !strings.Contains(trainPy, "v1.7.0") {
+		t.Error("train.py's docstring does not name the floor a data split needs")
+	}
+	// The whole point: whatever _already_registered says, a split still trains.
+	if !strings.Contains(trainPy,
+		"trains_inside_init = not _already_registered(model_id) or bool(") {
+		t.Errorf("trains_inside_init no longer ORs in the split check:\n%s", trainPy)
+	}
+}
+
 // A default is a decision here: the Dockerfile and the project metadata have to
 // name the same interpreter, or the image builds an environment the code was not
 // written for.

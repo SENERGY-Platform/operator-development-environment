@@ -26,6 +26,7 @@ import (
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
@@ -144,6 +145,12 @@ type CreateRequest struct {
 	YAxis       YAxis
 	Window      profiler.Window
 	GroupTime   string
+	// Split is the session's data split (D36), or nil when it has none. Applied
+	// once, here at creation: the stored Window is clamped before it is ever
+	// resolved into a query, so a chart the model asked for cannot be re-panned
+	// past the training end later — see resolve.go's Data, which reads the
+	// already-clamped window and does not clamp again.
+	Split *exposure.Split
 }
 
 // SeriesResolution is one series' spec resolved against the platform: which
@@ -310,6 +317,15 @@ func (s *Service) normalise(req CreateRequest) (Spec, error) {
 	if err != nil {
 		return Spec{}, err
 	}
+	// D36, applied once at creation rather than at every render: the stored
+	// window is what resolve.go's Data reads back, so clamping it here is what
+	// keeps a chart the model asked for from reaching past the training end no
+	// matter how often it is later drawn.
+	from, to, err := req.Split.ClampWindow(window.From, window.To)
+	if err != nil {
+		return Spec{}, err
+	}
+	window.From, window.To = from, to
 	spec.Window = window
 	return spec, nil
 }

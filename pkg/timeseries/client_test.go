@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -232,6 +233,140 @@ func TestQueryRefusesAnElementTheSharedSchemaRejects(t *testing.T) {
 	}
 	if got.method != "" {
 		t.Error("an invalid element was sent to the platform anyway")
+	}
+}
+
+// splitTrainingEnd and splitTestEnd anchor every split test below, mirroring
+// pkg/exposure's own fixture times.
+var (
+	splitTrainingEnd = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	splitTestEnd     = time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC)
+)
+
+func TestQueryWithASplitLowersAnEndBeyondTheTrainingEndToIt(t *testing.T) {
+	client, got := serve(t, http.StatusOK, `[]`)
+
+	deviceID, serviceID := "urn:infai:ses:device:1", "urn:infai:ses:service:11111111-1111-1111-1111-111111111111"
+	start := splitTrainingEnd.AddDate(0, 0, -7).Format(time.RFC3339)
+	end := splitTrainingEnd.AddDate(0, 0, 7).Format(time.RFC3339) // past the training end
+	_, err := client.Query(context.Background(), "Bearer caller", []timeseries.QueryElement{{
+		DeviceId: &deviceID, ServiceId: &serviceID,
+		Columns: []timeseries.QueryColumn{{Name: "value.power"}},
+		Time:    &timeseries.QueryTime{Start: &start, End: &end},
+	}}, timeseries.QueryOptions{Split: &exposure.Split{TrainingEnd: splitTrainingEnd, TestEnd: splitTestEnd}})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if !strings.Contains(got.body, `"end":"`+splitTrainingEnd.Format(time.RFC3339)+`"`) {
+		t.Errorf("body = %s, want the end lowered to the training end %s", got.body, splitTrainingEnd)
+	}
+	if strings.Contains(got.body, end) {
+		t.Errorf("body = %s, still carries the requested end past the training end", got.body)
+	}
+}
+
+func TestQueryWithASplitRefusesAStartAtOrAfterTheTrainingEnd(t *testing.T) {
+	client, got := serve(t, http.StatusOK, `[]`)
+
+	deviceID, serviceID := "urn:infai:ses:device:1", "urn:infai:ses:service:11111111-1111-1111-1111-111111111111"
+	start := splitTrainingEnd.Format(time.RFC3339) // exactly at the training end
+	_, err := client.Query(context.Background(), "Bearer caller", []timeseries.QueryElement{{
+		DeviceId: &deviceID, ServiceId: &serviceID,
+		Columns: []timeseries.QueryColumn{{Name: "value.power"}},
+		Time:    &timeseries.QueryTime{Start: &start},
+	}}, timeseries.QueryOptions{Split: &exposure.Split{TrainingEnd: splitTrainingEnd, TestEnd: splitTestEnd}})
+
+	var beyond *exposure.BeyondTrainingEndError
+	if !errors.As(err, &beyond) {
+		t.Fatalf("error = %v, want a *exposure.BeyondTrainingEndError so the tool layer can relay it", err)
+	}
+	if !beyond.TrainingEnd.Equal(splitTrainingEnd) {
+		t.Errorf("TrainingEnd = %s, want %s", beyond.TrainingEnd, splitTrainingEnd)
+	}
+	if got.method != "" {
+		t.Error("a read starting at the training end reached the platform anyway")
+	}
+}
+
+func TestQueryWithASplitGivesAnElementWithoutATimeAnEndAtTheTrainingEnd(t *testing.T) {
+	client, got := serve(t, http.StatusOK, `[]`)
+
+	deviceID, serviceID := "urn:infai:ses:device:1", "urn:infai:ses:service:11111111-1111-1111-1111-111111111111"
+	_, err := client.Query(context.Background(), "Bearer caller", []timeseries.QueryElement{{
+		DeviceId: &deviceID, ServiceId: &serviceID,
+		Columns: []timeseries.QueryColumn{{Name: "value.power"}},
+		// No Time at all: unbounded, which the split still has to close off.
+	}}, timeseries.QueryOptions{Split: &exposure.Split{TrainingEnd: splitTrainingEnd, TestEnd: splitTestEnd}})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	// The wire schema requires start together with end; the zero time is what "no
+	// lower bound" looks like in a shape the schema accepts.
+	wantTime := `"time":{"start":"0001-01-01T00:00:00Z","end":"` + splitTrainingEnd.Format(time.RFC3339) + `"}`
+	if !strings.Contains(got.body, wantTime) {
+		t.Errorf("body = %s, want %s even though no window was asked for", got.body, wantTime)
+	}
+}
+
+func TestQueryWithoutASplitLeavesElementsByteIdentical(t *testing.T) {
+	client, got := serve(t, http.StatusOK, `[]`)
+
+	deviceID, serviceID := "urn:infai:ses:device:1", "urn:infai:ses:service:11111111-1111-1111-1111-111111111111"
+	start := splitTrainingEnd.AddDate(0, 0, -7).Format(time.RFC3339)
+	end := splitTrainingEnd.AddDate(0, 0, 7).Format(time.RFC3339)
+	element := timeseries.QueryElement{
+		DeviceId: &deviceID, ServiceId: &serviceID,
+		Columns: []timeseries.QueryColumn{{Name: "value.power"}},
+		Time:    &timeseries.QueryTime{Start: &start, End: &end},
+	}
+	if _, err := client.Query(context.Background(), "Bearer caller",
+		[]timeseries.QueryElement{element}, timeseries.QueryOptions{}); err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if !strings.Contains(got.body, `"end":"`+end+`"`) {
+		t.Errorf("body = %s, want the requested end untouched with no split set", got.body)
+	}
+}
+
+// A caller may reuse its element slice — the profiler's readRaw and readAggregated
+// both build one and pass it to Query once — so the clamp must never write through
+// the pointers it was given, only into a copy.
+func TestQueryWithASplitDoesNotMutateTheCallersElement(t *testing.T) {
+	client, _ := serve(t, http.StatusOK, `[]`)
+
+	deviceID, serviceID := "urn:infai:ses:device:1", "urn:infai:ses:service:11111111-1111-1111-1111-111111111111"
+	start := splitTrainingEnd.AddDate(0, 0, -7).Format(time.RFC3339)
+	end := splitTrainingEnd.AddDate(0, 0, 7).Format(time.RFC3339)
+	elements := []timeseries.QueryElement{{
+		DeviceId: &deviceID, ServiceId: &serviceID,
+		Columns: []timeseries.QueryColumn{{Name: "value.power"}},
+		Time:    &timeseries.QueryTime{Start: &start, End: &end},
+	}}
+	if _, err := client.Query(context.Background(), "Bearer caller", elements,
+		timeseries.QueryOptions{Split: &exposure.Split{TrainingEnd: splitTrainingEnd, TestEnd: splitTestEnd}}); err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if *elements[0].Time.End != end {
+		t.Errorf("caller's element End = %s, want it unchanged at %s — Query must clamp a copy", *elements[0].Time.End, end)
+	}
+}
+
+func TestQueryWithASplitRefusesARelativeTimeWindow(t *testing.T) {
+	client, got := serve(t, http.StatusOK, `[]`)
+
+	deviceID, serviceID := "urn:infai:ses:device:1", "urn:infai:ses:service:11111111-1111-1111-1111-111111111111"
+	last := "168h"
+	_, err := client.Query(context.Background(), "Bearer caller", []timeseries.QueryElement{{
+		DeviceId: &deviceID, ServiceId: &serviceID,
+		Columns: []timeseries.QueryColumn{{Name: "value.power"}},
+		Time:    &timeseries.QueryTime{Last: &last},
+	}}, timeseries.QueryOptions{Split: &exposure.Split{TrainingEnd: splitTrainingEnd, TestEnd: splitTestEnd}})
+	if !errors.Is(err, timeseries.ErrInvalidRequest) {
+		t.Fatalf("error = %v, want ErrInvalidRequest: a relative window resolves against the "+
+			"platform's own clock and cannot be bounded here", err)
+	}
+	if got.method != "" {
+		t.Error("a relative window under a data split reached the platform anyway")
 	}
 }
 

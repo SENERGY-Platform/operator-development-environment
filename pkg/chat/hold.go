@@ -229,20 +229,24 @@ func (e *Engine) resolveHold(
 		}
 	}
 
-	// The tier is re-read rather than taken from req, for the reason
-	// Dispatcher.Confirm documents: a developer may propose at L2, lower the tier
-	// while the card is on screen, and only then approve. req.Tier is what the
-	// session was at when the model asked, minutes ago.
-	tier := req.Tier
-	if current, err := e.TierFor(ctx, req.UserSub, req.SessionID); err == nil {
-		tier = current
+	// The tier and the split are both re-read rather than taken from req, for the
+	// reason Dispatcher.Confirm documents: a developer may propose at L2, lower the
+	// tier — or narrow or clear the split (D36) — while the card is on screen, and
+	// only then approve. req.Tier and req.Split are what the session held when the
+	// model asked, minutes ago. One session read gets both, rather than a call per
+	// field: they are read together everywhere else this decides what a dispatched
+	// call may do.
+	tier, split := req.Tier, req.Split
+	if current, err := e.Session(ctx, req.UserSub, req.SessionID); err == nil {
+		tier, split = current.Tier, current.Split
 	} else {
-		slog.WarnContext(ctx, "could not re-read the tier for a held call; using the recorded one",
+		slog.WarnContext(ctx, "could not re-read the session for a held call; using the recorded tier and split",
 			"session", req.SessionID, "error", err)
 	}
 
 	return e.dispatcher.Confirm(ctx, tools.Request{
 		Token: req.Token, UserSub: req.UserSub, SessionID: req.SessionID, Tier: tier,
+		Split: split,
 		// Carried from the held call rather than re-read: an approval acts in the
 		// workbench the model asked about, even if the developer has since opened
 		// another one.

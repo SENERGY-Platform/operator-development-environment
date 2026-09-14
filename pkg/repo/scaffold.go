@@ -242,7 +242,8 @@ comes up. ODE adds only the commit tag on the run.
 ODE runs this file. It is yours to change, but keep the init()/train_once() pair
 at the end: everything a run records happens inside one of the two.
 
-Needs Operator Lib v1.5.0 or newer, which pyproject.toml pins.
+Needs Operator Lib v1.5.0 or newer, which pyproject.toml pins, and v1.7.0 for a
+session with a data split.
 """
 
 import json
@@ -313,7 +314,17 @@ def main() -> int:
     # one. Asking unconditionally would train twice on the first run.
     mlflow.set_tracking_uri(opr_config.config.mlflow_url)
     model_id = f"pipeline-{dep_config.pipeline_id}_operator-{dep_config.operator_id}"
-    trains_inside_init = not _already_registered(model_id)
+
+    # Under a data split (Operator Lib v1.7.0), test_end on the config switches
+    # init() into its evaluation mode: it trains unconditionally, whatever the
+    # registry holds, and then replays the test window itself. Asking for a
+    # second training pass here would train twice on the same bounds — wasteful,
+    # not wrong, but pointless — so this is the one case trains_inside_init is
+    # true regardless of what the registry says. getattr guards a typed_config
+    # from a library older than v1.7.0, which has no test_end attribute at all.
+    trains_inside_init = not _already_registered(model_id) or bool(
+        getattr(typed_config, "test_end", None)
+    )
 
     operator.init(
         kafka_consumer=kafka_consumer,

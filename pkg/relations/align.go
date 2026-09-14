@@ -23,6 +23,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
@@ -165,6 +166,7 @@ func nextGrid(current float64) (float64, bool) {
 // would slide one member's week against another's.
 func (s *Service) Align(
 	ctx context.Context, token string, requests []alignRequest, window profiler.Window, gridSeconds float64,
+	split *exposure.Split,
 ) (AlignedFrame, error) {
 	if len(requests) == 0 {
 		return AlignedFrame{}, fmt.Errorf("%w: no series to align", ErrInvalidRequest)
@@ -231,7 +233,7 @@ func (s *Service) Align(
 	}
 
 	results, err := s.deps.Timeseries.Query(ctx, token, elements,
-		timeseries.QueryOptions{Timeout: s.deps.ReadTimeout})
+		timeseries.QueryOptions{Timeout: s.deps.ReadTimeout, Split: split})
 	frame.Reads = 1
 	if err != nil {
 		return AlignedFrame{}, err

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/admin"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
@@ -730,6 +731,75 @@ func (e *Engine) TierChanges(ctx context.Context, sub, id string) ([]TierChange,
 	return e.store.TierChanges(ctx, id)
 }
 
+// SetSplit changes a session's data split (D36).
+//
+// The developer's control, the way SetTier is: owner-checked, audited either way.
+// Unlike the tier there is no admin ceiling to check on a raise, because a split
+// only ever narrows what the assistant reads — there is nothing above it to bound,
+// and lowering vs. raising is not a distinction that applies to it the way it does
+// to the tier.
+//
+// nil clears the split, which is permitted and audited exactly like setting one:
+// clearing restores the unbounded behaviour every session had before this existed,
+// and that is as much a decision worth a row as narrowing it was.
+func (e *Engine) SetSplit(ctx context.Context, sub, id string, split *exposure.Split) (Session, error) {
+	session, err := e.Session(ctx, sub, id)
+	if err != nil {
+		return Session{}, err
+	}
+
+	var normalised *exposure.Split
+	if split != nil {
+		n := split.Normalised()
+		if err := n.Validate(); err != nil {
+			// Returned as-is: it wraps exposure.ErrInvalidSplit, which is what the API
+			// handler maps to 400.
+			return Session{}, err
+		}
+		normalised = &n
+	}
+
+	previous := session.Split
+	if splitsEqual(previous, normalised) {
+		return session, nil
+	}
+
+	session.Split = normalised
+	session.UpdatedAt = e.now()
+	if err := e.store.UpdateSession(ctx, session); err != nil {
+		return Session{}, err
+	}
+	if err := e.store.AppendSplitChange(ctx, SplitChange{
+		SessionID: id, UserSub: sub, From: previous, To: normalised, At: e.now(),
+	}); err != nil {
+		// The same reasoning as an unaudited tier change: the split already moved, and
+		// an unaudited change is exactly what must not happen to D36's
+		// pre-registration evidence.
+		slog.ErrorContext(ctx, "data split changed without an audit record",
+			"session", id, "error", err)
+	}
+
+	slog.InfoContext(ctx, "data split changed", "session", id, "user", sub)
+	return session, nil
+}
+
+// splitsEqual is exposure.Split.Equal, made nil-safe for the two sides of a
+// SetSplit call: no split on both sides is no change, and a nil compared with a
+// set split never is.
+func splitsEqual(a, b *exposure.Split) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
+func (e *Engine) SplitChanges(ctx context.Context, sub, id string) ([]SplitChange, error) {
+	if _, err := e.Session(ctx, sub, id); err != nil {
+		return nil, err
+	}
+	return e.store.SplitChanges(ctx, id)
+}
+
 func (e *Engine) PendingConfirmations(ctx context.Context, sub, id string) ([]Confirmation, error) {
 	if _, err := e.Session(ctx, sub, id); err != nil {
 		return nil, err
@@ -1045,6 +1115,7 @@ func (e *Engine) Confirm(
 			// session's tier *now* rather than the one recorded when the model asked.
 			result = e.dispatcher.Confirm(ctx, tools.Request{
 				Token: token.bearer(), UserSub: sub, SessionID: sessionID, Tier: session.Tier,
+				Split:       session.Split,
 				AutoRun:     session.AutoRun,
 				WorkbenchID: session.WorkbenchID,
 				Report: func(progress tools.Progress) {
@@ -1123,10 +1194,15 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 		// The tier is re-read each iteration rather than captured once, and clamped
 		// as it is read. A developer may lower the tier mid-exchange, and an admin may
 		// lower the ceiling; the next tool call must respect either.
+		//
+		// The split is re-read here for the same reason (D36): a developer narrowing
+		// or clearing it mid-exchange must bind the very next tool call, not only the
+		// next message, which is the same immediacy §3.2 gives the tier.
 		stored, found, err := e.store.Session(ctx, session.ID)
 		if err == nil && found {
 			session.Tier = e.effectiveTier(ctx, session.UserSub, stored.Tier)
 			session.Selection = stored.Selection
+			session.Split = stored.Split
 		}
 
 		messages, err := e.store.Messages(ctx, session.ID)
@@ -1388,6 +1464,7 @@ func (e *Engine) dispatch(
 			// into that operator's checkout and runs in that operator's kernel.
 			WorkbenchID: session.WorkbenchID,
 			Tier:        session.Tier,
+			Split:       session.Split,
 			AutoRun:     session.AutoRun,
 			// Published as it happens, so a long tool is visibly working. publish never
 			// blocks, which is what makes this safe to call from inside a platform read.
@@ -1831,15 +1908,18 @@ func (e *Engine) TierFor(ctx context.Context, userSub, sessionID string) (tools.
 // check and the admin clamp both come from going through Session rather than the
 // store — and one more that only shows on this transport: a provider running its
 // own tool loop reaches the tools through here, so a field this does not return is
-// a gate that will read a zero value on every call the CLI makes.
+// a gate that will read a zero value on every call the CLI makes. The split is one
+// of those fields (D36): a client of this transport must not be able to reach past
+// the training end merely because this handler forgot to carry it, the same way it
+// must not be able to name its own tier.
 func (e *Engine) State(ctx context.Context, userSub, sessionID string) (
-	tools.Tier, string, bool, error,
+	tools.Tier, *exposure.Split, string, bool, error,
 ) {
 	session, err := e.Session(ctx, userSub, sessionID)
 	if err != nil {
-		return tools.DefaultTier, "", false, err
+		return tools.DefaultTier, nil, "", false, err
 	}
-	return session.Tier, session.WorkbenchID, session.AutoRun, nil
+	return session.Tier, session.Split, session.WorkbenchID, session.AutoRun, nil
 }
 
 // RecordCreation and Creations implement tools.Creations, so the confirmed create

@@ -160,11 +160,12 @@
   "experiment_py_executable": "uv run",
   "experiment_kafka_bootstrap": "",
 
-  "//experiment_bounds": "experiment_max_package_bytes bounds the job archive, and exceeding it is *reported rather than truncated*: a job that ran against a partial repository fails in a way nobody could diagnose from the run. It also bounds ODE's own memory, because the archive is held whole and travels back from the pod base64-encoded, which costs a third more again. 16 MiB is three orders of magnitude more than a source repository needs; what it actually catches is a checked-in model file or a data directory. The two env bounds matter because a launch arrives from an HTTP body or from an LLM tool call, and neither is trusted input. experiment_max_log_bytes bounds the developer's own log route — logs never reach a model (§5.13).",
+  "//experiment_bounds": "experiment_max_package_bytes bounds the job archive, and exceeding it is *reported rather than truncated*: a job that ran against a partial repository fails in a way nobody could diagnose from the run. It also bounds ODE's own memory, because the archive is held whole and travels back from the pod base64-encoded, which costs a third more again. 16 MiB is three orders of magnitude more than a source repository needs; what it actually catches is a checked-in model file or a data directory. The two env bounds matter because a launch arrives from an HTTP body or from an LLM tool call, and neither is trusted input. experiment_max_log_bytes bounds the developer's own log route — logs never reach a model (§5.13). experiment_max_evaluation_rows bounds the test window of a data split (D36): the evaluation replays infer() once per input row, sequentially, in the job's driver, so an unbounded window is an unbounded driver loop. A launch whose window the usage accounting estimates above this is refused before anything is submitted, naming the estimate and the cap, rather than discovered as a job that never ends.",
   "experiment_max_package_bytes": 16777216,
   "experiment_max_env_vars": 32,
   "experiment_max_env_value_bytes": 4096,
   "experiment_max_log_bytes": 1048576,
+  "experiment_max_evaluation_rows": 1000000,
 
   "//experiment_timeouts": "experiment_request_timeout bounds one Ray or MLflow API call; experiment_upload_timeout bounds the one request that moves the whole archive, and is separate for the reason the profiler's two read timeouts are separate — a bound that fits a status probe cannot fit a multi-megabyte upload, and one figure for both means either the probe hangs or the upload is cut off mid-body.",
   "experiment_request_timeout": "30s",

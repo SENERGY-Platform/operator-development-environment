@@ -785,6 +785,14 @@ definitions:
         type: boolean
       created_at:
         type: string
+      data_split:
+        allOf:
+        - $ref: '#/definitions/exposure.Split'
+        description: |-
+          Split is the session's data split (D36), or nil when there is none. The tier
+          bounds *what kind* of data the assistant observes; the split bounds *up to
+          when*. Set and cleared through Engine.SetSplit, never through a tool
+          (set_data_split is denied), and audited the same way the tier is.
       exposure_tier:
         allOf:
         - $ref: '#/definitions/tools.Tier'
@@ -896,6 +904,14 @@ definitions:
         type: string
       commit_sha:
         type: string
+      data_split:
+        allOf:
+        - $ref: '#/definitions/exposure.Split'
+        description: |-
+          Split is the session's data split (D36) this run was launched under, or nil
+          for an ordinary run. Set once at launch and never moved: deploymentEnvironment
+          reads it to write the bounds into the deployment config, and the summary reads
+          it to check that the run's own tags confirm them.
       ended_at:
         type: string
       entrypoint:
@@ -1050,6 +1066,14 @@ definitions:
         type: string
       credential:
         $ref: '#/definitions/experiments.Credential'
+      data_split:
+        allOf:
+        - $ref: '#/definitions/exposure.Split'
+        description: |-
+          Split is the session's data split (D36) this run was launched under, or nil
+          for an ordinary run. Set once at launch and never moved: deploymentEnvironment
+          reads it to write the bounds into the deployment config, and the summary reads
+          it to check that the run's own tags confirm them.
       ended_at:
         type: string
       entrypoint:
@@ -1188,6 +1212,52 @@ definitions:
           read as "used no memory" would be a fabricated finding.
         type: string
     type: object
+  experiments.SplitReport:
+    properties:
+      confirmed:
+        description: |-
+          Confirmed is "confirmed" when the run's own tags equal these bounds,
+          "not confirmed by the run" when the run is finished and they do not, and
+          "pending" while the run is still going — a run that has not finished simply
+          has not logged the tags yet, which is not evidence of anything.
+        type: string
+      messages:
+        description: |-
+          Messages and Results are the run's own evaluation.messages and
+          evaluation.results params: how many input rows the replay saw, and how many
+          of them produced a non-nil result. Pointers because zero is a real answer —
+          an evaluation whose selector matched nothing — and the run not having logged
+          them yet is a different thing (§5.4.6, D24).
+        type: integer
+      note:
+        description: |-
+          Note explains an unconfirmed or pending report. Empty when Confirmed is
+          "confirmed": a matching run needs no explanation.
+        type: string
+      results:
+        type: integer
+      run_history_end:
+        description: |-
+          RunHistoryEnd and RunTestEnd are the run's own operator_lib.history_end and
+          operator_lib.test_end tags, verbatim, so a mismatch is something a developer
+          can see rather than only being told about.
+        type: string
+      run_test_end:
+        type: string
+      test_end:
+        type: string
+      training_end:
+        type: string
+      window_end:
+        type: string
+      window_start:
+        description: |-
+          WindowStart and WindowEnd are the run's own evaluation.window_start and
+          evaluation.window_end params, which should equal TrainingEnd and TestEnd
+          when Confirmed is "confirmed" — carried separately rather than assumed equal,
+          so a reader can see the run's own account of it.
+        type: string
+    type: object
   experiments.Summary:
     properties:
       commit_sha:
@@ -1201,6 +1271,14 @@ definitions:
         items:
           $ref: '#/definitions/experiments.MetricDelta'
         type: array
+      data_split:
+        allOf:
+        - $ref: '#/definitions/experiments.SplitReport'
+        description: |-
+          Split is present exactly when the run was launched under a data split (D36).
+          It carries no values — only bounds, counts and a confirmation string — so
+          MaskedFor need not touch it: masking exists for what a traceback can smuggle
+          out of a developer's series, and nothing here can.
       ended_at:
         type: string
       entrypoint:
@@ -1236,6 +1314,22 @@ definitions:
           Finished says the run is in a state it will not leave, so a model can tell a
           final metric from a snapshot of one still moving.
         type: boolean
+      metric_times:
+        additionalProperties:
+          format: int64
+          type: integer
+        description: |-
+          MetricTimes is the maximum MLflow timestamp logged for each key in Metrics
+          (Unix milliseconds, over the metric's whole history — not only the point
+          latestMetrics selects as latest). MaskedFor needs it to tell a value
+          written during training from one written after (D37), and it has to be an
+          exported, JSON-tagged field rather than something recomputed at read time:
+          a finished run's summary is persisted as encoded JSON (store.go's
+          PutSummary/GetSummary) and reloaded on every later read, so an unexported
+          field would silently stop carrying the timestamps for exactly the cached
+          runs. MaskedFor clears it on the copy it returns — a model never reads a
+          timestamp back, only the count above.
+        type: object
       metrics:
         additionalProperties:
           format: float64
@@ -1285,6 +1379,16 @@ definitions:
         additionalProperties:
           type: string
         type: object
+      withheld_metrics:
+        description: |-
+          WithheldMetrics counts what MaskedFor removed from Metrics and from
+          ComparisonToPrevious before handing the summary to a model: a name off the
+          developer's own declared allowlist, or a value written after the run's
+          training phase ended (D37) — one number, never which, and no distinction
+          between the two reasons, because a name is already information out of the
+          run and which rule caught it says something about how the run was written.
+          Zero on the developer's own route, which MaskedFor never touches.
+        type: integer
     type: object
   experiments.TopicMapping:
     properties:
@@ -1294,6 +1398,20 @@ definitions:
         type: string
     type: object
   experiments.Verdict:
+    type: object
+  exposure.Split:
+    properties:
+      test_end:
+        description: |-
+          TestEnd closes the window a launched run runs inference over:
+          [TrainingEnd, TestEnd). Strictly after TrainingEnd.
+        type: string
+      training_end:
+        description: |-
+          TrainingEnd is the first instant the assistant may not observe and the
+          bound a launched run trains under. It may be in the future when set, in
+          which case a launch is refused until it has passed.
+        type: string
     type: object
   interpret.Interpretation:
     properties:
@@ -4219,6 +4337,101 @@ paths:
       security:
       - Bearer: []
       summary: Change a session's provider or model
+      tags:
+      - chat
+  /chat/sessions/{id}/split:
+    put:
+      consumes:
+      - application/json
+      description: |-
+        The developer's bound (D36) on what the assistant may observe in
+        time and on what a launched run trains on. No LLM tool exists for
+        this (tools.Denied), so this route is the only way it changes. A
+        `null` body clears it. Every change, including clearing, is written
+        to the session's own audit trail — the pre-registration evidence a
+        scoring script can check a run's recorded bounds against.
+      parameters:
+      - description: session id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: the split to move to (RFC 3339), or null to clear it
+        in: body
+        name: request
+        required: true
+        schema:
+          properties:
+            test_end:
+              type: string
+            training_end:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/chat.Session'
+        "400":
+          description: malformed JSON, or test_end not after training_end
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Set a session's data split
+      tags:
+      - chat
+  /chat/sessions/{id}/split-changes:
+    get:
+      description: |-
+        D36 requires every split change to be logged, the way §3.2 requires
+        it for the tier. This is that record, including when the split was
+        cleared (`to` is null).
+      parameters:
+      - description: session id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: A session's data-split history
       tags:
       - chat
   /chat/sessions/{id}/tier:

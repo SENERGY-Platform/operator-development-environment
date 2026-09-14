@@ -29,6 +29,7 @@ import (
 
 	"github.com/SENERGY-Platform/models/go/models"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/timeseries"
 )
 
@@ -981,6 +982,96 @@ func TestAWindowOutsideTheAvailableDataIsRefused(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+// D36: a data split lowers the analysis and raw windows to the training end in
+// the prologue, before either read happens, so the elements sent for both passes
+// end there rather than at whatever the platform's own availability reaches.
+func TestAWindowCrossingTheTrainingEndIsLoweredToIt(t *testing.T) {
+	fake := meterFixture()
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+
+	trainingEnd := computeNow.Add(-7 * 24 * time.Hour)
+	testEnd := computeNow.Add(7 * 24 * time.Hour)
+	result, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+		Split:     &exposure.Split{TrainingEnd: trainingEnd, TestEnd: testEnd},
+	})
+	if err != nil {
+		t.Fatalf("ProfileService: %v", err)
+	}
+	if !result.AnalysisWindow.To.Equal(trainingEnd) {
+		t.Errorf("analysis window ends at %s, want the training end %s", result.AnalysisWindow.To, trainingEnd)
+	}
+	if !result.RawWindow.To.Equal(trainingEnd) {
+		t.Errorf("raw window ends at %s, want the training end %s", result.RawWindow.To, trainingEnd)
+	}
+	if len(fake.queries) == 0 {
+		t.Fatal("no elements were sent to assert on")
+	}
+	for _, elements := range fake.queries {
+		for _, element := range elements {
+			if element.Time == nil || element.Time.End == nil {
+				t.Fatalf("element without a time.end: %+v", element)
+			}
+			end, err := time.Parse(time.RFC3339, *element.Time.End)
+			if err != nil {
+				t.Fatalf("element time.end %q does not parse: %v", *element.Time.End, err)
+			}
+			if !end.Equal(trainingEnd) {
+				t.Errorf("element ends at %s, want the training end %s", end, trainingEnd)
+			}
+		}
+	}
+}
+
+// A requested analysis window starting at or after the training end lies
+// entirely in the test window, so it is refused with the structured,
+// model-readable error rather than silently intersected into an empty one.
+func TestAnAnalysisWindowStartingAtOrAfterTheTrainingEndIsRefused(t *testing.T) {
+	fake := meterFixture()
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+
+	trainingEnd := computeNow.Add(-7 * 24 * time.Hour)
+	testEnd := computeNow.Add(7 * 24 * time.Hour)
+	_, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+		AnalysisWindow: Window{
+			From: trainingEnd, // exactly at it: excluded, not merely beyond
+			To:   trainingEnd.Add(24 * time.Hour),
+		},
+		Split: &exposure.Split{TrainingEnd: trainingEnd, TestEnd: testEnd},
+	})
+	var beyond *exposure.BeyondTrainingEndError
+	if !errors.As(err, &beyond) {
+		t.Fatalf("error = %v, want a *exposure.BeyondTrainingEndError so the tool layer can relay it", err)
+	}
+	if !beyond.TrainingEnd.Equal(trainingEnd) {
+		t.Errorf("TrainingEnd = %s, want %s", beyond.TrainingEnd, trainingEnd)
+	}
+	if len(fake.queries) != 0 {
+		t.Error("a window refused before the read still reached the platform")
+	}
+}
+
+// A nil split leaves ProfileService exactly as it was: no window is touched and
+// no element is refused.
+func TestANilSplitLeavesTheProfilerUnaffected(t *testing.T) {
+	fake := meterFixture()
+	prof := newTestProfiler(t, fake, powerOntology(), computeNow)
+
+	result, err := prof.ProfileService(context.Background(), "Bearer caller", ProfileRequest{
+		Device:    meterDevice(testDeviceID, testServiceID),
+		ServiceID: testServiceID,
+	})
+	if err != nil {
+		t.Fatalf("ProfileService: %v", err)
+	}
+	if !result.AnalysisWindow.To.Equal(computeNow) {
+		t.Errorf("analysis window ends at %s, want the unclamped now %s", result.AnalysisWindow.To, computeNow)
 	}
 }
 

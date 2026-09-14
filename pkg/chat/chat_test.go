@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/admin"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
@@ -125,6 +126,10 @@ type ranTools struct {
 	// presented is the credential each call carried. It is what shows a token to be
 	// read per call rather than captured for the whole turn.
 	presented []string
+	// splits is the session's data split (D36) each call carried, in call order —
+	// what shows the split, like the token and the tier, to be read per call rather
+	// than captured once for the whole exchange.
+	splits []*exposure.Split
 }
 
 func (r *ranTools) executor(name string) tools.Executor {
@@ -133,8 +138,17 @@ func (r *ranTools) executor(name string) tools.Executor {
 		defer r.mux.Unlock()
 		r.called = append(r.called, name)
 		r.presented = append(r.presented, req.Token)
+		r.splits = append(r.splits, req.Split)
 		return map[string]any{"ran": name}, nil
 	}
+}
+
+// splitsSeen is the sequence of splits every dispatched call carried, in call
+// order.
+func (r *ranTools) splitsSeen() []*exposure.Split {
+	r.mux.Lock()
+	defer r.mux.Unlock()
+	return append([]*exposure.Split{}, r.splits...)
 }
 
 func (r *ranTools) tokens() []string {
@@ -563,6 +577,56 @@ func TestSystemPromptNamesTheTierAndWhatIsAbove(t *testing.T) {
 	}
 }
 
+// TestSystemPromptNamesTheAbsenceOfASplit is D36's default: a session that never
+// had a split set gets the sentence that says reads run up to now, not silence.
+func TestSystemPromptNamesTheAbsenceOfASplit(t *testing.T) {
+	h := newHarness(t, textTurn("hello"))
+	session := h.session(t, tools.L0)
+
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "hi")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	prompt := h.provider.lastRequest(t).System
+	if !strings.Contains(prompt, "No data split") {
+		t.Error("the system prompt does not say there is no data split")
+	}
+}
+
+// TestSystemPromptNamesTheDataSplit is D36's twin of
+// TestSystemPromptNamesTheTierAndWhatIsAbove: the model has to be told the training
+// end and told plainly to ask the developer instead of retrying with a narrower
+// window, because the tool result it would otherwise learn that from is a refusal
+// it has already tried to work around by then.
+func TestSystemPromptNamesTheDataSplit(t *testing.T) {
+	h := newHarness(t, textTurn("hello"))
+	session := h.session(t, tools.L0)
+
+	trainingEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	testEnd := trainingEnd.AddDate(0, 0, 7)
+	if _, err := h.engine.SetSplit(context.Background(), testUser, session.ID, &exposure.Split{
+		TrainingEnd: trainingEnd, TestEnd: testEnd,
+	}); err != nil {
+		t.Fatalf("SetSplit: %v", err)
+	}
+
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "hi")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	prompt := h.provider.lastRequest(t).System
+	if !strings.Contains(prompt, trainingEnd.Format(time.RFC3339)) {
+		t.Error("the system prompt does not state the session's training end")
+	}
+	if !strings.Contains(prompt, "refused") || !strings.Contains(prompt, "ask the developer") {
+		t.Error("the system prompt should tell the model to ask the developer rather than retry")
+	}
+}
+
 // TestLoweringTheTierMidExchangeTakesEffect checks that the tier is re-read per
 // iteration rather than captured once at the start of the exchange.
 func TestLoweringTheTierMidExchangeTakesEffect(t *testing.T) {
@@ -601,6 +665,87 @@ func TestLoweringTheTierMidExchangeTakesEffect(t *testing.T) {
 	}
 	if blocked == 0 {
 		t.Error("lowering the tier mid-exchange did not block the next call")
+	}
+}
+
+// TestDispatchedRequestCarriesTheSessionsSplit checks that the session's data
+// split (D36) reaches the executor on every dispatched call, the way the tier and
+// the token do (engine.go's four Request build sites).
+func TestDispatchedRequestCarriesTheSessionsSplit(t *testing.T) {
+	h := newHarness(t,
+		toolTurn("call-1", "l0_tool"),
+		textTurn("done"),
+	)
+	session := h.session(t, tools.L0)
+
+	trainingEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	testEnd := trainingEnd.AddDate(0, 0, 7)
+	if _, err := h.engine.SetSplit(context.Background(), testUser, session.ID, &exposure.Split{
+		TrainingEnd: trainingEnd, TestEnd: testEnd,
+	}); err != nil {
+		t.Fatalf("SetSplit: %v", err)
+	}
+
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	seen := h.tracker.splitsSeen()
+	if len(seen) != 1 {
+		t.Fatalf("dispatched calls = %d, want 1", len(seen))
+	}
+	if seen[0] == nil || !seen[0].TrainingEnd.Equal(trainingEnd) || !seen[0].TestEnd.Equal(testEnd) {
+		t.Errorf("dispatched split = %+v, want training_end=%s test_end=%s",
+			seen[0], trainingEnd, testEnd)
+	}
+}
+
+// TestNarrowingTheSplitMidExchangeTakesEffect is the split's twin of
+// TestLoweringTheTierMidExchangeTakesEffect: a developer setting a split while a
+// tool loop is running must bind the very next call, not only the next message —
+// see run()'s per-iteration re-read, which this proves rather than only the tier's.
+func TestNarrowingTheSplitMidExchangeTakesEffect(t *testing.T) {
+	h := newHarness(t,
+		toolTurn("call-1", "l0_tool"),
+		toolTurn("call-2", "l0_tool"),
+		textTurn("done"),
+	)
+	session := h.session(t, tools.L0)
+
+	trainingEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	testEnd := trainingEnd.AddDate(0, 0, 7)
+
+	var reads int
+	h.store.setHook(func() {
+		reads++
+		// The first read is iteration one, which dispatches with no split. Setting one
+		// here means iteration two re-reads the session and finds it.
+		if reads == 1 {
+			if _, err := h.engine.SetSplit(context.Background(), testUser, session.ID, &exposure.Split{
+				TrainingEnd: trainingEnd, TestEnd: testEnd,
+			}); err != nil {
+				t.Errorf("SetSplit: %v", err)
+			}
+		}
+	})
+
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	seen := h.tracker.splitsSeen()
+	if len(seen) != 2 {
+		t.Fatalf("dispatched calls = %d, want 2", len(seen))
+	}
+	if seen[0] != nil {
+		t.Errorf("the first call already carried a split: %+v", seen[0])
+	}
+	if seen[1] == nil || !seen[1].TrainingEnd.Equal(trainingEnd) {
+		t.Errorf("the second call split = %+v, want training_end=%s", seen[1], trainingEnd)
 	}
 }
 
@@ -1010,6 +1155,129 @@ func TestTierChangesAreAudited(t *testing.T) {
 		if changes[i].At.IsZero() {
 			t.Errorf("entry %d has no timestamp, which §3.2 requires", i)
 		}
+	}
+}
+
+// --- data split (D36) ---
+
+// TestSplitChangesAreAudited is D36's twin of TestTierChangesAreAudited. Unlike
+// the tier, a new session starts with no split and nothing is audited for that —
+// there is nothing to pre-register until a developer sets one — so the trail
+// begins at the first SetSplit rather than at creation.
+func TestSplitChangesAreAudited(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session := h.session(t, tools.L0)
+
+	first := exposure.Split{
+		TrainingEnd: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		TestEnd:     time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC),
+	}
+	set, err := h.engine.SetSplit(ctx, testUser, session.ID, &first)
+	if err != nil {
+		t.Fatalf("SetSplit: %v", err)
+	}
+	if set.Split == nil || !set.Split.Equal(first) {
+		t.Fatalf("session split = %+v, want %+v", set.Split, first)
+	}
+
+	second := exposure.Split{
+		TrainingEnd: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		TestEnd:     time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC),
+	}
+	if _, err := h.engine.SetSplit(ctx, testUser, session.ID, &second); err != nil {
+		t.Fatalf("SetSplit (change): %v", err)
+	}
+
+	cleared, err := h.engine.SetSplit(ctx, testUser, session.ID, nil)
+	if err != nil {
+		t.Fatalf("SetSplit (clear): %v", err)
+	}
+	if cleared.Split != nil {
+		t.Errorf("session split = %+v after clearing, want nil", cleared.Split)
+	}
+
+	changes, err := h.engine.SplitChanges(ctx, testUser, session.ID)
+	if err != nil {
+		t.Fatalf("SplitChanges: %v", err)
+	}
+	if len(changes) != 3 {
+		t.Fatalf("audit entries = %d, want 3 (set, change, clear)", len(changes))
+	}
+
+	if changes[0].From != nil {
+		t.Errorf("first entry from = %+v, want nil", changes[0].From)
+	}
+	if changes[0].To == nil || !changes[0].To.Equal(first) {
+		t.Errorf("first entry to = %+v, want %+v", changes[0].To, first)
+	}
+	if changes[1].From == nil || !changes[1].From.Equal(first) {
+		t.Errorf("second entry from = %+v, want %+v", changes[1].From, first)
+	}
+	if changes[1].To == nil || !changes[1].To.Equal(second) {
+		t.Errorf("second entry to = %+v, want %+v", changes[1].To, second)
+	}
+	if changes[2].From == nil || !changes[2].From.Equal(second) {
+		t.Errorf("third entry from = %+v, want %+v", changes[2].From, second)
+	}
+	if changes[2].To != nil {
+		t.Errorf("third entry to = %+v, want nil (cleared)", changes[2].To)
+	}
+	for i, change := range changes {
+		if change.UserSub != testUser {
+			t.Errorf("entry %d lost the user, which D36 requires the same way §3.2 does", i)
+		}
+		if change.At.IsZero() {
+			t.Errorf("entry %d has no timestamp", i)
+		}
+	}
+}
+
+// TestReversedSplitBoundsAreRefused checks that Validate's error reaches the
+// caller as exposure.ErrInvalidSplit, which is what the API handler maps to 400.
+func TestReversedSplitBoundsAreRefused(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session := h.session(t, tools.L0)
+
+	reversed := &exposure.Split{
+		TrainingEnd: time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC),
+		TestEnd:     time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+	}
+	if _, err := h.engine.SetSplit(ctx, testUser, session.ID, reversed); !errors.Is(err, exposure.ErrInvalidSplit) {
+		t.Errorf("SetSplit with reversed bounds = %v, want exposure.ErrInvalidSplit", err)
+	}
+}
+
+// TestSettingTheSameSplitTwiceIsNotANoOp mirrors the intent behind
+// TestLoweringAClampedSessionIsNotANoOp for the tier: SetSplit compares against the
+// *stored* split, so setting an equal split is the no-audit no-op the comment in
+// SetSplit describes, and a genuinely different one is never mistaken for it.
+func TestSettingTheSameSplitTwiceIsNotANoOp(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	session := h.session(t, tools.L0)
+
+	split := &exposure.Split{
+		TrainingEnd: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		TestEnd:     time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC),
+	}
+	if _, err := h.engine.SetSplit(ctx, testUser, session.ID, split); err != nil {
+		t.Fatalf("SetSplit: %v", err)
+	}
+	// The same bounds again, as a new pointer: equal by value, so this must not
+	// audit a second time.
+	same := &exposure.Split{TrainingEnd: split.TrainingEnd, TestEnd: split.TestEnd}
+	if _, err := h.engine.SetSplit(ctx, testUser, session.ID, same); err != nil {
+		t.Fatalf("SetSplit (repeat): %v", err)
+	}
+
+	changes, err := h.engine.SplitChanges(ctx, testUser, session.ID)
+	if err != nil {
+		t.Fatalf("SplitChanges: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("audit entries = %d, want 1: setting an equal split must not audit again", len(changes))
 	}
 }
 
