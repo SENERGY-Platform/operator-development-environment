@@ -370,7 +370,40 @@ Nothing here grades. The library computes no metric — what the target is and h
 far ahead the forecast looks are the protocol's to declare, and the library does
 not read `evaluation.yaml` — and ODE never reads the artifact into a tool
 response. It reaches the developer through MLflow and the results route, the way
-D34 serves the unmasked exception.
+D34 serves the unmasked exception. Scoring could later move into the library, once
+the protocol has fixed a target field and a horizon to declare in
+`evaluation.yaml`; until both exist there is nothing for a metric to be a metric
+*of*, and a plausible-looking MAE beside the artifact would be worse than none.
+
+### What "leakage" means here, since the replay reads history on purpose
+
+Inference at time *t* may read history from before *t*, and that includes values
+inside the test window that are older than the message being replayed. That is not
+a leak. It is how an online forecaster works: at nine o'clock it knows what
+happened at eight, and a model that were denied that would be evaluated on a
+problem nobody has. Leakage is seeing a value **at or after** *t*, and the clock is
+what prevents it — the replay moves it to each message's own time before calling
+`infer()`, so a bounded read inside `infer()` returns exactly what would have been
+available at that instant.
+
+That is also why `provide_historic_data` gained no `end` argument. The bound comes
+from the clock, and the clock from the config the launch owns, so operator code —
+which the assistant writes — has nothing to pass and nothing to get wrong. An
+operator that wants a narrower window inside training, a rolling-origin validation
+for instance, slices the frame it was handed; that is its own arithmetic over data
+it may already see, not a second bound competing with this one.
+
+Two refusals belong to the launch rather than to the run. A training end still in
+the future is refused, because the test window holds no data yet and a window with
+nothing in it is not an evaluation. And the replay is sequential `infer()` calls in
+the job's driver, so a test window of weeks at one-second resolution is millions of
+them: the launch sizes the window from the platform's usage accounting — stored
+bytes per day over the rough per-point size `estimate_read_cost` uses, for every
+device-backed topic — and refuses an estimate above
+`experiment_max_evaluation_rows`, one million by default, naming the estimate and
+the cap. A topic replayed from Kafka cannot be sized that way and is named in a
+warning instead, because refusing on a figure that does not exist would be worse
+than proceeding with the developer told.
 
 ## The way back out, which is the harder half
 

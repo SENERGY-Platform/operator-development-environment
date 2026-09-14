@@ -263,6 +263,19 @@ it is not an evaluation. How the split reaches a run, and what the run records s
 that the split can be checked rather than trusted, is in
 [experiments.md](experiments.md).
 
+Both bounds are UTC on the way in and on the way out. The route accepts RFC 3339
+with an offset and stores the instant, so a developer in any zone can type what
+their own clock says; everything after that — the audit, the deployment config, the
+run's own tags — is UTC, because a split compared across two of them is a split
+compared wrongly.
+
+**Undoing it costs nothing**, which is deliberate for a control that is set by
+hand and by judgement. The two columns are nullable and clearing the split is a
+normal, audited change rather than a migration; the two config fields the launch
+writes are optional, and their absence is the path every deployed operator already
+takes. So a session that turns out to have the wrong bound is corrected by setting
+another one, and a deployment that wants none of this simply never sets one.
+
 ## Auto mode: a standing answer, not a weaker gate
 
 A developer reading a dataframe meets `run_code`'s confirmation dozens of times an

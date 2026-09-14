@@ -386,8 +386,8 @@ type DataRequest struct {
 //
 // The data split (D36) is not applied again here, and that is deliberate rather
 // than an omission: it binds the model's tools and the launches from the
-// session, not the developer's own reads (PLAN.md's Assumptions, matching how
-// the tier already binds the model and not the person). Service.normalise
+// session, not the developer's own reads (docs/authorisation-and-exposure-tiers.md,
+// matching how the tier already binds the model and not the person). Service.normalise
 // clamped spec.Window once, at creation, from the request that carried the
 // model's split — so a chart the model proposed cannot itself reach the test
 // window — but a developer who later pans this same chart with req.Window
