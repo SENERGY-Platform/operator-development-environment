@@ -1419,12 +1419,17 @@ definitions:
           InputTopics are the stored record's, not recomputed, so a run approved with
           an edited input reports what it actually read.
 
-          No tier masking, and that is a considered omission rather than an oversight:
-          a topic names a device id and a message path, launch_experiment is an L0 tool
-          that already receives exactly these in its own input, and
-          propose_data_selection takes a device_id at L0 too — so §3.2 has nothing here
-          to withhold. Masking it would only cost a model the ability to say which
-          device its own launch actually ran against after a developer's edit.
+          No tier masking, and that is a considered omission rather than an oversight.
+          The reason is *not* that the model already sent these itself — it may well
+          not have. A developer may move a topic to another device before approving,
+          and get_experiment_results reads back any of the developer's runs, including
+          ones this conversation never launched; in both cases this field tells the
+          model a device id it never wrote. The reason is that a device id is an
+          identity rather than a value: §3.2 bounds what a model learns about the
+          *readings* of a series, and propose_data_selection already takes a device_id
+          at L0, so naming a device is not what the tier withholds. Masking it would
+          only cost a model the ability to say which device a run actually read —
+          which is the one thing a developer's edit makes it unable to infer.
         items:
           $ref: '#/definitions/experiments.InputTopic'
         type: array
