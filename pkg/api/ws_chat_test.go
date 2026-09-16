@@ -382,6 +382,20 @@ func TestWSChatRefusalsCarryAStatus(t *testing.T) {
 		{"decision without a decision", "chat_decide",
 			map[string]any{"session_id": sessionID, "confirmation_id": "x"},
 			http.StatusBadRequest},
+		// an edited input has nothing to apply to a decline. Refused before
+		// either transport ever looks up the confirmation, so "nope" never needs to
+		// exist for this case — see TestDecliningWithAnEditedInputIsRefusedIdentically
+		// for the exact wording, which both transports must share.
+		{"chat_confirm decline with an edited input", "chat_confirm",
+			map[string]any{
+				"session_id": sessionID, "confirmation_id": "nope",
+				"approve": false, "input": map[string]any{"a": 1},
+			}, http.StatusBadRequest},
+		{"chat_decide decline with an edited input", "chat_decide",
+			map[string]any{
+				"session_id": sessionID, "confirmation_id": "nope",
+				"approve": false, "input": map[string]any{"a": 1},
+			}, http.StatusBadRequest},
 	}
 
 	for i, tc := range cases {
@@ -396,6 +410,41 @@ func TestWSChatRefusalsCarryAStatus(t *testing.T) {
 			}
 			if frame.Status != tc.status {
 				t.Errorf("status = %d, want %d (%s)", frame.Status, tc.status, frame.Error)
+			}
+		})
+	}
+}
+
+// TestDecliningWithAnEditedInputIsRefusedIdentically is B1's own requirement: the
+// two transports share one unexported check in ws_chat.go precisely so they
+// cannot drift on the wording, and this asserts they have not — same status,
+// same sentence, from both chat_confirm (a stopped turn) and chat_decide (a held
+// call).
+func TestDecliningWithAnEditedInputIsRefusedIdentically(t *testing.T) {
+	h := newWSChatHarness(t)
+	sessionID := h.session(t)
+	conn := h.dial(t)
+
+	const wantError = "an edited input has nothing to apply to a decline"
+
+	for _, kind := range []string{"chat_confirm", "chat_decide"} {
+		t.Run(kind, func(t *testing.T) {
+			id := "decline-" + kind
+			writeFrame(t, conn, kind, id, map[string]any{
+				"session_id": sessionID, "confirmation_id": "nope",
+				"approve": false, "input": map[string]any{"a": 1},
+			})
+			_, frame := readUntil(t, conn, func(f wsFrame) bool {
+				return f.ID == id && (f.Type == "error" || f.Type == "accepted")
+			})
+			if frame.Type != "error" {
+				t.Fatalf("%s: got %+v, want an error", kind, frame)
+			}
+			if frame.Status != http.StatusBadRequest {
+				t.Errorf("%s: status = %d, want 400", kind, frame.Status)
+			}
+			if frame.Error != wantError {
+				t.Errorf("%s: error = %q, want exactly %q", kind, frame.Error, wantError)
 			}
 		})
 	}

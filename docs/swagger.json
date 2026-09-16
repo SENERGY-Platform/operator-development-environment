@@ -2346,6 +2346,81 @@
                 }
             }
         },
+        "/input-topics/resolve": {
+            "post": {
+                "description": "Without device_id, describes the topic against the device it\nalready names. With device_id, rewrites the topic — its name,\nfilterValue and every mapping source — for that device, deriving\nthe counterpart variable from the target device type rather than\nassuming a name or a path survives a device change. Reads the\ntopic's own device under Execute (§5.1: this route decides which\nhistory a run will read), and with device_id present, the target\ndevice the same way.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "experiments"
+                ],
+                "summary": "Describe or retarget one launch_experiment input topic",
+                "parameters": [
+                    {
+                        "description": "the topic, and optionally the device to move it to",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.resolveInputTopicBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/experiments.Resolved"
+                        }
+                    },
+                    "400": {
+                        "description": "a malformed topic, or one that cannot be derived",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "the platform refused this user a device named by the topic",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
         "/kernel": {
             "get": {
                 "description": "Resolved from the caller's own token: no route here takes a user\nparameter, which is what makes \"your pod\" mean yours (§5.6).",
@@ -5802,6 +5877,17 @@
                 }
             }
         },
+        "api.resolveInputTopicBody": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string"
+                },
+                "topic": {
+                    "$ref": "#/definitions/experiments.InputTopic"
+                }
+            }
+        },
         "api.selectBody": {
             "type": "object",
             "properties": {
@@ -6449,6 +6535,23 @@
                 }
             }
         },
+        "experiments.Alternative": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string"
+                },
+                "unit": {
+                    "type": "string"
+                },
+                "variable_name": {
+                    "type": "string"
+                },
+                "variable_path": {
+                    "type": "string"
+                }
+            }
+        },
         "experiments.Credential": {
             "type": "object",
             "properties": {
@@ -6534,6 +6637,13 @@
                 "experiment_id": {
                     "description": "ID is ODE's own identifier, the one that appears in URLs. Separate from\nSubmissionID because the two have different owners: a Ray cluster may be\nreplaced, and a developer's own list of what they ran should survive that.",
                     "type": "string"
+                },
+                "input_topics": {
+                    "description": "InputTopics are the operator's inputs this run actually read. Recorded rather\nthan recomputed: a launch may be approved with an input the developer edited\n, so the topics the model proposed and the topics that ran are not\nnecessarily the same, and only this row says which ran.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/experiments.InputTopic"
+                    }
                 },
                 "message": {
                     "description": "Message is Ray's own, for a job that failed. Never a log.",
@@ -6712,6 +6822,13 @@
                     "description": "ID is ODE's own identifier, the one that appears in URLs. Separate from\nSubmissionID because the two have different owners: a Ray cluster may be\nreplaced, and a developer's own list of what they ran should survive that.",
                     "type": "string"
                 },
+                "input_topics": {
+                    "description": "InputTopics are the operator's inputs this run actually read. Recorded rather\nthan recomputed: a launch may be approved with an input the developer edited\n, so the topics the model proposed and the topics that ran are not\nnecessarily the same, and only this row says which ran.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/experiments.InputTopic"
+                    }
+                },
                 "message": {
                     "description": "Message is Ray's own, for a job that failed. Never a log.",
                     "type": "string"
@@ -6834,6 +6951,96 @@
                 }
             }
         },
+        "experiments.Resolved": {
+            "type": "object",
+            "properties": {
+                "alternatives": {
+                    "description": "Alternatives are the matched service's other queryable variables, written\nin the same source convention as the topic's own mappings (mapping 0's,\nsince every mapping resolves to one service — see Retarget). A developer\nuses this to correct a derivation that picked a plausible but wrong\nvariable.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/experiments.Alternative"
+                    }
+                },
+                "device": {
+                    "$ref": "#/definitions/experiments.ResolvedDevice"
+                },
+                "mappings": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/experiments.ResolvedMapping"
+                    }
+                },
+                "service": {
+                    "$ref": "#/definitions/experiments.ResolvedService"
+                },
+                "topic": {
+                    "$ref": "#/definitions/experiments.InputTopic"
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "experiments.ResolvedDevice": {
+            "type": "object",
+            "properties": {
+                "device_type_id": {
+                    "type": "string"
+                },
+                "device_type_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "experiments.ResolvedMapping": {
+            "type": "object",
+            "properties": {
+                "aspect_id": {
+                    "type": "string"
+                },
+                "characteristic_id": {
+                    "type": "string"
+                },
+                "dest": {
+                    "type": "string"
+                },
+                "function_id": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "unit": {
+                    "type": "string"
+                },
+                "variable_name": {
+                    "type": "string"
+                },
+                "variable_path": {
+                    "type": "string"
+                }
+            }
+        },
+        "experiments.ResolvedService": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
         "experiments.ResourceUsage": {
             "type": "object",
             "properties": {
@@ -6938,6 +7145,13 @@
                 "finished": {
                     "description": "Finished says the run is in a state it will not leave, so a model can tell a\nfinal metric from a snapshot of one still moving.",
                     "type": "boolean"
+                },
+                "input_topics": {
+                    "description": "InputTopics are the stored record's, not recomputed, so a run approved with\nan edited input reports what it actually read.\n\nNo tier masking, and that is a considered omission rather than an oversight:\na topic names a device id and a message path, launch_experiment is an L0 tool\nthat already receives exactly these in its own input, and\npropose_data_selection takes a device_id at L0 too — so §3.2 has nothing here\nto withhold. Masking it would only cost a model the ability to say which\ndevice its own launch actually ran against after a developer's edit.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/experiments.InputTopic"
+                    }
                 },
                 "metric_times": {
                     "description": "MetricTimes is the maximum MLflow timestamp logged for each key in Metrics\n(Unix milliseconds, over the metric's whole history — not only the point\nlatestMetrics selects as latest). MaskedFor needs it to tell a value\nwritten during training from one written after (D37), and it has to be an\nexported, JSON-tagged field rather than something recomputed at read time:\na finished run's summary is persisted as encoded JSON (store.go's\nPutSummary/GetSummary) and reloaded on every later read, so an unexported\nfield would silently stop carrying the timestamps for exactly the cached\nruns. MaskedFor clears it on the copy it returns — a model never reads a\ntimestamp back, only the count above.",

@@ -300,6 +300,13 @@ definitions:
       variable_path:
         type: string
     type: object
+  api.resolveInputTopicBody:
+    properties:
+      device_id:
+        type: string
+      topic:
+        $ref: '#/definitions/experiments.InputTopic'
+    type: object
   api.selectBody:
     properties:
       full_name:
@@ -835,6 +842,17 @@ definitions:
           they have one, so no conversation loses its code context.
         type: string
     type: object
+  experiments.Alternative:
+    properties:
+      source:
+        type: string
+      unit:
+        type: string
+      variable_name:
+        type: string
+      variable_path:
+        type: string
+    type: object
   experiments.Credential:
     properties:
       expires_in_seconds:
@@ -922,6 +940,15 @@ definitions:
           SubmissionID because the two have different owners: a Ray cluster may be
           replaced, and a developer's own list of what they ran should survive that.
         type: string
+      input_topics:
+        description: |-
+          InputTopics are the operator's inputs this run actually read. Recorded rather
+          than recomputed: a launch may be approved with an input the developer edited
+          , so the topics the model proposed and the topics that ran are not
+          necessarily the same, and only this row says which ran.
+        items:
+          $ref: '#/definitions/experiments.InputTopic'
+        type: array
       message:
         description: Message is Ray's own, for a job that failed. Never a log.
         type: string
@@ -1084,6 +1111,15 @@ definitions:
           SubmissionID because the two have different owners: a Ray cluster may be
           replaced, and a developer's own list of what they ran should survive that.
         type: string
+      input_topics:
+        description: |-
+          InputTopics are the operator's inputs this run actually read. Recorded rather
+          than recomputed: a launch may be approved with an input the developer edited
+          , so the topics the model proposed and the topics that ran are not
+          necessarily the same, and only this row says which ran.
+        items:
+          $ref: '#/definitions/experiments.InputTopic'
+        type: array
       message:
         description: Message is Ray's own, for a job that failed. Never a log.
         type: string
@@ -1197,6 +1233,70 @@ definitions:
       reason:
         $ref: '#/definitions/experiments.FailureReason'
       status:
+        type: string
+    type: object
+  experiments.Resolved:
+    properties:
+      alternatives:
+        description: |-
+          Alternatives are the matched service's other queryable variables, written
+          in the same source convention as the topic's own mappings (mapping 0's,
+          since every mapping resolves to one service — see Retarget). A developer
+          uses this to correct a derivation that picked a plausible but wrong
+          variable.
+        items:
+          $ref: '#/definitions/experiments.Alternative'
+        type: array
+      device:
+        $ref: '#/definitions/experiments.ResolvedDevice'
+      mappings:
+        items:
+          $ref: '#/definitions/experiments.ResolvedMapping'
+        type: array
+      service:
+        $ref: '#/definitions/experiments.ResolvedService'
+      topic:
+        $ref: '#/definitions/experiments.InputTopic'
+      warnings:
+        items:
+          type: string
+        type: array
+    type: object
+  experiments.ResolvedDevice:
+    properties:
+      device_type_id:
+        type: string
+      device_type_name:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+    type: object
+  experiments.ResolvedMapping:
+    properties:
+      aspect_id:
+        type: string
+      characteristic_id:
+        type: string
+      dest:
+        type: string
+      function_id:
+        type: string
+      source:
+        type: string
+      unit:
+        type: string
+      variable_name:
+        type: string
+      variable_path:
+        type: string
+    type: object
+  experiments.ResolvedService:
+    properties:
+      id:
+        type: string
+      name:
         type: string
     type: object
   experiments.ResourceUsage:
@@ -1314,6 +1414,20 @@ definitions:
           Finished says the run is in a state it will not leave, so a model can tell a
           final metric from a snapshot of one still moving.
         type: boolean
+      input_topics:
+        description: |-
+          InputTopics are the stored record's, not recomputed, so a run approved with
+          an edited input reports what it actually read.
+
+          No tier masking, and that is a considered omission rather than an oversight:
+          a topic names a device id and a message path, launch_experiment is an L0 tool
+          that already receives exactly these in its own input, and
+          propose_data_selection takes a device_id at L0 too — so §3.2 has nothing here
+          to withhold. Masking it would only cost a model the ability to say which
+          device its own launch actually ran against after a developer's edit.
+        items:
+          $ref: '#/definitions/experiments.InputTopic'
+        type: array
       metric_times:
         additionalProperties:
           format: int64
@@ -5160,6 +5274,62 @@ paths:
       summary: Liveness
       tags:
       - meta
+  /input-topics/resolve:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Without device_id, describes the topic against the device it
+        already names. With device_id, rewrites the topic — its name,
+        filterValue and every mapping source — for that device, deriving
+        the counterpart variable from the target device type rather than
+        assuming a name or a path survives a device change. Reads the
+        topic's own device under Execute (§5.1: this route decides which
+        history a run will read), and with device_id present, the target
+        device the same way.
+      parameters:
+      - description: the topic, and optionally the device to move it to
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.resolveInputTopicBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/experiments.Resolved'
+        "400":
+          description: a malformed topic, or one that cannot be derived
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: the platform refused this user a device named by the topic
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Describe or retarget one launch_experiment input topic
+      tags:
+      - experiments
   /kernel:
     delete:
       description: |-

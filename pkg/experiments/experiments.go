@@ -142,6 +142,11 @@ type Experiment struct {
 	// reads it to write the bounds into the deployment config, and the summary reads
 	// it to check that the run's own tags confirm them.
 	Split *exposure.Split `json:"data_split,omitempty"`
+	// InputTopics are the operator's inputs this run actually read. Recorded rather
+	// than recomputed: a launch may be approved with an input the developer edited
+	//, so the topics the model proposed and the topics that ran are not
+	// necessarily the same, and only this row says which ran.
+	InputTopics []InputTopic `json:"input_topics,omitempty"`
 }
 
 // Credential describes what the job will authenticate to the platform with, and
@@ -270,6 +275,21 @@ type Summary struct {
 	// MaskedFor need not touch it: masking exists for what a traceback can smuggle
 	// out of a developer's series, and nothing here can.
 	Split *SplitReport `json:"data_split,omitempty"`
+	// InputTopics are the stored record's, not recomputed, so a run approved with
+	// an edited input reports what it actually read.
+	//
+	// No tier masking, and that is a considered omission rather than an oversight.
+	// The reason is *not* that the model already sent these itself — it may well
+	// not have. A developer may move a topic to another device before approving,
+	// and get_experiment_results reads back any of the developer's runs, including
+	// ones this conversation never launched; in both cases this field tells the
+	// model a device id it never wrote. The reason is that a device id is an
+	// identity rather than a value: §3.2 bounds what a model learns about the
+	// *readings* of a series, and propose_data_selection already takes a device_id
+	// at L0, so naming a device is not what the tier withholds. Masking it would
+	// only cost a model the ability to say which device a run actually read —
+	// which is the one thing a developer's edit makes it unable to infer.
+	InputTopics []InputTopic `json:"input_topics,omitempty"`
 }
 
 // SplitReport is step 16's confirmation: the bounds ODE told the run to train

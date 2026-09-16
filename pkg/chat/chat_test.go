@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -130,6 +132,10 @@ type ranTools struct {
 	// what shows the split, like the token and the tier, to be read per call rather
 	// than captured once for the whole exchange.
 	splits []*exposure.Split
+	// inputs is the raw input each call actually ran with, in call order — what an
+	// approved-with-changes confirmation is scored against: not what the
+	// model proposed, but what the executor received.
+	inputs []json.RawMessage
 }
 
 func (r *ranTools) executor(name string) tools.Executor {
@@ -139,8 +145,16 @@ func (r *ranTools) executor(name string) tools.Executor {
 		r.called = append(r.called, name)
 		r.presented = append(r.presented, req.Token)
 		r.splits = append(r.splits, req.Split)
+		r.inputs = append(r.inputs, req.Input)
 		return map[string]any{"ran": name}, nil
 	}
+}
+
+// inputsSeen is the sequence of inputs every dispatched call actually ran with.
+func (r *ranTools) inputsSeen() []json.RawMessage {
+	r.mux.Lock()
+	defer r.mux.Unlock()
+	return append([]json.RawMessage{}, r.inputs...)
 }
 
 // splitsSeen is the sequence of splits every dispatched call carried, in call
@@ -326,8 +340,14 @@ func find(events []Event, kind EventType) []Event {
 
 // toolTurn scripts a turn that calls one tool.
 func toolTurn(id, name string) []llm.Event {
+	return toolTurnWithInput(id, name, json.RawMessage(`{}`))
+}
+
+// toolTurnWithInput is toolTurn with a proposed input worth editing — plain `{}`
+// has nothing in it for a developer's approval to change.
+func toolTurnWithInput(id, name string, input json.RawMessage) []llm.Event {
 	return []llm.Event{
-		llm.ToolCallEvent(llm.ToolCall{ID: id, Name: name, Input: json.RawMessage(`{}`)}),
+		llm.ToolCallEvent(llm.ToolCall{ID: id, Name: name, Input: input}),
 		llm.DoneEvent("tool_use", llm.Usage{
 			InputTokens: 10, OutputTokens: 5, Provider: "fake", Model: "fake-model",
 		}),
@@ -791,7 +811,7 @@ func TestConfirmationHoldsTheExchange(t *testing.T) {
 
 	// Approving runs the tool and continues.
 	resumed, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
-		session.ID, pending[0].ID, true)
+		session.ID, pending[0].ID, true, nil)
 	if err != nil {
 		t.Fatalf("Confirm: %v", err)
 	}
@@ -832,7 +852,7 @@ func TestConfirmAnnouncesTheDecisionOnTheResumedExchange(t *testing.T) {
 	}
 
 	resumed, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
-		session.ID, pending[0].ID, true)
+		session.ID, pending[0].ID, true, nil)
 	if err != nil {
 		t.Fatalf("Confirm: %v", err)
 	}
@@ -866,7 +886,7 @@ func TestRejectingAConfirmationDoesNotRunTheTool(t *testing.T) {
 	}
 
 	resumed, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
-		session.ID, pending[0].ID, false)
+		session.ID, pending[0].ID, false, nil)
 	if err != nil {
 		t.Fatalf("Confirm: %v", err)
 	}
@@ -878,7 +898,7 @@ func TestRejectingAConfirmationDoesNotRunTheTool(t *testing.T) {
 
 	// And it must be resolved, so it cannot be replayed.
 	if _, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
-		session.ID, pending[0].ID, true); !errors.Is(err, ErrAlreadyResolved) {
+		session.ID, pending[0].ID, true, nil); !errors.Is(err, ErrAlreadyResolved) {
 		t.Errorf("re-confirming gave %v, want ErrAlreadyResolved", err)
 	}
 }
@@ -897,7 +917,7 @@ func TestConfirmedCallProducesOneToolResultOnly(t *testing.T) {
 	events, _ := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "do it")
 	drain(t, events)
 	pending, _ := h.engine.PendingConfirmations(context.Background(), testUser, session.ID)
-	resumed, _ := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser, session.ID, pending[0].ID, true)
+	resumed, _ := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser, session.ID, pending[0].ID, true, nil)
 	drain(t, resumed)
 
 	messages, err := h.engine.Messages(context.Background(), testUser, session.ID)
@@ -917,6 +937,176 @@ func TestConfirmedCallProducesOneToolResultOnly(t *testing.T) {
 			t.Errorf("tool_use %q was answered %d times; both native protocols reject that",
 				callID, count)
 		}
+	}
+}
+
+// --- a confirmation approved with an input ---
+
+// TestApprovingWithAnInputRunsAndRecordsIt is the property the change is for: the
+// developer's edit is what runs, and the record keeps both what the model
+// proposed and what was applied.
+func TestApprovingWithAnInputRunsAndRecordsIt(t *testing.T) {
+	proposed := json.RawMessage(`{"device_id":"urn:a"}`)
+	h := newHarness(t,
+		toolTurnWithInput("call-1", "confirmed_tool", proposed),
+		textTurn("done"),
+	)
+	session := h.session(t, tools.L0)
+
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "do it")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	pending, err := h.engine.PendingConfirmations(context.Background(), testUser, session.ID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending = %v, err = %v; want one", pending, err)
+	}
+	edited := json.RawMessage(`{"device_id":"urn:b"}`)
+
+	resumed, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
+		session.ID, pending[0].ID, true, edited)
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	drain(t, resumed)
+
+	seen := h.tracker.inputsSeen()
+	if len(seen) != 1 || string(seen[0]) != string(edited) {
+		t.Errorf("the tool ran with %v, want the edited input %s", seen, edited)
+	}
+
+	confirmation, found, err := h.store.Confirmation(context.Background(), pending[0].ID)
+	if err != nil || !found {
+		t.Fatalf("Confirmation: found=%v err=%v", found, err)
+	}
+	if string(confirmation.Input) != string(proposed) {
+		t.Errorf("stored input = %s, want the model's own proposal %s unchanged",
+			confirmation.Input, proposed)
+	}
+	if string(confirmation.AppliedInput) != string(edited) {
+		t.Errorf("stored applied_input = %s, want the edited input %s", confirmation.AppliedInput, edited)
+	}
+}
+
+// TestApprovingWithoutAnInputRecordsNoAppliedInput is the other half: an ordinary
+// approval must not manufacture an edit that never happened.
+func TestApprovingWithoutAnInputRecordsNoAppliedInput(t *testing.T) {
+	h := newHarness(t,
+		toolTurn("call-1", "confirmed_tool"),
+		textTurn("done"),
+	)
+	session := h.session(t, tools.L0)
+
+	events, _ := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "do it")
+	drain(t, events)
+	pending, _ := h.engine.PendingConfirmations(context.Background(), testUser, session.ID)
+
+	resumed, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
+		session.ID, pending[0].ID, true, nil)
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	drain(t, resumed)
+
+	confirmation, found, err := h.store.Confirmation(context.Background(), pending[0].ID)
+	if err != nil || !found {
+		t.Fatalf("Confirmation: found=%v err=%v", found, err)
+	}
+	if confirmation.AppliedInput != nil {
+		t.Errorf("applied_input = %s, want nil for an unedited approval", confirmation.AppliedInput)
+	}
+}
+
+// TestTheDecisionTurnNamesTheChangedPaths is what the model is told, and is what
+// keeps its context from describing a launch that did not happen.
+func TestTheDecisionTurnNamesTheChangedPaths(t *testing.T) {
+	proposed := json.RawMessage(`{"device_id":"urn:a"}`)
+	h := newHarness(t,
+		toolTurnWithInput("call-1", "confirmed_tool", proposed),
+		textTurn("done"),
+	)
+	session := h.session(t, tools.L0)
+
+	events, _ := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "do it")
+	drain(t, events)
+	pending, _ := h.engine.PendingConfirmations(context.Background(), testUser, session.ID)
+	edited := json.RawMessage(`{"device_id":"urn:b"}`)
+
+	resumed, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
+		session.ID, pending[0].ID, true, edited)
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	drain(t, resumed)
+
+	messages, err := h.engine.Messages(context.Background(), testUser, session.ID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	var found string
+	for _, message := range messages {
+		if message.Role != llm.RoleUser {
+			continue
+		}
+		if got := text(message); strings.Contains(got, "after changing it") {
+			found = got
+		}
+	}
+	if found == "" {
+		t.Fatal("no decision turn said the input was changed")
+	}
+	if !strings.Contains(found, "device_id") {
+		t.Errorf("the decision turn does not name the changed path: %q", found)
+	}
+	if !strings.Contains(found, "urn:a") || !strings.Contains(found, "urn:b") {
+		t.Errorf("the decision turn does not show old and new values: %q", found)
+	}
+}
+
+// TestAnEditedInputIsStillSubjectToTheTierGate is the invariant the whole change
+// rests on: an edit must not be a way past a tier that was lowered after the
+// model proposed the call. Dispatcher.Confirm is unchanged and re-checks req.Tier
+// against the tool's own MinTier regardless of what pending.Input is, so this
+// holds for the very same reason TestAHeldCallReReadsTheTierWhenItIsApproved does
+// on the held path.
+func TestAnEditedInputIsStillSubjectToTheTierGate(t *testing.T) {
+	h := newHarness(t,
+		toolTurn("call-1", "confirmed_l2_tool"),
+		textTurn("done"),
+	)
+	session := h.session(t, tools.L2)
+
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "do it")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+	pending, _ := h.engine.PendingConfirmations(context.Background(), testUser, session.ID)
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1", len(pending))
+	}
+
+	if _, err := h.engine.SetTier(context.Background(), testUser, session.ID, tools.L0); err != nil {
+		t.Fatalf("SetTier: %v", err)
+	}
+
+	resumed, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
+		session.ID, pending[0].ID, true, json.RawMessage(`{"edited":true}`))
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	collected := drain(t, resumed)
+
+	if h.tracker.was("confirmed_l2_tool") {
+		t.Fatal("an edited input ran an L2 tool after the session was lowered to L0")
+	}
+	results := find(collected, EventToolResult)
+	if len(results) != 1 || results[0].ToolResult == nil ||
+		results[0].ToolResult.Outcome != tools.OutcomeBlockedByTier {
+		t.Errorf("result = %+v, want outcome %q — the tier at approval still governs an edited call",
+			collected, tools.OutcomeBlockedByTier)
 	}
 }
 
@@ -1115,6 +1305,134 @@ func TestUsageIsRecordedForTheExchange(t *testing.T) {
 	}
 	if spend.Tokens != 30 {
 		t.Errorf("recorded tokens = %d, want 30", spend.Tokens)
+	}
+}
+
+// runLogLines reads back what a *llm.RunLog wrote, one entry per line.
+func runLogLines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read run log: %v", err)
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
+}
+
+func TestRunLogWritesOneLineWithTheCallCountAndTheFourTokenKinds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.log")
+	runLog, err := llm.NewRunLog(path)
+	if err != nil {
+		t.Fatalf("NewRunLog: %v", err)
+	}
+	defer runLog.Close()
+
+	h := newHarness(t,
+		[]llm.Event{
+			llm.ToolCallEvent(llm.ToolCall{ID: "c1", Name: "l0_tool", Input: json.RawMessage(`{}`)}),
+			llm.DoneEvent("tool_use", llm.Usage{
+				InputTokens: 10, OutputTokens: 5, CachedInputTokens: 3, CacheWriteTokens: 2,
+				Provider: "fake", Model: "fake-model",
+			}),
+		},
+		[]llm.Event{
+			llm.TextEvent("done"),
+			llm.DoneEvent("end_turn", llm.Usage{
+				InputTokens: 8, OutputTokens: 4, CachedInputTokens: 1, CacheWriteTokens: 1,
+				Provider: "fake", Model: "fake-model",
+			}),
+		},
+	)
+	// The harness above only exists for its collaborators; rebuild the engine with
+	// the run log wired in, the same way TestAToolResultWriteRefusedByACancelledContextIsRetried
+	// rebuilds it over a different store.
+	engine, err := New(context.Background(), h.engine.providers, h.engine.dispatcher, h.store,
+		h.engine.limits, &fixedIDs{}, Options{RunLog: runLog, Currency: "EUR"})
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	h.engine = engine
+
+	session := h.session(t, tools.L0)
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	lines := runLogLines(t, path)
+	if len(lines) != 1 {
+		t.Fatalf("run log lines = %d, want 1", len(lines))
+	}
+	var entry llm.RunEntry
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("decode run log line: %v", err)
+	}
+	// Two turns, one provider call each — not the iteration cap.
+	if entry.Calls != 2 {
+		t.Errorf("Calls = %d, want 2", entry.Calls)
+	}
+	if entry.InputTokens != 18 {
+		t.Errorf("InputTokens = %d, want 18", entry.InputTokens)
+	}
+	if entry.OutputTokens != 9 {
+		t.Errorf("OutputTokens = %d, want 9", entry.OutputTokens)
+	}
+	if entry.CachedInputTokens != 4 {
+		t.Errorf("CachedInputTokens = %d, want 4", entry.CachedInputTokens)
+	}
+	if entry.CacheWriteTokens != 3 {
+		t.Errorf("CacheWriteTokens = %d, want 3", entry.CacheWriteTokens)
+	}
+	if entry.Currency != "EUR" {
+		t.Errorf("Currency = %q, want EUR", entry.Currency)
+	}
+}
+
+func TestRunLogWritesNoLineWhenNoProviderCallWasMade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.log")
+	runLog, err := llm.NewRunLog(path)
+	if err != nil {
+		t.Fatalf("NewRunLog: %v", err)
+	}
+	defer runLog.Close()
+
+	h := newHarness(t)
+	engine, err := New(context.Background(), h.engine.providers, h.engine.dispatcher, h.store,
+		h.engine.limits, &fixedIDs{}, Options{RunLog: runLog, Currency: "EUR"})
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	h.engine = engine
+
+	ctx := context.Background()
+	session := h.session(t, tools.L0)
+	// Points the session at a provider the registry never received, so run() fails
+	// before it ever opens a stream — the "no provider call" case the log must stay
+	// quiet for.
+	stored, found, err := h.store.Session(ctx, session.ID)
+	if err != nil || !found {
+		t.Fatalf("Session: found=%v err=%v", found, err)
+	}
+	stored.Provider = "not-configured"
+	if err := h.store.UpdateSession(ctx, stored); err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+
+	events, err := h.engine.Send(ctx, StaticToken(testToken), testUser, session.ID, "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	collected := drain(t, events)
+	if errs := find(collected, EventError); len(errs) == 0 {
+		t.Fatal("expected an error event for the unconfigured provider")
+	}
+
+	if lines := runLogLines(t, path); len(lines) != 0 {
+		t.Errorf("run log lines = %d, want 0, got %v", len(lines), lines)
 	}
 }
 
@@ -1641,7 +1959,7 @@ func TestAConfirmedToolUsesTheTokenOfTheDecision(t *testing.T) {
 	}
 
 	resumed, err := h.engine.Confirm(context.Background(), StaticToken("Bearer at-decision"), testUser,
-		session.ID, pending[0].ID, true)
+		session.ID, pending[0].ID, true, nil)
 	if err != nil {
 		t.Fatalf("Confirm: %v", err)
 	}

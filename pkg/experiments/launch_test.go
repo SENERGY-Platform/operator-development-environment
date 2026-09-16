@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -421,6 +422,57 @@ func TestTheRayServiceAccountReachesTheCluster(t *testing.T) {
 		}
 	}
 	t.Errorf("no request carried the configured Ray credential; saw %v", h.ray.Tokens)
+}
+
+// --- input topics recorded and read back ---
+
+// A launch's input topics are stored, not recomputed: a confirmed launch may
+// later be approved with an input the developer edited, and only the
+// record says which topics actually ran.
+func TestALaunchStoresItsInputTopicsAndReadsThemBackUnchanged(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	result := h.launch()
+	if !reflect.DeepEqual(result.InputTopics, testInputTopics()) {
+		t.Errorf("launch result input_topics = %+v, want the launched topics %+v",
+			result.InputTopics, testInputTopics())
+	}
+
+	record, err := h.service.Get(context.Background(), h.request(), result.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !reflect.DeepEqual(record.InputTopics, testInputTopics()) {
+		t.Errorf("reading the experiment back = %+v, want the topics it was launched "+
+			"with %+v, unchanged", record.InputTopics, testInputTopics())
+	}
+}
+
+// The column is NOT NULL and defaults to `[]`, which is what an experiment
+// launched before this field existed reads back as. This is the memory store's
+// half of that contract — the one this suite actually exercises
+// (docs/testing.md): PostgresStore's own JSONB encoding and decoding needs a
+// live database to run against, and this suite runs none.
+func TestARecordWithNoInputTopicsReadsBackAsNilNotAsAPanic(t *testing.T) {
+	store := experiments.NewMemoryStore()
+	record := experiments.Experiment{
+		ID: "exp-old", UserSub: testUserSub, Status: experiments.StatusSucceeded,
+	}
+	if err := store.Put(context.Background(), record); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	read, found, err := store.Get(context.Background(), testUserSub, "exp-old")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !found {
+		t.Fatal("the record was not found")
+	}
+	if read.InputTopics != nil {
+		t.Errorf("input_topics = %+v, want nil for a record that named none", read.InputTopics)
+	}
 }
 
 func sortedNames(names map[string]bool) []string {

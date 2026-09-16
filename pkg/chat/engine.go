@@ -126,6 +126,16 @@ type Options struct {
 	// same ceiling as ExchangeTimeout and must be well under the provider's own
 	// turn timeout, or the turn dies underneath the card the developer is reading.
 	ConfirmationTimeout time.Duration
+	// RunLog appends one line per completed exchange, making the yield of prompt
+	// caching visible without waiting on the provider's own day-by-day billing. A
+	// nil *llm.RunLog is fine: every method on it is a no-op, which is what an
+	// exchange gets when llm_run_log is unset.
+	RunLog *llm.RunLog
+	// Currency labels a run log line's cost. The engine has no *llm.Pricing of its
+	// own — pkg.go builds it from configuration and llm.DefaultPrices together —
+	// so this is read from there rather than adding that whole type as a second
+	// dependency here for one string.
+	Currency string
 }
 
 const (
@@ -1069,8 +1079,14 @@ func (e *Engine) CancelExchange(ctx context.Context, sub, sessionID string) erro
 //
 // Like Send, the continuation runs detached: the developer's decision starts work
 // that no longer depends on their connection staying open.
+//
+// input is the developer's edit of the model's proposed call, or nil for an
+// ordinary approval. The stored proposal — confirmation.PendingConfirmation.Input
+// — is never overwritten: it is what selection correctness is scored from, and
+// this is a copy taken at dispatch time, not a mutation of it.
 func (e *Engine) Confirm(
 	ctx context.Context, token TokenSource, sub, sessionID, confirmationID string, approve bool,
+	input json.RawMessage,
 ) (*Exchange, error) {
 	session, err := e.Session(ctx, sub, sessionID)
 	if err != nil {
@@ -1108,11 +1124,24 @@ func (e *Engine) Confirm(
 		if approve {
 			resolved.Decision = DecisionApproved
 		}
+		if approve && len(input) > 0 {
+			resolved.AppliedInput = input
+		}
 
 		var result tools.Result
 		if approve {
+			// A copy, not a mutation of confirmation.PendingConfirmation: that value is
+			// the model's own proposal and is never overwritten, here or anywhere else —
+			// see the field's own comment on Confirmation.
+			pending := confirmation.PendingConfirmation
+			if len(input) > 0 {
+				pending.Input = input
+			}
 			// Re-dispatched through Confirm, which re-checks the tier against the
 			// session's tier *now* rather than the one recorded when the model asked.
+			// That check runs against pending.Tool and req.Tier alone, so an edited
+			// input does not change what it decides: a tier lowered after the proposal
+			// still refuses, edit or no edit.
 			result = e.dispatcher.Confirm(ctx, tools.Request{
 				Token: token.bearer(), UserSub: sub, SessionID: sessionID, Tier: session.Tier,
 				Split:       session.Split,
@@ -1121,7 +1150,7 @@ func (e *Engine) Confirm(
 				Report: func(progress tools.Progress) {
 					exchange.publish(Event{Type: EventProgress, Progress: &progress})
 				},
-			}, confirmation.PendingConfirmation)
+			}, pending)
 		} else {
 			result = tools.Result{
 				CallID: confirmation.CallID, Tool: confirmation.Tool,
@@ -1160,7 +1189,8 @@ func (e *Engine) Confirm(
 		// tool_use in an assistant turn to be answered before the conversation may
 		// continue. A second tool_result for the same id is a protocol error, so the
 		// developer's decision is reported as ordinary conversation instead.
-		if err := e.store.AppendMessages(ctx, sessionID, confirmationOutcome(result, approve)); err != nil {
+		if err := e.store.AppendMessages(ctx, sessionID,
+			confirmationOutcome(result, approve, confirmation.PendingConfirmation.Input, resolved.AppliedInput)); err != nil {
 			exchange.publish(Event{Type: EventError, Error: err.Error()})
 			return
 		}
@@ -1183,7 +1213,34 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 	// total is the exchange's aggregate, reported once at the end for the UI. The
 	// individual turns are accounted as they complete — see below.
 	total := llm.Usage{}
+	// start and providerCalls are the run log's own accounting, alongside total:
+	// how long the exchange took and how many provider requests it actually made,
+	// which for a tool loop is not e.opts.MaxIterations. providerCalls is
+	// incremented where the stream is opened, a few lines below.
+	start := e.now()
+	providerCalls := 0
 	defer func() {
+		// An exchange that never opened a stream — a store or session error ahead of
+		// the first one — logged nothing a provider did, so no line is written for it.
+		if providerCalls > 0 {
+			// Detached from ctx for the same reason RecordUsage below is: the calls
+			// already happened and are already billed whether or not the developer
+			// waited for this turn, so a cancelled exchange still leaves its line.
+			logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			e.opts.RunLog.Append(logCtx, llm.RunEntry{
+				Start: start, End: e.now(),
+				Provider: total.Provider, Model: total.Model,
+				Calls:             providerCalls,
+				InputTokens:       total.InputTokens,
+				CacheWriteTokens:  total.CacheWriteTokens,
+				CachedInputTokens: total.CachedInputTokens,
+				OutputTokens:      total.OutputTokens,
+				Cost:              total.CostEUR,
+				Currency:          e.opts.Currency,
+				CostEstimated:     total.CostEstimated,
+			})
+			cancel()
+		}
 		if total.InputTokens == 0 && total.OutputTokens == 0 {
 			return
 		}
@@ -1261,6 +1318,7 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 			exchange.publish(Event{Type: EventError, Error: err.Error()})
 			return
 		}
+		providerCalls++
 
 		turn, ok := e.consume(ctx, exchange, stream)
 		total.Add(turn.usage)
@@ -1672,7 +1730,16 @@ func (e *Engine) persistAssistant(ctx context.Context, sessionID string, turn tu
 }
 
 // confirmationOutcome reports a developer's decision as a user turn.
-func confirmationOutcome(result tools.Result, approved bool) StoredMessage {
+//
+// proposed is what the model asked for (confirmation.PendingConfirmation.Input);
+// applied is what actually ran, nil when the proposal ran unchanged. Both are read
+// rather than only result, because the tool's own result says nothing about
+// whether the input behind it was the model's or the developer's — and a model
+// that cannot tell the two apart may keep reasoning from a proposal that did not
+// run — about the wrong device, most of the time, since the device is what a
+// developer edits. This turn is one of the two places that is prevented; the
+// other is the run's own recorded input topics (docs/experiments.md).
+func confirmationOutcome(result tools.Result, approved bool, proposed, applied json.RawMessage) StoredMessage {
 	builder := &strings.Builder{}
 	if !approved {
 		fmt.Fprintf(builder,
@@ -1688,18 +1755,72 @@ func confirmationOutcome(result tools.Result, approved bool) StoredMessage {
 	if err != nil {
 		encoded = []byte(`{"error":"the result could not be encoded"}`)
 	}
+
+	// changeNote already names the tool and the fact of the approval, so an edited
+	// call continues from there instead of saying "approved" twice.
+	lead := fmt.Sprintf("The developer approved the %s call. ", result.Tool)
+	if len(applied) > 0 {
+		lead = changeNote(result.Tool, proposed, applied) + " "
+	}
 	if result.Outcome == tools.OutcomeOK {
-		fmt.Fprintf(builder, "The developer approved the %s call. It ran and returned:\n%s",
-			result.Tool, encoded)
+		fmt.Fprintf(builder, "%sIt ran and returned:\n%s", lead, encoded)
 	} else {
-		fmt.Fprintf(builder,
-			"The developer approved the %s call, but it did not run (%s):\n%s",
-			result.Tool, result.Outcome, encoded)
+		fmt.Fprintf(builder, "%sIt did not run (%s):\n%s", lead, result.Outcome, encoded)
 	}
 	return StoredMessage{
 		Role:    llm.RoleUser,
 		Content: []llm.Content{{Type: llm.ContentText, Text: builder.String()}},
 	}
+}
+
+// changeNote renders a developer's edit as the sentence both decision paths use —
+// confirmationOutcome above, and resolveHold's equivalent in hold.go, which has no
+// second turn to append to and folds this straight into the held call's own
+// result (see docs/chat-and-streaming.md, "the result goes ... back to the MCP
+// call, as its tool result"). One helper, so the two cannot render the same edit
+// two different ways.
+func changeNote(tool string, before, after json.RawMessage) string {
+	changes := diffJSON(before, after)
+	if len(changes) == 0 {
+		// Reached only if a caller passes a non-empty "applied" that turns out to
+		// decode identically to the proposal — nothing to name, so say nothing.
+		return fmt.Sprintf("The developer approved the %s call.", tool)
+	}
+
+	const maxListed = 20
+	listed := changes
+	more := 0
+	if len(listed) > maxListed {
+		listed = changes[:maxListed]
+		more = len(changes) - maxListed
+	}
+
+	parts := make([]string, 0, len(listed))
+	for _, c := range listed {
+		parts = append(parts, fmt.Sprintf("%s %s → %s",
+			c.path, changeValue(c.before, c.beforeOK), changeValue(c.after, c.afterOK)))
+	}
+	list := strings.Join(parts, "; ")
+	if more > 0 {
+		list += fmt.Sprintf("; and %d more", more)
+	}
+
+	return fmt.Sprintf("The developer approved the %s call after changing it. Changed: %s.", tool, list)
+}
+
+// changeValue renders one side of a changed path. Truncated well short of a
+// model's context being worth spending on it: an edited array of covariates is
+// exactly the shape of input this exists for, and a wall of JSON serves the model
+// worse than a cut one does.
+func changeValue(value string, present bool) string {
+	if !present {
+		return "(absent)"
+	}
+	const maxLen = 120
+	if len(value) > maxLen {
+		return value[:maxLen] + "…"
+	}
+	return value
 }
 
 // toolResultMessage packs results into the user-role message both protocols

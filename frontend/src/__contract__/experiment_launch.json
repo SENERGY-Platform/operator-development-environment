@@ -1,25 +1,38 @@
 {
   "branch": "main",
-  "commit_sha": "fbd350b493c1007bf21ee440576457aa3117b020",
+  "commit_sha": "6bbdf4e74c9f8449989c0d529e05459a1ddf55ce",
   "credential": {
     "expires_with_session": true,
     "note": "this job carries the developer's interactive session token: a run that outlives the session will lose its access to the platform partway through. Configure keycloak_url, keycloak_realm, keycloak_client_id and keycloak_client_secret to mint a token scoped to the job instead",
     "source": "session"
   },
-  "entrypoint": "python training.py",
-  "experiment_id": "xbdyl2kyblnz2buavupwzokype",
+  "entrypoint": "uv run python train.py",
+  "experiment_id": "2kqqpu2lms4qawwwtl7mijlfze",
+  "input_topics": [
+    {
+      "filterType": "DeviceId",
+      "filterValue": "urn:infai:ses:device:2ac5436e-5538-4eb3-a448-2d77de68e915",
+      "mappings": [
+        {
+          "dest": "value",
+          "source": "value.power.value"
+        }
+      ],
+      "name": "urn_infai_ses_service_9ba92218-37d8-4c80-ad3d-bb3eb5c8457d"
+    }
+  ],
   "mlflow_experiment_id": "1",
-  "mlflow_experiment_name": "ode/dev/jonah-pv-forecast",
-  "mlflow_run_id": "run-3",
-  "mlflow_tracking_uri": "http://127.0.0.1:40802",
-  "package_bytes": 6106,
+  "mlflow_experiment_name": "pipeline-ode-dev_operator-jonah-pv-forecast",
+  "mlflow_run_id": "run-4",
+  "mlflow_tracking_uri": "http://127.0.0.1:41474",
+  "package_bytes": 9092,
   "package_reused": false,
-  "package_uri": "gcs://_ray_pkg_18648e8939aba336fbe9337c7b0897db5796905b5166f1465bb10158fbf15d86.zip",
+  "package_uri": "gcs://_ray_pkg_0289d7d84d48684e94a46d852755a8c23fc0ff8747ddae19c38a39a786b494b2.zip",
   "repository": "jonah/pv-forecast",
   "scoped_credential": false,
   "status": "PENDING",
-  "submission_id": "oozvr4vo7ge7op55k7s2ko7lb4",
-  "submitted_at": "2026-08-27T07:20:47.584673193Z",
-  "updated_at": "2026-08-27T07:20:47.584673193Z",
-  "workbench_id": "nn6exyu5cc4m5m7qi3ddrqleqa"
+  "submission_id": "3pp3l2dlnzjftaerkm46tnykb4",
+  "submitted_at": "2026-09-14T08:54:20.599378817Z",
+  "updated_at": "2026-09-14T08:54:20.599378817Z",
+  "workbench_id": "qemfy7ijdh5ophwocgi7ut6pv4"
 }

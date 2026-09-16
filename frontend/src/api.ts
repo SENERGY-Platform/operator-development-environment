@@ -1113,6 +1113,7 @@ export interface UsageRecord {
   input_tokens: number;
   output_tokens: number;
   cached_input_tokens?: number;
+  cache_write_tokens?: number;
   cost: number;
   cost_estimated: boolean;
   at: string;
@@ -1276,6 +1277,7 @@ export interface Usage {
   input_tokens: number;
   output_tokens: number;
   cached_input_tokens?: number;
+  cache_write_tokens?: number;
   provider?: string;
   model?: string;
   cost_eur?: number;
@@ -2116,6 +2118,69 @@ export interface RepoWriteResult {
 
 // --- M8 ---
 
+/** One input of the operator being trained, as Operator Lib's OperatorConfig
+ * parses it. The field names are camelCase because that is what Operator Lib
+ * reads off the wire, not this file's own convention. */
+export interface TopicMapping {
+  dest: string;
+  source: string;
+}
+
+/** FilterType is "DeviceId" or "OperatorId"; FilterValue the id it matches. */
+export interface InputTopic {
+  name: string;
+  filterType: string;
+  filterValue: string;
+  mappings: TopicMapping[];
+}
+
+export interface ResolvedDevice {
+  id: string;
+  name: string;
+  device_type_id: string;
+  device_type_name: string;
+}
+
+export interface ResolvedService {
+  id: string;
+  name: string;
+}
+
+/** One mapping with the variable it reads, named for a person rather than left as
+ * a bare path. */
+export interface ResolvedMapping {
+  dest: string;
+  source: string;
+  variable_name: string;
+  variable_path: string;
+  unit?: string;
+  characteristic_id?: string;
+  function_id?: string;
+  aspect_id?: string;
+}
+
+/** One other variable of the matched service, offered so a developer can correct
+ * a derivation that picked a plausible but wrong one. No characteristic or
+ * function/aspect here — those are only known once a mapping actually resolves to
+ * this variable. */
+export interface ResolvedAlternative {
+  source: string;
+  variable_name: string;
+  variable_path: string;
+  unit?: string;
+}
+
+/** The answer of `POST /input-topics/resolve`: an input topic described in the
+ * names a person reads, or rewritten for another device (docs/experiments.md). */
+export interface ResolvedInputTopic {
+  topic: InputTopic;
+  device: ResolvedDevice;
+  service: ResolvedService;
+  mappings: ResolvedMapping[];
+  alternatives?: ResolvedAlternative[];
+  warnings?: string[];
+}
+
 /** A Ray job's state, in Ray's own vocabulary (§5.12).
  *
  * Not translated: these are the strings the Ray dashboard beside the pane shows,
@@ -2159,6 +2224,12 @@ export interface Experiment {
    * limitation, not a fault — see `ExperimentCredential`. */
   scoped_credential: boolean;
   data_split?: DataSplit | null;
+  /** The operator's inputs this run actually read (docs/experiments.md). Recorded rather than
+   * recomputed, so a launch approved with an edited device shows what ran and not
+   * what was proposed. Absent on a run launched before the column existed — that
+   * is "not recorded", never "this run read nothing": `requireInputTopics` refuses
+   * a launch with none. */
+  input_topics?: InputTopic[];
   submitted_at: string;
   updated_at: string;
   started_at?: string;
@@ -2334,6 +2405,9 @@ export interface ExperimentSummary {
   /** What the comparison is against, so a claim about an improvement is checkable. */
   previous_run_id?: string;
   data_split?: SplitReport;
+  /** The stored record's inputs, not recomputed — see `Experiment.input_topics`.
+   * Absent for a run recorded before the column existed. */
+  input_topics?: InputTopic[];
   started_at?: string;
   ended_at?: string;
   note?: string;
@@ -2778,6 +2852,21 @@ export const api = {
   /** The caller's own experiments, newest first. Statuses are refreshed from Ray
    * for the runs that have not finished, and only those, so polling a list of
    * finished runs costs the cluster nothing. */
+  /**
+   * Describes a launch's input topic in the names a person reads, or — with a
+   * device id — rewrites it for that device (docs/experiments.md). Without `deviceId`
+   * this is a preview of the topic as proposed; with one it is a move.
+   *
+   * 400 for a topic that cannot be derived (a malformed topic, or a mapping with
+   * no counterpart on the target device type); the caller shows that and leaves
+   * the topic unchanged rather than retrying.
+   */
+  resolveInputTopic: (topic: InputTopic, deviceId?: string) =>
+    post<ResolvedInputTopic>("/input-topics/resolve", {
+      topic,
+      device_id: deviceId ?? "",
+    }),
+
   experiments: (limit?: number) =>
     get<{
       experiments: Experiment[];

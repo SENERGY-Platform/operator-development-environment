@@ -150,7 +150,7 @@ func TestAHeldCallStopsReadingAsBusy(t *testing.T) {
 		t.Errorf("snapshot while held = %+v, want one waiting session", got)
 	}
 
-	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, confirmation, true); err != nil {
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, confirmation, true, nil); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	awaitResult(t, results)

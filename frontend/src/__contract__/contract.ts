@@ -35,6 +35,7 @@ import type {
   QuickProfileList,
   RelationProfile,
   RelationProposal,
+  ResolvedInputTopic,
   RepoCommit,
   RepoCommitDraft,
   RepoConnection,
@@ -78,6 +79,7 @@ import experimentLogs from "./experiment_logs.json";
 import experimentResults from "./experiment_results.json";
 import experimentResultsFailed from "./experiment_results_failed.json";
 import experimentList from "./experiments.json";
+import inputTopicResolved from "./input_topic_resolved.json";
 import kernelFiles from "./kernel_files.json";
 import kernelStatus from "./kernel_status.json";
 import override from "./override.json";
@@ -190,6 +192,10 @@ export const checked = {
   // this route serves it unmasked, and a model reads it masked below L2.
   experimentResultsFailed: experimentResultsFailed satisfies Loose<ExperimentSummary>,
   experimentLogs: experimentLogs satisfies Loose<ExperimentLogs>,
+  // The retarget answer, captured with both optional fields populated: a
+  // mapping with a unit reference would leave `unit` untested, since this device
+  // type's variables declare a characteristic but no unit reference.
+  inputTopicResolved: inputTopicResolved satisfies Loose<ResolvedInputTopic>,
 
   // M9. Emitted by the API test harness through the *real* poller and the real
   // chat engine, so the injected summary, the proposal's fingerprint and the

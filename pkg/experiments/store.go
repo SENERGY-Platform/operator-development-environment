@@ -316,30 +316,64 @@ const experimentColumns = `id, user_sub, submission_id, mlflow_run_id, mlflow_ex
        mlflow_experiment_name, session_id, workbench_id, repository, commit_sha, branch,
        entrypoint, package_uri, package_bytes, package_reused, status, message,
        scoped_credential, submitted_at, updated_at, started_at, ended_at,
-       split_training_end, split_test_end`
+       split_training_end, split_test_end, input_topics`
 
 func (s *PostgresStore) Put(ctx context.Context, record Experiment) error {
 	trainingEnd, testEnd := splitColumns(record.Split)
-	_, err := s.db.Pool().Exec(ctx, `
+	topics, err := inputTopicsColumn(record.InputTopics)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Pool().Exec(ctx, `
 INSERT INTO ode_experiments (`+experimentColumns+`)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-        $21, $22, $23, $24)
+        $21, $22, $23, $24, $25)
 ON CONFLICT (id) DO UPDATE SET
     status = EXCLUDED.status, message = EXCLUDED.message, updated_at = EXCLUDED.updated_at,
     started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at,
     mlflow_run_id = EXCLUDED.mlflow_run_id`,
-		// split_training_end and split_test_end are not in the DO UPDATE SET: a
-		// split is set once at launch (Launch stores record.Split before this is
-		// ever called) and Put's other callers only refresh status and timing, so
-		// there is nothing that would ever need to change them on conflict.
+		// split_training_end, split_test_end and input_topics are not in the DO
+		// UPDATE SET: a split and a launch's input topics are both set once, when
+		// Launch stores the record for the first time, and Put's other callers —
+		// a status refresh, a poller settling a forgotten submission — only refresh
+		// status and timing and have nothing new to write into either.
 		record.ID, record.UserSub, record.SubmissionID, record.RunID, record.MLflowExperimentID,
 		record.MLflowExperimentName, record.SessionID, record.WorkbenchID, record.Repository,
 		record.CommitSHA,
 		record.Branch, record.Entrypoint, record.PackageURI, record.PackageBytes,
 		record.PackageReused, record.Status, record.Message, record.ScopedCredential,
 		record.SubmittedAt, record.UpdatedAt, record.StartedAt, record.EndedAt,
-		trainingEnd, testEnd)
+		trainingEnd, testEnd, topics)
 	return err
+}
+
+// inputTopicsColumn encodes a launch's input topics for the NOT NULL jsonb
+// column. A nil slice — an ordinary Put on a record from before this field
+// existed, or a launch somehow reaching here with none — is written as `[]`
+// rather than `null`: the column has no NULL to hold, and json.Marshal(nil) on a
+// []InputTopic would otherwise write the one value the column rejects.
+func inputTopicsColumn(topics []InputTopic) ([]byte, error) {
+	if topics == nil {
+		topics = []InputTopic{}
+	}
+	return json.Marshal(topics)
+}
+
+// inputTopicsFromColumn is inputTopicsColumn's inverse. An empty array reads back
+// as nil rather than as an empty, non-nil slice, matching InputTopics' own
+// `omitempty` tag; and a value that will not parse — a row this process cannot
+// read for any reason — also reads back as nil rather than failing the row,
+// because an experiment predates this column far more often than it is corrupt,
+// and a read that fails on it would take a whole record down with it.
+func inputTopicsFromColumn(raw []byte) []InputTopic {
+	var topics []InputTopic
+	if err := json.Unmarshal(raw, &topics); err != nil {
+		return nil
+	}
+	if len(topics) == 0 {
+		return nil
+	}
+	return topics
 }
 
 // splitColumns is a Split's two nullable columns, or two unset ones for no split
@@ -516,6 +550,7 @@ type scanner interface {
 func scanExperiment(row scanner) (Experiment, bool, error) {
 	var record Experiment
 	var trainingEnd, testEnd sql.NullTime
+	var topics []byte
 	err := row.Scan(
 		&record.ID, &record.UserSub, &record.SubmissionID, &record.RunID,
 		&record.MLflowExperimentID, &record.MLflowExperimentName, &record.SessionID,
@@ -523,7 +558,7 @@ func scanExperiment(row scanner) (Experiment, bool, error) {
 		&record.Entrypoint,
 		&record.PackageURI, &record.PackageBytes, &record.PackageReused, &record.Status,
 		&record.Message, &record.ScopedCredential, &record.SubmittedAt, &record.UpdatedAt,
-		&record.StartedAt, &record.EndedAt, &trainingEnd, &testEnd)
+		&record.StartedAt, &record.EndedAt, &trainingEnd, &testEnd, &topics)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Experiment{}, false, nil
 	}
@@ -531,6 +566,7 @@ func scanExperiment(row scanner) (Experiment, bool, error) {
 		return Experiment{}, false, err
 	}
 	record.Split = splitFromColumns(trainingEnd, testEnd)
+	record.InputTopics = inputTopicsFromColumn(topics)
 	return record, true, nil
 }
 

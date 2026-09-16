@@ -297,6 +297,7 @@ CREATE TABLE IF NOT EXISTS ode_usage (
     input_tokens        BIGINT NOT NULL DEFAULT 0,
     output_tokens       BIGINT NOT NULL DEFAULT 0,
     cached_input_tokens BIGINT NOT NULL DEFAULT 0,
+    cache_write_tokens  BIGINT NOT NULL DEFAULT 0,
     -- NUMERIC, not double precision: this column is summed against a spend cap,
     -- and binary floating point accumulates error over thousands of rows in the
     -- one place where the total has to be defensible.
@@ -304,6 +305,21 @@ CREATE TABLE IF NOT EXISTS ode_usage (
     cost_estimated      BOOLEAN NOT NULL DEFAULT TRUE,
     at                  TIMESTAMPTZ NOT NULL DEFAULT now()
 )`,
+	},
+	{
+		// What a cache *write* cost, reported separately from cached_input_tokens
+		// (which is a cache *read*) because Anthropic prices the two differently:
+		// writing a cache entry costs 1.25x plain input. Added rather than declared
+		// in the CREATE above so a deployment that already has ode_usage gets the
+		// column too, additive with a default, which is the only shape of change
+		// this migration style can carry (see Migrate).
+		//
+		// DEFAULT 0 is right for the same reason every other column here defaults
+		// to zero: a row written before prompt caching existed made no cache writes.
+		name: "ode_usage_cache_write_tokens",
+		sql: `
+ALTER TABLE ode_usage
+    ADD COLUMN IF NOT EXISTS cache_write_tokens BIGINT NOT NULL DEFAULT 0`,
 	},
 	{
 		name: "ode_usage_by_user_time",
@@ -785,5 +801,30 @@ CREATE TABLE IF NOT EXISTS ode_experiment_summaries (
     record        JSONB NOT NULL,
     built_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 )`,
+	},
+	{
+		// What actually ran, when a developer edited a proposed confirmation's input
+		// before approving it (docs/chat-and-streaming.md).
+		// Nullable with no default: NULL is "the proposal ran unchanged", which is
+		// every row written before this column existed and every ordinary approval
+		// since, and a default of '{}' would make that indistinguishable from an
+		// edit that happened to produce an empty object.
+		name: "ode_confirmations_applied_input",
+		sql: `
+ALTER TABLE ode_confirmations
+    ADD COLUMN IF NOT EXISTS applied_input JSONB`,
+	},
+	{
+		// The input topics a run actually read recorded at launch, recorded rather
+		// than recomputed: an approved launch_experiment may have run with a
+		// developer's edited input rather than the model's proposal, so only the run
+		// itself knows which topics it read. NOT NULL with a default of '[]': an
+		// older row has no record of its topics, and '[]' says exactly that — it must
+		// never be read as "a run with no inputs", which requireInputTopics makes
+		// impossible in the first place.
+		name: "ode_experiments_input_topics",
+		sql: `
+ALTER TABLE ode_experiments
+    ADD COLUMN IF NOT EXISTS input_topics JSONB NOT NULL DEFAULT '[]'::jsonb`,
 	},
 }

@@ -1,7 +1,8 @@
 {
   "connected": true,
+  "grant_url": "http://127.0.0.1:41842/settings/connections/applications/client",
   "identity": {
-    "connected_at": "2026-09-01T06:21:00.596511225Z",
+    "connected_at": "2026-09-14T08:54:20.684515537Z",
     "login": "jonah",
     "name": "Jonah",
     "scopes": [

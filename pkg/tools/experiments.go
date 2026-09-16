@@ -67,6 +67,12 @@ type LaunchExperimentResult struct {
 	// and what it means if it does not.
 	Credential experiments.Credential `json:"credential"`
 	Warnings   []string               `json:"warnings,omitempty"`
+	// InputTopics is read from the stored record, not from this call's own input:
+	// a confirmed launch may be approved with an input the developer edited
+	//, so what was asked for and what actually ran are not necessarily the
+	// same, and the record is the only one of the two that says which ran. Present
+	// whether or not the input was edited.
+	InputTopics []experiments.InputTopic `json:"input_topics"`
 	// DataSplit is the session's data split (D36) this run was launched under, or
 	// nil for an ordinary launch — the same field the stored Experiment carries,
 	// so the model reads it back exactly as get_experiment_results will.
@@ -103,7 +109,7 @@ func (s *surface) launchExperiment(ctx context.Context, req Request) (any, error
 
 	hint := "the job is queued; read it back with get_experiment_results, which " +
 		"answers with a snapshot while it is still running and with the result once " +
-		"it has finished"
+		"it has finished. input_topics names the topics this run actually read"
 	if result.Split != nil {
 		hint += ". This session has a data split, so the run is an evaluation: it " +
 			"trains on history before the training end and then replays inference " +
@@ -121,8 +127,11 @@ func (s *surface) launchExperiment(ctx context.Context, req Request) (any, error
 		Status:       result.Status,
 		Credential:   result.Credential,
 		Warnings:     result.Warnings,
-		DataSplit:    result.Split,
-		Hint:         hint,
+		// The stored record's topics, not in.InputTopics — see the field's own
+		// comment.
+		InputTopics: result.InputTopics,
+		DataSplit:   result.Split,
+		Hint:        hint,
 	}, nil
 }
 

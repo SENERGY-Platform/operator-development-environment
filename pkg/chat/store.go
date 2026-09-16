@@ -565,19 +565,33 @@ func (s *PostgresStore) PutConfirmation(ctx context.Context, confirmation Confir
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO ode_confirmations (id, session_id, user_sub, call_id, tool, input, tier,
-		                              created_at, resolved_at, decision)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10)
+		                              created_at, resolved_at, decision, applied_input)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10, $11)
 		ON CONFLICT (id) DO UPDATE
-		SET resolved_at = EXCLUDED.resolved_at, decision = EXCLUDED.decision`,
+		SET resolved_at = EXCLUDED.resolved_at, decision = EXCLUDED.decision,
+		    applied_input = EXCLUDED.applied_input`,
 		confirmation.ID, confirmation.SessionID, confirmation.UserSub, confirmation.CallID,
 		confirmation.Tool, []byte(input), confirmation.Tier.String(),
-		nullTime(confirmation.CreatedAt), confirmation.ResolvedAt, confirmation.Decision)
+		nullTime(confirmation.CreatedAt), confirmation.ResolvedAt, confirmation.Decision,
+		nullableJSON(confirmation.AppliedInput))
 	return err
+}
+
+// nullableJSON is what a possibly-absent JSON value becomes on the way to a
+// nullable column: nil so the driver writes SQL NULL, never an empty object or
+// array. AppliedInput needs exactly this, unlike input above — absent has to read
+// back as "nothing was edited", not as an edit that happened to produce `{}`.
+func nullableJSON(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	return []byte(raw)
 }
 
 func (s *PostgresStore) Confirmation(ctx context.Context, id string) (Confirmation, bool, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, session_id, user_sub, call_id, tool, input, tier, created_at, resolved_at, decision
+		SELECT id, session_id, user_sub, call_id, tool, input, tier, created_at, resolved_at, decision,
+		       applied_input
 		FROM ode_confirmations WHERE id = $1`, id)
 
 	confirmation, err := scanConfirmation(row)
@@ -592,7 +606,8 @@ func (s *PostgresStore) Confirmation(ctx context.Context, id string) (Confirmati
 
 func (s *PostgresStore) PendingConfirmations(ctx context.Context, sessionID string) ([]Confirmation, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, session_id, user_sub, call_id, tool, input, tier, created_at, resolved_at, decision
+		SELECT id, session_id, user_sub, call_id, tool, input, tier, created_at, resolved_at, decision,
+		       applied_input
 		FROM ode_confirmations
 		WHERE session_id = $1 AND resolved_at IS NULL
 		ORDER BY created_at`, sessionID)
@@ -679,13 +694,20 @@ func (s *PostgresStore) Creations(ctx context.Context, sessionID string) ([]tool
 func scanConfirmation(row scanner) (Confirmation, error) {
 	var confirmation Confirmation
 	var tier string
-	var input []byte
+	var input, appliedInput []byte
 	if err := row.Scan(&confirmation.ID, &confirmation.SessionID, &confirmation.UserSub,
 		&confirmation.CallID, &confirmation.Tool, &input, &tier,
-		&confirmation.CreatedAt, &confirmation.ResolvedAt, &confirmation.Decision); err != nil {
+		&confirmation.CreatedAt, &confirmation.ResolvedAt, &confirmation.Decision,
+		&appliedInput); err != nil {
 		return Confirmation{}, err
 	}
 	confirmation.Input = json.RawMessage(input)
+	// NULL scans as a nil slice, the same way selection does in scanSession — not
+	// "an edit that produced an empty value", which is what defaulting this the
+	// way input defaults above would say instead.
+	if len(appliedInput) > 0 {
+		confirmation.AppliedInput = json.RawMessage(appliedInput)
+	}
 	if parsed, err := tools.ParseTier(tier); err == nil {
 		confirmation.Tier = parsed
 	}

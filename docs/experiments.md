@@ -288,6 +288,94 @@ developer gets is cluster time spent on a failed run and a Python traceback in a
 log they have to go and find. The refusal names the tool that fixes it, the way
 the uncommitted-changes refusal names the commit.
 
+## Moving a topic to another device is a derivation, not a text edit
+
+A developer may take a launch the assistant proposed and point one of its input
+topics at a different device before approving it (the decision mechanism is in
+[chat-and-streaming.md](chat-and-streaming.md); what the device change *means* is
+here). Three things about the topic follow from the device and none of them is
+typed: the topic `name` is the matched service's id with `:` replaced by `_`, the
+`filterValue` is the new device id, and every mapping `source` is a path into that
+service's output. `POST /input-topics/resolve` performs that derivation, with no
+`device_id` to describe a topic as proposed and with one to rewrite it.
+
+`dest` is the one field that never changes. It is the name the operator's own code
+reads out of `data`, so rewriting it would break the code rather than repoint it.
+
+The counterpart variable on the new device type is looked for in a fixed order:
+first the same path on one of its services, then — failing that — the variable
+with the same **function and aspect** as the original, which is what "reads the
+same thing" means when two device types name it differently. Failing both, the
+topic is refused, naming the mapping that has no counterpart, and the developer
+declines instead of approving something that would read nothing.
+
+A characteristic that differs between the two is a **warning, not a conversion**.
+Operator Lib converts nothing, so an operator pointed at a device publishing
+kilowatts where it used to read watts will read kilowatts and say nothing. Two
+device types measuring the same quantity in different units are the common case,
+and the developer knows whether the operator copes; a derivation that silently
+inserted a factor would be changing the data under code it cannot see.
+
+Every mapping of one topic has to land on the same service, because a topic is one
+Kafka topic and cannot read two.
+
+### A mapping's `source` is not a `Variable.Path`, and nothing here says what it is
+
+This is the part worth reading before touching the derivation. The profiler's
+`Variable.Path` starts at the output's root variable, so `quick.json` carries
+`value.power`. The launch fixtures carry `value.power.value` as a mapping source —
+one segment longer. Nothing in this repository converts between the two, no
+document states the rule, and the only statement of the topic-name convention
+anywhere is an example in the `launch_experiment` tool schema.
+
+So the derivation does not assume a form. It resolves the *original* source
+against the original device type by trying the source itself, then the source
+without its last segment, then without its first, and whichever hits fixes the
+convention for that call — which is then inverted when the new source is written
+from the counterpart's path. A deployment whose sources carry an extra segment
+keeps producing them; one whose sources are bare paths keeps producing those.
+
+The trap is that the two fallbacks can hit **by accident**. A source of
+`value.power.total`, on a service carrying both `value.power` and `value.total`,
+resolves to the variable `value.power` with `total` left over — and `total` is then
+appended to whatever path the counterpart has, producing a source that is
+well-formed, plausible on the card, and addresses nothing. The code cannot tell
+that case from a deployment whose sources genuinely carry an extra segment. What
+it can do is refuse to assume it quietly: any non-identity reading raises a warning
+naming the source, the variable it assumed and the leftover segment, and two
+mappings of one topic that disagree about where the variable sits in the message
+refuse the topic outright — that is not two conventions, it is a sign that at least
+one of the two resolved by accident.
+
+If the convention is ever written down — in Operator Lib, or in a platform
+document — this is the place to replace a guess with a rule.
+
+## A run records the topics it read, because they are not recoverable from anywhere else
+
+`ode_experiments.input_topics` holds what a run actually read, and the record is
+the only thing that knows. The topics the model proposed are on the confirmation;
+the topics that ran are here, and after a developer has moved one the two are
+different. So the field is set once at launch, after `validateTopics` and
+`requireInputTopics` have passed, and is deliberately absent from the upsert's
+`ON CONFLICT DO UPDATE SET` — a status refresh has nothing new to say about what a
+finished run read.
+
+An older row carries `[]`, which says "not recorded" rather than "read nothing":
+`requireInputTopics` makes a run with genuinely no inputs impossible, so the empty
+case can only ever be a row written before the column existed.
+
+They travel on the launch result and on the summary, so a model can say which
+series a run read — which, after an edit it did not make, it could not otherwise
+infer. That this is not withheld below L2 is a tier question and is answered in
+[authorisation-and-exposure-tiers.md](authorisation-and-exposure-tiers.md).
+
+**What was considered and not built**: a session-level frozen inventory that ODE
+enforces on every launch. The record plus the developer's own discipline is enough
+for the protocol the ablation needs, and enforcement can be added later if that
+turns out to be wrong. Building it first would have put a second authority beside
+`lib/access`, which already refuses a topic naming a device the developer may not
+read.
+
 ## `train.py`, and why the entrypoint is not `main.py`
 
 `main.py` is the deployed operator's entrypoint and is the wrong one here.

@@ -529,6 +529,28 @@ still `preview_series` at L2, and every statistic over them is still
 as `probe_availability` does, so the claim is checkable from the response rather
 than being a property of the code.
 
+### The same line, on the other side: naming a device is not reading one
+
+A run's input topics travel back to the model unmasked, at every tier — on the
+launch result and on `get_experiment_results`. They name a device id, a service
+and a message path, which is more platform vocabulary than any other field of a
+summary carries, so it is worth saying why the tier has nothing to withhold here.
+
+The reason is **not** that the model sent them itself. That was true before a
+developer could edit a launch and is no longer: after a topic has been moved
+(see [experiments.md](experiments.md)), the field names a device the model never
+wrote, and `get_experiment_results` reads back any of the developer's runs,
+including ones the conversation never launched. The argument from "it already
+knows" would be a comfortable one and it is wrong.
+
+The reason is the line above. A device id is an **identity**, not a reading. §3.2
+bounds what a model learns about the *values* of a series, and
+`propose_data_selection` already takes a `device_id` at L0 — naming a device is
+how a model asks about one, not something the tier is protecting. What would be
+lost by masking it is specific and real: a model that cannot see which device a
+run read has no way to notice that the developer moved it, and will keep
+reasoning about the device it proposed.
+
 ## run_code, and what the tier does not cover
 
 `run_code` is tier **L0** with a confirmation, which is what §5.8's table says

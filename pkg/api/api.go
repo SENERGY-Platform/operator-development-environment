@@ -368,6 +368,11 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 	// polled rather than streamed. As with the kernel and repo routes, none of them
 	// takes a user parameter.
 	if deps.Experiments != nil {
+		// Kept off /experiments to avoid a static segment beside the /:id
+		// wildcard — the same reason /quick-profiles sits beside /profiles
+		// rather than under it (see :219 above).
+		secured.POST("/input-topics/resolve", handleResolveInputTopic(deps.Devices))
+
 		experimentRoutes := secured.Group("/experiments")
 		experimentRoutes.POST("", handleLaunchExperiment(deps.Experiments))
 		experimentRoutes.GET("", handleListExperiments(deps.Experiments))

@@ -224,8 +224,18 @@ export class OdeSocket {
    * Deliberately not a chat stream. The turn holding the call never paused, so its
    * result arrives on the relay the caller already has open; subscribing again to
    * say "approved" would replay the whole turn into a view that is watching it.
+   *
+   * `input` is the developer's edit of the model's proposed call (see
+   * docs/chat-and-streaming.md). Omitted for an ordinary decision;
+   * `JSON.stringify` drops an `undefined` field, so passing it through
+   * unconditionally still sends the plain shape when there is no edit.
    */
-  async decide(sessionId: string, confirmationId: string, approve: boolean): Promise<void> {
+  async decide(
+    sessionId: string,
+    confirmationId: string,
+    approve: boolean,
+    input?: unknown,
+  ): Promise<void> {
     const id = `d${++this.sequence}`;
     const socket = await this.ready();
 
@@ -240,6 +250,7 @@ export class OdeSocket {
               session_id: sessionId,
               confirmation_id: confirmationId,
               approve,
+              input,
             },
           }),
         );

@@ -19,6 +19,7 @@ package experiments_test
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -473,6 +474,28 @@ func TestTheRunsOwnTagsGradeItWhenTheFileNamesNoMetric(t *testing.T) {
 	if !strings.Contains(criterion.Source, "tags") {
 		t.Errorf("source = %q, want it to say the criterion came from the run itself",
 			criterion.Source)
+	}
+}
+
+// The summary carries a run's input topics too, from the same stored record —
+// so a model reading get_experiment_results can see which topics the run it
+// asked about actually read, whether or not a confirmed launch was later
+// approved with an edited input.
+func TestASummaryCarriesTheInputTopicsTheRunActuallyRead(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	launched := h.launch()
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"rmse": 0.31})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	if !reflect.DeepEqual(summary.InputTopics, testInputTopics()) {
+		t.Errorf("summary input_topics = %+v, want the topics the run was launched with %+v",
+			summary.InputTopics, testInputTopics())
 	}
 }
 

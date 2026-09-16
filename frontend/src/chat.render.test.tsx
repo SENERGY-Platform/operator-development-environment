@@ -22,12 +22,15 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   workbenchLabel,
   type ChatSession,
+  type InputTopic,
   type ProviderInfo,
+  type ResolvedInputTopic,
   type Session,
   type Workbench,
 } from "./api";
 import sessionDetail from "./__contract__/chat_session.json";
 import sessionList from "./__contract__/chat_sessions.json";
+import inputTopicResolved from "./__contract__/input_topic_resolved.json";
 import toolSurface from "./__contract__/chat_tools.json";
 
 /**
@@ -81,6 +84,8 @@ let readGate: Promise<void> | null = null;
 let sent: string[] = [];
 /** Decisions sent through the non-streaming path, as [confirmation, approve]. */
 let decided: [string, boolean][] = [];
+/** The edited input `decide` carried on the held path, when it carried one. */
+let decidedInputs: unknown[] = [];
 /** What the stored conversation reports as awaiting the developer. */
 let pending: Record<string, unknown>[] = [];
 /** Every alert the pane asked for, as [headline, body]. */
@@ -129,6 +134,29 @@ let dropWatch: (() => void) | null = null;
 
 /** What the confirmation card handed to Monaco, in order. */
 let shown: string[] = [];
+
+/**
+ * What `api.resolveInputTopic` answers with for a preview call (no device id) —
+ * the topic described against the device it already names.
+ */
+let resolvePreview: ResolvedInputTopic | null = null;
+/** Set to fail the next preview read, for the fallback-to-JSON test. */
+let resolvePreviewError: string | null = null;
+/** What it answers with for a retarget call (a device id given) — reused as the
+ *  real fixture, so the card's "moved" state is the backend's own shape. */
+let resolveRetarget: ResolvedInputTopic = inputTopicResolved as ResolvedInputTopic;
+/** Set to fail the next retarget, for the refused-move test. A move that cannot
+ *  be derived has to leave the topic as it was rather than half-applied. */
+let resolveRetargetError: string | null = null;
+/** Every call the card made to the resolve route, as [topic, deviceId]. */
+let resolveCalls: [InputTopic, string | undefined][] = [];
+/** What `quick_profiles` answers the device picker with. */
+let quickCandidates: Record<string, unknown>[] = [];
+/** Every request the device picker made over the socket. */
+let quickProfileRequests: { type: string; payload: unknown }[] = [];
+/** Every payload `chat_confirm` streamed, so a test can check `input` travelled
+ *  with it. */
+let chatConfirmPayloads: Record<string, unknown>[] = [];
 
 // The card renders run_code's argument as code, and Monaco does not run under
 // jsdom — it wants workers and a layout. Mocked to the surface CodeView touches,
@@ -187,17 +215,17 @@ function openSocket() {
 /** Whether the pane asked for the connection rather than waiting to be handed one. */
 let connectRequests = 0;
 
-vi.mock("./ws", () => ({
-  Cancelled: FakeCancelled,
-  WsError: FakeWsError,
-  odeSocket: {
-    ensureConnected() {
-      // The real one connects and the state follows. Counted as well as acted on,
-      // because a pane that never asks is exactly the bug: `onState` alone leaves
-      // the socket idle, and both of this pane's subscriptions wait on `open`.
-      connectRequests += 1;
-      if (socketState !== "open") openSocket();
-    },
+/** One fake socket, exported under both names — the device picker imports it as
+ *  `profilerSocket`, the rest of the conversation as `odeSocket`, and ws.ts says
+ *  they are the same connection. */
+const fakeSocket = {
+  ensureConnected() {
+    // The real one connects and the state follows. Counted as well as acted on,
+    // because a pane that never asks is exactly the bug: `onState` alone leaves
+    // the socket idle, and both of this pane's subscriptions wait on `open`.
+    connectRequests += 1;
+    if (socketState !== "open") openSocket();
+  },
     onState(listener: (state: string) => void) {
       listeners.push(listener);
       // The replay that makes a resubscription indistinguishable from a reconnect.
@@ -206,12 +234,27 @@ vi.mock("./ws", () => ({
         listeners = listeners.filter((entry) => entry !== listener);
       };
     },
+    async request(type: string, payload: unknown) {
+      quickProfileRequests.push({ type, payload });
+      return {
+        candidates: quickCandidates,
+        skipped: [],
+        reads: { availability: 0, usage: 0, values: 0 },
+        coverage_window: { from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z" },
+        devices_listed: quickCandidates.length,
+        total_devices: quickCandidates.length,
+        device_limit: 10,
+      };
+    },
     stream(
       type: string,
       payload: unknown,
       handlers: { signal?: AbortSignal; onEvent?: (event: unknown) => void },
     ): Promise<{ attached: boolean }> {
       streamed.push(type);
+      if (type === "chat_confirm") {
+        chatConfirmPayloads.push(payload as Record<string, unknown>);
+      }
       if (type === "chat_send") {
         // The engine stores the developer's message before it begins the exchange,
         // so a later read of the conversation has it whether or not the turn ended.
@@ -259,10 +302,17 @@ vi.mock("./ws", () => ({
     cancelChat(sessionId: string) {
       cancelled.push(sessionId);
     },
-    async decide(_sessionId: string, confirmationId: string, approve: boolean) {
+    async decide(_sessionId: string, confirmationId: string, approve: boolean, input?: unknown) {
       decided.push([confirmationId, approve]);
+      if (input !== undefined) decidedInputs.push(input);
     },
-  },
+};
+
+vi.mock("./ws", () => ({
+  Cancelled: FakeCancelled,
+  WsError: FakeWsError,
+  odeSocket: fakeSocket,
+  profilerSocket: fakeSocket,
 }));
 
 vi.mock("./api", async (importOriginal) => {
@@ -271,6 +321,16 @@ vi.mock("./api", async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
+      resolveInputTopic: async (topic: InputTopic, deviceId?: string) => {
+        resolveCalls.push([topic, deviceId]);
+        if (!deviceId) {
+          if (resolvePreviewError) throw new Error(resolvePreviewError);
+          if (!resolvePreview) throw new Error("no preview configured for this test");
+          return resolvePreview;
+        }
+        if (resolveRetargetError) throw new Error(resolveRetargetError);
+        return resolveRetarget;
+      },
       chatSessions: async () => ({ sessions: listed }),
       renameChatSession: async (id: string, title: string) => {
         renamed.push([id, title]);
@@ -458,6 +518,15 @@ beforeEach(() => {
   repointed = [];
   accounted = true;
   bootstrap = {};
+  decidedInputs = [];
+  chatConfirmPayloads = [];
+  resolvePreview = null;
+  resolvePreviewError = null;
+  resolveRetarget = inputTopicResolved as ResolvedInputTopic;
+  resolveRetargetError = null;
+  resolveCalls = [];
+  quickCandidates = [];
+  quickProfileRequests = [];
 });
 
 afterEach(async () => {
@@ -629,10 +698,15 @@ async function switchTo(host: HTMLElement, title: string) {
   await settle(3);
 }
 
-function press(host: HTMLElement, label: string) {
-  const button = [...host.querySelectorAll("button")].find(
+/** press's lookup without the throw, for asserting a button is *not* offered. */
+function buttonNamed(host: HTMLElement, label: string) {
+  return [...host.querySelectorAll("button")].find(
     (entry) => entry.textContent?.trim() === label,
   );
+}
+
+function press(host: HTMLElement, label: string) {
+  const button = buttonNamed(host, label);
   if (!button) throw new Error(`no ${label} button on screen`);
   return act(async () => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 }
@@ -2411,4 +2485,374 @@ it("says what the provider came up as, in the conversation that is using it", as
   const state = document.querySelector(".provider-state");
   expect(state?.textContent).toContain("tools over MCP");
   expect(state?.textContent).toContain("the claude binary could not be run");
+});
+
+// --- the launch_experiment card: moving a topic, and approving with the edit ---
+
+const TOPIC_A: InputTopic = {
+  name: "urn_infai_ses_service_it-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  filterType: "DeviceId",
+  filterValue: "urn:infai:ses:device:input-topics-a",
+  mappings: [{ dest: "value", source: "value.power" }],
+};
+
+/** A confirmation proposing a launch over the given topics. */
+function launchConfirmation(topics: InputTopic[]) {
+  return {
+    id: "conf-launch",
+    tool: "launch_experiment",
+    input: { entrypoint: "uv run python train.py", input_topics: topics },
+    tier: "L0",
+    created_at: "2026-09-14T00:00:00Z",
+  };
+}
+
+/** What `resolveInputTopic` answers previewing a topic against the device it
+ *  already names, with a function and aspect so the picker filters. */
+function previewOf(topic: InputTopic, deviceName: string): ResolvedInputTopic {
+  return {
+    topic,
+    device: {
+      id: topic.filterValue,
+      name: deviceName,
+      device_type_id: "dt-a",
+      device_type_name: "Inverter",
+    },
+    service: { id: "urn:infai:ses:service:it-aaaa", name: "readings" },
+    mappings: [
+      {
+        dest: "value",
+        source: "value.power",
+        variable_name: "power",
+        variable_path: "value.power",
+        unit: "W",
+        characteristic_id: "ch-watt",
+        function_id: "fn-power",
+        aspect_id: "aspect-pv",
+      },
+    ],
+    alternatives: [],
+    warnings: [],
+  };
+}
+
+/** A quick_profiles candidate, with only the fields CandidateRow and DeviceLabel
+ *  actually read. */
+function candidate(deviceId: string, name: string, functionId: string, aspectId: string) {
+  const notComputed = { status: "not_computed", reason: "insufficient_coverage", detail: "" };
+  return {
+    series_ref: {
+      device_id: deviceId,
+      service_id: "urn:infai:ses:service:it-bbbb",
+      variable_path: "value.power",
+    },
+    device: { name, device_type_id: "dt-b", device_type_name: "Meter" },
+    tier: "L0",
+    availability: notComputed,
+    volume: notComputed,
+    declared: {
+      characteristic_id: "ch-kilowatt",
+      unit: "kW",
+      unit_source: "ontology",
+      min_value: notComputed,
+      max_value: notComputed,
+      type: "number",
+      function_id: functionId,
+      aspect_id: aspectId,
+    },
+    interaction: "event",
+    liveness: { connection_state: "online", last_value_age_s: notComputed, basis: "" },
+    ontology_completeness: { status: "complete", missing: [] },
+    rank_hints: { span_days: 10, coverage_proxy: 0.9, is_live: true, score: 0.8 },
+    queryable: true,
+    provenance: {},
+  };
+}
+
+/** The device the fixture retarget answer moves the topic to. */
+const DEVICE_B_ID = (inputTopicResolved as ResolvedInputTopic).device.id;
+
+it("a launch_experiment card offers the editor; another tool's card does not", async () => {
+  resolvePreview = previewOf(TOPIC_A, "PV Inverter");
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+
+  expect(host.querySelector(".launch-topic"), "no launch topic card").not.toBeNull();
+  expect(host.textContent).toContain("PV Inverter");
+  expect(host.textContent).toContain("readings");
+  expect(host.querySelector(".launch-topic-move")).not.toBeNull();
+  // No id anywhere on the card — only names.
+  expect(host.textContent).not.toContain(TOPIC_A.filterValue);
+
+  pending = [
+    {
+      id: "conf-export",
+      tool: "create_export",
+      input: { import_id: "urn:infai:ses:import:7" },
+      tier: "L0",
+      created_at: "2026-09-14T00:00:00Z",
+    },
+  ];
+  const other = await open();
+  await settle(5);
+  expect(other.querySelector(".launch-topic")).toBeNull();
+  expect(other.querySelector(".launch-topic-move")).toBeNull();
+  expect(resolveCalls).toHaveLength(1); // only the launch card ever called it
+});
+
+it("moving a topic to a device replaces the row with the route's answer, and approving sends input on the socket", async () => {
+  resolvePreview = previewOf(TOPIC_A, "PV Inverter");
+  quickCandidates = [candidate(DEVICE_B_ID, "Meter", "fn-power", "aspect-pv")];
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+  expect(host.textContent).toContain("PV Inverter");
+
+  await press(host, "Move to another device");
+  await settle(5);
+  expect(quickProfileRequests.length).toBeGreaterThan(0);
+
+  const row = [...host.querySelectorAll(".device-picker tr")].find((r) =>
+    r.textContent?.includes("Meter"),
+  ) as HTMLElement | undefined;
+  expect(row, "the candidate device is not in the picker").not.toBeUndefined();
+  await act(async () => row?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await settle(5);
+
+  expect(resolveCalls.at(-1)?.[1]).toBe(DEVICE_B_ID);
+  // The row now shows what the route answered, not what was proposed.
+  expect(host.textContent).toContain("Meter");
+  expect(host.textContent).not.toContain("PV Inverter");
+  // The characteristic warning the fixture carries travels onto the card.
+  expect(host.textContent).toContain("Operator Lib converts nothing");
+
+  await press(host, "Approve with changes");
+  await settle(5);
+
+  expect(streamed).toContain("chat_confirm");
+  const sentPayload = chatConfirmPayloads.at(-1);
+  expect(sentPayload?.approve).toBe(true);
+  const sentInput = sentPayload?.input as { entrypoint: string; input_topics: InputTopic[] };
+  expect(sentInput.entrypoint).toBe("uv run python train.py");
+  expect(sentInput.input_topics[0]).toEqual((inputTopicResolved as ResolvedInputTopic).topic);
+
+  // The resolved card: the diff, shown from what the pane already holds rather
+  // than waited for on a reload.
+  expect(host.textContent).toContain("Approved launch_experiment with changes");
+  expect(host.textContent).toContain("input_topics[0]");
+});
+
+it("a held launch_experiment confirmation sends the edited input through decide, not a second stream", async () => {
+  resolvePreview = previewOf(TOPIC_A, "PV Inverter");
+  quickCandidates = [candidate(DEVICE_B_ID, "Meter", "fn-power", "aspect-pv")];
+  pending = [{ ...launchConfirmation([TOPIC_A]), out_of_band: true }];
+
+  const host = await open();
+  await settle(5);
+
+  await press(host, "Move to another device");
+  await settle(5);
+  const row = [...host.querySelectorAll(".device-picker tr")].find((r) =>
+    r.textContent?.includes("Meter"),
+  ) as HTMLElement | undefined;
+  await act(async () => row?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await settle(5);
+
+  await press(host, "Approve with changes");
+  await settle(5);
+
+  expect(decided).toEqual([["conf-launch", true]]);
+  expect(streamed.filter((type) => type === "chat_confirm")).toHaveLength(0);
+  const input = decidedInputs.at(-1) as { input_topics: InputTopic[] };
+  expect(input.input_topics[0]).toEqual((inputTopicResolved as ResolvedInputTopic).topic);
+});
+
+/*
+ * A failing resolve must not blank the card (an edge case the working plan
+ * named, restated by the coordinator): the developer still has to be able to
+ * decide, so the one topic that could not be described falls back to the plain
+ * JSON dump every other tool's argument gets, and the card around it — Approve,
+ * Decline — stands.
+ */
+it("a topic that fails to resolve falls back to its raw JSON, and the card still decides", async () => {
+  resolvePreviewError = "the device could not be read";
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+
+  const fallback = host.querySelector(".launch-topic-fallback");
+  expect(fallback, "no fallback for the topic that failed to resolve").not.toBeNull();
+  expect(fallback?.textContent).toContain(TOPIC_A.filterValue);
+  expect(host.querySelector(".launch-topic-move")).toBeNull();
+
+  // Still answerable, unchanged.
+  await press(host, "Approve");
+  await settle(3);
+  expect(streamed).toContain("chat_confirm");
+  expect(chatConfirmPayloads.at(-1)?.input).toBeUndefined();
+});
+
+/*
+ * A topic whose first mapping names no function or aspect: filtering on nothing
+ * would match nothing and read as "there are no comparable series", which is a
+ * different and false claim — so the picker shows every candidate instead, and
+ * says why it is not narrowed.
+ */
+it("a topic with no function or aspect offers every candidate, unfiltered, with a note", async () => {
+  const preview = previewOf(TOPIC_A, "PV Inverter");
+  preview.mappings[0] = { ...preview.mappings[0], function_id: undefined, aspect_id: undefined };
+  resolvePreview = preview;
+  quickCandidates = [
+    candidate("urn:infai:ses:device:input-topics-b", "Meter", "fn-power", "aspect-pv"),
+    candidate("urn:infai:ses:device:input-topics-c", "Oven", "fn-temperature", "aspect-kitchen"),
+  ];
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+
+  await press(host, "Move to another device");
+  await settle(5);
+
+  expect(host.textContent).toContain("names no function or aspect");
+  const rows = [...host.querySelectorAll(".device-picker tr")];
+  expect(rows.map((r) => r.textContent).join("|")).toContain("Meter");
+  expect(rows.map((r) => r.textContent).join("|")).toContain("Oven");
+});
+
+/*
+ * The frozen target the protocol wants is exactly the one already confirmed, so
+ * it is offered first rather than left to sort with the rest.
+ */
+it("pins the session's confirmed selection at the top of the candidate list", async () => {
+  listed = listed.map((s) =>
+    s.id === "id-1"
+      ? {
+          ...s,
+          selection: {
+            rationale: "chosen earlier in this conversation",
+            series: [
+              {
+                device_id: "urn:infai:ses:device:input-topics-c",
+                service_id: "urn:infai:ses:service:it-bbbb",
+                variable_path: "value.power",
+              },
+            ],
+            proposed_at: "2026-09-01T00:00:00Z",
+          },
+        }
+      : s,
+  );
+  resolvePreview = previewOf(TOPIC_A, "PV Inverter");
+  quickCandidates = [
+    candidate("urn:infai:ses:device:input-topics-b", "Meter", "fn-power", "aspect-pv"),
+    candidate("urn:infai:ses:device:input-topics-c", "Confirmed Device", "fn-power", "aspect-pv"),
+  ];
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+
+  await press(host, "Move to another device");
+  await settle(5);
+
+  const rows = [...host.querySelectorAll(".device-picker tr")];
+  expect(rows[0]?.textContent).toContain("Confirmed Device");
+});
+
+/*
+ * A refused move leaves the topic alone. The route answers 400 when a mapping has
+ * no counterpart on the chosen device type, and the developer's next move is to
+ * decline and ask for something else — which they can only do if the card still
+ * shows what was actually proposed. A half-applied topic would be worse than no
+ * move at all: it would be approved as if the model had asked for it.
+ */
+it("a move the route refuses is reported and leaves the topic as it was", async () => {
+  resolvePreview = previewOf(TOPIC_A, "PV Inverter");
+  quickCandidates = [candidate(DEVICE_B_ID, "Meter", "fn-power", "aspect-pv")];
+  resolveRetargetError = "mapping value has no counterpart on device type dt-b";
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+
+  await press(host, "Move to another device");
+  await settle(5);
+  const row = [...host.querySelectorAll(".device-picker tr")].find((r) =>
+    r.textContent?.includes("Meter"),
+  ) as HTMLElement | undefined;
+  await act(async () => row?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await settle(5);
+
+  const error = host.querySelector(".launch-topic-move-error");
+  expect(error, "a refused move said nothing").not.toBeNull();
+  expect(error?.textContent).toContain("no counterpart");
+  // The topic is the proposed one still, and the button says so: nothing was
+  // edited, so there is nothing to approve "with changes".
+  expect(host.textContent).toContain("PV Inverter");
+  expect(host.textContent).not.toContain("Meter (");
+  expect(buttonNamed(host, "Approve with changes")).toBeUndefined();
+  expect(buttonNamed(host, "Approve")).not.toBeUndefined();
+});
+
+/*
+ * The per-mapping dropdown is the repair for a derivation that picked a
+ * plausible but wrong variable, so what matters is that choosing an alternative
+ * reaches the topic that gets approved — not merely that a control rendered.
+ */
+it("picking an alternative variable rewrites that mapping's source and is what gets approved", async () => {
+  const withAlternatives: ResolvedInputTopic = {
+    ...previewOf(TOPIC_A, "PV Inverter"),
+    alternatives: [
+      { source: "value.total", variable_name: "total", variable_path: "value.total", unit: "Wh" },
+    ],
+  };
+  resolvePreview = withAlternatives;
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+
+  // The options render through a portal, outside the pane's own root, so they are
+  // looked for on the document rather than on host.
+  const trigger = host.querySelector(".launch-topic-alt") as HTMLElement | null;
+  expect(trigger, "no alternatives dropdown on a mapping that has one").not.toBeNull();
+  await act(async () => trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await settle(5);
+
+  const option = [...document.querySelectorAll("[role='option']")].find((o) =>
+    o.textContent?.includes("total"),
+  ) as HTMLElement | undefined;
+  expect(option, "the alternative was not offered").not.toBeUndefined();
+  // A full pointer sequence, not a bare click: the select commits a choice on
+  // pointerup, so a click alone opens nothing and changes nothing.
+  await act(async () => {
+    for (const type of ["pointerdown", "pointerup", "click"]) {
+      option?.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+    }
+  });
+  await settle(5);
+
+  await press(host, "Approve with changes");
+  await settle(5);
+
+  const sent = chatConfirmPayloads.at(-1)?.input as { input_topics: InputTopic[] };
+  expect(sent.input_topics[0].mappings[0].source).toBe("value.total");
+  // dest is the name the operator's own code reads and is never rewritten.
+  expect(sent.input_topics[0].mappings[0].dest).toBe(TOPIC_A.mappings[0].dest);
+});
+
+it("changedPaths names the leaf that moved, and nothing when nothing did", async () => {
+  const { changedPaths } = await import("./chat");
+  expect(
+    changedPaths(
+      { input_topics: [{ filterValue: "a", mappings: [{ dest: "value", source: "x" }] }] },
+      { input_topics: [{ filterValue: "b", mappings: [{ dest: "value", source: "x" }] }] },
+    ),
+  ).toEqual(["input_topics[0].filterValue"]);
+  expect(changedPaths({ a: 1 }, { a: 1 })).toEqual([]);
 });

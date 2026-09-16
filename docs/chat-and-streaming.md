@@ -164,6 +164,79 @@ whose caller has gone. ODE also writes a per-server tool timeout into the CLI's
 generated MCP config, so `MCP_TOOL_TIMEOUT` in ODE's environment cannot cut a
 legitimate hold short.
 
+### A confirmation is answered with a decision, and optionally with an input
+
+A confirmation used to be a yes or a no over the input the model sent. It now
+carries an optional `input`, on both transports (`chat_confirm` for a stopped
+turn, `chat_decide` for a held call), and when one is present it is what runs.
+
+The case it exists for is a proposed `launch_experiment` whose target device is
+not the one the developer wants. Without this they can only decline and ask, which
+costs turns, puts their wish into the conversation as an uncontrolled input, and
+lets the model re-propose the covariates along with the device. Handing back an
+edited input at the moment of approval gives them the device and leaves the model
+everything else it chose.
+
+**It is not a new permission.** A developer could already launch anything they
+like from the UI, so applying their edit through the model's own call widens
+nothing. Two rules keep it that way:
+
+- An input with `approve: false` is refused — *"an edited input has nothing to
+  apply to a decline"* — as is one that is not valid JSON. Both refusals live in
+  one helper, because there are two transports and a rule enforced twice drifts.
+- `Dispatcher.Confirm` is **unchanged**. Its tier re-check runs against the tool
+  and the session's tier now, not against the input, so a tier lowered after the
+  proposal still refuses. An edit changes what runs if the gate lets it through;
+  it is not a way past the gate. `requireInputTopics`, `validateTopics` and
+  `lib/access` all see the applied input exactly as they would see a model's, so a
+  device the developer may not read is refused where every other unreadable device
+  is.
+
+**The proposal is never overwritten.** `PendingConfirmation.Input` stays the
+model's own, and what ran goes into a second column, `applied_input`, nil when the
+proposal ran unchanged. Both paths dispatch a *copy* with the input replaced.
+That is not tidiness: the comparison of the two is how the ablation scores whether
+the model's first proposal named the right device, and a comparison only works if
+one side of it cannot move.
+
+**Generic in the backend, specific in the frontend.** The backend knows only "a
+confirmation is approved with an input"; the SPA offers an editor for one tool and
+one field. A backend allow-list of which fields of which tool may be edited would
+be a second copy of every tool's input schema, kept in step by hand — and it would
+buy nothing, because the executor already decodes and validates what it is given
+and the record already shows every deviation.
+
+**The model is told, in the place each path has for telling it.** The two decision
+paths differ in shape, so they differ here too, and this is the one asymmetry worth
+knowing. The native path resumes a turn that stopped, so the change is named in
+the user turn that reports the outcome. The held path resumes nothing — the CLI's
+own loop never paused and reads the result of its own MCP call — so there is no
+second turn to append to, and appending one would reach the model minutes later or
+not at all. The note is folded into the result instead, as
+`{"result": …, "developer_note": …}` around whatever the tool returned, which
+stays generic rather than reaching into one tool's own result shape. Both render
+the change through the same helper, so the two cannot describe one edit two ways.
+
+There is deliberately **no hint to re-propose**. The decision stands; the model is
+being told what happened, not asked to weigh in. By the time it reads this, the
+edited launch has already run — which is the point, because the developer's device
+is not a proposal.
+
+**What a developer may change is a rule of the protocol, not of the code.** The
+editor moves a topic to another device; it does not add topics, remove them, or
+rename a `dest`. Which inputs the operator has, which of them are covariates, and
+what each is called inside the operator stay the model's decisions, because the
+ablation scores the model on exactly those and an answer the developer edited is
+not an answer the model gave. The backend does not enforce this and should not:
+that would be the per-tool allow-list above, and it is unnecessary, because the
+record holds both inputs and any deviation is visible in it afterwards.
+
+Every other confirmed tool's card is unchanged — `run_code`'s code and the
+create and delete tools' arguments are still approve-or-decline. A generic JSON
+editor over any confirmed input was considered and dropped: the tools differ in
+what an edit would even mean, and the one case with a real need is the one that
+has a derivation behind it rather than a text box.
+
 ### A conversation can change workbench, and the history has to be told
 
 Which workbench a conversation acts in — whose checkout `write_file` writes into,

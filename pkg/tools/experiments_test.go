@@ -275,6 +275,63 @@ func TestALaunchIsHeldForTheDevelopersConfirmation(t *testing.T) {
 	}
 }
 
+// A launch result names the topics the run actually read, which are not
+// necessarily the ones the model asked for: a confirmed launch may be approved
+// with an input the developer edited, and the stored record is the only one of
+// the two that says which ran.
+//
+// The fake deliberately answers with topics that differ from the call's own, so
+// this fails an implementation that reads the tool input back out — which is the
+// mistake worth a test here, because such an implementation agrees with the
+// record on every unedited launch and lies on exactly the one that matters.
+func TestALaunchResultNamesTheTopicsTheRunActuallyRead(t *testing.T) {
+	recorded := launchedResult()
+	recorded.InputTopics = []experiments.InputTopic{{
+		Name:        "urn_infai_ses_service_the-developers-device",
+		FilterType:  "DeviceId",
+		FilterValue: "urn:infai:ses:device:bbbb",
+		Mappings:    []experiments.TopicMapping{{Dest: "value", Source: "value.power"}},
+	}}
+	fake := &fakeExperiments{result: recorded}
+	registry := experimentSurface(t, fake)
+
+	held := dispatchExperiment(t, registry, "launch_experiment", `{
+	  "entrypoint": "python training.py",
+	  "input_topics": [{
+	    "name": "urn_infai_ses_service_the-models-proposal",
+	    "filterType": "DeviceId",
+	    "filterValue": "urn:infai:ses:device:aaaa",
+	    "mappings": [{"dest": "value", "source": "value.power"}]
+	  }]
+	}`)
+	if held.Confirmation == nil {
+		t.Fatal("no confirmation was recorded for the developer to resolve")
+	}
+
+	dispatcher, err := NewDispatcher(registry, nil, &sequentialIDs{})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	confirmed := dispatcher.Confirm(context.Background(),
+		Request{Token: "Bearer t", UserSub: "user-1", SessionID: "sess-1", Tier: L0},
+		*held.Confirmation)
+	if confirmed.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", confirmed.Outcome, confirmed.Content)
+	}
+
+	answer, ok := confirmed.Content.(LaunchExperimentResult)
+	if !ok {
+		t.Fatalf("content = %T, want a LaunchExperimentResult", confirmed.Content)
+	}
+	if len(answer.InputTopics) != 1 {
+		t.Fatalf("input topics = %+v, want the one the record holds", answer.InputTopics)
+	}
+	if got := answer.InputTopics[0].FilterValue; got != "urn:infai:ses:device:bbbb" {
+		t.Errorf("filterValue = %q, want the record's device; the result is reporting "+
+			"what the call asked for rather than what ran", got)
+	}
+}
+
 // The refusal on a dirty working copy has to reach the model as something it can
 // act on, because the action — commit — is one only the developer can take.
 func TestALaunchRefusedForUncommittedWorkTellsTheModelWhy(t *testing.T) {

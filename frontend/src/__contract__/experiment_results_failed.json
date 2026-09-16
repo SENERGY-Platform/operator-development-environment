@@ -1,7 +1,7 @@
 {
-  "commit_sha": "b09d9a1ca76bb2eab1918aed0af9e88b6af8bec4",
+  "commit_sha": "daa14098d40886c7815e0ad03498f99bd10937c5",
   "comparison_to_previous": [],
-  "ended_at": "2026-09-01T06:21:31.019Z",
+  "ended_at": "2026-09-14T08:55:50.034Z",
   "entrypoint": "uv run python train.py",
   "evaluation_criteria": {
     "goal": "minimise",
@@ -13,10 +13,10 @@
       "status": "not_computed"
     },
     "metric": "rmse",
-    "source": "evaluation.yaml at b09d9a1, which is the developer's own (no tool may modify it)",
+    "source": "evaluation.yaml at daa1409, which is the developer's own (no tool may modify it)",
     "threshold": 0.35
   },
-  "experiment_id": "ekjla2kzobfva3xb6fp6cvk2m4",
+  "experiment_id": "fagtczm2jgdtmunq4mcd6h5oau",
   "failure": {
     "exception": "ValueError",
     "frames": [
@@ -34,6 +34,19 @@
     "message": "Input X contains NaN in column 'power_kw' at 3 of 43200 rows"
   },
   "finished": true,
+  "input_topics": [
+    {
+      "filterType": "DeviceId",
+      "filterValue": "urn:infai:ses:device:2ac5436e-5538-4eb3-a448-2d77de68e915",
+      "mappings": [
+        {
+          "dest": "value",
+          "source": "value.power.value"
+        }
+      ],
+      "name": "urn_infai_ses_service_9ba92218-37d8-4c80-ad3d-bb3eb5c8457d"
+    }
+  ],
   "metrics": {},
   "params": {
     "lookback_days": "7"
@@ -55,20 +68,20 @@
         "status": "not_computed"
       },
       "metric": "mape",
-      "source": "evaluation.yaml at b09d9a1, which is the developer's own (no tool may modify it)",
+      "source": "evaluation.yaml at daa1409, which is the developer's own (no tool may modify it)",
       "threshold": 5
     }
   ],
-  "started_at": "2026-09-01T06:20:01.019Z",
+  "started_at": "2026-09-14T08:54:20.034Z",
   "status": "FAILED",
-  "submission_id": "6oqdjiblxmokztalli3gzt4f7u",
+  "submission_id": "jawfi2dnq2sraumf3x3xpxymza",
   "tags": {
     "branch": "main",
-    "commit_sha": "b09d9a1ca76bb2eab1918aed0af9e88b6af8bec4",
+    "commit_sha": "daa14098d40886c7815e0ad03498f99bd10937c5",
     "entrypoint": "uv run python train.py",
-    "ode_experiment_id": "ekjla2kzobfva3xb6fp6cvk2m4",
+    "ode_experiment_id": "fagtczm2jgdtmunq4mcd6h5oau",
     "ode_source": "ode",
-    "ray_submission_id": "6oqdjiblxmokztalli3gzt4f7u",
+    "ray_submission_id": "jawfi2dnq2sraumf3x3xpxymza",
     "repository": "jonah/pv-forecast"
   }
 }

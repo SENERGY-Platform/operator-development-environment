@@ -1051,6 +1051,30 @@ function Submission({
         <Row label="Commit">
           <code title={experiment.commit_sha}>{experiment.commit_sha}</code>
         </Row>
+        {/*
+          Absent rather than "no inputs" for a run recorded before the column
+          existed (docs/experiments.md): requireInputTopics refuses a launch with
+          genuinely none, so a missing field can only mean "not recorded", and
+          claiming otherwise would be a claim the record does not support.
+        */}
+        {experiment.input_topics && experiment.input_topics.length > 0 && (
+          <Row
+            label="Input topics"
+            hint="What this run actually read — the developer's device if the proposed one was moved before approving"
+          >
+            <ul className="exp-input-topics flex flex-col gap-1">
+              {experiment.input_topics.map((topic) => (
+                <li key={`${topic.name}|${topic.filterValue}`} className="exp-input-topic">
+                  <code className="wrap" title={topic.name}>{topic.filterValue}</code>
+                  <span className="muted-inline text-xs text-muted-foreground">
+                    {" "}
+                    {topic.mappings.map((m) => `${m.dest} ← ${m.source}`).join(", ")}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Row>
+        )}
         <Row label="Package">
           {bytes(experiment.package_bytes)}
           {experiment.package_reused && (

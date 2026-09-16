@@ -664,8 +664,15 @@ ValueError: Input X contains NaN in column 'power_kw' at 3 of 43200 rows
 	// whether it did.
 	h.writeFile(t, "training.py", "# a third state\n")
 	h.commit(t, "Adjust the training task")
+	// Named here rather than left to withInputTopics, which only h.launch applies:
+	// this call goes through h.call directly, so a launch without them is the 400
+	// requireInputTopics owes it — which is what made this fixture unwritable.
 	launch := h.call(t, http.MethodPost, "/experiments",
-		map[string]any{"run_name": "third", "env_vars": map[string]string{"FOLDS": "10"}},
+		map[string]any{
+			"run_name":     "third",
+			"env_vars":     map[string]string{"FOLDS": "10"},
+			"input_topics": testInputTopics(),
+		},
 		"developer")
 	if launch.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(launch.Body)

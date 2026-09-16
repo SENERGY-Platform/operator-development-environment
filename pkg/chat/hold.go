@@ -18,6 +18,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -72,11 +73,21 @@ const defaultConfirmationTimeout = 5 * time.Minute
 // provider's, which only knows a tool call did not come back.
 const confirmationCallMargin = 30 * time.Second
 
+// decision is a developer's answer to a held confirmation: whether they approved
+// it, and — for an approval — the input that should run if it differs from the
+// model's own proposal. input is nil for an ordinary approval or any
+// decline; B1 (ws_chat.go) refuses an input alongside a decline before either
+// ever reaches here.
+type decision struct {
+	approve bool
+	input   json.RawMessage
+}
+
 // hold is one call waiting for a decision.
 type hold struct {
 	// decided carries the developer's answer. Buffered, so Decide never blocks on
 	// a waiter that has already given up on the timer.
-	decided chan bool
+	decided chan decision
 	// sessionID is checked in Decide: a confirmation id alone must not be enough to
 	// answer a hold belonging to another conversation.
 	sessionID string
@@ -121,7 +132,7 @@ func (e *Engine) Hold(ctx context.Context, req tools.Request, call tools.Call) (
 	}
 
 	waiting := &hold{
-		decided:   make(chan bool, 1),
+		decided:   make(chan decision, 1),
 		sessionID: req.SessionID,
 		userSub:   req.UserSub,
 	}
@@ -164,15 +175,16 @@ func (e *Engine) Hold(ctx context.Context, req tools.Request, call tools.Call) (
 	// takes the waiter owns the outcome.
 	giveUp := func(reason, told string) (tools.Result, bool, error) {
 		if !e.claimHold(confirmation.ID) {
-			return e.resolveHold(ctx, req, confirmation, exchange, <-waiting.decided), true, nil
+			dec := <-waiting.decided
+			return e.resolveHold(ctx, req, confirmation, exchange, dec.approve, dec.input), true, nil
 		}
 		e.abandonHold(ctx, exchange, confirmation, reason)
 		return heldFailure(confirmation, told), true, nil
 	}
 
 	select {
-	case approve := <-waiting.decided:
-		return e.resolveHold(ctx, req, confirmation, exchange, approve), true, nil
+	case dec := <-waiting.decided:
+		return e.resolveHold(ctx, req, confirmation, exchange, dec.approve, dec.input), true, nil
 
 	case <-exchange.Done():
 		// The turn was abandoned — the developer pressed stop, or the provider's own
@@ -200,9 +212,14 @@ func (e *Engine) Hold(ctx context.Context, req tools.Request, call tools.Call) (
 }
 
 // resolveHold runs or refuses the held call once the developer has answered.
+//
+// input is the developer's edit of the model's proposal, or nil for an ordinary
+// approval. Written to resolved.AppliedInput before PutConfirmation, so
+// the confirmation is never recorded pending — the proposal itself,
+// confirmation.PendingConfirmation.Input, is never touched.
 func (e *Engine) resolveHold(
 	ctx context.Context, req tools.Request, confirmation Confirmation,
-	exchange *Exchange, approve bool,
+	exchange *Exchange, approve bool, input json.RawMessage,
 ) tools.Result {
 	now := e.now()
 	resolved := confirmation
@@ -210,6 +227,9 @@ func (e *Engine) resolveHold(
 	resolved.Decision = DecisionRejected
 	if approve {
 		resolved.Decision = DecisionApproved
+	}
+	if approve && len(input) > 0 {
+		resolved.AppliedInput = input
 	}
 	if err := e.store.PutConfirmation(ctx, resolved); err != nil {
 		slog.ErrorContext(ctx, "could not record a confirmation decision",
@@ -244,7 +264,17 @@ func (e *Engine) resolveHold(
 			"session", req.SessionID, "error", err)
 	}
 
-	return e.dispatcher.Confirm(ctx, tools.Request{
+	// A copy, not a mutation of confirmation.PendingConfirmation: see resolved's
+	// own comment above. Dispatcher.Confirm is unchanged and re-checks req.Tier
+	// against pending.Tool exactly as it does for an unedited call, so a tier
+	// lowered after the proposal still refuses — an edit is not a way past that
+	// gate, it only changes what runs if the gate lets it through.
+	pending := confirmation.PendingConfirmation
+	if len(input) > 0 {
+		pending.Input = input
+	}
+
+	result := e.dispatcher.Confirm(ctx, tools.Request{
 		Token: req.Token, UserSub: req.UserSub, SessionID: req.SessionID, Tier: tier,
 		Split: split,
 		// Carried from the held call rather than re-read: an approval acts in the
@@ -257,7 +287,25 @@ func (e *Engine) resolveHold(
 		Report: func(progress tools.Progress) {
 			exchange.publish(Event{Type: EventProgress, Progress: &progress})
 		},
-	}, confirmation.PendingConfirmation)
+	}, pending)
+
+	if len(input) > 0 {
+		// This is the only place the model learns of the edit. Unlike the native
+		// path (confirmationOutcome, engine.go), a held call is answered back into
+		// the very MCP call that is waiting on it — there is no second turn to
+		// append a note to, because the CLI's own loop never stopped (see
+		// docs/chat-and-streaming.md, "the result goes ... back to the MCP call, as
+		// its tool result"). So the note is folded into the result itself, wrapping
+		// whatever the tool returned rather than replacing it — this stays generic
+		// across every confirmed tool rather than reaching into one tool's own
+		// result shape.
+		result.Content = map[string]any{
+			"result":         result.Content,
+			"developer_note": changeNote(confirmation.Tool, confirmation.PendingConfirmation.Input, input),
+		}
+	}
+
+	return result
 }
 
 // publishResolution tells every view of an exchange that a confirmation is
@@ -367,7 +415,21 @@ func heldFailure(confirmation Confirmation, why string) tools.Result {
 // paused; this one resolves a call inside a turn that never stopped, so it starts
 // nothing and returns no exchange — the events the developer is already watching
 // carry the result.
-func (e *Engine) Decide(ctx context.Context, sub, sessionID, confirmationID string, approve bool) error {
+//
+// input is the developer's edit of the model's proposed call, or nil for an
+// ordinary decision. ws_chat.go refuses an input alongside a decline, and
+// non-JSON input, before either ever reaches here — this trusts its caller the
+// same way Confirm does.
+//
+// Required rather than variadic, even though every existing caller passes nil and
+// variadic would have spared them the change. This is the method that releases a
+// held tool call for execution; a caller that means to pass an edit and forgets
+// must fail to compile rather than silently run the model's own proposal instead
+// of the developer's.
+func (e *Engine) Decide(
+	ctx context.Context, sub, sessionID, confirmationID string, approve bool,
+	input json.RawMessage,
+) error {
 	if _, err := e.Session(ctx, sub, sessionID); err != nil {
 		return err
 	}
@@ -393,7 +455,7 @@ func (e *Engine) Decide(ctx context.Context, sub, sessionID, confirmationID stri
 		return ErrNotHeld
 	}
 
-	waiting.decided <- approve
+	waiting.decided <- decision{approve: approve, input: input}
 	return nil
 }
 

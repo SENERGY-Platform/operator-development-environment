@@ -148,6 +148,23 @@ func (h *heldHarness) hold(tier tools.Tier, tool string) <-chan tools.Result {
 	return done
 }
 
+// holdWithInput is hold with a proposed input worth a developer's edit — hold's
+// own fixed `{}` has nothing in it to change.
+func (h *heldHarness) holdWithInput(tier tools.Tier, tool string, input json.RawMessage) <-chan tools.Result {
+	done := make(chan tools.Result, 1)
+	go func() {
+		result, held, err := h.engine.Hold(context.Background(), tools.Request{
+			Token: testToken, UserSub: testUser, SessionID: h.session.ID, Tier: tier,
+		}, tools.Call{ID: "call-1", Name: tool, Input: input})
+		if !held || err != nil {
+			done <- tools.Result{Outcome: tools.Outcome("not_held")}
+			return
+		}
+		done <- result
+	}()
+	return done
+}
+
 // awaitConfirmation waits for the request to reach the developer, which is what a
 // test has to see before it can answer on their behalf.
 func (h *heldHarness) awaitConfirmation(t *testing.T) string {
@@ -188,7 +205,7 @@ func TestAHeldCallRunsWhenTheDeveloperApproves(t *testing.T) {
 	results := h.hold(tools.L0, "confirmed_tool")
 
 	id := h.awaitConfirmation(t)
-	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true); err != nil {
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true, nil); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 
@@ -208,7 +225,7 @@ func TestAHeldCallDoesNotRunWhenTheDeveloperDeclines(t *testing.T) {
 	results := h.hold(tools.L0, "confirmed_tool")
 
 	id := h.awaitConfirmation(t)
-	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, false); err != nil {
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, false, nil); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 
@@ -233,7 +250,7 @@ func TestAHeldCallReReadsTheTierWhenItIsApproved(t *testing.T) {
 	if _, err := h.engine.SetTier(context.Background(), testUser, h.session.ID, tools.L0); err != nil {
 		t.Fatalf("SetTier: %v", err)
 	}
-	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true); err != nil {
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true, nil); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 
@@ -244,6 +261,188 @@ func TestAHeldCallReReadsTheTierWhenItIsApproved(t *testing.T) {
 	}
 	if h.tracker.was("confirmed_l2_tool") {
 		t.Fatal("an L2 tool ran after the session was lowered to L0")
+	}
+}
+
+// An edited input must not be a way past the same gate: the tier re-check runs
+// against the tool and req.Tier alone (Dispatcher.Confirm is unchanged), so it
+// refuses an edited call exactly as it refuses an unedited one.
+func TestAHeldCallWithAnEditedInputIsStillSubjectToTheTierGate(t *testing.T) {
+	h := newHeldHarness(t, tools.L2)
+	results := h.holdWithInput(tools.L2, "confirmed_l2_tool", json.RawMessage(`{"device_id":"urn:a"}`))
+
+	id := h.awaitConfirmation(t)
+	if _, err := h.engine.SetTier(context.Background(), testUser, h.session.ID, tools.L0); err != nil {
+		t.Fatalf("SetTier: %v", err)
+	}
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true,
+		json.RawMessage(`{"device_id":"urn:b"}`)); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	result := awaitResult(t, results)
+	if result.Outcome != tools.OutcomeBlockedByTier {
+		t.Errorf("outcome = %q, want %q — an edited input does not run around a lowered tier",
+			result.Outcome, tools.OutcomeBlockedByTier)
+	}
+	if h.tracker.was("confirmed_l2_tool") {
+		t.Fatal("an edited input ran an L2 tool after the session was lowered to L0")
+	}
+}
+
+// --- a held confirmation approved with an input ---
+
+// TestAHeldCallRunsWithAnEditedInput is the edited-input property on the out-of-band path:
+// the developer's edit is what runs, and the record keeps both what the model
+// proposed and what was applied — the same as the native path, through a
+// different mechanism (Decide, not Confirm).
+func TestAHeldCallRunsWithAnEditedInput(t *testing.T) {
+	h := newHeldHarness(t, tools.L0)
+	proposed := json.RawMessage(`{"device_id":"urn:a"}`)
+	results := h.holdWithInput(tools.L0, "confirmed_tool", proposed)
+
+	id := h.awaitConfirmation(t)
+	edited := json.RawMessage(`{"device_id":"urn:b"}`)
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true, edited); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	result := awaitResult(t, results)
+	if result.Outcome != tools.OutcomeOK {
+		t.Fatalf("outcome = %q, want %q (result %+v)", result.Outcome, tools.OutcomeOK, result)
+	}
+	seen := h.tracker.inputsSeen()
+	if len(seen) != 1 || string(seen[0]) != string(edited) {
+		t.Errorf("the tool ran with %v, want the edited input %s", seen, edited)
+	}
+
+	confirmation, found, err := h.store.Confirmation(context.Background(), id)
+	if err != nil || !found {
+		t.Fatalf("Confirmation: found=%v err=%v", found, err)
+	}
+	if string(confirmation.Input) != string(proposed) {
+		t.Errorf("stored input = %s, want the model's own proposal %s unchanged",
+			confirmation.Input, proposed)
+	}
+	if string(confirmation.AppliedInput) != string(edited) {
+		t.Errorf("stored applied_input = %s, want the edited input %s", confirmation.AppliedInput, edited)
+	}
+}
+
+// TestAHeldCallWithoutAnEditRecordsNoAppliedInput is the other half: an ordinary
+// held approval must not manufacture an edit that never happened.
+func TestAHeldCallWithoutAnEditRecordsNoAppliedInput(t *testing.T) {
+	h := newHeldHarness(t, tools.L0)
+	results := h.hold(tools.L0, "confirmed_tool")
+
+	id := h.awaitConfirmation(t)
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true, nil); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	awaitResult(t, results)
+
+	confirmation, found, err := h.store.Confirmation(context.Background(), id)
+	if err != nil || !found {
+		t.Fatalf("Confirmation: found=%v err=%v", found, err)
+	}
+	if confirmation.AppliedInput != nil {
+		t.Errorf("applied_input = %s, want nil for an unedited approval", confirmation.AppliedInput)
+	}
+}
+
+// TestAHeldCallsResultCarriesTheChangeNote is the held path's telling of an edit —
+// see resolveHold's own comment on why it is the result's content and not a
+// second turn: a held call is answered back into the very MCP call the CLI is
+// waiting on, and there is no second turn on this side to append a note to.
+func TestAHeldCallsResultCarriesTheChangeNote(t *testing.T) {
+	h := newHeldHarness(t, tools.L0)
+	proposed := json.RawMessage(`{"device_id":"urn:a"}`)
+	results := h.holdWithInput(tools.L0, "confirmed_tool", proposed)
+
+	id := h.awaitConfirmation(t)
+	edited := json.RawMessage(`{"device_id":"urn:b"}`)
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true, edited); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	result := awaitResult(t, results)
+	content, ok := result.Content.(map[string]any)
+	if !ok {
+		t.Fatalf("held result content = %#v, want a map carrying the tool's result and the note", result.Content)
+	}
+	note, _ := content["developer_note"].(string)
+	if !strings.Contains(note, "after changing it") || !strings.Contains(note, "device_id") {
+		t.Errorf("developer_note = %q, want it to name the changed path", note)
+	}
+	if _, ok := content["result"]; !ok {
+		t.Error("the tool's own result was dropped when the note was added")
+	}
+}
+
+// TestBothDecisionPathsRenderTheSameEditThroughChangeNote is the cross-path requirement
+// ("both paths produce the same turn text for the same edit"), adapted to what
+// the two paths actually are. The native path (engine.go's confirmationOutcome)
+// writes a new user turn; the held path (resolveHold above) has none to write —
+// it folds the note into the very MCP result the CLI is waiting on (see
+// docs/chat-and-streaming.md, "the result goes ... back to the MCP call, as its
+// tool result"). The containers differ on purpose and are not made to match; what
+// must not differ, because both call the one shared helper with the same
+// arguments, is the sentence itself.
+func TestBothDecisionPathsRenderTheSameEditThroughChangeNote(t *testing.T) {
+	proposed := json.RawMessage(`{"device_id":"urn:a"}`)
+	edited := json.RawMessage(`{"device_id":"urn:b"}`)
+	want := changeNote("confirmed_tool", proposed, edited)
+
+	// Native path: the shared sentence leads the stored decision turn.
+	nh := newHarness(t, toolTurnWithInput("call-1", "confirmed_tool", proposed), textTurn("done"))
+	session := nh.session(t, tools.L0)
+	events, err := nh.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "do it")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+	pending, _ := nh.engine.PendingConfirmations(context.Background(), testUser, session.ID)
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1", len(pending))
+	}
+	resumed, err := nh.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
+		session.ID, pending[0].ID, true, edited)
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	drain(t, resumed)
+	messages, err := nh.engine.Messages(context.Background(), testUser, session.ID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	var nativeText string
+	for _, message := range messages {
+		if message.Role == llm.RoleUser {
+			if got := text(message); strings.Contains(got, "after changing it") {
+				nativeText = got
+			}
+		}
+	}
+	if !strings.HasPrefix(nativeText, want) {
+		t.Errorf("native decision turn = %q, want it to start with %q", nativeText, want)
+	}
+
+	// Held path: the same sentence is the whole of the note, carried in the
+	// result's content rather than in a stored message.
+	hh := newHeldHarness(t, tools.L0)
+	results := hh.holdWithInput(tools.L0, "confirmed_tool", proposed)
+	id := hh.awaitConfirmation(t)
+	if err := hh.engine.Decide(context.Background(), testUser, hh.session.ID, id, true, edited); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	result := awaitResult(t, results)
+	content, ok := result.Content.(map[string]any)
+	if !ok {
+		t.Fatalf("held result content = %#v, want a map with the developer's note", result.Content)
+	}
+	note, _ := content["developer_note"].(string)
+	if note != want {
+		t.Errorf("held developer_note = %q, want exactly %q", note, want)
 	}
 }
 
@@ -367,7 +566,7 @@ func TestADecidedHoldIsAnnouncedOnTheExchange(t *testing.T) {
 
 	results := h.hold(tools.L0, "confirmed_tool")
 	id := h.awaitConfirmation(t)
-	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true); err != nil {
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true, nil); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	awaitResult(t, results)
@@ -406,7 +605,7 @@ func TestConfirmRefusesACallThatIsBeingHeld(t *testing.T) {
 	id := h.awaitConfirmation(t)
 
 	_, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
-		h.session.ID, id, true)
+		h.session.ID, id, true, nil)
 	if !errors.Is(err, ErrHeldOutOfBand) {
 		t.Errorf("Confirm error = %v, want ErrHeldOutOfBand", err)
 	}
@@ -416,7 +615,7 @@ func TestConfirmRefusesACallThatIsBeingHeld(t *testing.T) {
 
 	// And the hold is still answerable, which is the point of refusing rather than
 	// resolving it.
-	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true); err != nil {
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true, nil); err != nil {
 		t.Fatalf("Decide after a refused Confirm: %v", err)
 	}
 	if result := awaitResult(t, results); result.Outcome != tools.OutcomeOK {
@@ -431,12 +630,12 @@ func TestASecondDecisionFindsNothingHolding(t *testing.T) {
 	results := h.hold(tools.L0, "confirmed_tool")
 	id := h.awaitConfirmation(t)
 
-	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true); err != nil {
+	if err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true, nil); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 	awaitResult(t, results)
 
-	err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true)
+	err := h.engine.Decide(context.Background(), testUser, h.session.ID, id, true, nil)
 	if !errors.Is(err, ErrNotHeld) {
 		t.Errorf("second Decide error = %v, want ErrNotHeld", err)
 	}
@@ -448,7 +647,7 @@ func TestOnlyTheOwnerCanDecideAHeldCall(t *testing.T) {
 	h.hold(tools.L0, "confirmed_tool")
 	id := h.awaitConfirmation(t)
 
-	err := h.engine.Decide(context.Background(), "sub-mallory", h.session.ID, id, true)
+	err := h.engine.Decide(context.Background(), "sub-mallory", h.session.ID, id, true, nil)
 	if err == nil {
 		t.Fatal("another user answered a held call")
 	}

@@ -367,6 +367,68 @@ it("a run with a previous one to compare against gets the table and the rule bes
   expect(text).toContain("lower is better");
 });
 
+// --- the run's input topics, from the launch result (docs/experiments.md) ---
+
+/** Submission is collapsed by default, so its content has to be opened before
+ *  it is queryable — the same way a folded tool-call row does in the chat pane. */
+async function openSubmission(host: HTMLElement) {
+  const trigger = [...host.querySelectorAll(".section-head")].find((el) =>
+    el.textContent?.includes("Submission"),
+  ) as HTMLElement | undefined;
+  if (!trigger) throw new Error("no Submission section on screen");
+  await act(async () => trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+it("shows the input topics of a run, from the launch result", async () => {
+  listing = [
+    {
+      ...EXPERIMENT,
+      input_topics: [
+        {
+          name: "urn_infai_ses_service_it-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          filterType: "DeviceId",
+          filterValue: "urn:infai:ses:device:input-topics-a",
+          mappings: [{ dest: "value", source: "value.power" }],
+        },
+      ],
+    },
+  ];
+  primary = met(true);
+  secondary = [];
+  comparison = [];
+
+  const host = await open();
+  await openSubmission(host);
+
+  const topics = host.querySelector(".exp-input-topics");
+  expect(topics, "no input topics shown for a run that carries them").not.toBeNull();
+  expect(topics?.textContent).toContain("urn:infai:ses:device:input-topics-a");
+  expect(topics?.textContent).toContain("value ← value.power");
+});
+
+/*
+ * Absent rather than empty: a run recorded before the column existed carries no
+ * input_topics at all, and requireInputTopics (pkg/experiments/deployment.go)
+ * makes a run with genuinely none impossible — so a missing field can only mean
+ * "not recorded", and an empty-state message here would claim more than the
+ * record supports.
+ */
+it("shows nothing for a run recorded before input topics existed", async () => {
+  listing = [{ ...EXPERIMENT }];
+  primary = met(true);
+  secondary = [];
+  comparison = [];
+
+  const host = await open();
+  await openSubmission(host);
+
+  expect(host.querySelector(".exp-input-topics")).toBeNull();
+  expect(host.textContent).not.toContain("no inputs");
+});
+
 // --- the launch card in the conversation (§5.12, D6) ---
 
 /**

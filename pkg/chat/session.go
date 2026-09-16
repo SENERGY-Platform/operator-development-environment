@@ -186,6 +186,16 @@ type Confirmation struct {
 	// restart — a stored flag would outlive the caller and describe a hold that no
 	// longer exists. The engine sets it from its own registry of live holds.
 	OutOfBand bool `json:"out_of_band,omitempty"`
+	// AppliedInput is what actually ran, when the developer edited the model's
+	// proposed input before approving (docs/chat-and-streaming.md). Nil when the
+	// proposal ran unchanged — which is every confirmation resolved before this
+	// field existed, and reads correctly as "nothing was edited" for them too.
+	//
+	// A second field rather than a mutation of PendingConfirmation.Input: that
+	// field is the model's own proposal, never overwritten, because it is what
+	// selection correctness is scored from — the comparison only works
+	// if one side of it cannot drift.
+	AppliedInput json.RawMessage `json:"applied_input,omitempty"`
 }
 
 const (
@@ -211,6 +221,16 @@ func (c Confirmation) Describe() map[string]any {
 		"input":      input,
 		"tier":       c.Tier,
 		"created_at": c.CreatedAt,
+	}
+	// Present only once the developer has edited something, the same way "input"
+	// above is always shown but this is not — a card with nothing applied yet has
+	// nothing here to show.
+	if len(c.AppliedInput) > 0 {
+		var applied any
+		if err := json.Unmarshal(c.AppliedInput, &applied); err != nil {
+			applied = string(c.AppliedInput)
+		}
+		described["applied_input"] = applied
 	}
 	if c.OutOfBand {
 		described["out_of_band"] = true

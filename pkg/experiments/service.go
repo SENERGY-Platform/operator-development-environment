@@ -561,6 +561,10 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 		// than off req: the record is what is stored, and the two must never say
 		// different things about what this run's bounds were.
 		Split: split,
+		// Recorded after validateTopics and requireInputTopics above, so what is
+		// stored is exactly what passed them — never a topic list that would have
+		// been refused.
+		InputTopics: req.InputTopics,
 	}
 
 	// The run is ODE's, created before the job and tagged in the same request. That

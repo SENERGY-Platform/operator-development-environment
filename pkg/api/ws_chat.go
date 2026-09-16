@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -54,10 +55,54 @@ type chatConfirmBody struct {
 	SessionID      string `json:"session_id"`
 	ConfirmationID string `json:"confirmation_id"`
 	Approve        *bool  `json:"approve"`
+	// Input is the developer's edit of the model's proposed call — see
+	// docs/chat-and-streaming.md, "a confirmation is answered with a decision, and
+	// optionally with an input". Absent for an ordinary decision.
+	// Accepted only alongside approve: true and only when it parses — see
+	// refuseEditedInput, which both msgChatConfirm and chat_decide call before
+	// either ever reaches the engine.
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 type chatAttachBody struct {
 	SessionID string `json:"session_id"`
+}
+
+// confirmInputError is refused for an edited input on the wrong terms. It carries
+// its own exact wording — what the developer sees — and unwraps to
+// chat.ErrInvalidRequest purely so statusForChatError still maps it to 400 the way
+// every other malformed request does; wrapping with fmt.Errorf("%w: ...") would
+// have prepended that error's own text and left neither refusal reading as the
+// sentence below.
+type confirmInputError string
+
+func (e confirmInputError) Error() string { return string(e) }
+func (e confirmInputError) Unwrap() error { return chat.ErrInvalidRequest }
+
+const (
+	errInputOnDecline    = confirmInputError("an edited input has nothing to apply to a decline")
+	errInputNotValidJSON = confirmInputError("the edited input is not valid JSON")
+)
+
+// refuseEditedInput is the one check both transports run on a decision's input —
+// msgChatConfirm below and decideConfirmation — so chat_confirm and chat_decide
+// cannot drift on what they accept. A test asserts they refuse identically.
+//
+// An empty input is not an edit at all (an ordinary decision omits the field), so
+// nothing here applies to it; only a present input is checked against the two
+// rules (docs/chat-and-streaming.md): it must accompany an approval, and it must
+// parse.
+func refuseEditedInput(approve bool, input json.RawMessage) error {
+	if len(input) == 0 {
+		return nil
+	}
+	if !approve {
+		return errInputOnDecline
+	}
+	if !json.Valid(input) {
+		return errInputNotValidJSON
+	}
+	return nil
 }
 
 // startExchange begins or attaches to an exchange and relays its events.
@@ -150,10 +195,13 @@ func (s *wsSession) exchangeFor(ctx context.Context, message wsInbound) (*chat.E
 			return nil, errors.New("approve must be true or false; " +
 				"there is no default for a confirmation")
 		}
+		if err := refuseEditedInput(*body.Approve, body.Input); err != nil {
+			return nil, err
+		}
 		// s.token.Bearer, not a copy of it: the exchange outlives this call, and a
 		// turn that runs for minutes needs the token the client refreshes meanwhile.
 		return s.chat.Confirm(ctx, s.token.Bearer, s.user,
-			body.SessionID, body.ConfirmationID, *body.Approve)
+			body.SessionID, body.ConfirmationID, *body.Approve, body.Input)
 
 	case msgChatAttach:
 		var body chatAttachBody
@@ -238,11 +286,17 @@ func (s *wsSession) decideConfirmation(ctx context.Context, message wsInbound) {
 		})
 		return
 	}
+	if err := refuseEditedInput(*body.Approve, body.Input); err != nil {
+		s.send(wsOutbound{
+			Type: msgError, ID: message.ID, Status: http.StatusBadRequest, Error: err.Error(),
+		})
+		return
+	}
 
 	// Not gated on s.slots, for the reason startExchange is not: that gate bounds
 	// concurrent platform reads, and this does none — the work an approval starts
 	// runs inside the exchange that was already waiting for it.
-	if err := s.chat.Decide(ctx, s.user, body.SessionID, body.ConfirmationID, *body.Approve); err != nil {
+	if err := s.chat.Decide(ctx, s.user, body.SessionID, body.ConfirmationID, *body.Approve, body.Input); err != nil {
 		s.send(wsOutbound{
 			Type: msgError, ID: message.ID,
 			Error: err.Error(), Status: statusForChatError(err),

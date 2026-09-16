@@ -1,51 +1,111 @@
 {
-  "count": 2,
+  "count": 3,
   "experiments": [
     {
       "branch": "main",
-      "commit_sha": "3355d2d43d6b2a626a218814764d23adcdb183a2",
-      "ended_at": "2026-09-01T06:21:59.898Z",
+      "commit_sha": "daa14098d40886c7815e0ad03498f99bd10937c5",
+      "ended_at": "2026-09-14T08:55:20.034Z",
       "entrypoint": "uv run python train.py",
-      "experiment_id": "kqirjhdfxfhj7e7el5nq5sxwc4",
+      "experiment_id": "fagtczm2jgdtmunq4mcd6h5oau",
+      "input_topics": [
+        {
+          "filterType": "DeviceId",
+          "filterValue": "urn:infai:ses:device:2ac5436e-5538-4eb3-a448-2d77de68e915",
+          "mappings": [
+            {
+              "dest": "value",
+              "source": "value.power.value"
+            }
+          ],
+          "name": "urn_infai_ses_service_9ba92218-37d8-4c80-ad3d-bb3eb5c8457d"
+        }
+      ],
       "mlflow_experiment_id": "1",
       "mlflow_experiment_name": "pipeline-ode-dev_operator-jonah-pv-forecast",
-      "mlflow_run_id": "run-2",
-      "package_bytes": 10049,
-      "package_reused": false,
-      "package_uri": "gcs://_ray_pkg_377d46014c8ee64e327bfe5dbb5470189ce8ad1be56164c7bad2ff587c8166f7.zip",
+      "mlflow_run_id": "run-3",
+      "package_bytes": 10306,
+      "package_reused": true,
+      "package_uri": "gcs://_ray_pkg_36b2c90a5c31a8efaadf51c1f361ba3ac4ee19ce2a2d1db9f6251701dacca98b.zip",
       "repository": "jonah/pv-forecast",
       "scoped_credential": false,
-      "session_id": "bbrliemqbpwickvqsu5khx5yfe",
-      "started_at": "2026-09-01T06:20:59.898Z",
-      "status": "SUCCEEDED",
-      "submission_id": "2tegrqpnetlp24j7f4g2um5gq4",
-      "submitted_at": "2026-09-01T06:20:59.897938609Z",
-      "updated_at": "2026-09-01T06:20:59.899393332Z",
-      "workbench_id": "fy2ptlwrzv2xizvs6f53osog7a"
+      "started_at": "2026-09-14T08:54:20.034Z",
+      "status": "FAILED",
+      "submission_id": "jawfi2dnq2sraumf3x3xpxymza",
+      "submitted_at": "2026-09-14T08:54:20.034118381Z",
+      "updated_at": "2026-09-14T08:54:20.035606157Z",
+      "workbench_id": "qemfy7ijdh5ophwocgi7ut6pv4"
     },
     {
       "branch": "main",
-      "commit_sha": "788c3d725278084a36a0617a18a9b4f9da83f94f",
-      "ended_at": "2026-09-01T06:21:59.606Z",
+      "commit_sha": "daa14098d40886c7815e0ad03498f99bd10937c5",
+      "ended_at": "2026-09-14T08:55:19.872Z",
       "entrypoint": "uv run python train.py",
-      "experiment_id": "hf2uruwl5zbvbge53egrw23re4",
+      "experiment_id": "aqanwhund5pj2fi32e6i7yf424",
+      "input_topics": [
+        {
+          "filterType": "DeviceId",
+          "filterValue": "urn:infai:ses:device:2ac5436e-5538-4eb3-a448-2d77de68e915",
+          "mappings": [
+            {
+              "dest": "value",
+              "source": "value.power.value"
+            }
+          ],
+          "name": "urn_infai_ses_service_9ba92218-37d8-4c80-ad3d-bb3eb5c8457d"
+        }
+      ],
+      "mlflow_experiment_id": "1",
+      "mlflow_experiment_name": "pipeline-ode-dev_operator-jonah-pv-forecast",
+      "mlflow_run_id": "run-2",
+      "package_bytes": 10306,
+      "package_reused": false,
+      "package_uri": "gcs://_ray_pkg_36b2c90a5c31a8efaadf51c1f361ba3ac4ee19ce2a2d1db9f6251701dacca98b.zip",
+      "repository": "jonah/pv-forecast",
+      "scoped_credential": false,
+      "session_id": "nc654ublhze24gw2rvjvzqsf4q",
+      "started_at": "2026-09-14T08:54:19.872Z",
+      "status": "SUCCEEDED",
+      "submission_id": "vvl4h6gahvtqetst6iv7rwpppy",
+      "submitted_at": "2026-09-14T08:54:19.871598347Z",
+      "updated_at": "2026-09-14T08:54:20.035866537Z",
+      "workbench_id": "qemfy7ijdh5ophwocgi7ut6pv4"
+    },
+    {
+      "branch": "main",
+      "commit_sha": "a8a26f98f5e39c1770319de8add28053a9bb531f",
+      "ended_at": "2026-09-14T08:55:19.577Z",
+      "entrypoint": "uv run python train.py",
+      "experiment_id": "4vzues3u3bq5537rmmppbefc34",
+      "input_topics": [
+        {
+          "filterType": "DeviceId",
+          "filterValue": "urn:infai:ses:device:2ac5436e-5538-4eb3-a448-2d77de68e915",
+          "mappings": [
+            {
+              "dest": "value",
+              "source": "value.power.value"
+            }
+          ],
+          "name": "urn_infai_ses_service_9ba92218-37d8-4c80-ad3d-bb3eb5c8457d"
+        }
+      ],
       "mlflow_experiment_id": "1",
       "mlflow_experiment_name": "pipeline-ode-dev_operator-jonah-pv-forecast",
       "mlflow_run_id": "run-1",
-      "package_bytes": 11600,
+      "package_bytes": 11857,
       "package_reused": false,
-      "package_uri": "gcs://_ray_pkg_f2219d4fed0b1f6a1b07c48fdc6d7ceb4279266af4058e95c884716a50d6c3e0.zip",
+      "package_uri": "gcs://_ray_pkg_616bf22d4430ad71822fe777a0e1a7e4cdca6704e03fb5bc509add21f8294cb7.zip",
       "repository": "jonah/pv-forecast",
       "scoped_credential": false,
-      "session_id": "bbrliemqbpwickvqsu5khx5yfe",
-      "started_at": "2026-09-01T06:20:59.606Z",
+      "session_id": "nc654ublhze24gw2rvjvzqsf4q",
+      "started_at": "2026-09-14T08:54:19.577Z",
       "status": "SUCCEEDED",
-      "submission_id": "ji3mbekk6v4dnwspoiewfqwbvi",
-      "submitted_at": "2026-09-01T06:20:59.605462612Z",
-      "updated_at": "2026-09-01T06:20:59.607096968Z",
-      "workbench_id": "fy2ptlwrzv2xizvs6f53osog7a"
+      "submission_id": "443g7ds7betwl56idzywe5w2ly",
+      "submitted_at": "2026-09-14T08:54:19.577202453Z",
+      "updated_at": "2026-09-14T08:54:19.578565886Z",
+      "workbench_id": "qemfy7ijdh5ophwocgi7ut6pv4"
     }
   ],
-  "mlflow_url": "http://127.0.0.1:41146",
-  "ray_url": "http://127.0.0.1:40998"
+  "mlflow_url": "http://127.0.0.1:41474",
+  "ray_url": "http://127.0.0.1:41326"
 }

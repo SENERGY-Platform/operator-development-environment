@@ -1,0 +1,44 @@
+{
+  "alternatives": [
+    {
+      "source": "value.total",
+      "variable_name": "total",
+      "variable_path": "value.total"
+    }
+  ],
+  "device": {
+    "device_type_id": "dt-b",
+    "device_type_name": "Meter",
+    "id": "urn:infai:ses:device:input-topics-b",
+    "name": "Meter"
+  },
+  "mappings": [
+    {
+      "aspect_id": "aspect-pv",
+      "characteristic_id": "ch-kilowatt",
+      "dest": "value",
+      "function_id": "fn-power",
+      "source": "value.power",
+      "variable_name": "power",
+      "variable_path": "value.power"
+    }
+  ],
+  "service": {
+    "id": "urn:infai:ses:service:it-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    "name": "readings"
+  },
+  "topic": {
+    "filterType": "DeviceId",
+    "filterValue": "urn:infai:ses:device:input-topics-b",
+    "mappings": [
+      {
+        "dest": "value",
+        "source": "value.power"
+      }
+    ],
+    "name": "urn_infai_ses_service_it-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+  },
+  "warnings": [
+    "mapping value: characteristic changed from \"ch-watt\" to \"ch-kilowatt\"; Operator Lib converts nothing, so the operator will read value in a different unit"
+  ]
+}

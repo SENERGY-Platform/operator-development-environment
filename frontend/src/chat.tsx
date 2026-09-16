@@ -24,9 +24,13 @@ import {
   type ChatMessage,
   type ChatSession,
   type DataSplit,
+  type InputTopic,
   type Limits,
   type PendingConfirmation,
   type ProviderInfo,
+  type QuickProfileList,
+  type ResolvedAlternative,
+  type ResolvedInputTopic,
   type Session,
   type SessionActivity,
   type SessionSpend,
@@ -76,7 +80,13 @@ import { announce } from "./attention";
 import { CodeView } from "./codeview";
 import { LaunchedRunsCard, launchedExperimentId, useLaunchedRuns } from "./experiments";
 import { Markdown } from "./markdown";
-import { Cancelled, odeSocket, type SocketState } from "./ws";
+import {
+  CandidateRow,
+  DEFAULT_DEVICE_LIMIT,
+  DeviceLabel,
+  seriesKey,
+} from "./profiler";
+import { Cancelled, odeSocket, profilerSocket, type SocketState } from "./ws";
 import { setParam, useParam } from "./router";
 import { Busy, Muted, Pane, Section, dateTime, describe, num, shortId, useLoad } from "./ui";
 import { useConversationPairing, useWorkbenches } from "./workbench";
@@ -1593,23 +1603,42 @@ function Conversation({
   );
 
   const decide = useCallback(
-    (confirmation: PendingConfirmation, approve: boolean) => {
+    (confirmation: PendingConfirmation, approve: boolean, input?: unknown) => {
       setPending((existing) => existing.filter((entry) => entry.id !== confirmation.id));
       // The card goes from this pane and the mark goes from the panel in the same
       // click. Both are put back by the engine if it disagrees.
       onAnswered(session.id);
+
+      // The resolved card (D10): the developer's own edit, read against the
+      // model's proposal, shown at the moment of the decision rather than waited
+      // for — both paths below eventually reload the stored history, which holds
+      // the backend's own account of the same change, but that can be seconds or
+      // minutes away on a held call still running its turn.
+      if (approve && input !== undefined) {
+        const changes = changedPaths(confirmation.input, input);
+        if (changes.length > 0) {
+          setTurns((existing) => [
+            ...existing,
+            {
+              kind: "notice",
+              level: "info",
+              text: `Approved ${confirmation.tool} with changes: ${changes.join(", ")}.`,
+            },
+          ]);
+        }
+      }
 
       // A held call is answered in place. The provider's own tool loop is still
       // running and its relay is still open, so the result of this decision arrives
       // on the stream already being watched — starting a second one would detach
       // that view and replay the turn into it.
       if (confirmation.out_of_band) {
-        void odeSocket.decide(session.id, confirmation.id, approve).catch((e: unknown) => {
+        void odeSocket.decide(session.id, confirmation.id, approve, input).catch((e: unknown) => {
           setError(describe(e));
         });
         return;
       }
-      void run("chat_confirm", { confirmation_id: confirmation.id, approve });
+      void run("chat_confirm", { confirmation_id: confirmation.id, approve, input });
     },
     [onAnswered, run, session.id],
   );
@@ -1877,6 +1906,7 @@ function Conversation({
         <ConfirmationPrompt
           key={confirmation.id}
           confirmation={confirmation}
+          session={session}
           onDecide={decide}
         />
       ))}
@@ -2959,6 +2989,49 @@ function SplitControl({
 }
 
 /**
+ * changedPaths lists the leaf paths where two JSON-shaped values differ — added,
+ * removed, or changed — sorted so the result is stable across runs on the same
+ * input.
+ *
+ * The frontend's own computation, over the two values the developer's own edit
+ * produced, rather than a rendering of the backend's `ChangedPaths`
+ * (pkg/chat/diff.go): the card shows what it approved from what it already holds,
+ * not a sentence it has to parse back out of the model's context.
+ */
+export function changedPaths(before: unknown, after: unknown): string[] {
+  const out: string[] = [];
+  walkChanged("", before, after, out);
+  return out;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function walkChanged(path: string, before: unknown, after: unknown, out: string[]): void {
+  if (before === undefined && after === undefined) return;
+
+  if (isPlainObject(before) && isPlainObject(after)) {
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    for (const key of [...keys].sort()) {
+      walkChanged(path ? `${path}.${key}` : key, before[key], after[key], out);
+    }
+    return;
+  }
+
+  if (Array.isArray(before) && Array.isArray(after)) {
+    const length = Math.max(before.length, after.length);
+    for (let i = 0; i < length; i += 1) {
+      walkChanged(`${path}[${i}]`, before[i], after[i], out);
+    }
+    return;
+  }
+
+  if (JSON.stringify(before) === JSON.stringify(after)) return;
+  out.push(path || "(value)");
+}
+
+/**
  * The code a run_code confirmation is about, or null for any other call.
  *
  * Read defensively rather than cast: the input is whatever the model sent, and a
@@ -2972,15 +3045,50 @@ function codeOf(confirmation: PendingConfirmation): string | null {
   return typeof input.code === "string" && input.code.trim() !== "" ? input.code : null;
 }
 
+/**
+ * The input_topics of a launch_experiment confirmation, or null for any other
+ * call, or for one whose input does not carry them.
+ *
+ * Read defensively for the same reason `codeOf` is: the input is whatever the
+ * model sent, and requireInputTopics (pkg/experiments/deployment.go) is enforced
+ * on the backend's own copy of it, not on what reaches this card.
+ */
+function launchTopicsOf(confirmation: PendingConfirmation): InputTopic[] | null {
+  if (confirmation.tool !== "launch_experiment") return null;
+  const input = confirmation.input as { input_topics?: unknown } | null | undefined;
+  if (input === null || input === undefined || typeof input !== "object") return null;
+  if (!Array.isArray(input.input_topics) || input.input_topics.length === 0) return null;
+  return input.input_topics as InputTopic[];
+}
+
 /** ConfirmationPrompt is D11: the developer decides, with the arguments in view. */
 function ConfirmationPrompt({
   confirmation,
+  session,
   onDecide,
 }: {
   confirmation: PendingConfirmation;
-  onDecide: (confirmation: PendingConfirmation, approve: boolean) => void;
+  session: ChatSession;
+  onDecide: (confirmation: PendingConfirmation, approve: boolean, input?: unknown) => void;
 }) {
   const code = codeOf(confirmation);
+  const originalTopics = launchTopicsOf(confirmation);
+  // null until a topic has actually been moved or had a mapping repointed —
+  // distinct from "edited to the same topics", which changedPaths below would
+  // read correctly anyway, but there is then nothing to have called resolve for.
+  const [editedTopics, setEditedTopics] = useState<InputTopic[] | null>(null);
+
+  const topics = editedTopics ?? originalTopics;
+  // The full edited input, built by replacing input_topics alone: PLAN2's
+  // assumption is that the editor moves topics and renames nothing else, so
+  // entrypoint, env_vars and run_name travel through untouched.
+  const editedInput =
+    editedTopics && originalTopics
+      ? { ...(confirmation.input as Record<string, unknown>), input_topics: editedTopics }
+      : null;
+  const changes = editedInput ? changedPaths(confirmation.input, editedInput) : [];
+  const hasEdit = changes.length > 0;
+
   return (
     <div className="confirmation mt-3 shrink-0 rounded-lg border border-primary/40 bg-card p-3">
       <div className="confirmation-head text-sm">
@@ -2989,8 +3097,30 @@ function ConfirmationPrompt({
       {/* The arguments travel with the prompt: approving a tool name alone would be
           agreeing to something you cannot see. And for the one call whose argument
           is a program, that means reading it as a program — a cell of Python inside
-          a JSON string is one line of `\n` escapes. */}
-      {code === null ? (
+          a JSON string is one line of `\n` escapes. launch_experiment gets its own
+          card for the same reason: what a developer needs to see is which device
+          and which variables, not a blob of ids. */}
+      {topics !== null ? (
+        <div className="launch-topics mt-2 flex flex-col gap-2">
+          {topics.map((topic, index) => (
+            <LaunchTopicCard
+              // The index, not the topic's own identity: nothing here reorders,
+              // and keying on the topic's name or filterValue would remount the
+              // card the moment a move or a mapping edit changes exactly that
+              // field — which is the one time its own effect, keyed on the
+              // topic's content, is supposed to re-resolve in place rather than
+              // start over as a fresh card.
+              key={index}
+              topic={topic}
+              session={session}
+              onChange={(next) => {
+                const base = topics;
+                setEditedTopics(base.map((t, i) => (i === index ? next : t)));
+              }}
+            />
+          ))}
+        </div>
+      ) : code === null ? (
         <pre className="json mt-2 max-h-56 overflow-auto rounded-md bg-muted p-2 font-mono text-xs">
           {JSON.stringify(confirmation.input, null, 2)}
         </pre>
@@ -2998,13 +3128,300 @@ function ConfirmationPrompt({
         <CodeView code={code} />
       )}
       <div className="confirmation-actions mt-3 flex gap-2">
-        <Button size="sm" onClick={() => onDecide(confirmation, true)}>
-          Approve
+        <Button
+          size="sm"
+          onClick={() => onDecide(confirmation, true, hasEdit ? editedInput : undefined)}
+        >
+          {hasEdit ? "Approve with changes" : "Approve"}
         </Button>
         <Button size="sm" variant="outline" onClick={() => onDecide(confirmation, false)}>
           Decline
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * LaunchTopicCard is D9: one input topic of a proposed launch, described the way
+ * the Data pane describes a series rather than left as a device id and a path.
+ *
+ * Resolves itself on mount and on every move, against `POST
+ * /input-topics/resolve` (pkg/experiments/retarget.go) — the same route serves
+ * the preview and the retarget, so this is the one place that ever has to read
+ * that answer.
+ */
+function LaunchTopicCard({
+  topic,
+  session,
+  onChange,
+}: {
+  topic: InputTopic;
+  session: ChatSession;
+  onChange: (topic: InputTopic) => void;
+}) {
+  const [preview, setPreview] = useState<ResolvedInputTopic | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const [moveError, setMoveError] = useState<string | null>(null);
+
+  // Keyed on the topic's own JSON rather than on its reference: a mapping picked
+  // from the alternatives dropdown below replaces the topic with a new object
+  // carrying the same identity, and the preview has to follow it without a
+  // superfluous second read of the same derivation.
+  const topicKey = JSON.stringify(topic);
+  // The key `preview` already answers for. A move or a picked alternative already
+  // knows the answer for the topic it produced — the resolve route can only ever
+  // tell it the same thing again — so this is what stops that read from firing a
+  // second time the moment `onChange` lands the new topic back on this component.
+  const resolvedFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (resolvedFor.current === topicKey) return;
+    let cancelled = false;
+    setPreview(null);
+    setPreviewError(null);
+    api
+      .resolveInputTopic(topic)
+      .then((resolved) => {
+        if (cancelled) return;
+        resolvedFor.current = topicKey;
+        setPreview(resolved);
+      })
+      .catch((e: unknown) => {
+        // A failing resolve must not blank the card: the developer still has to
+        // be able to decide, so this topic falls back to the plain JSON dump
+        // every other tool's argument gets rather than showing nothing.
+        if (!cancelled) setPreviewError(describe(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topicKey]);
+
+  const moveTo = async (deviceId: string) => {
+    setMoving(true);
+    setMoveError(null);
+    try {
+      const resolved = await api.resolveInputTopic(topic, deviceId);
+      resolvedFor.current = JSON.stringify(resolved.topic);
+      setPreview(resolved);
+      onChange(resolved.topic);
+      setPickerOpen(false);
+    } catch (e: unknown) {
+      // Left unchanged, and the refusal names the mapping with no counterpart —
+      // the developer declines instead, as PLAN2 says.
+      setMoveError(describe(e));
+    } finally {
+      setMoving(false);
+    }
+  };
+
+  const pickAlternative = (mappingIndex: number, alt: ResolvedAlternative) => {
+    if (!preview) return;
+    const nextTopic = {
+      ...topic,
+      mappings: topic.mappings.map((m, i) => (i === mappingIndex ? { ...m, source: alt.source } : m)),
+    };
+    onChange(nextTopic);
+    resolvedFor.current = JSON.stringify(nextTopic);
+    setPreview({
+      ...preview,
+      mappings: preview.mappings.map((m, i) =>
+        i === mappingIndex
+          ? {
+              dest: m.dest,
+              source: alt.source,
+              variable_name: alt.variable_name,
+              variable_path: alt.variable_path,
+              unit: alt.unit,
+            }
+          : m,
+      ),
+    });
+  };
+
+  if (previewError) {
+    return (
+      <div className="launch-topic launch-topic-fallback rounded-md border bg-muted/30 p-2">
+        <p className="muted text-xs text-muted-foreground">
+          Could not describe this input ({previewError}); showing it as sent.
+        </p>
+        <pre className="json mt-1 max-h-40 overflow-auto rounded-md bg-muted p-2 font-mono text-xs">
+          {JSON.stringify(topic, null, 2)}
+        </pre>
+      </div>
+    );
+  }
+
+  if (!preview) {
+    return (
+      <div className="launch-topic rounded-md border bg-muted/30 p-2">
+        <Busy>Describing this input…</Busy>
+      </div>
+    );
+  }
+
+  const firstMapping = preview.mappings[0] as ResolvedInputTopic["mappings"][number] | undefined;
+  const filterable = Boolean(firstMapping?.function_id && firstMapping?.aspect_id);
+
+  return (
+    <div className="launch-topic flex flex-col gap-1.5 rounded-md border bg-muted/30 p-2">
+      <div className="launch-topic-device flex flex-wrap items-center gap-2 text-sm">
+        <DeviceLabel
+          device={{
+            name: preview.device.name,
+            device_type_id: preview.device.device_type_id,
+            device_type_name: preview.device.device_type_name,
+          }}
+          fallbackId={preview.device.id}
+        />
+        <span className="muted-inline text-xs text-muted-foreground">{preview.service.name}</span>
+        <Collapsible open={pickerOpen} onOpenChange={setPickerOpen} className="ml-auto">
+          <CollapsibleTrigger
+            render={
+              <Button size="sm" variant="outline" type="button" className="launch-topic-move" />
+            }
+          >
+            Move to another device
+          </CollapsibleTrigger>
+          <CollapsibleContent className="launch-topic-picker mt-2 w-full">
+            <DevicePicker
+              session={session}
+              functionId={filterable ? firstMapping?.function_id : undefined}
+              aspectId={filterable ? firstMapping?.aspect_id : undefined}
+              onPick={(deviceId) => void moveTo(deviceId)}
+            />
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
+      {moving && <Busy>Moving this input…</Busy>}
+      {moveError && <p className="launch-topic-move-error text-xs text-destructive">{moveError}</p>}
+      {preview.mappings.map((mapping, index) => (
+        <div
+          key={mapping.dest}
+          className="launch-topic-mapping flex flex-wrap items-center gap-2 text-xs"
+        >
+          <code>{mapping.dest}</code>
+          <span aria-hidden>←</span>
+          <span>{mapping.variable_name}</span>
+          <code className="muted-inline text-muted-foreground">{mapping.variable_path}</code>
+          {mapping.unit && (
+            <span className="muted-inline text-muted-foreground">({mapping.unit})</span>
+          )}
+          {preview.alternatives && preview.alternatives.length > 0 && (
+            <Select
+              value={mapping.variable_path}
+              onValueChange={(value) => {
+                if (value === null) return;
+                const alt = preview.alternatives?.find((a) => a.variable_path === value);
+                if (alt) pickAlternative(index, alt);
+              }}
+            >
+              <SelectTrigger size="sm" aria-label={`Variable for ${mapping.dest}`} className="launch-topic-alt w-auto">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={mapping.variable_path}>{mapping.variable_name}</SelectItem>
+                {preview.alternatives.map((alt) => (
+                  <SelectItem key={alt.variable_path} value={alt.variable_path}>
+                    {alt.variable_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
+      ))}
+      {preview.warnings && preview.warnings.length > 0 && (
+        <ul className="launch-topic-warnings flex flex-col gap-0.5 text-xs text-foreground">
+          {preview.warnings.map((warning) => (
+            <li key={warning} className="launch-topic-warning">
+              {warning}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * DevicePicker is the candidate list D9's "Move to another device" opens.
+ *
+ * Not `CandidatesPane` itself (profiler.tsx): that component is not exported —
+ * it is the Data pane's own filter form, search box and window controls bundled
+ * together, none of which apply to picking one device for one topic. This reuses
+ * its exact fetch (`quick_profiles` over the socket, at tier L0) and its row
+ * (`CandidateRow`), which are exported, rather than reimplementing either.
+ */
+function DevicePicker({
+  session,
+  functionId,
+  aspectId,
+  onPick,
+}: {
+  session: ChatSession;
+  /** Both present filters to comparable series; either absent leaves the list
+   * unfiltered — filtering on nothing would match nothing and read as "there are
+   * no comparable series", which is a different and false claim. */
+  functionId?: string;
+  aspectId?: string;
+  onPick: (deviceId: string) => void;
+}) {
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      profilerSocket.request<QuickProfileList>(
+        "quick_profiles",
+        { limit: DEFAULT_DEVICE_LIMIT },
+        signal,
+      ),
+    [],
+  );
+  const { data, error, loading } = useLoad(load);
+
+  if (loading) return <Busy>Reading candidate devices…</Busy>;
+  if (error) return <Muted>{error}</Muted>;
+  if (!data) return null;
+
+  const filtered =
+    functionId && aspectId
+      ? data.candidates.filter(
+          (c) => c.declared.function_id === functionId && c.declared.aspect_id === aspectId,
+        )
+      : data.candidates;
+
+  // The series of the session's confirmed selection, pinned at the top: the
+  // frozen target the protocol wants is exactly the one already confirmed.
+  const confirmed = new Set(
+    (session.selection?.series ?? []).map((s) => `${s.device_id}|${s.service_id}|${s.variable_path}`),
+  );
+  const ordered = [...filtered].sort(
+    (a, b) => Number(confirmed.has(seriesKey(b))) - Number(confirmed.has(seriesKey(a))),
+  );
+
+  return (
+    <div className="device-picker flex flex-col gap-1">
+      {!(functionId && aspectId) && (
+        <Muted>Showing every candidate: this input names no function or aspect to match on.</Muted>
+      )}
+      {ordered.length === 0 && <Muted>No comparable series among the candidates.</Muted>}
+      {ordered.length > 0 && (
+        <Table>
+          <TableBody>
+            {ordered.map((candidate, index) => (
+              <CandidateRow
+                key={seriesKey(candidate)}
+                candidate={candidate}
+                rank={index + 1}
+                onSelect={() => onPick(candidate.series_ref.device_id)}
+              />
+            ))}
+          </TableBody>
+        </Table>
+      )}
     </div>
   );
 }

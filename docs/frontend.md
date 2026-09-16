@@ -427,6 +427,40 @@ accounting, no cap, a provider that declares nothing: in each case the honest an
 is silence. A zero reads as a measurement, and the whole point of showing spend
 beside the model is that the number can be trusted.
 
+### A confirmation card shows a tool's input as JSON, with two exceptions
+
+`ConfirmationPrompt` renders whatever the model sent as a JSON dump, which is the
+right default: a card that showed only a tool name would ask a developer to
+approve something they cannot see, and there is no generic way to render an
+arbitrary tool's arguments better than as what they are.
+
+Two tools earn a card of their own, for the same reason in both cases — the
+developer has to judge something the JSON does not show them. `run_code` gets
+`CodeView`, because approving code means reading it. `launch_experiment` gets a
+row per input topic: the device with its device type, the service, and one line
+per mapping naming the variable, its path and its unit — resolved through
+`POST /input-topics/resolve` rather than read off the input, because the input
+holds ids and a developer judging which series a run will read needs names.
+
+That card is also where a topic can be moved to another device before approving.
+The candidate list is the Data pane's own, over `quick_profiles`, narrowed to the
+function and aspect of the topic's first mapping so that only comparable series
+are offered, with the session's confirmed selection pinned at the top. **No id is
+shown or typed anywhere on it**: the topic name, the device and every mapping
+source follow from the device that was picked — the derivation is in
+[experiments.md](experiments.md), and the decision mechanism in
+[chat-and-streaming.md](chat-and-streaming.md).
+
+Three failure shapes are worth knowing, because each is a state a developer can
+actually reach. A topic whose preview call fails falls back to the plain JSON
+dump for that topic and the card still decides — a preview is an aid, and losing
+it must not cost the developer the decision. A topic whose first mapping declares
+no function or aspect offers the candidate list unfiltered with a note saying why,
+because filtering on nothing would show an empty list, which reads as "there are
+no comparable series" and is a different and false claim. And a move the route
+refuses reports the mapping that has no counterpart and leaves the topic as it
+was, rather than applying half of it.
+
 ### Two runs on one conversation: the later one owns the view
 
 `run` in `frontend/src/chat.tsx` is what watches a turn — a send, a confirmation or

@@ -110,6 +110,20 @@ One field is absent rather than empty and that is not a mistake: the runs carry 
 `session_id` tag, because the fixture launches through the HTTP route rather than
 from a chat session. A launch that came from one would have it.
 
+`input_topic_resolved.json` is the input-topic derivation, and it is a fake's
+throughout: two device types built in the test, not read from a platform. The
+*shape* is the backend's own marshalling, which is what this directory checks, and
+one thing about the capture is deliberate. It is a **retarget** answer rather than
+a describe one, against a target type that declares a different characteristic on
+the same path and carries a second variable — so both `warnings` and
+`alternatives` are populated rather than omitted. Retargeting between two
+identically shaped types produces neither, and a capture from that pair would have
+left the frontend typing two fields no fixture had ever shown it. The generating
+test asserts both are non-empty, so a future change that stops producing them
+fails rather than writing a quietly smaller fixture. `unit` is absent on the
+mappings because those variables declare a characteristic and no unit reference;
+it is optional, not gone.
+
 The M6 files are the second least synthetic. Only the two series behind them are
 fabricated — an oven and a kitchen light, chosen so the real session detector finds a
 split in each — and everything above that is computed: the thresholds are the

@@ -150,6 +150,9 @@ func buildSummary(
 		Tags:         tags,
 		StartedAt:    mlflowTime(run.Info.StartTime),
 		EndedAt:      mlflowTime(run.Info.EndTime),
+		// From the stored record, not recomputed: see InputTopics' own comment for
+		// why that is the field that has to be trusted here.
+		InputTopics: record.InputTopics,
 	}
 	summary.Finished = Terminal(summary.Status)
 	if !summary.Finished {
