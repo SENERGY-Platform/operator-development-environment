@@ -460,6 +460,12 @@ function UsageReport({ currency }: { currency: string }) {
                           +{num(record.cached_input_tokens)} cached
                         </span>
                       ) : null}
+                      {record.cache_write_tokens ? (
+                        <span className="muted text-muted-foreground" title="Cache write, priced above plain input">
+                          {" "}
+                          +{num(record.cache_write_tokens)} cache write
+                        </span>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       {record.cost_estimated ? (

@@ -261,6 +261,41 @@ func TestUnpricedModelIsReported(t *testing.T) {
 	}
 }
 
+// --- usage accounting ---
+
+// TestRecordUsageAccountsACacheWriteOnlyTurn is the regression for the
+// short-circuit in RecordUsage: a turn that only wrote a cache entry — no fresh
+// input, no cached read, no output — must still leave an accounting row, or a
+// spend cap silently under-counts every turn that writes a cache and nothing else.
+func TestRecordUsageAccountsACacheWriteOnlyTurn(t *testing.T) {
+	service, store := testService(t)
+	ctx := context.Background()
+
+	service.RecordUsage(ctx, testUser, "sess-1", llm.Usage{
+		CacheWriteTokens: 500, Provider: "test", Model: "test-model",
+	})
+
+	records, err := store.UsageSince(ctx, testUser, time.Now().Add(-time.Hour), 0)
+	if err != nil {
+		t.Fatalf("UsageSince: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("got %d usage records, want 1: a cache-write-only turn must not vanish", len(records))
+	}
+	if records[0].CacheWriteTokens != 500 {
+		t.Errorf("CacheWriteTokens = %d, want 500", records[0].CacheWriteTokens)
+	}
+}
+
+// TestRecordTokensSumsAllFourKinds is Record.Tokens() itself: a token cap is
+// enforced against this sum, and a kind left out of it is a kind the cap cannot see.
+func TestRecordTokensSumsAllFourKinds(t *testing.T) {
+	record := Record{InputTokens: 1, OutputTokens: 2, CachedInputTokens: 4, CacheWriteTokens: 8}
+	if got := record.Tokens(); got != 15 {
+		t.Errorf("Tokens() = %d, want 15 (1+2+4+8)", got)
+	}
+}
+
 // --- the tier ceiling (§3.3) ---
 
 func TestMaxTierCeiling(t *testing.T) {

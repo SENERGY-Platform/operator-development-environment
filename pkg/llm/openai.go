@@ -233,6 +233,10 @@ func (p *OpenAIProvider) usage(
 	if usage.CachedInputTokens > 0 && usage.InputTokens >= usage.CachedInputTokens {
 		usage.InputTokens -= usage.CachedInputTokens
 	}
+	// CacheWriteTokens stays zero, and that is the truth rather than a gap. This
+	// API caches a prefix on its own, without breakpoints and without charging for
+	// the entry, so there is no write to count — unlike Anthropic, where the entry
+	// is asked for and billed above plain input.
 	p.pricing.Apply(&usage)
 	return usage
 }

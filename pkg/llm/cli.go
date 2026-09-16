@@ -387,19 +387,11 @@ type cliStreamLine struct {
 			Content   json.RawMessage `json:"content"`
 			IsError   bool            `json:"is_error"`
 		} `json:"content"`
-		Usage struct {
-			InputTokens          int `json:"input_tokens"`
-			OutputTokens         int `json:"output_tokens"`
-			CacheReadInputTokens int `json:"cache_read_input_tokens"`
-		} `json:"usage"`
-		Model string `json:"model"`
+		Usage cliUsage `json:"usage"`
+		Model string   `json:"model"`
 	} `json:"message"`
-	Usage struct {
-		InputTokens          int `json:"input_tokens"`
-		OutputTokens         int `json:"output_tokens"`
-		CacheReadInputTokens int `json:"cache_read_input_tokens"`
-	} `json:"usage"`
-	IsError bool `json:"is_error"`
+	Usage   cliUsage `json:"usage"`
+	IsError bool     `json:"is_error"`
 }
 
 // handleLine maps one output line onto the normalised stream. It reports whether
@@ -428,8 +420,7 @@ func (p *AnthropicCLIProvider) handleLine(
 		if parsed.Message.StopReason != "" {
 			*stopReason = parsed.Message.StopReason
 		}
-		accumulateCLIUsage(usage, parsed.Message.Usage.InputTokens,
-			parsed.Message.Usage.OutputTokens, parsed.Message.Usage.CacheReadInputTokens)
+		accumulateCLIUsage(usage, parsed.Message.Usage)
 
 		for _, content := range parsed.Message.Content {
 			switch content.Type {
@@ -473,8 +464,7 @@ func (p *AnthropicCLIProvider) handleLine(
 		}
 
 	case "result":
-		accumulateCLIUsage(usage, parsed.Usage.InputTokens,
-			parsed.Usage.OutputTokens, parsed.Usage.CacheReadInputTokens)
+		accumulateCLIUsage(usage, parsed.Usage)
 		if parsed.Subtype != "" && parsed.Subtype != "success" {
 			*stopReason = parsed.Subtype
 		}
@@ -496,10 +486,26 @@ func (p *AnthropicCLIProvider) handleLine(
 // the totals are what the developer is billed for, so they are summed rather than
 // replaced — an inner loop of ten tool calls costs ten messages' tokens, and
 // taking only the last would under-report spend against a §3.3 cap.
-func accumulateCLIUsage(usage *Usage, input, output, cached int) {
-	usage.InputTokens += input
-	usage.OutputTokens += output
-	usage.CachedInputTokens += cached
+func accumulateCLIUsage(usage *Usage, reported cliUsage) {
+	usage.InputTokens += reported.InputTokens
+	usage.OutputTokens += reported.OutputTokens
+	usage.CachedInputTokens += reported.CacheReadInputTokens
+	usage.CacheWriteTokens += reported.CacheCreationInputTokens
+}
+
+// cliUsage is the token report the CLI prints, named rather than written out at
+// each of the two places it appears.
+//
+// The CLI does its own prompt caching and reports both halves of it, which is why
+// the write side is read here as well: ODE places no cache breakpoints for this
+// transport — it never builds the request — but it is still billed for what the
+// CLI's caching costs, and a §3.3 cap that could not see those tokens would not
+// bind on this provider.
+type cliUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 // writeMCPConfig puts the CLI's MCP configuration in a private file and returns

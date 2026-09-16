@@ -198,6 +198,7 @@ func (p *AnthropicProvider) usage(message *anthropic.Message) Usage {
 		InputTokens:       int(message.Usage.InputTokens),
 		OutputTokens:      int(message.Usage.OutputTokens),
 		CachedInputTokens: int(message.Usage.CacheReadInputTokens),
+		CacheWriteTokens:  int(message.Usage.CacheCreationInputTokens),
 		Provider:          p.name,
 		Model:             string(message.Model),
 	}
@@ -221,9 +222,18 @@ func (p *AnthropicProvider) params(req Request) (anthropic.MessageNewParams, err
 		MaxTokens: int64(maxTokens),
 		Messages:  toAnthropicMessages(req.Messages),
 	}
+	markCachedPrefix(params.Messages)
 
 	if req.System != "" {
-		params.System = []anthropic.TextBlockParam{{Text: req.System}}
+		// The first of the three cache breakpoints, and the one that pays for itself
+		// fastest. Tools render before system, so a mark here caches both — and tools
+		// are the larger half: ODE offers the whole permitted surface with its
+		// descriptions and JSON schemas on every call of the tool loop, which is up to
+		// MaxIterations calls for one message.
+		params.System = []anthropic.TextBlockParam{{
+			Text:         req.System,
+			CacheControl: anthropic.NewCacheControlEphemeralParam(),
+		}}
 	}
 
 	effort := req.Effort
@@ -293,6 +303,55 @@ func toAnthropicTool(definition ToolDefinition) (anthropic.ToolParam, error) {
 		tool.InputSchema.Required = schema.Required
 	}
 	return tool, nil
+}
+
+// messagesPerIteration is how many messages one pass of the chat engine's tool
+// loop appends: the assistant's turn and the user turn carrying the tool results.
+//
+// Used only to guess where the previous request's breakpoint sat. A wrong guess
+// wastes one of the four breakpoints and nothing else, so the constant does not
+// have to be right for every shape of turn — a message that produced no tool call
+// appends one message rather than two, and the mark then lands a turn further back
+// than intended, which still reads.
+const messagesPerIteration = 2
+
+// markCachedPrefix places the conversation's cache breakpoints.
+//
+// Two of them, on the last block of the last message and on the last block of
+// where the previous request ended. The first is what makes the next request
+// cheap: the whole history behind it — every answer, every tool result, every
+// document a tool read — is cached, and over a long session that is by far the
+// largest thing ODE re-sends. The second is the read point for *this* request,
+// written by the last one; the API also looks back on its own from an explicit
+// breakpoint, so the second mark is belt and braces rather than load-bearing, and
+// it costs nothing but one of four slots.
+//
+// The system block takes a third, leaving one spare.
+//
+// Deliberately five-minute entries, which is what an unqualified ephemeral mark
+// means. A one-hour entry would survive the gaps this conversation actually has —
+// a developer reading a confirmation card holds a tool call for up to
+// chat_confirmation_timeout, and thinking time between messages is longer still —
+// but it is charged at twice fresh input to write rather than a quarter more, so
+// it only pays where the reads really do arrive late. That is a question for the
+// run log to answer, not for this line to assume.
+func markCachedPrefix(messages []anthropic.MessageParam) {
+	mark := func(index int) {
+		if index < 0 || index >= len(messages) {
+			return
+		}
+		blocks := messages[index].Content
+		if len(blocks) == 0 {
+			return
+		}
+		// Nil for a block variant that carries no cache control. None of the three
+		// ODE produces is one, and checking is cheaper than depending on that.
+		if control := blocks[len(blocks)-1].GetCacheControl(); control != nil {
+			*control = anthropic.NewCacheControlEphemeralParam()
+		}
+	}
+	mark(len(messages) - 1)
+	mark(len(messages) - 1 - messagesPerIteration)
 }
 
 func toAnthropicMessages(messages []Message) []anthropic.MessageParam {

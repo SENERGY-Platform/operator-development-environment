@@ -253,7 +253,8 @@ func (s *Service) CheckWorkbenchCount(ctx context.Context, sub string, current i
 // accounting write succeeds — is the stricter choice and would be right if the cap
 // were a billing boundary rather than a governance one.
 func (s *Service) RecordUsage(ctx context.Context, sub, sessionID string, usage llm.Usage) {
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CachedInputTokens == 0 {
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CachedInputTokens == 0 &&
+		usage.CacheWriteTokens == 0 {
 		return
 	}
 	record := Record{
@@ -264,6 +265,7 @@ func (s *Service) RecordUsage(ctx context.Context, sub, sessionID string, usage 
 		InputTokens:       usage.InputTokens,
 		OutputTokens:      usage.OutputTokens,
 		CachedInputTokens: usage.CachedInputTokens,
+		CacheWriteTokens:  usage.CacheWriteTokens,
 		Cost:              usage.CostEUR,
 		CostEstimated:     usage.CostEstimated,
 		At:                s.now(),

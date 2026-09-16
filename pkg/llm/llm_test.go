@@ -474,11 +474,12 @@ func TestUsageAddsAcrossTurns(t *testing.T) {
 	total := Usage{}
 	total.Add(Usage{InputTokens: 10, OutputTokens: 5, CostEUR: 0.1,
 		Provider: "p", Model: "m", CostEstimated: true})
-	total.Add(Usage{InputTokens: 3, OutputTokens: 2, CachedInputTokens: 7, CostEUR: 0.05,
-		Provider: "p", Model: "m"})
+	total.Add(Usage{InputTokens: 3, OutputTokens: 2, CachedInputTokens: 7,
+		CacheWriteTokens: 4, CostEUR: 0.05, Provider: "p", Model: "m"})
 
-	if total.InputTokens != 13 || total.OutputTokens != 7 || total.CachedInputTokens != 7 {
-		t.Errorf("tokens = %+v, want 13/7/7", total)
+	if total.InputTokens != 13 || total.OutputTokens != 7 ||
+		total.CachedInputTokens != 7 || total.CacheWriteTokens != 4 {
+		t.Errorf("tokens = %+v, want 13/7/7/4", total)
 	}
 	if total.CostEUR != 0.15000000000000002 && total.CostEUR != 0.15 {
 		t.Errorf("cost = %v, want 0.15", total.CostEUR)

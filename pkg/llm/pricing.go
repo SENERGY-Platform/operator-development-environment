@@ -35,14 +35,24 @@ type ModelPrice struct {
 	// input. Zero means "same as input", which overstates cost rather than
 	// understating it — the safe direction for a spend cap.
 	CachedInputPerMTok float64 `json:"cached_input_per_mtok,omitempty"`
+	// CacheWritePerMTok prices a cache write, which is *dearer* than fresh input:
+	// the entry is built as well as read.
+	//
+	// Zero therefore cannot fall back to the input price the way the line above
+	// does — that would understate, which is the direction a spend cap must not
+	// err in. It falls back to cacheWriteMultiplier times the input price instead,
+	// which is the published relation.
+	CacheWritePerMTok float64 `json:"cache_write_per_mtok,omitempty"`
 }
 
 // Pricing turns token counts into an estimated cost.
 //
-// It is deliberately a lookup over configuration rather than a table baked into
-// the binary: published prices change, and a hard-coded figure that silently
-// goes stale is worse than an absent one, because a spend cap computed from it
-// would be wrong without anyone noticing.
+// A lookup rather than arithmetic against a fixed table, because published prices
+// change and a figure that silently goes stale makes a spend cap quietly wrong.
+// Configuration is therefore the authority. DefaultPrices in prices.go sits
+// underneath it as a dated floor and is consulted only where configuration is
+// silent — see where pkg.go assembles the two, and PricesAsOf for how old that
+// floor is.
 //
 // An unpriced model yields no cost and sets Priced to false, so an admin can see
 // that a cap is not actually being enforced for it rather than seeing zero spend
@@ -50,6 +60,16 @@ type ModelPrice struct {
 type Pricing struct {
 	mux    sync.RWMutex
 	prices []ModelPrice
+	// fallback is the built-in table, searched only after prices has failed to
+	// name the model at all.
+	//
+	// A second slice rather than one list with the built-in entries appended,
+	// because "configuration wins" has to hold for a prefix entry too. In one list
+	// the prefix search picks the longest match wherever it came from, so an admin
+	// who reprices a whole family with a short prefix loses silently to any longer
+	// built-in entry that also matches — the opposite of what configuring a price
+	// is for.
+	fallback []ModelPrice
 	// currency labels the figures. Not converted anywhere: the provider bills in
 	// its own currency and pretending otherwise would need a rate ODE does not have.
 	currency string
@@ -64,6 +84,16 @@ func NewPricing(currency string, prices ...ModelPrice) *Pricing {
 	return &Pricing{prices: prices, currency: currency}
 }
 
+// NewPricingWithFallback is what a deployment builds: the admin's own table, and
+// underneath it a table consulted only where the first says nothing about a model
+// — by exact name or by prefix. See DefaultPrices in prices.go for what that floor
+// is and why it exists.
+func NewPricingWithFallback(currency string, configured, fallback []ModelPrice) *Pricing {
+	pricing := NewPricing(currency, configured...)
+	pricing.fallback = fallback
+	return pricing
+}
+
 func (p *Pricing) Currency() string {
 	if p == nil {
 		return defaultCurrency
@@ -73,18 +103,26 @@ func (p *Pricing) Currency() string {
 	return p.currency
 }
 
-// Prices is the configured table, for the admin surface.
+// Prices is the table in effect, for the admin surface: the configured entries
+// first, then the built-in ones underneath them, in the order Lookup consults
+// them. Both, because an admin reading this to see why a cap binds needs to see
+// the floor as well as their own list.
 func (p *Pricing) Prices() []ModelPrice {
 	if p == nil {
 		return []ModelPrice{}
 	}
 	p.mux.RLock()
 	defer p.mux.RUnlock()
-	return append([]ModelPrice{}, p.prices...)
+	out := make([]ModelPrice, 0, len(p.prices)+len(p.fallback))
+	out = append(out, p.prices...)
+	return append(out, p.fallback...)
 }
 
-// Lookup finds the price for a model: exact match first, then the longest
-// matching prefix, so a specific entry always beats a family one.
+// Lookup finds the price for a model.
+//
+// The configured table is searched to exhaustion before the built-in one is
+// touched, so a model the admin has priced never resolves to a built-in figure —
+// not even where a built-in entry would have matched it with a longer prefix.
 func (p *Pricing) Lookup(model string) (ModelPrice, bool) {
 	if p == nil || model == "" {
 		return ModelPrice{}, false
@@ -92,7 +130,16 @@ func (p *Pricing) Lookup(model string) (ModelPrice, bool) {
 	p.mux.RLock()
 	defer p.mux.RUnlock()
 
-	for _, price := range p.prices {
+	if price, found := lookupIn(p.prices, model); found {
+		return price, true
+	}
+	return lookupIn(p.fallback, model)
+}
+
+// lookupIn searches one table: exact match first, then the longest matching
+// prefix, so a specific entry always beats a family one.
+func lookupIn(prices []ModelPrice, model string) (ModelPrice, bool) {
+	for _, price := range prices {
 		if price.Model == model {
 			return price, true
 		}
@@ -100,7 +147,7 @@ func (p *Pricing) Lookup(model string) (ModelPrice, bool) {
 
 	best := ModelPrice{}
 	found := false
-	for _, price := range p.prices {
+	for _, price := range prices {
 		if price.Model == "" || !strings.HasPrefix(model, price.Model) {
 			continue
 		}
@@ -124,15 +171,20 @@ func (p *Pricing) Apply(usage *Usage) {
 	}
 
 	// Cached input is priced separately and is not part of InputTokens on either
-	// provider, so the two are added rather than subtracted.
+	// provider, so the three are added rather than subtracted.
 	cachedPrice := price.CachedInputPerMTok
 	if cachedPrice == 0 {
 		cachedPrice = price.InputPerMTok
+	}
+	writePrice := price.CacheWritePerMTok
+	if writePrice == 0 {
+		writePrice = price.InputPerMTok * cacheWriteMultiplier
 	}
 
 	const perMillion = 1_000_000.0
 	usage.CostEUR = float64(usage.InputTokens)/perMillion*price.InputPerMTok +
 		float64(usage.CachedInputTokens)/perMillion*cachedPrice +
+		float64(usage.CacheWriteTokens)/perMillion*writePrice +
 		float64(usage.OutputTokens)/perMillion*price.OutputPerMTok
 	usage.CostEstimated = true
 }

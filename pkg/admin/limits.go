@@ -284,13 +284,19 @@ type Record struct {
 	InputTokens       int       `json:"input_tokens"`
 	OutputTokens      int       `json:"output_tokens"`
 	CachedInputTokens int       `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int       `json:"cache_write_tokens,omitempty"`
 	Cost              float64   `json:"cost"`
 	CostEstimated     bool      `json:"cost_estimated"`
 	At                time.Time `json:"at"`
 }
 
+// Tokens is the count a token cap is enforced against, and it includes
+// CacheWriteTokens for the same reason it includes CachedInputTokens: a cache
+// write is input the provider read and billed, and a cap that left it out would
+// be trivial to route around by writing the cache fresh on every request instead
+// of letting it hit.
 func (r Record) Tokens() int64 {
-	return int64(r.InputTokens) + int64(r.OutputTokens) + int64(r.CachedInputTokens)
+	return int64(r.InputTokens) + int64(r.OutputTokens) + int64(r.CachedInputTokens) + int64(r.CacheWriteTokens)
 }
 
 // Spend is what a subject has used over a window.

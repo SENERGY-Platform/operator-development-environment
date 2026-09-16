@@ -123,6 +123,27 @@ func TestDefaultsFillTheUnsetOperationalValues(t *testing.T) {
 	if config.ToolRunCodeMaxOutputBytes != 8000 {
 		t.Errorf("ToolRunCodeMaxOutputBytes = %d, want 8000", config.ToolRunCodeMaxOutputBytes)
 	}
+	// Off unless asked for: a run log nobody configured must not appear on its own,
+	// least of all inside a container filesystem that does not survive a restart.
+	if config.LlmRunLog != "" {
+		t.Errorf("LlmRunLog = %q, want empty", config.LlmRunLog)
+	}
+}
+
+func TestModelPriceReadsTheCacheWriteRate(t *testing.T) {
+	config, err := Load(writeConfig(t, `{"api_port":"8080","llm_pricing":[
+		{"model":"claude-sonnet-5","input_per_mtok":2,"output_per_mtok":10,
+			"cached_input_per_mtok":0.2,"cache_write_per_mtok":2.5}
+	]}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(config.LlmPricing) != 1 {
+		t.Fatalf("LlmPricing entries = %d, want 1", len(config.LlmPricing))
+	}
+	if got := config.LlmPricing[0].CacheWritePerMTok; got != 2.5 {
+		t.Errorf("CacheWritePerMTok = %v, want 2.5", got)
+	}
 }
 
 // The profiler's numeric settings are int64 rather than int because

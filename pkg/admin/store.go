@@ -304,18 +304,18 @@ func (s *PostgresStore) AppendUsage(ctx context.Context, record Record) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO ode_usage (user_sub, session_id, provider, model,
 		                       input_tokens, output_tokens, cached_input_tokens,
-		                       cost, cost_estimated, at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, now()))`,
+		                       cache_write_tokens, cost, cost_estimated, at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()))`,
 		record.UserSub, record.SessionID, record.Provider, record.Model,
 		record.InputTokens, record.OutputTokens, record.CachedInputTokens,
-		record.Cost, record.CostEstimated, nullTime(record.At))
+		record.CacheWriteTokens, record.Cost, record.CostEstimated, nullTime(record.At))
 	return err
 }
 
 func (s *PostgresStore) SpendSince(ctx context.Context, subject string, since time.Time) (Spend, error) {
 	// COALESCE because SUM over no rows is NULL, and a fresh user has no rows.
 	row := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(input_tokens + output_tokens + cached_input_tokens), 0),
+		SELECT COALESCE(SUM(input_tokens + output_tokens + cached_input_tokens + cache_write_tokens), 0),
 		       COALESCE(SUM(cost), 0),
 		       COUNT(*)
 		FROM ode_usage
@@ -336,7 +336,7 @@ func (s *PostgresStore) SessionSpend(ctx context.Context, subject, sessionID str
 	// COALESCE for the same reason SpendSince has it, and bool_and over no rows is
 	// NULL too: a conversation whose first turn has not finished has no rows at all.
 	row := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(input_tokens + output_tokens + cached_input_tokens), 0),
+		SELECT COALESCE(SUM(input_tokens + output_tokens + cached_input_tokens + cache_write_tokens), 0),
 		       COALESCE(SUM(cost), 0),
 		       COUNT(*),
 		       COALESCE(bool_and(cost_estimated), TRUE)
@@ -355,7 +355,7 @@ func (s *PostgresStore) UsageSince(ctx context.Context, subject string, since ti
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT user_sub, session_id, provider, model, input_tokens, output_tokens,
-		       cached_input_tokens, cost, cost_estimated, at
+		       cached_input_tokens, cache_write_tokens, cost, cost_estimated, at
 		FROM ode_usage
 		WHERE at >= $1 AND ($2 = '' OR user_sub = $2)
 		ORDER BY at DESC
@@ -370,7 +370,7 @@ func (s *PostgresStore) UsageSince(ctx context.Context, subject string, since ti
 		var record Record
 		if err := rows.Scan(&record.UserSub, &record.SessionID, &record.Provider, &record.Model,
 			&record.InputTokens, &record.OutputTokens, &record.CachedInputTokens,
-			&record.Cost, &record.CostEstimated, &record.At); err != nil {
+			&record.CacheWriteTokens, &record.Cost, &record.CostEstimated, &record.At); err != nil {
 			return nil, err
 		}
 		out = append(out, record)

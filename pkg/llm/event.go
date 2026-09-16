@@ -107,6 +107,13 @@ type Usage struct {
 	// separate rather than folded into InputTokens because it is priced
 	// differently, and an accounting record that hid it would overstate spend.
 	CachedInputTokens int `json:"cached_input_tokens,omitempty"`
+	// CacheWriteTokens is what it cost to *write* a cache entry, reported by
+	// Anthropic as cache_creation_input_tokens and priced above plain input rather
+	// than below it. Separate for the same reason CachedInputTokens is, and the
+	// omission is the more expensive one: folded into InputTokens it would hide the
+	// premium, and left out entirely it would let a session that rewrites its cache
+	// every turn run past a cap that never saw the tokens.
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 
 	Provider string  `json:"provider,omitempty"`
 	Model    string  `json:"model,omitempty"`
@@ -123,6 +130,7 @@ func (u *Usage) Add(other Usage) {
 	u.InputTokens += other.InputTokens
 	u.OutputTokens += other.OutputTokens
 	u.CachedInputTokens += other.CachedInputTokens
+	u.CacheWriteTokens += other.CacheWriteTokens
 	u.CostEUR += other.CostEUR
 	if other.Provider != "" {
 		u.Provider = other.Provider

@@ -80,14 +80,17 @@
   "llm_adaptive_thinking": true,
   "llm_max_tool_iterations": 12,
 
-  "//llm_pricing": "Per million tokens, for the estimated cost §3.3 accounts against. Matched exactly, else by longest prefix. Not baked into the binary: published prices change, and a stale figure makes a cost cap quietly wrong. Verify before relying on these.",
+  "//llm_pricing": "Per million tokens, for the estimated cost §3.3 accounts against. Matched exactly, else by longest prefix, and wins over llm.DefaultPrices' built-in table model by model — see pkg.go for how the two are assembled. Verify before relying on these; the built-in table is dated (llm.PricesAsOf) and this one is not.",
   "llm_currency": "EUR",
   "llm_pricing": [
-    { "model": "claude-fable-5", "input_per_mtok": 10.0, "output_per_mtok": 50.0 },
-    { "model": "claude-opus-5", "input_per_mtok": 5.0, "output_per_mtok": 25.0 },
-    { "model": "claude-sonnet-5", "input_per_mtok": 2.0, "output_per_mtok": 10.0 },
-    { "model": "claude-haiku-4-5", "input_per_mtok": 1.0, "output_per_mtok": 5.0 }
+    { "model": "claude-fable-5", "input_per_mtok": 10.0, "output_per_mtok": 50.0, "cached_input_per_mtok": 1.0, "cache_write_per_mtok": 12.5 },
+    { "model": "claude-opus-5", "input_per_mtok": 5.0, "output_per_mtok": 25.0, "cached_input_per_mtok": 0.5, "cache_write_per_mtok": 6.25 },
+    { "model": "claude-sonnet-5", "input_per_mtok": 2.0, "output_per_mtok": 10.0, "cached_input_per_mtok": 0.2, "cache_write_per_mtok": 2.5 },
+    { "model": "claude-haiku-4-5", "input_per_mtok": 1.0, "output_per_mtok": 5.0, "cached_input_per_mtok": 0.1, "cache_write_per_mtok": 1.25 }
   ],
+
+  "//llm_run_log": "One JSON line per completed exchange, appended to this path — the yield of prompt caching, visible without waiting for the provider's own billing, which only answers day by day. Empty is off, and is the default: a log nobody asked for would otherwise write into a container filesystem that is gone on the next restart.",
+  "llm_run_log": "",
 
   "//jupyterhub": "§5.6. Empty leaves the kernel surface unserved. The token is ODE's JupyterHub *service* credential and must hold servers, tokens, access:servers and users:activity — startup fails if it does not. Granting them is deployment configuration and is not part of this repository. The workspace path is relative to the singleuser server root and has to be inside the mounted PVC, which is why the default sits under data/ rather than at the home root.",
   "jupyterhub_url": "",

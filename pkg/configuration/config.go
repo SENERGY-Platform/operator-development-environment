@@ -215,10 +215,20 @@ type ConfigStruct struct {
 	LlmMaxToolIterations int64 `json:"llm_max_tool_iterations"`
 
 	// Pricing is what a million tokens costs, per model, used for §3.3's estimated
-	// cost. Not baked into the binary: published prices change, and a stale
-	// hard-coded figure would make a spend cap quietly wrong.
+	// cost. llm.DefaultPrices is a dated built-in table that sits underneath this
+	// one as a floor — see pkg.go, which assembles the two so this configuration
+	// wins model by model. Without it a deployment that configures no prices has no
+	// figures at all; with it, a stale entry here is still an admin's own mistake
+	// to fix rather than a silent gap this file leaves open.
 	LlmCurrency string       `json:"llm_currency"`
 	LlmPricing  []ModelPrice `json:"llm_pricing"`
+
+	// LlmRunLog is where one JSON line per completed exchange is appended, making
+	// the yield of prompt caching visible without waiting for the provider's own
+	// billing, which only answers day by day. Empty is the default and means off:
+	// a log nobody asked for would otherwise write into a container filesystem
+	// that is gone on the next restart.
+	LlmRunLog string `json:"llm_run_log"`
 
 	// ProfilerReadTimeout bounds one value-reading request to the platform,
 	// separately from TimeseriesRequestTimeout.
@@ -569,6 +579,7 @@ type ModelPrice struct {
 	InputPerMTok       float64 `json:"input_per_mtok"`
 	OutputPerMTok      float64 `json:"output_per_mtok"`
 	CachedInputPerMTok float64 `json:"cached_input_per_mtok"`
+	CacheWritePerMTok  float64 `json:"cache_write_per_mtok"`
 }
 
 type Config = *ConfigStruct

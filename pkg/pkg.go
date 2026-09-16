@@ -397,7 +397,13 @@ func startM3(
 	repoService *repo.Service,
 	experimentService *experiments.Service,
 ) error {
-	pricing := llm.NewPricing(config.LlmCurrency, modelPrices(config.LlmPricing)...)
+	// The built-in table is a floor under the configured one rather than part of
+	// it: Lookup exhausts configuration — exact names and prefixes both — before it
+	// consults the floor, so a model the admin has priced never resolves to a
+	// built-in figure. Two tables rather than one appended list, because in one
+	// list a short configured prefix would lose to a longer built-in one.
+	pricing := llm.NewPricingWithFallback(
+		config.LlmCurrency, modelPrices(config.LlmPricing), llm.DefaultPrices())
 
 	providers, err := buildProviders(ctx, config, pricing)
 	if err != nil {
@@ -521,6 +527,15 @@ func startM3(
 			"claude_cli_timeout", cliTimeout, "chat_exchange_timeout", exchangeTimeout)
 	}
 
+	// A path that cannot be opened is a startup failure rather than a warning: a
+	// log the deployment asked for and that silently writes nowhere is worse than
+	// no log at all, because the absence of lines then reads as the absence of
+	// runs rather than as the misconfiguration it is.
+	runLog, err := llm.NewRunLog(config.LlmRunLog)
+	if err != nil {
+		return fmt.Errorf("config: llm_run_log: %w", err)
+	}
+
 	// ctx, not a background context: an exchange is detached from the request that
 	// started it but not from the process, so shutdown still stops one in flight.
 	engine, err := chat.New(ctx, providers, dispatcher, chatStore, adminService, ids, chat.Options{
@@ -531,6 +546,12 @@ func startM3(
 		ExchangeTimeout: exchangeTimeout,
 
 		ConfirmationTimeout: confirmationTimeout,
+		RunLog:              runLog,
+		// The engine has no other route to what a token costs: Pricing lives here,
+		// built from configuration and llm.DefaultPrices together, and passing the
+		// currency through Options is the one field's worth of coupling that saves
+		// the engine from holding a *llm.Pricing of its own just to label a log line.
+		Currency: pricing.Currency(),
 	})
 	if err != nil {
 		return err
@@ -1237,6 +1258,7 @@ func modelPrices(configured []configuration.ModelPrice) []llm.ModelPrice {
 			InputPerMTok:       price.InputPerMTok,
 			OutputPerMTok:      price.OutputPerMTok,
 			CachedInputPerMTok: price.CachedInputPerMTok,
+			CacheWritePerMTok:  price.CacheWritePerMTok,
 		})
 	}
 	return out
