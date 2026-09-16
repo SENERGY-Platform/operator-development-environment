@@ -574,6 +574,35 @@ run recorded is re-rendered from the parsed instant rather than passed through:
 a tag that is not a timestamp does not travel at all, because an operator that
 wrote prose into it wrote prose a model would otherwise read.
 
+**And two fields carry a metric's value without being the metrics map.** Both were
+open until an adversarial read of this document against the code found them, and
+both for the same structural reason: `buildSummary` derives them from the
+*unfiltered* metrics, before `MaskedFor` exists to narrow anything.
+
+`evaluation_criteria` is the one that mattered. `grade()` reads the criterion's
+metric out of the raw map, so a run that logged `rmse` from its replay — the exact
+name the developer declared, no forged timestamp, no undeclared key — had that key
+withheld from `metrics` and delivered the same number anyway as
+`evaluation_criteria.value`, with a verdict beside it, at every tier. `MaskedFor`
+now applies the same predicate to the graded criterion and to every secondary one:
+where the metric behind it is withheld, the value goes and `met` becomes an
+explicit `not_computed` with reason `metric_withheld`. That is D24 one level up —
+"this reader may not have the value" and "the run missed the target" are different
+facts, and a bool would have made them the same one. The developer's own route
+still grades it, because the cut happens only in the masked copy.
+
+`resource_usage.peak_memory_mb` is the same door one field over: one float taken
+from whichever of `peak_memory_mb`, `peak_memory` or `max_memory_mb` the job
+reported, assembled in `buildSummary` and previously untouched by any filter. It
+needed no forgery at all — a single `log_metric("peak_memory_mb", value)` from
+`infer()`. It is now dropped whenever the metric it came from would be withheld.
+`duration_s` stays: it comes from the run's own start and end times rather than
+from anything the job logged.
+
+Neither is counted twice in `withheld_metrics`. The key behind each was already in
+the metrics map and already counted there; what the note adds for a cut criterion
+is a sentence saying a criterion without a value is not a criterion that failed.
+
 **The name allowlist, which is hygiene.** What a model reads of a run's metrics is
 also declared rather than arbitrary: `MaskedFor` keeps the metric named by the
 developer's `evaluation.yaml` criterion, the metrics of every secondary criterion,

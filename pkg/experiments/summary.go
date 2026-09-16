@@ -99,6 +99,12 @@ const (
 // entirely rather than reporting a run that used no memory.
 var memoryMetrics = []string{"peak_memory_mb", "peak_memory", "max_memory_mb"}
 
+// peakMemorySourcePrefix is how ResourceUsage.PeakMemorySource names the metric it
+// took the figure from. A constant rather than a literal in two places, because
+// MaskedFor reads the name back out of it to decide whether the figure may be
+// carried — see memorySourceMetric.
+const peakMemorySourcePrefix = "metric "
+
 // lowerIsBetterMarkers are the substrings that make a metric one where a smaller
 // number is an improvement.
 //
@@ -326,7 +332,7 @@ func resourceUsage(run mlflowRun, metrics map[string]float64) ResourceUsage {
 	for _, name := range memoryMetrics {
 		if value, reported := metrics[name]; reported {
 			usage.PeakMemoryMB = value
-			usage.PeakMemorySource = "metric " + name
+			usage.PeakMemorySource = peakMemorySourcePrefix + name
 			break
 		}
 	}

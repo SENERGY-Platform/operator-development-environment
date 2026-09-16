@@ -464,3 +464,97 @@ func TestARunWithoutASplitStillShowsItsParams(t *testing.T) {
 		t.Errorf("params = %v, want them untouched without a split", masked.Params)
 	}
 }
+
+// --- the two fields that carry a value without being the Metrics map ---
+
+// The leak this pair of tests exists for: filtering Metrics alone was not enough.
+// evaluation_criteria is graded in buildSummary from the unfiltered metrics, so a
+// declared metric logged from the replay was withheld from the map and delivered
+// anyway as the criterion's own value and verdict — no forged timestamp, no
+// undeclared name, just the metric the developer asked to be judged on.
+func TestMaskedForWithholdsTheCriterionOfAMetricLoggedAfterTrainingEnded(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml", "metric: rmse\ngoal: minimise\nthreshold: 0.35\n")
+	h.commit("State the real criterion")
+	launched := h.launch()
+
+	start := h.mlflow.Run(t, launched.RunID).StartTime
+	h.mlflow.SetTag(t, launched.RunID, trainingEndedAtTag, strconv.FormatInt(start+500, 10))
+	// Under the declared name, at step 1 — timestamp start+1000, past the cutoff.
+	h.mlflow.LogMetric(t, launched.RunID, "rmse", 0.01, 1)
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", nil)
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary := summaryOf(t, h, launched.ID)
+	if summary.EvaluationCriteria.Value == nil || *summary.EvaluationCriteria.Value != 0.01 {
+		t.Fatalf("the developer's own criterion = %+v, want the value the run logged",
+			summary.EvaluationCriteria)
+	}
+
+	masked := summary.MaskedFor(exposure.L0)
+	if masked.EvaluationCriteria.Value != nil {
+		t.Errorf("evaluation_criteria.value = %v, want no value: the metric behind it "+
+			"was logged after training ended", *masked.EvaluationCriteria.Value)
+	}
+	if masked.EvaluationCriteria.Met.Known() {
+		t.Errorf("evaluation_criteria.met = %v, want an explicit non-result rather than "+
+			"a verdict computed from a value this reader may not have",
+			masked.EvaluationCriteria.Met.IsMet())
+	}
+	if reason := masked.EvaluationCriteria.Met.Status().Reason; reason != experiments.ReasonMetricWithheld {
+		t.Errorf("reason = %q, want %q", reason, experiments.ReasonMetricWithheld)
+	}
+	// The developer's own summary is untouched by the copy the model read.
+	if summary.EvaluationCriteria.Value == nil {
+		t.Error("MaskedFor wrote through to the caller's own criterion")
+	}
+}
+
+// The same door, one field over: peak_memory_mb is one float taken from whichever
+// of three memory metrics the job reported, assembled before MaskedFor runs.
+func TestMaskedForWithholdsAPeakMemoryFigureTakenFromAWithheldMetric(t *testing.T) {
+	h := newHarness(t)
+	h.ready() // the scaffold's evaluation.yaml declares "baseline"
+	launched := h.launch()
+	h.mlflow.Finish(t, launched.RunID, "FINISHED",
+		map[string]float64{"baseline": 0.9, "peak_memory_mb": 1234})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary := summaryOf(t, h, launched.ID)
+	if summary.ResourceUsage.PeakMemoryMB != 1234 {
+		t.Fatalf("the developer's own resource usage = %+v, want the figure the run "+
+			"reported", summary.ResourceUsage)
+	}
+
+	masked := summary.MaskedFor(exposure.L0)
+	if masked.ResourceUsage.PeakMemoryMB != 0 || masked.ResourceUsage.PeakMemorySource != "" {
+		t.Errorf("resource_usage = %+v, want the figure dropped: peak_memory_mb is not "+
+			"a metric the developer declared", masked.ResourceUsage)
+	}
+	if masked.ResourceUsage.DurationSeconds != summary.ResourceUsage.DurationSeconds {
+		t.Errorf("duration_s = %v, want it kept: it comes from the run's own start and "+
+			"end times, not from anything the job logged",
+			masked.ResourceUsage.DurationSeconds)
+	}
+}
+
+// A declared memory metric logged before the cutoff is an ordinary reading and
+// stays, so the filter above is not a blanket removal of the figure.
+func TestMaskedForKeepsAPeakMemoryFigureTheDeveloperDeclared(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml",
+		"metric: rmse\ngoal: minimise\nthreshold: 0.35\nsecondary_metrics: [peak_memory_mb]\n")
+	h.commit("Watch the memory too")
+	launched := h.launch()
+	h.mlflow.Finish(t, launched.RunID, "FINISHED",
+		map[string]float64{"rmse": 0.31, "peak_memory_mb": 1234})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	masked := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0)
+	if masked.ResourceUsage.PeakMemoryMB != 1234 {
+		t.Errorf("resource_usage = %+v, want the declared figure kept",
+			masked.ResourceUsage)
+	}
+}

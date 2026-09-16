@@ -337,6 +337,37 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 	if split {
 		s.Params = evaluationParamsOnly(s.Params)
 	}
+	// The two fields that carry a metric's value without being the Metrics map, and
+	// the reason this filter is not one line. Both are derived in buildSummary from
+	// the *unfiltered* metrics, before this method exists to narrow anything, so
+	// filtering the map alone left a declared metric a run logged from its replay
+	// reaching a model through the verdict beside it. Found by execution, not by
+	// reading.
+	criteriaCut := false
+	if updated, cut := withholdCriterion(
+		s.EvaluationCriteria, allowed, s.MetricTimes, cutoff, hasCutoff, split); cut {
+		s.EvaluationCriteria, criteriaCut = updated, true
+	}
+	if len(s.SecondaryCriteria) > 0 {
+		secondary := make([]Criterion, len(s.SecondaryCriteria))
+		for i, criterion := range s.SecondaryCriteria {
+			updated, cut := withholdCriterion(
+				criterion, allowed, s.MetricTimes, cutoff, hasCutoff, split)
+			secondary[i] = updated
+			criteriaCut = criteriaCut || cut
+		}
+		s.SecondaryCriteria = secondary
+	}
+	// ResourceUsage.PeakMemoryMB is one float under a name ODE chose, taken from
+	// whichever of three memory metrics the job reported — so it is as writable from
+	// a replay as any other metric, and it needed no forged timestamp and no
+	// declared name to get here. DurationSeconds stays: it comes from the run's own
+	// start and end times rather than from anything the job logged.
+	if name := memorySourceMetric(s.ResourceUsage.PeakMemorySource); name != "" &&
+		!keepMetric(name, allowed, s.MetricTimes, cutoff, hasCutoff, split) {
+		s.ResourceUsage.PeakMemoryMB = 0
+		s.ResourceUsage.PeakMemorySource = ""
+	}
 	s.WithheldMetrics = withheld
 	// A model never reads a timestamp back — only the count above says anything
 	// was withheld, which is all this field exists to carry.
@@ -348,7 +379,49 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 				"criterion or a secondary one) that was also logged before training "+
 				"ended.", withheld))
 	}
+	if criteriaCut {
+		s.Note = strings.TrimSpace(s.Note +
+			" A criterion whose metric was withheld carries no value and no verdict "+
+				"here; that is not a criterion the run missed, and the developer's own "+
+				"results route grades it.")
+	}
 	return s
+}
+
+// withholdCriterion blanks a graded criterion whose own metric this copy may not
+// carry, and reports whether it did.
+//
+// The verdict becomes an explicit non-result rather than false, which is D24's
+// rule one level up: "the value is not available to this reader" and "the run
+// missed the target" are different facts, and a bool would have made them the same
+// one. A criterion with no value to begin with is left alone — it already says
+// metric_not_reported, which is the truer reason.
+func withholdCriterion(
+	criterion Criterion, allowed map[string]struct{}, times map[string]int64,
+	cutoff int64, hasCutoff, split bool,
+) (Criterion, bool) {
+	if criterion.Metric == "" || criterion.Value == nil {
+		return criterion, false
+	}
+	if keepMetric(criterion.Metric, allowed, times, cutoff, hasCutoff, split) {
+		return criterion, false
+	}
+	criterion.Value = nil
+	criterion.Met = NotEvaluated(ReasonMetricWithheld,
+		"the run logged %q where this summary may not carry it, so there is no value "+
+			"here to grade; the developer's own results route has it",
+		criterion.Metric)
+	return criterion, true
+}
+
+// memorySourceMetric reads the metric name back out of
+// ResourceUsage.PeakMemorySource, or "" when the figure did not come from a metric
+// at all. The prefix is ODE's own, written in exactly one place (resourceUsage).
+func memorySourceMetric(source string) string {
+	if !strings.HasPrefix(source, peakMemorySourcePrefix) {
+		return ""
+	}
+	return strings.TrimPrefix(source, peakMemorySourcePrefix)
 }
 
 // --- the metric allowlist (§5.13, D37) ---

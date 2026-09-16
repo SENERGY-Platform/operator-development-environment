@@ -95,6 +95,13 @@ const (
 	// The scaffold's own comment warns about exactly this, and it is the case a
 	// bool would have turned into "the run missed the target".
 	ReasonMetricNotReported CriterionReason = "metric_not_reported"
+	// ReasonMetricWithheld is a criterion whose own metric this copy of the summary
+	// may not carry: the run logged it after its training phase ended, or under a
+	// name the criteria do not declare (D37). The value exists and the developer's
+	// own results route has it; what is missing is permission for *this* reader,
+	// which is a different fact from a metric the run never logged
+	// (ReasonMetricNotReported) and must not be flattened into a failed criterion.
+	ReasonMetricWithheld CriterionReason = "metric_withheld"
 	// ReasonNoDeveloperCredential is a summary built with no developer token —
 	// which is every summary the poller builds, because a background poller has no
 	// token and §3.1 item 3 does not let it acquire one. The criteria are read when
