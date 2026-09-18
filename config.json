@@ -76,7 +76,8 @@
   "public_url": "http://localhost:8080",
 
   "llm_max_tokens": 8192,
-  "llm_effort": "max",
+  "//llm_effort": "How hard the model works before it answers, from low to max. xhigh rather than max because max is the setting for work where correctness outweighs cost, and ODE's design puts the load-bearing correctness elsewhere: the profiler computes every statistic deterministically and the assistant reads the result, which is the §4 rule the system prompt states outright. What is left for the model is choosing what to look at and explaining why — agentic work, which is what xhigh is for. It is also the one knob here that trades quality for tokens directly, so change it against llm_run_log rather than by argument: the cost moves the same day, the quality only shows over a week of normal use. Note the interaction with llm_max_tokens above, which bounds thinking and answer together.",
+  "llm_effort": "xhigh",
   "llm_adaptive_thinking": true,
   "llm_max_tool_iterations": 12,
 
