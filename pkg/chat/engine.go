@@ -1414,6 +1414,19 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 		}
 	}
 
+	// On the audit trail rather than in the conversation: the event reaches the
+	// window that is watching and nothing else, because an Exchange is memory and
+	// is gone once the turn ends. A reader after the run — the evaluation protocol
+	// counts aborted exchanges per session — has no other trace to read, and an
+	// injected message would be one the model sees, which would change the
+	// conversation over a bound that is the environment's own.
+	if err := e.store.AppendExchangeAbort(ctx, ExchangeAbort{
+		SessionID: session.ID, UserSub: session.UserSub, Reason: StopMaxIterations,
+	}); err != nil {
+		slog.ErrorContext(ctx, "could not record an aborted exchange",
+			"session", session.ID, "reason", StopMaxIterations, "error", err)
+	}
+
 	exchange.publish(Event{
 		Type:       EventDone,
 		StopReason: StopMaxIterations,

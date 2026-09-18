@@ -286,6 +286,28 @@ CREATE TABLE IF NOT EXISTS ode_split_changes (
               ON ode_split_changes (session_id, at DESC)`,
 	},
 	{
+		// Every exchange ODE stopped itself, with the bound it hit. The stop reason
+		// lives on an Exchange, which is in memory and deregistered the moment the
+		// turn ends, so without this row "the tool loop ran out" is unreadable an
+		// hour later. The evaluation protocol counts these per session as a validity
+		// check: an exchange that ended at the bound ended for a reason that is not
+		// the treatment.
+		name: "ode_exchange_aborts",
+		sql: `
+CREATE TABLE IF NOT EXISTS ode_exchange_aborts (
+    id         BIGSERIAL PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    user_sub   TEXT NOT NULL,
+    reason     TEXT NOT NULL,
+    at         TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+	},
+	{
+		name: "ode_exchange_aborts_by_session",
+		sql: `CREATE INDEX IF NOT EXISTS ode_exchange_aborts_session_idx
+              ON ode_exchange_aborts (session_id, at DESC)`,
+	},
+	{
 		name: "ode_usage",
 		sql: `
 CREATE TABLE IF NOT EXISTS ode_usage (

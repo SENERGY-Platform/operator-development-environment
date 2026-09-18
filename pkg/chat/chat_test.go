@@ -498,6 +498,19 @@ func TestMaxIterationsStopsARunawayLoop(t *testing.T) {
 	if len(done) != 1 || done[0].StopReason != "max_iterations" {
 		t.Errorf("done = %+v, want a max_iterations stop", done)
 	}
+
+	// The event above goes with the exchange, so the row is the only trace left to
+	// a reader after the run, and the evaluation protocol counts it per session.
+	aborts, err := h.store.ExchangeAborts(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("ExchangeAborts: %v", err)
+	}
+	if len(aborts) != 1 || aborts[0].Reason != StopMaxIterations {
+		t.Fatalf("aborts = %+v, want one recorded at the tool-loop bound", aborts)
+	}
+	if aborts[0].UserSub != testUser || aborts[0].At.IsZero() {
+		t.Errorf("abort = %+v, want the session's user and a time", aborts[0])
+	}
 }
 
 // --- the tier gate, end to end ---

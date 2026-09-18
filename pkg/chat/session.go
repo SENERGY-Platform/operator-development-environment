@@ -156,6 +156,25 @@ type TierChange struct {
 	At        time.Time  `json:"at"`
 }
 
+// ExchangeAbort is one entry of the audit trail for an exchange ODE stopped
+// rather than the model ending its own turn. Only the tool-loop bound reaches it
+// today, and Reason carries which bound it was so a later one needs no second
+// table.
+//
+// It exists because the stop reason is otherwise an Exchange field, and an
+// Exchange is in memory and gone when the turn ends (docs/chat-and-streaming.md).
+// A reader after the fact — the tier ablation's scoring script, which counts
+// aborted exchanges as a validity check — could then only infer the abort by
+// counting tool calls and guessing where one exchange ended and the next began.
+// The row is written on the developer's own session, never into the conversation,
+// so nothing the model reads changes with it.
+type ExchangeAbort struct {
+	SessionID string    `json:"session_id"`
+	UserSub   string    `json:"user_sub"`
+	Reason    string    `json:"reason"`
+	At        time.Time `json:"at"`
+}
+
 // SplitChange is one entry of D36's audit trail, the same way TierChange is for
 // §3.2: the pre-registration evidence that a scoring script can compare a run's
 // recorded bounds against, rather than trust that the split held. From and To are

@@ -65,6 +65,13 @@ type Store interface {
 	AppendSplitChange(ctx context.Context, change SplitChange) error
 	SplitChanges(ctx context.Context, sessionID string) ([]SplitChange, error)
 
+	// AppendExchangeAbort and ExchangeAborts are the audit trail for an exchange
+	// ODE stopped itself, the same shape as the tier's and the split's. Append-only
+	// and per session, because the question it answers — did this run hit the tool
+	// loop's bound — is asked per session and long after the exchange is gone.
+	AppendExchangeAbort(ctx context.Context, abort ExchangeAbort) error
+	ExchangeAborts(ctx context.Context, sessionID string) ([]ExchangeAbort, error)
+
 	PutConfirmation(ctx context.Context, confirmation Confirmation) error
 	Confirmation(ctx context.Context, id string) (Confirmation, bool, error)
 	PendingConfirmations(ctx context.Context, sessionID string) ([]Confirmation, error)
@@ -90,6 +97,7 @@ type MemoryStore struct {
 	messages      map[string][]StoredMessage
 	tierChanges   map[string][]TierChange
 	splitChanges  map[string][]SplitChange
+	aborts        map[string][]ExchangeAbort
 	confirmations map[string]Confirmation
 	creations     map[string][]tools.Creation
 }
@@ -100,6 +108,7 @@ func NewMemoryStore() *MemoryStore {
 		messages:      map[string][]StoredMessage{},
 		tierChanges:   map[string][]TierChange{},
 		splitChanges:  map[string][]SplitChange{},
+		aborts:        map[string][]ExchangeAbort{},
 		confirmations: map[string]Confirmation{},
 		creations:     map[string][]tools.Creation{},
 	}
@@ -227,6 +236,22 @@ func (s *MemoryStore) TierChanges(_ context.Context, sessionID string) ([]TierCh
 	s.mux.RLock()
 	defer s.mux.RUnlock()
 	return append([]TierChange{}, s.tierChanges[sessionID]...), nil
+}
+
+func (s *MemoryStore) AppendExchangeAbort(_ context.Context, abort ExchangeAbort) error {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	if abort.At.IsZero() {
+		abort.At = time.Now().UTC()
+	}
+	s.aborts[abort.SessionID] = append(s.aborts[abort.SessionID], abort)
+	return nil
+}
+
+func (s *MemoryStore) ExchangeAborts(_ context.Context, sessionID string) ([]ExchangeAbort, error) {
+	s.mux.RLock()
+	defer s.mux.RUnlock()
+	return append([]ExchangeAbort{}, s.aborts[sessionID]...), nil
 }
 
 func (s *MemoryStore) AppendSplitChange(_ context.Context, change SplitChange) error {
@@ -518,6 +543,34 @@ func (s *PostgresStore) TierChanges(ctx context.Context, sessionID string) ([]Ti
 		change.From, _ = tools.ParseTier(from)
 		change.To, _ = tools.ParseTier(to)
 		out = append(out, change)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) AppendExchangeAbort(ctx context.Context, abort ExchangeAbort) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO ode_exchange_aborts (session_id, user_sub, reason)
+		VALUES ($1, $2, $3)`,
+		abort.SessionID, abort.UserSub, abort.Reason)
+	return err
+}
+
+func (s *PostgresStore) ExchangeAborts(ctx context.Context, sessionID string) ([]ExchangeAbort, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id, user_sub, reason, at
+		FROM ode_exchange_aborts WHERE session_id = $1 ORDER BY at`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ExchangeAbort{}
+	for rows.Next() {
+		var abort ExchangeAbort
+		if err := rows.Scan(&abort.SessionID, &abort.UserSub, &abort.Reason, &abort.At); err != nil {
+			return nil, err
+		}
+		out = append(out, abort)
 	}
 	return out, rows.Err()
 }
