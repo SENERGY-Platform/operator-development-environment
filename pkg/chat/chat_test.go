@@ -551,20 +551,22 @@ func TestL0BlocksValueBearingToolsThroughTheEngine(t *testing.T) {
 	}
 }
 
-// TestOnlyPermittedToolsAreOffered checks the other half: at L0 the model is not
-// even shown the higher-tier tools, so it does not spend context discovering them.
-func TestOnlyPermittedToolsAreOffered(t *testing.T) {
-	for _, tc := range []struct {
-		tier      tools.Tier
-		wantTools []string
-	}{
-		{tools.L0, []string{"confirmed_tool", "l0_tool"}},
-		{tools.L1, []string{"confirmed_tool", "l0_tool", "l1_tool"}},
-		{tools.L2, []string{"confirmed_l2_tool", "confirmed_tool", "l0_tool", "l1_tool", "l2_tool"}},
-	} {
-		t.Run(tc.tier.String(), func(t *testing.T) {
+// TestEveryTierIsShownTheSameToolSchemas is the cache half. The schema list
+// renders ahead of everything else, so it is only cacheable while it stays
+// byte-identical; a list that shrank at L0 would be rewritten in full on every
+// tier change, which costs far more than the handful of definitions it withheld.
+//
+// Withholding them was the older behaviour and it was deliberate — see
+// Registry.Implemented for the arithmetic that reversed it. What that reversal
+// must not touch is the refusal: TestL0BlocksValueBearingToolsThroughTheEngine
+// above is the guarantee, and TestSystemPromptNamesTheTierAndWhatIsAbove is what
+// keeps the model from trying in the first place.
+func TestEveryTierIsShownTheSameToolSchemas(t *testing.T) {
+	whole := []string{"confirmed_l2_tool", "confirmed_tool", "l0_tool", "l1_tool", "l2_tool"}
+	for _, tier := range []tools.Tier{tools.L0, tools.L1, tools.L2} {
+		t.Run(tier.String(), func(t *testing.T) {
 			h := newHarness(t, textTurn("hello"))
-			session := h.session(t, tc.tier)
+			session := h.session(t, tier)
 
 			events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "hi")
 			if err != nil {
@@ -572,14 +574,54 @@ func TestOnlyPermittedToolsAreOffered(t *testing.T) {
 			}
 			drain(t, events)
 
-			offered := []string{}
+			shown := []string{}
 			for _, definition := range h.provider.lastRequest(t).Tools {
-				offered = append(offered, definition.Name)
+				shown = append(shown, definition.Name)
 			}
-			if strings.Join(offered, ",") != strings.Join(tc.wantTools, ",") {
-				t.Errorf("offered %v, want %v", offered, tc.wantTools)
+			if strings.Join(shown, ",") != strings.Join(whole, ",") {
+				t.Errorf("shown %v, want the whole surface %v: a tier-varying schema "+
+					"list cannot be cached across a tier change", shown, whole)
 			}
 		})
+	}
+}
+
+// TestOutOfBandToolsStayTierFiltered is the other side of the same decision. A
+// provider that runs its own loop is handed names rather than schemas and ODE
+// places no breakpoint on them, so there is no cache entry to keep stable and the
+// older reasoning still stands: a name the CLI never sees is a refusal that never
+// happens.
+//
+// AllowedTools is what actually reaches the CLI, as --allowedTools; the request's
+// own Tools field is only log material on this path. Both are asserted, because
+// the widening of the schema list must not have leaked into either.
+func TestOutOfBandToolsStayTierFiltered(t *testing.T) {
+	h := newTwoProviderHarness(t, textTurn("hello"))
+	session := h.session(t, "cli", "")
+
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "hi")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+
+	request := h.cli.lastRequest(t)
+	want := []string{"confirmed_tool", "l0_tool"}
+
+	if request.ToolEndpoint == nil {
+		t.Fatal("no tool endpoint, so the CLI was never told which tools it may " +
+			"call and this test would assert nothing")
+	}
+	if strings.Join(request.ToolEndpoint.AllowedTools, ",") != strings.Join(want, ",") {
+		t.Errorf("AllowedTools = %v, want the L0 list %v", request.ToolEndpoint.AllowedTools, want)
+	}
+
+	got := []string{}
+	for _, definition := range request.Tools {
+		got = append(got, definition.Name)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("out-of-band schema list = %v, want the L0 list %v", got, want)
 	}
 }
 

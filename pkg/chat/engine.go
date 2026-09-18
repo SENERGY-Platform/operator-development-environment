@@ -1268,16 +1268,32 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 			return
 		}
 
+		// Two lists, because the two paths pay for a tool name differently.
+		//
+		// offered is what this tier permits, and it is what an out-of-band provider
+		// is told: the CLI receives names it may call, so a name withheld is a
+		// refusal that never happens. presented is the schema list a provider gets
+		// in the request itself, and there the whole implemented surface is cheaper —
+		// it renders at position 0 and is therefore only cacheable while it stays
+		// byte-identical, which a tier-varying list never is. See Registry.Implemented.
+		//
+		// Neither list is an enforcement point. Dispatch checks the tier on every
+		// call, and the system prompt names the tools above this tier either way.
 		offered := []tools.Definition{}
+		presented := []tools.Definition{}
 		if capabilities.Tools {
 			offered = e.dispatcher.Registry().Available(session.Tier)
+			presented = offered
+			if !capabilities.ToolsOutOfBand {
+				presented = e.dispatcher.Registry().Implemented()
+			}
 		}
 
 		request := llm.Request{
 			Model:     session.Model,
 			System:    systemPrompt(e.dispatcher.Registry(), session, capabilities.Tools),
 			Messages:  conversation(messages),
-			Tools:     toolDefinitions(offered),
+			Tools:     toolDefinitions(presented),
 			MaxTokens: e.opts.MaxTokens,
 			Effort:    e.opts.Effort,
 		}

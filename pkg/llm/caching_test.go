@@ -121,6 +121,49 @@ func TestAnthropicMarksNothingWithoutAConversation(t *testing.T) {
 	// slice on the way to finding that out.
 	markCachedPrefix(nil)
 	markCachedPrefix([]anthropic.MessageParam{{}})
+	markCachedTools(nil)
+	markCachedTools([]anthropic.ToolUnionParam{{}})
+}
+
+// TestAnthropicMarksTheToolsSeparately is why the mark exists. The system block
+// covers the tools too, since tools render first — but only while the system text
+// holds still, and that text carries the session's tier. Their own mark is what
+// lets a tier change rewrite the smaller half alone.
+func TestAnthropicMarksTheToolsSeparately(t *testing.T) {
+	params, err := cachingProvider(t).params(Request{
+		System:   "you are the assistant inside ODE",
+		Messages: exchange(),
+		Tools: []ToolDefinition{
+			{Name: "search_ontology", Description: "search", Schema: json.RawMessage(`{"type":"object"}`)},
+			{Name: "quick_profile", Description: "profile", Schema: json.RawMessage(`{"type":"object"}`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("params: %v", err)
+	}
+
+	if len(params.Tools) != 2 {
+		t.Fatalf("tools = %d, want 2", len(params.Tools))
+	}
+	if control := params.Tools[1].OfTool.CacheControl; string(control.Type) != "ephemeral" {
+		t.Error("the last tool is not a breakpoint; the schemas then ride on the " +
+			"system mark and a tier change rewrites all of them")
+	}
+	if control := params.Tools[0].OfTool.CacheControl; string(control.Type) == "ephemeral" {
+		t.Error("an earlier tool carries a breakpoint; only the last one should, " +
+			"or the block is split for no gain and a slot is wasted")
+	}
+
+	// Four is the API's ceiling, and this request is at it: tools, system, and the
+	// two in markCachedPrefix. A fifth would be rejected outright, so the count is
+	// asserted rather than left to be discovered as a 400 in production.
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if count := strings.Count(string(encoded), `"cache_control"`); count != 4 {
+		t.Errorf("breakpoints = %d, want exactly the API's four: %s", count, encoded)
+	}
 }
 
 // --- pricing ---

@@ -338,6 +338,38 @@ func TestAvailableExcludesHigherTiersAndUnbuiltTools(t *testing.T) {
 	}
 }
 
+// TestImplementedCrossesTiersButNotTheUnbuilt is the list a provider that takes
+// schemas in the request is shown, so it drops the tier filter on purpose — but
+// the other half of Available's filter still has to hold. A tool with no executor
+// can only ever be refused, and a schema for it would spend context on every
+// single request to buy that refusal.
+func TestImplementedCrossesTiersButNotTheUnbuilt(t *testing.T) {
+	tracker := &ran{}
+	registry, _, _ := testSurface(t, tracker)
+
+	implemented := names(registry.Implemented())
+	want := []string{"confirmed_tool", "l0_tool", "l1_tool", "l2_tool", "recognising_tool"}
+	if !slices.Equal(implemented, want) {
+		t.Fatalf("Implemented() = %v, want %v", implemented, want)
+	}
+	if slices.Contains(implemented, "future_tool") {
+		t.Error("an unimplemented tool is shown; it can never succeed, " +
+			"so its schema is spent on every request for nothing")
+	}
+
+	// The point of the method: what it returns does not move with the tier, which
+	// is what makes the block one stable cache entry.
+	if !slices.Equal(names(registry.Implemented()), names(registry.Implemented())) {
+		t.Error("Implemented() is not stable across calls")
+	}
+	for _, tier := range []Tier{L0, L1, L2} {
+		if len(registry.Available(tier)) == len(implemented) && tier != MaxTier {
+			t.Errorf("Available(%s) matches Implemented(), so this fixture cannot "+
+				"tell a tier-filtered list from a tier-independent one", tier)
+		}
+	}
+}
+
 func TestUnimplementedToolRefusesWithItsReason(t *testing.T) {
 	tracker := &ran{}
 	_, dispatcher, _ := testSurface(t, tracker)

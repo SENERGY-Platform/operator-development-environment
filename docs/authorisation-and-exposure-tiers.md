@@ -165,9 +165,14 @@ EOF
 ```
 
 Frames come back as `accepted`, then one `event` per item of the stream, then `done`.
-At L0 the assistant can resolve the intent and rank candidates,
-and `preview_series` is not offered to it at all; if it asks anyway, the dispatcher
-answers with §3.2's refusal verbatim:
+At L0 the assistant can resolve the intent and rank candidates, but not read a
+value. Whether it is shown that `preview_series` exists depends on the provider:
+one that takes tool schemas in the request is shown the whole surface, because a
+schema list that shrank with the tier could not be cached across a tier change,
+while a provider that runs its own loop is handed only the names this tier
+permits. Either way the system prompt names the tools above the tier and says not
+to attempt them, and either way the call is what is refused — the dispatcher
+checks the tier itself and answers with §3.2's refusal verbatim:
 
 ```json
 {"blocked_by_tier":"L0","required":"L2","tool":"preview_series",

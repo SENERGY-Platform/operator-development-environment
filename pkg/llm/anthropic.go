@@ -269,8 +269,35 @@ func (p *AnthropicProvider) params(req Request) (anthropic.MessageNewParams, err
 		}
 		params.Tools = append(params.Tools, anthropic.ToolUnionParam{OfTool: &tool})
 	}
+	markCachedTools(params.Tools)
 
 	return params, nil
+}
+
+// markCachedTools puts a breakpoint on the last tool definition.
+//
+// The system mark below already covers tools, because tools render first — but it
+// covers them only as far as the system text is unchanged, and that text carries
+// the session's tier and split (see chat.systemPrompt). A tier change therefore
+// rewrites the whole prefix today, schemas included, though not one schema byte
+// differed. Tools are the larger half of it: 43 definitions are about 16k tokens
+// against roughly 4k of system text.
+//
+// A mark of their own splits the two, so a tier change costs the system block and
+// the tool block survives it — and survives a split change, a new session and a
+// different developer with it, since the schemas depend on none of them.
+//
+// This is the fourth breakpoint of the API's four, together with the system mark
+// and the two in markCachedPrefix. There is no room for a fifth.
+func markCachedTools(tools []anthropic.ToolUnionParam) {
+	if len(tools) == 0 {
+		return
+	}
+	last := tools[len(tools)-1].OfTool
+	if last == nil {
+		return
+	}
+	last.CacheControl = anthropic.NewCacheControlEphemeralParam()
 }
 
 // toAnthropicTool converts a definition, moving the JSON Schema across as the

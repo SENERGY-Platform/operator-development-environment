@@ -272,11 +272,47 @@ func (r *Registry) Definitions() []Definition {
 // and then spends more on the model trying it and being told no. The model is
 // told which tools exist beyond its tier separately, as prose, so it can suggest
 // raising the tier rather than being silently unaware.
+//
+// The context-economy half of that no longer holds where the schemas are cached,
+// and Implemented is what those callers use instead; the refusal half does, which
+// is why both keep Beyond in the prompt. This remains the list for out-of-band
+// tool use, where names are handed over without schemas and nothing is cached.
 func (r *Registry) Available(tier Tier) []Definition {
 	out := make([]Definition, 0, len(r.order))
 	for _, name := range r.order {
 		definition := r.byName[name]
 		if definition.Implemented() && tier.Permits(definition.MinTier) {
+			out = append(out, definition)
+		}
+	}
+	return out
+}
+
+// Implemented is the whole working surface, whatever the tier: what a provider
+// that receives tool schemas in the request is shown.
+//
+// It exists because Available's context economy inverts once the schemas are
+// cached. Available saves the six definitions between L0 and L2, about 2.5k
+// tokens; but the tool block renders at position 0, so a list that varies by tier
+// cannot be one stable cache entry, and every tier change — twenty of them across
+// eight sessions in the first fortnight — rewrites all 16k instead. A cached read
+// of the whole surface costs a tenth of fresh input, which is less than the
+// trimmed list costs uncached, so the wider list is the cheaper one.
+//
+// What does not invert is the second half of Available's argument: a tool the
+// model can see is a tool it may try and be refused, spending an iteration. That
+// is why Beyond still names those tools in the system prompt, with the
+// instruction not to attempt them — the prose carries what the schema list no
+// longer does. Dispatch remains the guarantee either way.
+//
+// Out-of-band tool use keeps Available: the CLI is handed names rather than
+// schemas, ODE places no breakpoints on that path, and there is no cache entry
+// for a wider list to stabilise.
+func (r *Registry) Implemented() []Definition {
+	out := make([]Definition, 0, len(r.order))
+	for _, name := range r.order {
+		definition := r.byName[name]
+		if definition.Implemented() {
 			out = append(out, definition)
 		}
 	}
