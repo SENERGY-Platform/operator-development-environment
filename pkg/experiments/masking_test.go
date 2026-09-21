@@ -448,6 +448,43 @@ func TestASplitRunShowsAModelOnlyTheEvaluationParams(t *testing.T) {
 	}
 }
 
+// D37 addendum: the post-replay metric's own four params cross the same boundary,
+// by exact name — never a prefix, the same rule the four params above and the
+// four metric names already carry.
+func TestASplitRunShowsAModelTheFourMetricParamsButNotANearMiss(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	launched := h.launch(func(req *experiments.LaunchRequest) {
+		req.Split = testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+	})
+
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", "computed")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_name", "mae")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_value", "3.5")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_n", "120")
+	// A near miss: not one of the four exact names, and must not ride in on the
+	// "evaluation." prefix the four legitimate ones share.
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_value_extra", "should not pass")
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", nil)
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	masked := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0)
+	for name, want := range map[string]string{
+		"evaluation.metric_status": "computed",
+		"evaluation.metric_name":   "mae",
+		"evaluation.metric_value":  "3.5",
+		"evaluation.metric_n":      "120",
+	} {
+		if masked.Params[name] != want {
+			t.Errorf("params[%q] = %q, want %q", name, masked.Params[name], want)
+		}
+	}
+	if _, present := masked.Params["evaluation.metric_value_extra"]; present {
+		t.Errorf("params = %v, want the near-miss name removed: the match is exact, "+
+			"not a prefix", masked.Params)
+	}
+}
+
 // Without a split nothing ran against a test window, and params pass as they
 // always did.
 func TestARunWithoutASplitStillShowsItsParams(t *testing.T) {
@@ -508,6 +545,53 @@ func TestMaskedForWithholdsTheCriterionOfAMetricLoggedAfterTrainingEnded(t *test
 	// The developer's own summary is untouched by the copy the model read.
 	if summary.EvaluationCriteria.Value == nil {
 		t.Error("MaskedFor wrote through to the caller's own criterion")
+	}
+}
+
+// The D37 addendum's own trap, found the same way as the pair above: a criterion
+// whose value came from Operator Lib's post-replay param, not from an actual run
+// metric, has no entry in MetricTimes at all — the library never logs the metric
+// itself, only the param. Before withholdCriterion's own exception, that read as
+// "no timestamp, so withhold", which blanked the library's own number back out of
+// the exact copy a model reads, in the ordinary case where the developer's code
+// logs no metric under the criterion's name.
+func TestMaskedForKeepsALibrarySourcedCriterionWithNoMatchingRunMetric(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml", "metric: mae\ngoal: minimise\nthreshold: 5.0\n")
+	h.commit("State the real criterion")
+
+	trainingEnd := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	split := testSplit(trainingEnd, 6*time.Hour)
+	launched := h.launch(func(req *experiments.LaunchRequest) { req.Split = split })
+
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.history_end",
+		split.TrainingEnd.Format(time.RFC3339))
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.test_end",
+		split.TestEnd.Format(time.RFC3339))
+	h.mlflow.SetTag(t, launched.RunID, trainingEndedAtTag, "0")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", "computed")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_name", "mae")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_value", "3.5")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_n", "120")
+	// No "mae" metric logged at all — only the param, which is the ordinary case
+	// for this channel.
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", nil)
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary := summaryOf(t, h, launched.ID)
+	masked := summary.MaskedFor(exposure.L0)
+	if masked.EvaluationCriteria.Value == nil || *masked.EvaluationCriteria.Value != 3.5 {
+		t.Fatalf("masked value = %v, want the library's own 3.5 kept: a param carries no "+
+			"timestamp for the phase filter to test", masked.EvaluationCriteria.Value)
+	}
+	if !masked.EvaluationCriteria.Met.IsMet() {
+		t.Errorf("masked met = %+v, want it kept as a real verdict",
+			masked.EvaluationCriteria.Met)
+	}
+	if masked.Params["evaluation.metric_value"] != "3.5" {
+		t.Errorf("params = %v, want the raw param visible too, agreeing with the verdict",
+			masked.Params)
 	}
 }
 

@@ -61,7 +61,12 @@ that code.
 `Config` gains the optional `training_end` and `test_end`, every history reader
 takes its end from a clock the config sets, and `MLOperator.init()` runs the
 evaluation phase of D36 when `test_end` is present
-([experiments.md](experiments.md)). Step 6 is once more the step that decides.
+([experiments.md](experiments.md)). The same release scores that replay where it
+can: `Config` also takes `evaluation_metric`, `evaluation_target_series`,
+`evaluation_prediction_field` and `evaluation_resolution`, and where all four
+resolve the replay reports one metric over the test window as the four
+`evaluation.metric_*` params D37's addendum grades from. Step 6 is once more the
+step that decides.
 The failure of an image left behind is silent in the job — `simple_struct` reads
 declared keys only, so an older library ignores both fields, trains up to the
 launch and skips the evaluation — and visible in one place: the run's summary says

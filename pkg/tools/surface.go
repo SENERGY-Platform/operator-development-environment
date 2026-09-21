@@ -1283,9 +1283,14 @@ func NewSurface(deps Deps) (*Registry, error) {
 				"ordinary training run: Operator Lib trains on history strictly before the " +
 				"training end, then replays infer() over [training_end, test_end) with its " +
 				"clock advanced to each message's own time, and records " +
-				"`evaluation/predictions.csv` and `evaluation/inputs.csv` on the run along with " +
-				"the bounds it applied as tags — no metric is computed here, the scoring is the " +
-				"developer's protocol to run afterwards. There is no tool that sets, moves or " +
+				"`evaluation/predictions.csv` on the run along with " +
+				"the bounds it applied as tags. Whether the run is scored as well is the " +
+				"developer's own `evaluation.yaml`: where it names a target series, a " +
+				"prediction field and a resolution, and asks for `mae` or `rmse`, the library " +
+				"computes that one metric over the test window and the summary grades the " +
+				"criterion against it instead of against whatever the training logged under " +
+				"the same name; where it names less than that, nothing is scored and the " +
+				"summary says which setting was missing. There is no tool that sets, moves or " +
 				"clears the split — it is the developer's own bound, in the session, denied to " +
 				"you the way the exposure tier is. A launch is refused while the training end " +
 				"still lies in the future (a test window with no data in it is not an " +

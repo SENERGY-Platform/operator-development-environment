@@ -220,6 +220,22 @@ type CriteriaDocument struct {
 	// are. Carried because an assistant proposing a change to a run should be able to
 	// read what the criterion is *for* before proposing to miss it.
 	Rationale string
+	// TargetSeries, PredictionField and Resolution are what Operator Lib's own
+	// post-replay metric needs once a data split is confirmed (D36, D37): the
+	// platform path of the ground truth series, the key infer()'s return dict
+	// carries the forecast under, and the bucket both sides are averaged to before
+	// the join. All three travel into the deployment config as
+	// evaluation_target_series, evaluation_prediction_field and
+	// evaluation_resolution (see deployment.go).
+	//
+	// Empty when the file does not say — nothing here defaults any of the three, the
+	// same rule ParseCriteria already keeps for a missing threshold: a guessed
+	// series or field would be a value graded against something the developer never
+	// named, and the library's own fallback for "one of these is missing" is to
+	// compute nothing and say why (evaluation.metric_status).
+	TargetSeries    string
+	PredictionField string
+	Resolution      string
 }
 
 // CriterionSpec is one criterion as the file states it, before any run is graded.
@@ -257,6 +273,22 @@ var (
 	goalKeys      = []string{"goal", "direction", "objective", "optimise", "optimize"}
 	criteriaKeys  = []string{"criteria", "evaluation_criteria", "criterion"}
 	secondaryKeys = []string{"secondary_metrics", "secondary", "watch", "also_report"}
+
+	// targetSeriesKeys, predictionFieldKeys and resolutionKeys are the spellings
+	// for the three settings Operator Lib's own post-replay metric needs (D36,
+	// D37). Read the same way as everything else above: several spellings, nothing
+	// guessed.
+	//
+	// target_series deliberately excludes "target" — that spelling is already
+	// thresholdKeys' own, read as the number a metric is compared against, and
+	// reusing it here would read a developer's threshold as a series path with no
+	// test able to see the collision, because most files set only one of the two at
+	// a time. Every spelling added to any of the three lists below has to be
+	// checked against metricKeys, thresholdKeys, goalKeys, criteriaKeys and
+	// secondaryKeys first, for the same reason.
+	targetSeriesKeys    = []string{"target_series", "target_topic", "ground_truth_series"}
+	predictionFieldKeys = []string{"prediction_field", "prediction_key", "predicted_field"}
+	resolutionKeys      = []string{"resolution", "bucket", "join_resolution"}
 )
 
 // itemMetricKeys are the spellings a metric may have inside a *list* of criteria,
@@ -293,7 +325,16 @@ func ParseCriteria(source string) (CriteriaDocument, error) {
 				"metric and a threshold out of")
 	}
 
-	document := CriteriaDocument{Rationale: firstText(root, "rationale", "note", "why")}
+	document := CriteriaDocument{
+		Rationale: firstText(root, "rationale", "note", "why"),
+		// Document-level settings, read once regardless of whether the criterion
+		// itself is the flat form or the list form below — target_series,
+		// prediction_field and resolution are never per-criterion. Absent stays
+		// empty; ParseCriteria defaults nothing here either.
+		TargetSeries:    firstText(root, targetSeriesKeys...),
+		PredictionField: firstText(root, predictionFieldKeys...),
+		Resolution:      firstText(root, resolutionKeys...),
+	}
 
 	// A list form first, because a developer who restructured into one meant it to
 	// be the whole answer, and the flat keys beside it would then be leftovers.

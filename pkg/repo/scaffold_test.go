@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 )
 
@@ -197,6 +198,53 @@ func TestTheEvaluationFileSaysItIsTheDevelopers(t *testing.T) {
 	}
 	if !strings.Contains(evaluation, "§5.8") {
 		t.Error("evaluation.yaml does not say that no tool may change it")
+	}
+}
+
+// The D37 addendum's three keys are in the scaffold, and the file as a whole
+// still parses through ParseCriteria — the same claim TestTheScaffoldedCriteriaFileParses
+// makes in pkg/experiments/criteria_test.go against a copy of this shape, checked
+// here against the actual rendered template so the two cannot drift apart.
+func TestTheScaffoldedEvaluationFileNamesTheLibrarysOwnSettingsAndStillParses(t *testing.T) {
+	evaluation := renderTestScaffold(t)["evaluation.yaml"]
+	for _, field := range []string{"target_series:", "prediction_field:", "resolution:"} {
+		if !strings.Contains(evaluation, field) {
+			t.Errorf("evaluation.yaml is missing %q", field)
+		}
+	}
+	document, err := experiments.ParseCriteria(evaluation)
+	if err != nil {
+		t.Fatalf("the scaffolded evaluation.yaml no longer parses: %v", err)
+	}
+	if document.Primary == nil || document.Primary.Metric != "baseline" {
+		t.Fatalf("primary = %+v, want the scaffold's own baseline metric", document.Primary)
+	}
+	// target_series is deliberately empty: it is a path on the developer's own
+	// device, and a scaffolded guess would have this operator scored against a
+	// series it never reads. The other two are the scaffold's own truth — op.py
+	// returns {"prediction": ...} and operator.yaml declares that output — so an
+	// empty one there would be a default withheld for no reason.
+	if document.TargetSeries != "" {
+		t.Errorf("target_series = %q, want it left for the developer",
+			document.TargetSeries)
+	}
+	if document.PredictionField != "prediction" || document.Resolution != "1h" {
+		t.Errorf("prediction_field = %q, resolution = %q, want the scaffold's own",
+			document.PredictionField, document.Resolution)
+	}
+}
+
+// The README's file table still describes evaluation.yaml completely once it
+// also carries the library's own settings, rather than the table silently going
+// stale beside the file it describes.
+func TestTheReadmeStillDescribesTheEvaluationFileCompletely(t *testing.T) {
+	readme := renderTestScaffold(t)["README.md"]
+	row := "evaluation.yaml"
+	if !strings.Contains(readme, row) {
+		t.Fatal("README.md's file table dropped the evaluation.yaml row")
+	}
+	if !strings.Contains(readme, "ODE never writes this") {
+		t.Error("README.md's evaluation.yaml row no longer says ODE never writes it")
 	}
 }
 

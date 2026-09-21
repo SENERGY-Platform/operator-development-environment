@@ -454,14 +454,46 @@ shipped: the scoring script fetches them through timescale-wrapper on its own
 credential, which is the same read under the same permission check, one step
 further from the assistant.
 
-Nothing here grades. The library computes no metric — what the target is and how
-far ahead the forecast looks are the protocol's to declare, and the library does
-not read `evaluation.yaml` — and ODE never reads the artifact into a tool
-response. It reaches the developer through MLflow and the results route, the way
-D34 serves the unmasked exception. Scoring could later move into the library, once
-the protocol has fixed a target field and a horizon to declare in
-`evaluation.yaml`; until both exist there is nothing for a metric to be a metric
-*of*, and a plausible-looking MAE beside the artifact would be worse than none.
+Nothing here grades beyond the one metric the criteria file declares. ODE never
+reads the artifact into a tool response, and it reaches the developer through
+MLflow and the results route, the way D34 serves the unmasked exception. This
+section used to say the library computes no metric because nothing had fixed a
+target field and a horizon to declare in `evaluation.yaml`; a plausible-looking
+MAE beside the artifact would have been worse than none. That condition is now
+met: `evaluation.yaml` can name `target_series` (the platform path of the ground
+truth), `prediction_field` (the key `infer()`'s return dict carries the forecast
+under) and `resolution` (the bucket both sides are averaged to before joining). A
+horizon needed no fourth key — it is `result_time`, which `infer()` already sets
+on every row it produces.
+
+The library still does not read `evaluation.yaml` itself. ODE resolves the three
+keys and the criterion's own metric name at the commit the run was submitted
+from — the same read that resolves the criterion — and carries them into the
+deployment config beside `test_end`, as `evaluation_target_series`,
+`evaluation_prediction_field`, `evaluation_resolution` and `evaluation_metric`.
+Only when all four resolve does the replay's own `finally` compute anything: for
+each `prediction_rows` entry with a non-empty `result` and `result_time`, it reads
+`result[prediction_field]`, averages the target series — already in `merged`,
+nothing new read — over the `resolution` bucket `result_time` truncates into
+(never rounds into), and pairs the two where both exist. `mae` is the mean
+absolute difference and `rmse` the root mean square; any other metric name is not
+computed, and neither is a prediction whose bucket has no paired actual, which is
+mostly the tail of the window past `test_end`.
+
+The result travels as four params, never a metric — reopening the metrics map
+would reopen exactly the phase boundary D37 built, which is unchanged by any of
+this. `evaluation.metric_status` is always set (`computed`, or the reason it is
+not: a key missing, a series that resolves to more than one topic, an unknown
+metric name), `evaluation.metric_name` names what ODE asked for,
+`evaluation.metric_value` is the number and `evaluation.metric_n` the count of
+predictions it is actually over — load-bearing on its own, since a MAE over three
+joined predictions is not a figure that belongs unremarked beside one over thirty
+thousand. `evaluationParamsOnly` (pkg/experiments/failure.go) is the exact-name
+whitelist that lets these four, and only these four, cross `MaskedFor`'s boundary
+under a split; grading itself prefers `evaluation.metric_value` over the run's
+ordinary metrics map only when the split is confirmed, the status is `computed`,
+and the name matches the criterion being graded. A repository with none of the
+three keys, or a run under no split at all, grades exactly as it always did.
 
 ### What "leakage" means here, since the replay reads history on purpose
 

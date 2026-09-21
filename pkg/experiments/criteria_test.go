@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
 )
@@ -208,6 +209,129 @@ func TestANonNumericThresholdIsNotDefaultedToZero(t *testing.T) {
 	if document.Primary.HasThreshold {
 		t.Errorf("threshold = %v, want none: grading against a defaulted zero is a "+
 			"verdict nobody asked for", document.Primary.Threshold)
+	}
+}
+
+// --- the D37 addendum's three document-level keys ---
+
+// The flat form: target_series, prediction_field and resolution beside an
+// ordinary flat metric/threshold/goal.
+func TestTheThreeEvaluationKeysReadInFlatForm(t *testing.T) {
+	document, err := experiments.ParseCriteria(`metric: mae
+goal: minimise
+threshold: 30.0
+
+target_series: sensor.ENERGY.Power
+prediction_field: prediction
+resolution: 1h
+`)
+	if err != nil {
+		t.Fatalf("ParseCriteria: %v", err)
+	}
+	if document.TargetSeries != "sensor.ENERGY.Power" {
+		t.Errorf("target_series = %q", document.TargetSeries)
+	}
+	if document.PredictionField != "prediction" {
+		t.Errorf("prediction_field = %q", document.PredictionField)
+	}
+	if document.Resolution != "1h" {
+		t.Errorf("resolution = %q", document.Resolution)
+	}
+}
+
+// The three keys are document-level, so they still read when the criterion
+// itself is written in the restructured *list* form — a developer who moved
+// their metric into a `criteria:` list had no reason to move these three too.
+func TestTheThreeEvaluationKeysReadBesideAListFormCriterion(t *testing.T) {
+	document, err := experiments.ParseCriteria(`criteria:
+  - metric: val_rmse
+    threshold: 0.35
+    direction: minimize
+
+target_series: sensor.ENERGY.Power
+prediction_field: prediction
+resolution: 1h
+`)
+	if err != nil {
+		t.Fatalf("ParseCriteria: %v", err)
+	}
+	if document.Primary == nil || document.Primary.Metric != "val_rmse" {
+		t.Fatalf("primary = %+v, want the list form's own entry", document.Primary)
+	}
+	if document.TargetSeries != "sensor.ENERGY.Power" {
+		t.Errorf("target_series = %q, want it read regardless of the criterion's own form",
+			document.TargetSeries)
+	}
+	if document.PredictionField != "prediction" {
+		t.Errorf("prediction_field = %q", document.PredictionField)
+	}
+	if document.Resolution != "1h" {
+		t.Errorf("resolution = %q", document.Resolution)
+	}
+}
+
+// Alternate spellings, the same rule the rest of this file applies to every other
+// field: a developer who renamed a key should not be read as having named none.
+func TestTheThreeEvaluationKeysReadUnderAlternateSpellings(t *testing.T) {
+	document, err := experiments.ParseCriteria(
+		"metric: mae\ntarget_topic: sensor.ENERGY.Power\nprediction_key: prediction\n" +
+			"join_resolution: 1h\n")
+	if err != nil {
+		t.Fatalf("ParseCriteria: %v", err)
+	}
+	if document.TargetSeries != "sensor.ENERGY.Power" {
+		t.Errorf("target_series = %q, want the target_topic spelling read", document.TargetSeries)
+	}
+	if document.PredictionField != "prediction" {
+		t.Errorf("prediction_field = %q, want the prediction_key spelling read",
+			document.PredictionField)
+	}
+	if document.Resolution != "1h" {
+		t.Errorf("resolution = %q, want the join_resolution spelling read", document.Resolution)
+	}
+}
+
+// target_series must never be read from the `target` spelling: that spelling is
+// already thresholdKeys' own, and a file setting both a threshold and a target
+// series is exactly the case that would go silently wrong if the two lists ever
+// shared a word.
+func TestTargetSeriesDoesNotCollideWithTheThresholdSpellingTarget(t *testing.T) {
+	document, err := experiments.ParseCriteria(
+		"metric: r2\ntarget: 0.8\ngoal: maximise\ntarget_series: sensor.ENERGY.Power\n")
+	if err != nil {
+		t.Fatalf("ParseCriteria: %v", err)
+	}
+	if document.Primary == nil || !document.Primary.HasThreshold || document.Primary.Threshold != 0.8 {
+		t.Fatalf("primary = %+v, want `target: 0.8` read as the threshold, untouched",
+			document.Primary)
+	}
+	if document.TargetSeries != "sensor.ENERGY.Power" {
+		t.Errorf("target_series = %q, want the explicit key read", document.TargetSeries)
+	}
+}
+
+// The reverse of the same collision: a file with no target_series at all must not
+// read its threshold's `target` spelling as one.
+func TestAThresholdNamedTargetIsNotMisreadAsATargetSeries(t *testing.T) {
+	document, err := experiments.ParseCriteria("metric: r2\ntarget: 0.8\ngoal: maximise\n")
+	if err != nil {
+		t.Fatalf("ParseCriteria: %v", err)
+	}
+	if document.TargetSeries != "" {
+		t.Errorf("target_series = %q, want empty: only `target` was set, and that is the "+
+			"threshold spelling", document.TargetSeries)
+	}
+}
+
+// Missing is not an error and is not defaulted to anything — the same rule a
+// missing threshold gets.
+func TestTheThreeEvaluationKeysAreEmptyRatherThanDefaultedWhenAbsent(t *testing.T) {
+	document, err := experiments.ParseCriteria("metric: mae\nthreshold: 30\n")
+	if err != nil {
+		t.Fatalf("ParseCriteria: %v", err)
+	}
+	if document.TargetSeries != "" || document.PredictionField != "" || document.Resolution != "" {
+		t.Errorf("document = %+v, want all three empty rather than guessed", document)
 	}
 }
 
@@ -516,6 +640,273 @@ func TestATransientCriteriaFailureIsNotRemembered(t *testing.T) {
 	}
 }
 
+// --- the D37 addendum: grading prefers Operator Lib's own post-replay value ---
+
+// Each test below sets operator_lib.history_end / operator_lib.test_end to match
+// the launch's own split, which is the same recipe split_test.go's
+// TestASummaryConfirmsASplitWhoseRunTagsMatch uses to get summary.Split.Confirmed
+// to read "confirmed".
+
+// All three conditions holding: the split is confirmed, the run says it computed
+// exactly this criterion's metric, and the value parses. The library's own number
+// wins over the run's ordinary metrics map, and the Source line says so.
+func TestGradeUsesTheLibrarysValueWhenConfirmedComputedAndNameMatches(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml", "metric: mae\ngoal: minimise\nthreshold: 5.0\n")
+	h.commit("State the real criterion")
+
+	trainingEnd := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	split := testSplit(trainingEnd, 6*time.Hour)
+	launched := h.launch(func(req *experiments.LaunchRequest) { req.Split = split })
+
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.history_end",
+		split.TrainingEnd.Format(time.RFC3339))
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.test_end",
+		split.TestEnd.Format(time.RFC3339))
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", "computed")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_name", "mae")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_value", "3.5")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_n", "120")
+	// The run's own metrics map disagrees on purpose: if this value shows up
+	// instead, the override did not take.
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"mae": 999})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	criterion := summary.EvaluationCriteria
+	if criterion.Value == nil || *criterion.Value != 3.5 {
+		t.Fatalf("value = %v, want the library's own 3.5, not the run's metrics map",
+			criterion.Value)
+	}
+	if !criterion.Met.IsMet() {
+		t.Errorf("criterion = %+v, want 3.5 under a minimised 5.0 read as met", criterion)
+	}
+	if !strings.Contains(criterion.Source, "post-replay") ||
+		!strings.Contains(criterion.Source, "120") {
+		t.Errorf("source = %q, want it to say the value came from the library's own "+
+			"replay and to name the sample size", criterion.Source)
+	}
+}
+
+// The name does not match: Operator Lib computed a different metric than the one
+// this criterion names, so its number is not this criterion's answer.
+func TestGradeFallsBackToMetricsMapWhenTheMetricNameDoesNotMatch(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml", "metric: mae\ngoal: minimise\nthreshold: 5.0\n")
+	h.commit("State the real criterion")
+
+	trainingEnd := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	split := testSplit(trainingEnd, 6*time.Hour)
+	launched := h.launch(func(req *experiments.LaunchRequest) { req.Split = split })
+
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.history_end",
+		split.TrainingEnd.Format(time.RFC3339))
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.test_end",
+		split.TestEnd.Format(time.RFC3339))
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", "computed")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_name", "rmse")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_value", "3.5")
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"mae": 4.9})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	criterion := summary.EvaluationCriteria
+	if criterion.Value == nil || *criterion.Value != 4.9 {
+		t.Fatalf("value = %v, want the run's own mae (4.9): the library computed rmse, "+
+			"not this criterion's metric", criterion.Value)
+	}
+	if strings.Contains(criterion.Source, "post-replay") {
+		t.Errorf("source = %q, want the ordinary file source: the name did not match",
+			criterion.Source)
+	}
+}
+
+// The status is not "computed": whatever value the run carries under
+// evaluation.metric_value is not one to trust, whatever its name says.
+func TestGradeFallsBackToMetricsMapWhenTheStatusIsNotComputed(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml", "metric: mae\ngoal: minimise\nthreshold: 5.0\n")
+	h.commit("State the real criterion")
+
+	trainingEnd := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	split := testSplit(trainingEnd, 6*time.Hour)
+	launched := h.launch(func(req *experiments.LaunchRequest) { req.Split = split })
+
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.history_end",
+		split.TrainingEnd.Format(time.RFC3339))
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.test_end",
+		split.TestEnd.Format(time.RFC3339))
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", "target_series_ambiguous")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_name", "mae")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_value", "3.5")
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"mae": 4.9})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	criterion := summary.EvaluationCriteria
+	if criterion.Value == nil || *criterion.Value != 4.9 {
+		t.Fatalf("value = %v, want the run's own mae (4.9): the library did not report "+
+			"\"computed\"", criterion.Value)
+	}
+}
+
+// The split was not confirmed by the run's own tags — a cluster image whose
+// Operator Lib is older than v1.7.0, or a rewritten tag. Even a run whose params
+// claim "computed" under the right name must not be trusted here: the params are
+// as writable as the tags are, and the confirmation is the one check that reads
+// something the job cannot forge into matching (D37).
+func TestGradeFallsBackToMetricsMapWhenTheSplitIsNotConfirmed(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml", "metric: mae\ngoal: minimise\nthreshold: 5.0\n")
+	h.commit("State the real criterion")
+
+	trainingEnd := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	split := testSplit(trainingEnd, 6*time.Hour)
+	launched := h.launch(func(req *experiments.LaunchRequest) { req.Split = split })
+
+	// No operator_lib.history_end / operator_lib.test_end tags: exactly the older-
+	// library symptom split_test.go already covers for the confirmation itself.
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", "computed")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_name", "mae")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_value", "3.5")
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"mae": 4.9})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	if summary.Split == nil || summary.Split.Confirmed == "confirmed" {
+		t.Fatalf("split = %+v, want it not confirmed: the test set no matching tags",
+			summary.Split)
+	}
+	criterion := summary.EvaluationCriteria
+	if criterion.Value == nil || *criterion.Value != 4.9 {
+		t.Fatalf("value = %v, want the run's own mae (4.9): an unconfirmed split must not "+
+			"trust the run's own claim of having computed anything", criterion.Value)
+	}
+}
+
+// A run with no split at all: hasConfirmedSplit is false by construction (there is
+// no SplitReport to confirm), so even a run that happens to carry all four params
+// — unusual, but not impossible for a hand-crafted fixture — is graded from the
+// metrics map exactly as before this channel existed.
+func TestGradeFallsBackToMetricsMapWithoutASplitEvenIfTheParamsAreThere(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml", "metric: mae\ngoal: minimise\nthreshold: 5.0\n")
+	h.commit("State the real criterion")
+
+	launched := h.launch()
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", "computed")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_name", "mae")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_value", "3.5")
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"mae": 4.9})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	if summary.Split != nil {
+		t.Fatalf("split = %+v, want nil: this launch carried none", summary.Split)
+	}
+	criterion := summary.EvaluationCriteria
+	if criterion.Value == nil || *criterion.Value != 4.9 {
+		t.Fatalf("value = %v, want the run's own mae (4.9)", criterion.Value)
+	}
+}
+
+// A value that does not parse is a contradiction in what the run reported, not a
+// reason to grade nothing — the metrics map is still there.
+func TestGradeFallsBackToMetricsMapWhenTheLibraryValueDoesNotParse(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml", "metric: mae\ngoal: minimise\nthreshold: 5.0\n")
+	h.commit("State the real criterion")
+
+	trainingEnd := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	split := testSplit(trainingEnd, 6*time.Hour)
+	launched := h.launch(func(req *experiments.LaunchRequest) { req.Split = split })
+
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.history_end",
+		split.TrainingEnd.Format(time.RFC3339))
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.test_end",
+		split.TestEnd.Format(time.RFC3339))
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", "computed")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_name", "mae")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_value", "not-a-number")
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"mae": 4.9})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	criterion := summary.EvaluationCriteria
+	if criterion.Value == nil || *criterion.Value != 4.9 {
+		t.Fatalf("value = %v, want the run's own mae (4.9): evaluation.metric_value did "+
+			"not parse", criterion.Value)
+	}
+}
+
+// A secondary metric gets the same preference rule, not only the primary one —
+// grade's own precondition is "this criterion's own metric name", not "the
+// primary criterion".
+func TestGradePrefersTheLibrarysValueForASecondaryMetricToo(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml",
+		"metric: rmse\ngoal: minimise\nthreshold: 5.0\nsecondary_metrics: [mae]\n")
+	h.commit("Watch mae beside the real criterion")
+
+	trainingEnd := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	split := testSplit(trainingEnd, 6*time.Hour)
+	launched := h.launch(func(req *experiments.LaunchRequest) { req.Split = split })
+
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.history_end",
+		split.TrainingEnd.Format(time.RFC3339))
+	h.mlflow.SetTag(t, launched.RunID, "operator_lib.test_end",
+		split.TestEnd.Format(time.RFC3339))
+	// The library computed mae, not the primary rmse: only the secondary's value is
+	// overridden.
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", "computed")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_name", "mae")
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_value", "1.1")
+	h.mlflow.Finish(t, launched.RunID, "FINISHED",
+		map[string]float64{"rmse": 2.0, "mae": 999})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary, err := h.service.Results(context.Background(), h.request(), launched.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	if summary.EvaluationCriteria.Value == nil || *summary.EvaluationCriteria.Value != 2.0 {
+		t.Errorf("primary value = %v, want the run's own rmse (2.0): the library did not "+
+			"compute rmse", summary.EvaluationCriteria.Value)
+	}
+	if len(summary.SecondaryCriteria) != 1 {
+		t.Fatalf("secondary = %+v, want exactly one", summary.SecondaryCriteria)
+	}
+	if v := summary.SecondaryCriteria[0].Value; v == nil || *v != 1.1 {
+		t.Errorf("secondary mae value = %v, want the library's own 1.1, not the run's "+
+			"metrics map (999)", v)
+	}
+}
+
 // --- the verdict on the wire ---
 
 // §5.13 documents `met` as a boolean, and D24 forbids an un-evaluable field from
@@ -667,7 +1058,8 @@ func TestACriterionWithNoThresholdCarriesNoneOnTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCriteria: %v", err)
 	}
-	criterion, _ := document.ApplyTo(map[string]float64{"rmse": 0.31}, nil, "abc1234", nil)
+	criterion, _ := document.ApplyTo(
+		map[string]float64{"rmse": 0.31}, nil, nil, "abc1234", nil, false)
 	if criterion.Threshold != nil {
 		t.Errorf("threshold = %v, want none: the file named one nowhere", *criterion.Threshold)
 	}
@@ -684,7 +1076,8 @@ func TestACriterionWithNoThresholdCarriesNoneOnTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseCriteria: %v", err)
 	}
-	criterion, _ = document.ApplyTo(map[string]float64{"rmse": 0.31}, nil, "abc1234", nil)
+	criterion, _ = document.ApplyTo(
+		map[string]float64{"rmse": 0.31}, nil, nil, "abc1234", nil, false)
 	if criterion.Threshold == nil || *criterion.Threshold != 0 {
 		t.Fatalf("threshold = %v, want the zero the developer wrote", criterion.Threshold)
 	}

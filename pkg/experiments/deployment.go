@@ -95,6 +95,22 @@ type operatorSettings struct {
 	// (buildSummary, splitReport) exists to catch.
 	TrainingEnd string `json:"training_end,omitempty"`
 	TestEnd     string `json:"test_end,omitempty"`
+	// EvaluationMetric, EvaluationTargetSeries, EvaluationPredictionField and
+	// EvaluationResolution are the developer's own evaluation.yaml (D37 addendum),
+	// read at the commit the run was submitted from and carried into the config the
+	// same way the split is. Operator Lib computes its own post-replay metric only
+	// when all four resolve; any one missing, unresolvable, or naming a metric the
+	// library does not recognise and it logs why instead
+	// (evaluation.metric_status) rather than failing the run.
+	//
+	// Set only alongside TrainingEnd and TestEnd — see deploymentEnvironment. There
+	// is no replay without a data split, so there is nothing for these four to be
+	// read by otherwise, and a run with no split must see exactly the config it saw
+	// before this existed.
+	EvaluationMetric          string `json:"evaluation_metric,omitempty"`
+	EvaluationTargetSeries    string `json:"evaluation_target_series,omitempty"`
+	EvaluationPredictionField string `json:"evaluation_prediction_field,omitempty"`
+	EvaluationResolution      string `json:"evaluation_resolution,omitempty"`
 }
 
 // modelID is the key Operator Lib registers a model under, built in
@@ -149,8 +165,15 @@ func operatorID(repository string) string { return sanitiseSegment(repository) }
 // pipelineID and operatorID are passed rather than read back off the record: they
 // are derived, not stored, and a record reloaded from the store would carry empty
 // ones.
+//
+// criteria is the developer's own evaluation.yaml at the commit this run was
+// submitted from, or the zero CriteriaDocument when it could not be read — see
+// Launch, which reads it with the developer's own credential and never fails the
+// launch over it (§5.13, D37 addendum). A zero document leaves the four
+// evaluation_* config keys unset below exactly as if the file had none of them.
 func (s *Service) deploymentEnvironment(
 	record Experiment, pipelineID, operatorID string, topics []InputTopic, runID string,
+	criteria CriteriaDocument,
 ) (map[string]string, error) {
 	// Formatted off record.Split rather than a parameter of its own: the record is
 	// what Launch already stored, so the deployment config and the stored row can
@@ -158,9 +181,20 @@ func (s *Service) deploymentEnvironment(
 	// launch, which is Operator Lib's own "no split" — the omitempty tags drop the
 	// keys entirely rather than sending them empty.
 	var trainingEnd, testEnd string
+	// The four evaluation_* keys, set only alongside the split. There is no replay
+	// without one, so there is nothing for Operator Lib to compute these against —
+	// see operatorSettings' own comment.
+	var evaluationMetric, evaluationTargetSeries, evaluationPredictionField string
+	var evaluationResolution string
 	if record.Split != nil {
 		trainingEnd = record.Split.TrainingEnd.UTC().Format(time.RFC3339)
 		testEnd = record.Split.TestEnd.UTC().Format(time.RFC3339)
+		if criteria.Primary != nil {
+			evaluationMetric = criteria.Primary.Metric
+		}
+		evaluationTargetSeries = criteria.TargetSeries
+		evaluationPredictionField = criteria.PredictionField
+		evaluationResolution = criteria.Resolution
 	}
 	config := operatorConfig{
 		Config: operatorSettings{
@@ -170,10 +204,14 @@ func (s *Service) deploymentEnvironment(
 			// ray.init() would reject it. A run's driver is already on the cluster, so
 			// "auto" attaches to the cluster around it rather than opening a client
 			// connection back into the cluster it is in.
-			RayURL:       s.opts.RayClientURL,
-			TsWrapperURL: s.opts.TimescaleWrapperURL,
-			TrainingEnd:  trainingEnd,
-			TestEnd:      testEnd,
+			RayURL:                    s.opts.RayClientURL,
+			TsWrapperURL:              s.opts.TimescaleWrapperURL,
+			TrainingEnd:               trainingEnd,
+			TestEnd:                   testEnd,
+			EvaluationMetric:          evaluationMetric,
+			EvaluationTargetSeries:    evaluationTargetSeries,
+			EvaluationPredictionField: evaluationPredictionField,
+			EvaluationResolution:      evaluationResolution,
 		},
 		// Never nil: Operator Lib iterates it without checking, and a null here is a
 		// TypeError inside the job rather than a refusal the developer can read.

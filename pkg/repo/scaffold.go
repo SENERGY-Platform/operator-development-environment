@@ -677,8 +677,10 @@ config_values:
 # assistant relaxed has not been evaluated. ODE reads it to say whether a run met
 # what you asked for, and stops there.
 
-# The metric a run is judged on. It has to be a metric the training actually logs,
-# or a run will report it as absent rather than as failed.
+# The metric a run is judged on. Without a data split it has to be a metric the
+# training actually logs, or a run will report it as absent rather than as failed.
+# Under one, Operator Lib computes it over the test window from the three settings
+# further down.
 metric: baseline
 
 # The direction that counts as better, and the value that counts as good enough.
@@ -688,6 +690,19 @@ threshold: 0.0
 # What else to watch. Reported beside the decisive metric on every run, so a model
 # that wins on one number and loses on another is visible rather than surprising.
 secondary_metrics: []
+
+# Under a data split, Operator Lib scores the test window itself instead of
+# leaving it to the training code: the platform path of the ground truth, the key
+# infer() returns the forecast under, and the bucket both sides are averaged to
+# before comparing. Leave any of the three unset and nothing is computed — a run
+# behaves exactly as it did before these existed.
+#
+# target_series is the one with no sensible default: it is a path on your own
+# device, and a scaffolded guess would score this operator against a series it
+# never reads. The other two match what op.py and operator.yaml already say.
+target_series:
+prediction_field: prediction
+resolution: 1h
 
 # Free text for the reasoning behind the numbers above. Worth writing: the number
 # is the criterion, and this is why it is that number.
@@ -793,7 +808,7 @@ Development Environment. Every file here is yours to change, including this one.
 | "Dockerfile" | The image. Built by CI; buildable by hand. |
 | ".github/workflows/build.yml" | Builds and pushes "<<.Image>>". Change the registry here. |
 | "operator.yaml" | What the analytics stack registers: inputs, outputs, config. |
-| "evaluation.yaml" | Your criteria for whether a run is good. ODE never writes this. |
+| "evaluation.yaml" | Your criteria for whether a run is good, plus what Operator Lib needs to score a test window itself. ODE never writes this. |
 | "tests/test_op.py" | Tests for the three methods that are yours. |
 
 ## The lock file

@@ -585,8 +585,26 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 	// reading only the last one would miss whichever came first.
 	warnings = append(warnings, tokenWarnings...)
 
+	// The developer's own evaluation.yaml at the commit just built, read only under
+	// a split: without one there is no replay to hand these four settings to, and
+	// reading the file would spend a git command in the developer's pod for nothing.
+	// The read uses the same machinery Results() does (criteriaFor/readCriteria)
+	// and shares its cache, keyed on this commit — so a developer who opens the
+	// run's summary right after launching costs nothing extra.
+	//
+	// A problem here never fails the launch (D37 addendum): an unreadable or
+	// unparseable evaluation.yaml leaves criteria at its zero value, which
+	// deploymentEnvironment reads exactly as "the file named none of the four" —
+	// the same launch a repository with no evaluation.yaml at all has always
+	// gotten. Making a launch depend on a read that exists only to grade the run
+	// afterwards would be a new way for an existing repository to fail to start.
+	var criteria CriteriaDocument
+	if record.Split != nil {
+		criteria, _ = s.criteriaFor(ctx, req.Request, record)
+	}
+
 	deployment, err := s.deploymentEnvironment(
-		record, pipelineID, operatorIdentifier, req.InputTopics, runID)
+		record, pipelineID, operatorIdentifier, req.InputTopics, runID, criteria)
 	if err != nil {
 		return LaunchResult{}, err
 	}

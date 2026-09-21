@@ -342,7 +342,9 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 	// the *unfiltered* metrics, before this method exists to narrow anything, so
 	// filtering the map alone left a declared metric a run logged from its replay
 	// reaching a model through the verdict beside it. Found by execution, not by
-	// reading.
+	// reading. withholdCriterion itself now carries a further exception for a
+	// criterion sourced from the D37 addendum's params rather than from Metrics —
+	// see its own comment.
 	criteriaCut := false
 	if updated, cut := withholdCriterion(
 		s.EvaluationCriteria, allowed, s.MetricTimes, cutoff, hasCutoff, split); cut {
@@ -396,11 +398,30 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 // missed the target" are different facts, and a bool would have made them the same
 // one. A criterion with no value to begin with is left alone — it already says
 // metric_not_reported, which is the truer reason.
+//
+// A criterion whose value came from the D37 addendum's param channel
+// (libraryMetricValue, summary.go) is left alone too, and for a reason specific to
+// that channel rather than a general exemption: keepMetric's cutoff branch asks
+// whether *this run's own metrics history* for the name has a timestamp before
+// training ended, which is a question about a metrics-map value and has no answer
+// for one that was never logged as a metric at all — Operator Lib reports it as
+// evaluation.metric_value, a param, precisely so the phase filter has nothing to
+// test it against (see docs/decisions.md's D37 addendum). Without this check that
+// absence read as "withhold", which blanked the one number this whole channel
+// exists to deliver on the exact copy a model reads, in the ordinary case where
+// the developer's own code logs no metric under the criterion's name at all. The
+// four params underneath are already governed by evaluationParamsOnly's own
+// exact-name whitelist, applied before this function runs — this is what lets the
+// verdict agree with what a reader can already see in `params`, rather than
+// reopening the metrics-map phase filter this decision deliberately left alone.
 func withholdCriterion(
 	criterion Criterion, allowed map[string]struct{}, times map[string]int64,
 	cutoff int64, hasCutoff, split bool,
 ) (Criterion, bool) {
 	if criterion.Metric == "" || criterion.Value == nil {
+		return criterion, false
+	}
+	if strings.HasPrefix(criterion.Source, librarySourcePrefix) {
 		return criterion, false
 	}
 	if keepMetric(criterion.Metric, allowed, times, cutoff, hasCutoff, split) {
@@ -598,7 +619,7 @@ func filterDeltas(
 	return kept
 }
 
-// evaluationParamsOnly keeps the four params Operator Lib's replay reports and
+// evaluationParamsOnly keeps the eight params Operator Lib's replay reports and
 // drops everything else a run recorded.
 //
 // Only for a run that had a data split, and not because the others are
@@ -608,11 +629,22 @@ func filterDeltas(
 // values, so the safe set is the one the library writes about the replay itself.
 // The developer's own route is unfiltered and still carries what the training was
 // configured with.
+//
+// The four evaluation.metric_* names (D37 addendum) are exact matches, the same
+// as the four above them: a run cannot buy its way onto this list with
+// "evaluation.metric_value_2" any more than it could with
+// "evaluation.something_else" before it. This is the whole of what lets the
+// library's own post-replay number reach a model without opening the metrics map
+// back up — a param carries no timestamp, so it needed a name-exact channel
+// rather than the phase filter MaskedFor already applies to metrics, and that
+// filter is unchanged by this list growing.
 func evaluationParamsOnly(params map[string]string) map[string]string {
-	kept := make(map[string]string, 4)
+	kept := make(map[string]string, 8)
 	for _, name := range []string{
 		paramEvaluationMessages, paramEvaluationResults,
 		paramEvaluationWindowStart, paramEvaluationWindowEnd,
+		paramEvaluationMetricStatus, paramEvaluationMetricName,
+		paramEvaluationMetricValue, paramEvaluationMetricN,
 	} {
 		if value, ok := params[name]; ok {
 			kept[name] = value

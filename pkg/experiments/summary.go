@@ -93,6 +93,25 @@ const (
 	paramEvaluationWindowEnd   = "evaluation.window_end"
 )
 
+// The D37 addendum's four params: Operator Lib's own post-replay metric, computed
+// from `prediction_rows` and the `merged` frame it already holds once
+// evaluation.yaml names a target series, a prediction field and a resolution
+// (criteria.go's CriteriaDocument). Also Operator Lib's own names, and also a
+// param channel rather than a metric one — MetricStatus is always set, so a run
+// that computed nothing still says why, the same D24 shape as CriterionReason.
+const (
+	paramEvaluationMetricStatus = "evaluation.metric_status"
+	paramEvaluationMetricName   = "evaluation.metric_name"
+	paramEvaluationMetricValue  = "evaluation.metric_value"
+	paramEvaluationMetricN      = "evaluation.metric_n"
+)
+
+// metricStatusComputed is the one value of evaluation.metric_status that makes
+// evaluation.metric_value trustworthy — anything else (a reason the library could
+// not compute it, or the param simply absent) leaves grading exactly where it was
+// before this channel existed: the run's own metrics map.
+const metricStatusComputed = "computed"
+
 // memoryMetrics are the metric names a job may use to report peak memory, in the
 // order they are looked for. Absent is absent: §5.4.6's rule against a null read
 // as a zero applies here too, so ResourceUsage.PeakMemoryMB stays out of the JSON
@@ -167,15 +186,23 @@ func buildSummary(
 	}
 
 	summary.ResourceUsage = resourceUsage(run, metrics)
-	summary.EvaluationCriteria, summary.SecondaryCriteria = criteria.ApplyTo(
-		metrics, tags, record.CommitSHA, problem)
 
-	// Read from the same tags map EvaluationCriteria was just graded against,
+	// Read from the same tags map EvaluationCriteria is about to be graded against,
 	// after TagUserSub was dropped and before anything else touches it — the split
 	// confirmation is step 16's guard against a cluster image whose Operator Lib
 	// is older than v1.7.0, and it reads the run exactly the way a criterion tag
 	// does: as what the job itself reported, not as what ODE asked for.
+	//
+	// Computed before ApplyTo rather than after, which is a change from before the
+	// D37 addendum: grading now needs to know whether the split was confirmed, not
+	// only report it, because that is the first of the three conditions under which
+	// a criterion prefers Operator Lib's own post-replay number over the metrics
+	// map (see ApplyTo and libraryMetricValue below).
 	summary.Split = splitReport(record.Split, tags, params, summary.Finished)
+	hasConfirmedSplit := summary.Split != nil && summary.Split.Confirmed == splitConfirmed
+	summary.EvaluationCriteria, summary.SecondaryCriteria = criteria.ApplyTo(
+		metrics, params, tags, record.CommitSHA, problem, hasConfirmedSplit)
+
 	if summary.Split != nil && summary.Split.Confirmed == splitNotConfirmed {
 		summary.Note = strings.TrimSpace(summary.Note +
 			" This run's data split was not confirmed by its own tags; see the " +
@@ -348,17 +375,30 @@ func resourceUsage(run mlflowRun, metrics map[string]float64) ResourceUsage {
 // the training code happened to write, which is useful as a fallback and is not
 // the same authority. Where there is neither, the criterion says so — it is never
 // absent, and it is never `met: false`.
+//
+// params and hasConfirmedSplit are the D37 addendum: when a run's data split was
+// confirmed and its own evaluation.metric_status/evaluation.metric_name params say
+// it computed exactly the criterion's metric, that number is graded instead of
+// whatever the run's ordinary metrics map holds for the same name — see
+// libraryMetricValue. Neither argument does anything when the file names no
+// criterion at all; the fallback below is unchanged from before this addendum.
 func (d CriteriaDocument) ApplyTo(
-	metrics map[string]float64, tags map[string]string, commitSHA string,
-	problem *NotComputed,
+	metrics map[string]float64, params map[string]string, tags map[string]string,
+	commitSHA string, problem *NotComputed, hasConfirmedSplit bool,
 ) (Criterion, []Criterion) {
 	if d.Primary != nil {
-		source := fmt.Sprintf("%s at %s, which is the developer's own (no tool may "+
+		fileSource := fmt.Sprintf("%s at %s, which is the developer's own (no tool may "+
 			"modify it)", EvaluationCriteriaPath, shortSHA(commitSHA))
-		primary := grade(*d.Primary, metrics, source)
+
+		primaryMetrics, primarySource := libraryMetricValue(
+			metrics, params, hasConfirmedSplit, d.Primary.Metric, fileSource)
+		primary := grade(*d.Primary, primaryMetrics, primarySource)
+
 		secondary := make([]Criterion, 0, len(d.Secondary))
 		for _, spec := range d.Secondary {
-			secondary = append(secondary, grade(spec, metrics, source))
+			specMetrics, specSource := libraryMetricValue(
+				metrics, params, hasConfirmedSplit, spec.Metric, fileSource)
+			secondary = append(secondary, grade(spec, specMetrics, specSource))
 		}
 		if len(secondary) == 0 {
 			secondary = nil
@@ -368,7 +408,10 @@ func (d CriteriaDocument) ApplyTo(
 
 	// No criterion in the file, or no file. The run's own tags are the fallback M8
 	// built, kept because a job that reported what it was graded against is telling
-	// the truth about itself.
+	// the truth about itself. Never the library's own number: that channel exists
+	// only for the developer's own declared criterion (D37 addendum), and a run
+	// whose file named nothing has no metric name for evaluation.metric_name to
+	// match against.
 	if spec, ok := taggedCriterion(tags); ok {
 		return grade(spec, metrics,
 			"the run's own "+tagEvaluationMetric+" and "+tagEvaluationThreshold+" tags, "+
@@ -384,6 +427,76 @@ func (d CriteriaDocument) ApplyTo(
 				"run's own tags", EvaluationCriteriaPath, shortSHA(commitSHA)),
 		Source: EvaluationCriteriaPath,
 	}, nil
+}
+
+// libraryMetricValue is the D37 addendum's preference rule: Operator Lib's own
+// post-replay number over the run's ordinary metrics map, and only when all three
+// hold —
+//
+//   - the run's data split was confirmed (the same check buildSummary already
+//     makes for data_split.confirmed, passed in rather than recomputed here);
+//   - evaluation.metric_status says "computed", not a reason it was not;
+//   - evaluation.metric_name is exactly this criterion's metric — never a prefix,
+//     the same rule evaluationParamsOnly applies to the params themselves.
+//
+// Where any of the three fails, or evaluation.metric_value does not parse, the
+// caller's own metrics map and fileSource travel back unchanged: grading falls
+// back to exactly what it did before this channel existed, no different from a
+// run that never logged the four params at all.
+//
+// The metrics map handed back is never the caller's own: grade reads
+// metrics[metric], so surfacing the library's number means a copy with that one
+// key overridden, leaving every other entry — and every other criterion's lookup
+// — untouched.
+func libraryMetricValue(
+	metrics map[string]float64, params map[string]string, hasConfirmedSplit bool,
+	metric, fileSource string,
+) (map[string]float64, string) {
+	if metric == "" || !hasConfirmedSplit ||
+		strings.TrimSpace(params[paramEvaluationMetricStatus]) != metricStatusComputed ||
+		strings.TrimSpace(params[paramEvaluationMetricName]) != metric {
+		return metrics, fileSource
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(params[paramEvaluationMetricValue]), 64)
+	if err != nil {
+		// "computed" with a value that does not parse is a contradiction in what the
+		// run reported, not a reason to grade nothing — the metrics map is still
+		// there, exactly as if the run had said nothing at all.
+		return metrics, fileSource
+	}
+	overridden := make(map[string]float64, len(metrics)+1)
+	for name, existing := range metrics {
+		overridden[name] = existing
+	}
+	overridden[metric] = value
+	return overridden, librarySource(metric, params[paramEvaluationMetricN])
+}
+
+// librarySourcePrefix opens every Source string libraryMetricValue produces, and
+// is how MaskedFor's withholdCriterion (failure.go) tells a param-sourced
+// criterion value apart from an ordinary one read out of the run's metrics map —
+// see the comment there for why the two need different treatment under D37's
+// phase filter. Fixed and never built from anything a run controls, so a job
+// cannot forge it: metric and n are interpolated after this prefix, never before
+// it.
+const librarySourcePrefix = "Operator Lib's own post-replay "
+
+// librarySource is the Source line a reader sees when a criterion's value came
+// from Operator Lib's own replay rather than from the run's metrics map — the
+// same reason GoalStated travels beside a verdict: a number whose origin is
+// invisible reads as a claim rather than as a reading. n is folded in here rather
+// than added as a field beside Value, because the sample size is exactly what
+// tells a reader whether the number means anything — an evaluation.metric_n of 3
+// is not a figure that belongs unremarked next to one of thirty thousand.
+func librarySource(metric, n string) string {
+	count := "an unstated number of"
+	if parsed, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64); err == nil {
+		count = fmt.Sprintf("%d", parsed)
+	}
+	return fmt.Sprintf(
+		"%s%s for %s, computed over %s joined predictions "+
+			"from the test window (see %s) — not the run's metrics map",
+		librarySourcePrefix, paramEvaluationMetricValue, metric, count, paramEvaluationMetricN)
 }
 
 // taggedCriterion is M8's fallback: a criterion the run itself reported.
