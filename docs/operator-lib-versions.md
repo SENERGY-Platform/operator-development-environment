@@ -74,6 +74,20 @@ launch and skips the evaluation — and visible in one place: the run's summary 
 would have written are missing. A summary saying that after a launch under a split
 is the runbook telling you it was not run.
 
+**A version this file names is not necessarily a version that exists.** The
+library bumps `operator_lib/__init__.py`'s `__version__` inside the commit that
+earns it rather than in a release step of its own, so a working copy can read
+`v1.7.0` while the newest tag on the remote is still `v1.6.1` — and this file,
+written alongside that work, describes the new version as though it were
+installable. Step 6 below then pins a ref that nothing can resolve. Read the tags
+rather than the version string before treating a release as available:
+
+```text
+git ls-remote --tags git@github.com:SENERGY-Platform/analytics-operator-lib-python.git
+```
+
+As of 2026-09-21, `v1.7.0` is on `master` and carries no tag.
+
 ## Why only the latest is supported
 
 `MLOperator` connects to Ray itself, from the deployment config:
