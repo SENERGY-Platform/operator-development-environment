@@ -189,7 +189,7 @@ func buildSummary(
 
 	// Read from the same tags map EvaluationCriteria is about to be graded against,
 	// after TagUserSub was dropped and before anything else touches it — the split
-	// confirmation is step 16's guard against a cluster image whose Operator Lib
+	// confirmation is step 16's guard against a repository whose Operator Lib pin
 	// is older than v1.7.0, and it reads the run exactly the way a criterion tag
 	// does: as what the job itself reported, not as what ODE asked for.
 	//
@@ -578,10 +578,10 @@ func splitReport(split *exposure.Split, tags, params map[string]string, finished
 		report.Confirmed = splitPending
 	default:
 		report.Confirmed = splitNotConfirmed
-		report.Note = "the run recorded no split bounds, or different ones; a cluster " +
-			"image with an Operator Lib older than v1.7.0 drops both fields silently " +
-			"and the run then trained unbounded and skipped the evaluation; see " +
-			"docs/operator-lib-versions.md"
+		report.Note = "the run recorded no split bounds, or different ones; a " +
+			"repository pinned to an Operator Lib older than v1.7.0 drops both fields " +
+			"silently and the run then trained unbounded and skipped the evaluation; " +
+			"see docs/operator-lib-versions.md"
 	}
 
 	if value, err := strconv.ParseInt(params[paramEvaluationMessages], 10, 64); err == nil {

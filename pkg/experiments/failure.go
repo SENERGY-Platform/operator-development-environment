@@ -508,8 +508,8 @@ func permittedMetricNames(s Summary) map[string]struct{} {
 //
 // Absent is not reported here a second time: a terminal run under a data split
 // that carries no such tag is exactly what splitReport already calls "not
-// confirmed by the run" in the data_split block (a cluster image whose Operator
-// Lib predates v1.7.0), and a run with no split was never going to carry it. In
+// confirmed by the run" in the data_split block (a repository whose Operator Lib
+// pin predates v1.7.0), and a run with no split was never going to carry it. In
 // both cases the phase filter simply has nothing to filter by, and MaskedFor falls
 // back to the name allowlist alone.
 func trainingEndedAt(s Summary) (cutoff int64, usable bool) {

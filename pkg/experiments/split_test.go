@@ -300,7 +300,7 @@ func TestASummaryConfirmsASplitWhoseRunTagsMatch(t *testing.T) {
 	}
 }
 
-// The guard against a cluster image whose Operator Lib is older than v1.7.0: it
+// The guard against a repository whose Operator Lib pin is older than v1.7.0: it
 // reads no training_end or test_end from the config at all (simple_struct reads
 // declared keys only), trains unbounded, and never writes the two tags.
 func TestASummaryReportsAFinishedRunThatNeverConfirmedItsSplit(t *testing.T) {

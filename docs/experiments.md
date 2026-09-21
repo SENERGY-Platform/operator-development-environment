@@ -154,23 +154,25 @@ A new commit produces a new name and a new upload. Nothing caches on ODE's side;
 the cluster's own package store is the cache, which is the only one that can be
 right after a restart.
 
-## The package is code, not an environment
+## The package is code, and uv makes it an environment
 
-The runtime environment ODE sends carries `working_dir` and `env_vars` and nothing
-else (`jobRuntimeEnv` in `pkg/experiments/ray.go`) — no `pip`, no `conda`. So the
-upload is the developer's *source*, and every import it makes resolves against the
-**Ray cluster's own Python environment**: `operator_lib`, `mlflow`,
-`confluent_kafka` and `ray` all come from there, not from the repository's
-`pyproject.toml`.
+The runtime environment ODE sends carries `working_dir`, `env_vars` and
+`py_executable`, and no `pip` or `conda` key (`jobRuntimeEnv` in
+`pkg/experiments/ray.go`). Nothing is installed by Ray — but the entrypoint is
+`uv run python train.py` and `py_executable` is `uv run`, so uv builds the
+environment on the head and on each worker from the `pyproject.toml` and
+`uv.lock` the package already carries. `operator_lib`, `mlflow` and
+`confluent_kafka` therefore resolve against **the repository's own pin**, not
+against the cluster's image.
 
-Two consequences worth knowing before diagnosing a failed run. The cluster's
-Operator Lib is an unchecked deployment prerequisite — if it is absent, every
-launch fails with an `ImportError` in the job log, at the point where it looks
-like the developer's code. And a run therefore tests the source against the
-cluster's library rather than against the pin the repository was scaffolded with,
-so a passing run does not prove the operator's own image would start.
-[operator-lib-versions.md](operator-lib-versions.md) has the rest, including why
-only the latest Operator Lib is supported at all.
+Two consequences worth knowing before diagnosing a failed run. A run tests the
+source against the library the repository names, so a launch cannot be made to
+pass by fixing the cluster — and an operator whose pin is old runs an old
+library, whatever the cluster carries. And the one import that is not the
+repository's own decision is `ray` itself: it comes from the same uv environment,
+resolved through Operator Lib's pins, and it has to match the cluster it attaches
+to. [operator-lib-versions.md](operator-lib-versions.md) has the rest, including
+why only the latest Operator Lib is supported at all.
 
 ## The run is Operator Lib's; the commit is ODE's
 
@@ -235,9 +237,9 @@ repository is gone.
 **The run keeps the name ODE gave it only from Operator Lib v1.6.1.** Older
 libraries pass a `run_name` on the resume path too, and MLflow forwards it to
 `update_run_info`, so the name from the launch request — or `ode-{short sha}` —
-came back overwritten with `{model_id}@{timestamp}`. An experiment reads
-`operator_lib` from the Ray cluster's image rather than from the repository's pin,
-so this one follows the cluster and not `pyproject.toml`; see
+came back overwritten with `{model_id}@{timestamp}`. An experiment resolves
+`operator_lib` from the repository's own pin, so this one follows
+`pyproject.toml` and moving it is an edit in the repository; see
 [operator-lib-versions.md](operator-lib-versions.md). Where the name is wrong the
 run is still identifiable, because `session_id`, `ode_experiment_id` and
 `commit_sha` are tags rather than part of the name.

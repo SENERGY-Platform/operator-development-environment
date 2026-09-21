@@ -30,15 +30,16 @@ and nothing here fails when they go stale.
 
 | Place | Scope | Set by | Decides |
 | --- | --- | --- | --- |
-| `pyproject.toml` in the developer's repository | per repository | [service.go:665-676](../pkg/repo/service.go#L665), rendered at [scaffold.go:472](../pkg/repo/scaffold.go#L472), stored in `operator_lib_ref` ([database.go:466](../pkg/database/database.go#L466), [:517](../pkg/database/database.go#L517)) | The **deployed** operator's own container image, and nothing else |
-| The singleuser image | deployment-wide | `ARG OPERATOR_LIB_REF` at [singleuser-image/Dockerfile:60](../singleuser-image/Dockerfile#L60); the profile comes from [`jupyterhub_profile`](../pkg/configuration/config.go#L261), passed at [kernel.go:396](../pkg/kernel/kernel.go#L396) | Every cell the developer runs |
-| The Ray cluster's own image | deployment-wide, **outside this repository** | The cluster's configuration | Every experiment ODE launches |
+| `pyproject.toml` in the developer's repository | per repository | [service.go:665-676](../pkg/repo/service.go#L665), rendered at [scaffold.go:546](../pkg/repo/scaffold.go#L546), stored in `operator_lib_ref` ([database.go:547](../pkg/database/database.go#L547), [:598](../pkg/database/database.go#L598)) | The **deployed** operator's own container image — and every experiment, which resolves it out of the package |
+| The singleuser image | deployment-wide | `ARG OPERATOR_LIB_REF` at [singleuser-image/Dockerfile:93](../singleuser-image/Dockerfile#L93); the profile comes from [`jupyterhub_profile`](../pkg/configuration/config.go#L261), passed at [kernel.go:396](../pkg/kernel/kernel.go#L396) | Every cell the developer runs |
+| The Ray cluster's own image | deployment-wide, **outside this repository** | The cluster's configuration | The Ray version every experiment has to match — not the operator's own dependencies |
 | `operator_lib_ref` in ODE's configuration | deployment-wide | [config.json:140](../config.json#L140) | What new repositories are pinned to; empty resolves the newest tag |
 
 The distribution matters. The pin the developer can see in the Code pane
-([code.tsx:1355](../frontend/src/code.tsx#L1355)) governs the *production* image
-only. The two environments they actually work in — the kernel and the Ray
-cluster — are both deployment-wide and neither consults it.
+([code.tsx:1355](../frontend/src/code.tsx#L1355)) governs the production image
+*and* the experiment, because both build their environment from
+`pyproject.toml`. The kernel is the one that does not consult it: a cell runs
+against the singleuser image's library, which is deployment-wide.
 
 As of 2026-09-10 the library is at `v1.7.0` and pins:
 
@@ -52,10 +53,10 @@ psycopg2-binary==2.9.11
 
 `v1.6.1` moved none of them. It changes one thing, and only on the experiment
 path: `MLOperator` no longer renames a run it was handed in `MLFLOW_RUN_ID`, so an
-ODE run keeps the name the launch gave it. That makes step 6 of the runbook below
-— the Ray cluster's own image — the only step that decides whether the fix is in
-effect; the singleuser image carries it for consistency, not because a cell reaches
-that code.
+ODE run keeps the name the launch gave it. A repository picks that up when its
+own pin moves, which for an existing repository is an edit to its
+`pyproject.toml`; the singleuser image carries the library for the kernel, not
+because a cell reaches that code.
 
 `v1.7.0` moves none of them either, and again only the experiment path changes:
 `Config` gains the optional `training_end` and `test_end`, every history reader
@@ -65,9 +66,9 @@ evaluation phase of D36 when `test_end` is present
 can: `Config` also takes `evaluation_metric`, `evaluation_target_series`,
 `evaluation_prediction_field` and `evaluation_resolution`, and where all four
 resolve the replay reports one metric over the test window as the four
-`evaluation.metric_*` params D37's addendum grades from. Step 6 is once more the
-step that decides.
-The failure of an image left behind is silent in the job — `simple_struct` reads
+`evaluation.metric_*` params D37's addendum grades from. Once more it is the
+repository's own pin that decides.
+The failure of a pin left behind is silent in the job — `simple_struct` reads
 declared keys only, so an older library ignores both fields, trains up to the
 launch and skips the evaluation — and visible in one place: the run's summary says
 `"not confirmed by the run"` under `data_split`, because the tags the library
@@ -133,24 +134,18 @@ Two of the other pins carry the same shape of constraint, more weakly:
   [singleuser-image/Dockerfile:24-36](../singleuser-image/Dockerfile#L24), and the
   base moves forward when this pin does.
 
-## An experiment does not use the repository's pin
+## An experiment uses the repository's pin, and the cluster's Ray
 
-This is the part most likely to mislead someone, because everything about the
-launch path suggests otherwise: ODE packages the developer's committed working
-copy, uploads it, and runs `python train.py` inside it.
+The launch path behaves the way it looks, which is worth saying because this
+section used to claim the opposite: ODE packages the developer's **committed**
+tree with `git archive HEAD` ([archive.go:38](../pkg/experiments/archive.go#L38)),
+so `pyproject.toml` and `uv.lock` travel with it, uploads it as the job's
+`working_dir`, and runs the configured entrypoint inside it. That entrypoint is
+`uv run python train.py` ([config.json:159](../config.json#L159)) and the workers
+are started with `py_executable: "uv run"`
+([config.json:164](../config.json#L164)), so uv builds the same environment from
+those two files on the head and on every worker node, out of its own cache.
 
-But the runtime environment ODE sends carries two keys and no third:
-
-```go
-RuntimeEnv: jobRuntimeEnv{
-    WorkingDir: uri,
-    EnvVars:    environment,
-},
-```
-
-— [service.go:512](../pkg/experiments/service.go#L512), over the struct at
-[ray.go:75](../pkg/experiments/ray.go#L75), whose comment says outright that
-`pip` and `conda` belong to the repository's own code. Nothing installs anything.
 So when the scaffold's `train.py` runs
 
 ```python
@@ -158,37 +153,60 @@ import operator_lib.util as util
 from op import Operator
 ```
 
-`op` comes from the uploaded working directory and **`operator_lib` comes from the
-Ray cluster's own Python environment**. Same for `mlflow`, `confluent_kafka` and
-`ray` itself. `experiment_ray_client_url` is `"auto"`
-([config.json:153](../config.json#L153)), which attaches to the cluster the driver
-is already running in, so the client/cluster versions match trivially — because
-they are the same installation.
+`op` comes from the uploaded working directory and **`operator_lib` comes from
+the repository's own pin** — `operator-lib @ git+…@<ref>` in the scaffolded
+`pyproject.toml` ([scaffold.go:546](../pkg/repo/scaffold.go#L546)), resolved once
+at scaffold time from `operator_lib_ref` and recorded per repository. Same for
+`mlflow` and `confluent_kafka`, which Operator Lib pins. Nothing installs Operator
+Lib on the Ray cluster for this, and nothing should: an operator's dependencies
+are its own, and torch is not predictable from a shared image.
+
+**All of that holds while the entrypoint starts the driver with `uv run`.** A
+launch may name its own ([api/experiments.go:71](../pkg/api/experiments.go#L71),
+and the `launch_experiment` tool takes one), it is not validated, and
+`py_executable` is set to the deployment's value either way
+([service.go:619-627](../pkg/experiments/service.go#L619)). So an entrypoint of
+plain `python train.py` puts the *driver* on whatever interpreter the cluster
+image carries while the workers stay in the uv environment — the one
+configuration in which the cluster's own library matters, and a split
+driver/worker environment on top of it. The tool's schema asks for the prefix
+rather than the launch refusing its absence, which is a gap named here rather
+than closed.
+
+What the cluster's image does decide is **Ray**. `experiment_ray_client_url` is
+`"auto"` ([config.json:162](../config.json#L162)), so the driver attaches to the
+cluster it is already running in — but the `ray` it attaches with comes out of the
+uv environment, resolved through Operator Lib's own pins, and Ray refuses a client
+whose version differs from its cluster's. The version argument in this file
+therefore reaches a repository *through* Operator Lib rather than around it.
 
 Three things follow:
 
-1. **The Ray cluster's image is an ODE deployment prerequisite that ODE never
-   checks.** If Operator Lib is not installed there, every launch fails with an
-   `ImportError` in the job log — a Ray-side failure, at the point where it looks
-   like the developer's code. ODE reports no version, compares no version, and
-   has nothing to say about it. The empty-`ray_url` degradation
+1. **The Ray cluster needs Ray, not Operator Lib** — for a launch that keeps the
+   `uv run` prefix. A cluster image that carries no Operator Lib at all is then
+   correct. A cluster on a different Ray version than the one Operator Lib pins
+   is not, and it fails at `ray.init`, before a line of the developer's code
+   runs. ODE reports no version and compares none: the
+   empty-`ray_url` degradation
    ([config.go:382](../pkg/configuration/config.go#L382)) covers a *missing*
-   cluster, not a wrongly provisioned one.
-2. **An experiment tests the developer's source against the cluster's library, not
-   against their pin.** A run can pass on a repository whose `pyproject.toml`
-   would build an operator that cannot start. The reverse also holds: an
-   experiment fails on a library the repository does not name. Neither is visible
-   from the run.
-3. **Keeping the cluster and the singleuser image on the same Operator Lib is not
-   tidiness.** It is what makes "it worked in a cell" and "it worked as an
-   experiment" mean the same thing. They are two separately built images with no
-   mechanism keeping them in step, only the runbook below.
+   cluster, not a mismatched one.
+2. **An experiment tests the developer's source against the library they pinned.**
+   That is what makes a passing run a statement about the operator being built
+   rather than about the cluster it ran on — and it is also why a repository left
+   on an older pin silently runs an older library, features included: a session's
+   data split shows as `"not confirmed by the run"` rather than as anything about
+   the pin.
+3. **A cell and an experiment can still disagree.** The kernel imports Operator
+   Lib from the singleuser image
+   ([Dockerfile:92](../singleuser-image/Dockerfile#L92)), an experiment from the
+   repository's pin. Those are two versions whenever a repository was scaffolded
+   before the image last moved, and nothing compares them.
 
 ## When a new Operator Lib is released
 
 In this order. The order is the content: step 2 gates everything after it, and
-steps 6 and 8 are the two with no artefact in this repository — nothing here will
-remind anybody about them.
+step 8 is the one with no artefact in this repository — nothing here will remind
+anybody about it.
 
 1. **Read the diff of `setup.py`.** The pinned versions are the whole reason this
    is not automatic. `ray[client]`/`ray[data]`, `mlflow`, `confluent_kafka`,
@@ -215,10 +233,10 @@ remind anybody about them.
    configuration, and confirm [`jupyterhub_profile`](../pkg/configuration/config.go#L261)
    still names that profile. A spawn that names nothing gets the plain notebook
    image, without Operator Lib at all.
-6. **Install the same Operator Lib on the Ray cluster's head and worker images**,
-   for the reason the previous section gives: the experiment driver imports it
-   from there. This is the step with no artefact in this repository and therefore
-   the one nothing will remind anybody about.
+6. **Nothing is installed on the Ray cluster.** For the reason the previous
+   section gives: an experiment resolves Operator Lib out of the package it was
+   launched with, so the cluster only has to carry a Ray the new pin agrees with
+   — which is step 2, or nothing at all when the release moves no Ray.
 7. **Check the scaffold against the new library.** The template is the shape
    Operator Lib actually calls, so a rename upstream makes it a file that looks
    right and never runs. The surfaces it depends on:
@@ -320,6 +338,12 @@ the repository rather than a configuration ODE should support.
 - The exact failure a Ray version mismatch produces against *this* cluster has not
   been reproduced. The argument rests on Operator Lib's pins, its `ray.init` call
   site, and Ray's documented client/cluster version requirement.
-- Which Operator Lib the Ray cluster's images currently carry is not recorded
-  anywhere in this repository, and ODE cannot report it. Confirming it is a
-  cluster-side check.
+- Which Ray version the cluster's images currently carry is not recorded anywhere
+  in this repository, and ODE cannot report it. Confirming it is a cluster-side
+  check.
+- That uv can fill its cache on a worker node has not been checked. A first run
+  of a new commit resolves `operator-lib` from GitHub and the rest from PyPI, so
+  a node without that egress fails whatever the cluster image holds. Nothing in
+  this repository states the Ray nodes' egress rules; the scaffold pod's are
+  stated ([scaffold.go:100-103](../pkg/repo/scaffold.go#L100)) and are a
+  different pod.

@@ -762,8 +762,8 @@ func TestGradeFallsBackToMetricsMapWhenTheStatusIsNotComputed(t *testing.T) {
 	}
 }
 
-// The split was not confirmed by the run's own tags — a cluster image whose
-// Operator Lib is older than v1.7.0, or a rewritten tag. Even a run whose params
+// The split was not confirmed by the run's own tags — a repository whose Operator
+// Lib pin is older than v1.7.0, or a rewritten tag. Even a run whose params
 // claim "computed" under the right name must not be trusted here: the params are
 // as writable as the tags are, and the confirmation is the one check that reads
 // something the job cannot forge into matching (D37).

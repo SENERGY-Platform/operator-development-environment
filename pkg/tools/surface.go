@@ -1304,7 +1304,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  "properties": {
 			    "entrypoint": {
 			      "type": "string",
-			      "description": "The command Ray runs in the unpacked repository, e.g. \"python training.py --folds 5\". Omit it for the deployment's default, which points at the scaffold's training.py."
+			      "description": "The command Ray runs in the unpacked repository, e.g. \"uv run python train.py --folds 5\". Keep the uv run prefix: it is what builds the environment from the repository's own pyproject.toml and uv.lock, and a plain python runs the driver against whatever the cluster image happens to carry. Omit it for the deployment's default, which points at the scaffold's train.py."
 			    },
 			    "env_vars": {
 			      "type": "object",
@@ -1371,8 +1371,8 @@ func NewSurface(deps Deps) (*Registry, error) {
 				"end and test end, the message and result counts the replay logged, and a " +
 				"`confirmed` field — \"confirmed\", \"pending\" while the run is still going, or " +
 				"\"not confirmed by the run\". The last one means the run's own tags do not show " +
-				"it applied the bounds ODE sent — most often a cluster image whose Operator Lib " +
-				"is older than the version this feature needs — so treat its metrics as an " +
+				"it applied the bounds ODE sent — most often a repository pinned to an Operator " +
+				"Lib older than the version this feature needs — so treat its metrics as an " +
 				"ordinary training run rather than as an evaluation, and say why rather than " +
 				"reporting them as one.",
 			Effect:  "read MLflow",

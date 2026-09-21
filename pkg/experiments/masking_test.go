@@ -288,7 +288,7 @@ func TestMaskedForKeepsADeclaredMetricLoggedBeforeTrainingEnded(t *testing.T) {
 }
 
 // Without the tag, the phase filter has nothing to filter by, and MaskedFor falls
-// back to the name allowlist alone — a cluster image whose Operator Lib predates
+// back to the name allowlist alone — a repository whose Operator Lib pin predates
 // v1.7.0 never writes the tag, and that is already reported once, by
 // splitReport's "not confirmed by the run"; MaskedFor does not report it again.
 func TestMaskedForWithNoTrainingEndedTagBehavesLikeTheNameAllowlistAlone(t *testing.T) {
