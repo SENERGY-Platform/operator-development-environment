@@ -86,7 +86,7 @@ rather than the version string before treating a release as available:
 git ls-remote --tags git@github.com:SENERGY-Platform/analytics-operator-lib-python.git
 ```
 
-As of 2026-09-21, `v1.7.0` is on `master` and carries no tag.
+As of 2026-09-21, `v1.7.0` is tagged on `master`; the steps below it are not run.
 
 ## Why only the latest is supported
 
