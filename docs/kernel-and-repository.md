@@ -359,6 +359,16 @@ permitted at some tier, and a tool that can write every file of a repository wou
 be a way around that — so the tool refuses that name and says why. The developer's
 own routes write it like any other file, because it is theirs.
 
+`read_file` makes a different promise about the same path, and the two are not
+the same rule read twice: outright refusal is right for a write, because nothing
+the model could write there is a criterion the developer set, but a read of the
+metric and the threshold is exactly what the model needs to reason about a run.
+So `read_file` reads `evaluation.yaml` and renders ODE's own reading of it,
+target_series withheld from every field (D38) — comments and formatting gone,
+and the developer's target series withheld from every field it could repeat in,
+not searched for and blanked in the developer's own bytes; `withheld` and
+`rendered` on the result say so.
+
 ## The drafted commit message, and why it does not weaken §5.11 item 5
 
 `POST /repo/commit/message` asks the configured LLM provider for a commit message

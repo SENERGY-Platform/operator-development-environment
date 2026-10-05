@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/plaincode"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
@@ -48,6 +49,18 @@ import (
 // listing says a file exists, which is what the Code pane's own tree says (D14),
 // and hiding a name would leave a model proposing changes to a repository it has
 // been shown an edited picture of.
+//
+// A third case sits between the two and is neither: read_file renders rather than
+// refuses evaluation.yaml. Refusing it outright would deny the model the metric
+// and the threshold it needs to reason about a run, for the sake of the one field
+// — target_series — that would hand it the answer to a choice it is meant to make
+// itself (§5.2, D38). So the file is read like any other, and before the text
+// ever reaches the window logic below, experiments.RenderForAssistant replaces it
+// with ODE's own reading of the parsed document — the developer's bytes, minus
+// that one field — instead of searching those bytes for the value and trying to
+// blank it in place. write_file's own refusal of this path, further down, is
+// unaffected — the two tools make different promises about the same file, not
+// the same one twice.
 
 // maxListedFiles bounds one listing.
 //
@@ -170,8 +183,24 @@ type ReadFileResult struct {
 	Binary   bool   `json:"binary,omitempty"`
 	// Truncated says this answer is not the rest of the file, whether because the
 	// byte budget ran out here or because pkg/repo had already cut the read.
-	Truncated bool   `json:"truncated,omitempty"`
-	Hint      string `json:"hint,omitempty"`
+	Truncated bool `json:"truncated,omitempty"`
+	// Withheld names the keys whose value this read does not carry — today always
+	// either absent or exactly ["target_series"], the one evaluation.yaml field
+	// RenderForAssistant leaves out of every document it writes (D38). Set
+	// together with Rendered below and for the same reason: once the text is
+	// ODE's own reading of the file rather than its bytes, target_series is never
+	// in it, whether or not the file names one. Names rather than a count, unlike
+	// WithheldMetrics on the run summary (experiments.go): a metric's name is
+	// itself information about a run and D37 keeps it out, but target_series is
+	// the scaffold's own key (pkg/repo/scaffold.go) — naming it here costs nothing
+	// the file does not already show in the Code pane.
+	Withheld []string `json:"withheld,omitempty"`
+	// Rendered says this text is ODE's own reading of evaluation.yaml — the
+	// parsed CriteriaDocument written back out — rather than the file's bytes, so
+	// Size above and the length of Text disagree on purpose. Only evaluation.yaml
+	// ever sets this; every other file's Text is byte-identical to disk.
+	Rendered bool   `json:"rendered,omitempty"`
+	Hint     string `json:"hint,omitempty"`
 }
 
 func (s *surface) readFile(ctx context.Context, req Request) (any, error) {
@@ -216,7 +245,37 @@ func (s *surface) readFile(ctx context.Context, req Request) (any, error) {
 		return result, nil
 	}
 
-	lines, trailingNewline := splitLines(file.Text)
+	text := file.Text
+	if strings.EqualFold(path.Base(path.Clean(requested)), evaluationCriteria) {
+		// Before the line cut below, on the same argument as the credential check
+		// above it: the value has to be gone from the text itself, not trimmed off a
+		// window that happened to include it.
+		rendered, err := experiments.RenderForAssistant(text)
+		if err != nil {
+			// err is deliberately not part of this message. Every parse failure
+			// yamlsubset.go returns quotes the raw line that stopped it with %q
+			// (":325", ":335", ":460", ":496", ":513"), ParseCriteria passes that error
+			// through unchanged, and execute (pkg/tools/dispatch.go:414) would put
+			// whatever this function returns here into Failure{Error: err.Error()} for
+			// the model to read. A criteria file that fails to parse on the very line a
+			// developer meant to keep from the model — a target_series line missing its
+			// colon, say — would then hand the model that line back inside the refusal
+			// that was supposed to withhold it. So the refusal below is fixed text: the
+			// developer still sees the file exactly as it is in the Code pane, and fixes
+			// it there.
+			return nil, fmt.Errorf(
+				"%w: %s could not be shown safely: it does not parse well enough for ODE "+
+					"to render its own reading of it, and this tool will not fall back to "+
+					"showing the file as it is on disk. Ask the developer to fix it; they "+
+					"see it unchanged in the Code pane",
+				ErrInvalidInput, evaluationCriteria)
+		}
+		text = rendered
+		result.Rendered = true
+		result.Withheld = []string{"target_series"}
+	}
+
+	lines, trailingNewline := splitLines(text)
 	result.TotalLines = len(lines)
 	if len(lines) == 0 {
 		// An empty file is an ordinary file — `__init__.py` is empty in most Python
@@ -242,7 +301,10 @@ func (s *surface) readFile(ctx context.Context, req Request) (any, error) {
 	result.Text = strings.Join(window, "\n")
 	// A window that reaches the last line reproduces the file's own ending, so a
 	// full read is byte-identical to the file and can go back through write_file
-	// unchanged.
+	// unchanged — for every path but evaluationCriteria: that one is ODE's own
+	// rendering of the parsed document rather than the file's bytes at all, and
+	// write_file refuses the path outright anyway, so there was never a round
+	// trip through write_file to keep for it.
 	if trailingNewline && from+len(window)-1 == len(lines) {
 		result.Text += "\n"
 	}
@@ -262,6 +324,22 @@ func (s *surface) readFile(ctx context.Context, req Request) (any, error) {
 				"this file was too large to read whole, so lines %d-%d are all there is of it "+
 					"here; ask the developer for the part you need",
 				from, from+len(window)-1)
+		}
+	}
+	if result.Rendered {
+		// Size is still the file as it sits on disk, so it no longer matches
+		// len(text) once text is ODE's own rendering of the parsed document rather
+		// than the file's bytes — said here rather than left for the model to notice
+		// as a discrepancy on its own.
+		note := fmt.Sprintf(
+			"this text is ODE's own reading of %s, not its bytes: target_series is left "+
+				"out of it (see withheld), and size above is the file as it is on disk, "+
+				"which no longer matches the length of text because of that",
+			evaluationCriteria)
+		if result.Hint == "" {
+			result.Hint = note
+		} else {
+			result.Hint += ". " + note
 		}
 	}
 	return result, nil

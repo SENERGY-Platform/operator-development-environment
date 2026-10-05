@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/plaincode"
 )
 
 // ---- run_code (L0, confirmed) ----
@@ -100,6 +101,27 @@ func (s *surface) runCode(ctx context.Context, req Request) (any, error) {
 	}
 	if strings.TrimSpace(in.Code) == "" {
 		return nil, fmt.Errorf("%w: code is required", ErrInvalidInput)
+	}
+	// The one cell this executor refuses outright, checked on the raw source
+	// before anything else runs: a cell that names evaluation.yaml by path is the
+	// same route to the developer's criteria that read_file's own redaction
+	// exists to close (D38), just spelled as `open("evaluation.yaml")` instead of
+	// a tool call — and a confirmed cell would otherwise reach it, because
+	// confirmed code runs in the developer's own pod under their own token and
+	// can read anything they can. plaincode.MentionsFile is the same kind of
+	// floor CredentialPath already is: a path assembled at runtime,
+	// `open("evaluation" + ".yaml")`, walks past it, and that is named rather
+	// than hidden. plaincode.Recognised is deliberately untouched by this — it
+	// is the auto-run recogniser (D33), not a gate, and teaching it about this
+	// file would only spare a confirmation on a cell that has to be refused
+	// outright, never merely confirmed.
+	if plaincode.MentionsFile(in.Code, evaluationCriteria) {
+		return nil, fmt.Errorf(
+			"%w: this cell names %s, which holds the developer's evaluation criteria. "+
+				"Its contents are not shown to you (§5.8), whether through read_file or "+
+				"through a cell that opens it directly. Ask the developer what it says "+
+				"instead",
+			ErrInvalidInput, evaluationCriteria)
 	}
 
 	req.Progress("kernel", "ensuring the developer's pod and kernel are up")

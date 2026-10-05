@@ -335,6 +335,337 @@ func TestTheThreeEvaluationKeysAreEmptyRatherThanDefaultedWhenAbsent(t *testing.
 	}
 }
 
+// --- RenderForAssistant, so the developer's target series never reaches the
+// assistant while everything else in the file still does ---
+//
+// The six tests named "Finding N" below are regression tests for an adversarial
+// review of the textual redaction this function replaced (see RenderForAssistant's
+// own comment in criteria.go for what each finding was). Every one of them
+// searches the rendered output for the actual value, never for the wording of an
+// error — a test that only checked a message could pass while the value itself
+// still leaked.
+
+// The flat form with every field set: the value is gone, the marker is where it
+// stood, and every other field is still there with its own value —
+// RenderForAssistant has no business near metric, goal, threshold,
+// prediction_field or resolution.
+func TestRenderForAssistantRendersTheFlatFormWithoutTheTargetSeries(t *testing.T) {
+	source := "metric: mae\ngoal: minimise\nthreshold: 30.0\n" +
+		"target_series: sensor.ENERGY.Power\nprediction_field: prediction\nresolution: 1h\n"
+	rendered, err := experiments.RenderForAssistant(source)
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if strings.Contains(rendered, "sensor.ENERGY.Power") {
+		t.Errorf("rendered = %q, still carries the value", rendered)
+	}
+	if !strings.Contains(rendered, experiments.WithheldTargetSeries) {
+		t.Errorf("rendered = %q, want the marker where the value stood", rendered)
+	}
+	for _, want := range []string{
+		"metric: mae", "goal: minimise", "threshold: 30",
+		"prediction_field: prediction", "resolution: 1h",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered = %q, lost %q", rendered, want)
+		}
+	}
+}
+
+// The other two spellings are the same key as far as ParseCriteria is concerned,
+// so they render exactly like target_series does.
+func TestRenderForAssistantCoversAllThreeTargetSeriesSpellings(t *testing.T) {
+	base, err := experiments.RenderForAssistant("metric: mae\ntarget_series: sensor.ENERGY.Power\n")
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	for _, key := range []string{"target_topic", "ground_truth_series"} {
+		t.Run(key, func(t *testing.T) {
+			rendered, err := experiments.RenderForAssistant(
+				"metric: mae\n" + key + ": sensor.ENERGY.Power\n")
+			if err != nil {
+				t.Fatalf("RenderForAssistant: %v", err)
+			}
+			if rendered != base {
+				t.Errorf("%s rendered = %q, want the same document target_series produces: %q",
+					key, rendered, base)
+			}
+		})
+	}
+}
+
+// Finding 2: targetSeriesKeyColon used to compare a key case-sensitively, and
+// because ParseCriteria itself is case-sensitive too, a key spelled Target_Series
+// was never read as target_series by either the old redaction or the parser it
+// shadowed — the value under it never became CriteriaDocument.TargetSeries at
+// all. RenderForAssistant only ever writes what ParseCriteria understood, so a
+// value sitting under a key the parser does not recognise has no field to reach
+// the output through, by construction rather than by a case fix.
+func TestRenderForAssistantHidesAValueUnderAKeyTheParserDoesNotRecognise(t *testing.T) {
+	rendered, err := experiments.RenderForAssistant(
+		"metric: mae\nTarget_Series: sensor.ENERGY.Power\n")
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if strings.Contains(rendered, "sensor.ENERGY.Power") {
+		t.Errorf("rendered = %q, a wrongly-cased key's value reached the assistant", rendered)
+	}
+}
+
+// Finding 3: a target_series written inside a secondary_metrics list item is not
+// read as a metric — specOf finds none of itemMetricKeys there — and it is also
+// not the document-level TargetSeries, which ParseCriteria only ever reads at
+// the document's root. Neither reading puts the value into the parsed document,
+// so there is nothing for RenderForAssistant to echo.
+func TestRenderForAssistantHidesAValueNestedInsideASecondaryMetricsItem(t *testing.T) {
+	rendered, err := experiments.RenderForAssistant(
+		"metric: mae\nsecondary_metrics:\n  - target_series: sensor.ENERGY.Power\n")
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if strings.Contains(rendered, "sensor.ENERGY.Power") {
+		t.Errorf("rendered = %q, a value nested under secondary_metrics reached the assistant",
+			rendered)
+	}
+}
+
+// Finding 4: the developer's own line wrap splits the value across a folded
+// rationale's line break. ParseCriteria folds the two lines with the single
+// space YAML itself inserts at that break, so the parsed rationale never holds
+// the value as one contiguous run in the first place — rendering from the parsed
+// document rather than the raw bytes is what makes that true, not a search
+// clever enough to bridge a line break a raw-text scan never could.
+func TestRenderForAssistantHidesAValueSplitAcrossAFoldedRationaleLineBreak(t *testing.T) {
+	source := "metric: mae\ntarget_series: sensor.ENERGY.Power\n" +
+		"rationale: >\n  This operator targets sensor.ENERGY.\n  Power specifically.\n"
+	rendered, err := experiments.RenderForAssistant(source)
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if strings.Contains(rendered, "sensor.ENERGY.Power") {
+		t.Errorf("rendered = %q, the split value reassembled in the output", rendered)
+	}
+}
+
+// Finding 5: the value pass is case-insensitive, so a differently-cased
+// repetition in rationale is caught too — the raw-text value pass this replaced
+// compared case-sensitively and missed exactly this.
+func TestRenderForAssistantValuePassIsCaseInsensitive(t *testing.T) {
+	source := "metric: mae\ntarget_series: sensor.ENERGY.Power\n" +
+		"rationale: >\n  Formerly known as SENSOR.ENERGY.POWER on the old bus.\n"
+	rendered, err := experiments.RenderForAssistant(source)
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if strings.Contains(strings.ToLower(rendered), "sensor.energy.power") {
+		t.Errorf("rendered = %q, a differently-cased repetition of the value survived", rendered)
+	}
+	if !strings.Contains(rendered, "Formerly known as") {
+		t.Errorf("rendered = %q, the rest of the sentence was lost with it", rendered)
+	}
+}
+
+// Finding 6: the value pass only replaces a target series at a word boundary, so
+// a metric name that merely contains it as a substring is untouched —
+// target_series: power must not turn metric: power_mae into
+// metric: <withheld…>_mae, which the raw-text ReplaceAll this replaced did.
+func TestRenderForAssistantValuePassRespectsWordBoundaries(t *testing.T) {
+	rendered, err := experiments.RenderForAssistant("metric: power_mae\ntarget_series: power\n")
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if !strings.Contains(rendered, "metric: power_mae") {
+		t.Errorf("rendered = %q, want power_mae unmutilated: power is a substring of it, "+
+			"not a whole word beside it", rendered)
+	}
+}
+
+// A second adversarial review found the word-boundary rule's own gap: `.`, `-`,
+// `:` and `/` used to continue an identifier or a dotted platform path
+// unconditionally, so a value immediately followed by a sentence-ending period —
+// "… is sensor.ENERGY.Power." — was read as adjoining a continuation character
+// and left unmasked, in the developer's own document worded exactly that way.
+// wordBoundaryChar now treats those four as a continuation only when the
+// character beyond them, one step further in the same direction, is itself an
+// identifier character; `_` stays an unconditional continuation, unaffected
+// (TestRenderForAssistantValuePassRespectsWordBoundaries above still has to pass
+// with power_mae unmutilated). Every case here checks the value itself in the
+// rendered text, not the wording of the masking marker.
+func TestRenderForAssistantValuePassAtASentencesPunctuationAndAtTheFieldsEdges(t *testing.T) {
+	const target = "sensor.ENERGY.Power"
+	cases := []struct {
+		name      string
+		rationale string
+		masked    bool
+	}{
+		{"a sentence-ending period", "The series graded is sensor.ENERGY.Power.", true},
+		{"a dotted continuation after the value",
+			"The series graded is sensor.ENERGY.Power.Max.", false},
+		{"a longer identifier with no separator",
+			"The series graded is sensor.ENERGY.PowerMax.", false},
+		{"the value at the very end of the field",
+			"The series graded is sensor.ENERGY.Power", true},
+		{"the value at the very start of the field",
+			"sensor.ENERGY.Power is the series graded.", true},
+		{"parenthesised", "The series graded is (sensor.ENERGY.Power).", true},
+		{"semicolon-terminated",
+			"The series graded is sensor.ENERGY.Power; nothing else.", true},
+		{"quoted", `The series graded is "sensor.ENERGY.Power".`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source := "metric: mae\ntarget_series: " + target +
+				"\nrationale: >\n  " + tc.rationale + "\n"
+			rendered, err := experiments.RenderForAssistant(source)
+			if err != nil {
+				t.Fatalf("RenderForAssistant: %v", err)
+			}
+			present := strings.Contains(rendered, target)
+			if tc.masked && present {
+				t.Errorf("rendered = %q, want %q masked", rendered, target)
+			}
+			if !tc.masked && !present {
+				t.Errorf("rendered = %q, want %q left unmutilated", rendered, target)
+			}
+		})
+	}
+}
+
+// The three-character floor named in valuePass's own comment: a target series
+// shorter than three characters is left alone rather than searched for, because a
+// short fragment turns up inside ordinary prose too often to redact safely
+// without doing more damage than it prevents. Pinned by its own test, named as
+// what it is — a deliberate, documented limit — so a future reader does not read
+// "pv" surviving in rationale as a bug and tighten the boundary check to catch it.
+func TestRenderForAssistantLeavesATargetSeriesUnderThreeCharactersUnmasked(t *testing.T) {
+	source := "metric: mae\ntarget_series: pv\nrationale: >\n  The series graded is pv.\n"
+	rendered, err := experiments.RenderForAssistant(source)
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if !strings.Contains(rendered, "The series graded is pv.") {
+		t.Errorf("rendered = %q, want the two-character target left in rationale: this is "+
+			"a named limit (see valuePass's own comment), not a bug to fix here", rendered)
+	}
+}
+
+// The positive case beside finding 6: a value that stands as a whole word, with
+// nothing joined to either side of it, is exactly what the value pass exists to
+// catch. Ended with a comma deliberately, so this test stays independent of the
+// sentence-end case above
+// (TestRenderForAssistantValuePassAtASentencesPunctuationAndAtTheFieldsEdges): a
+// comma was never one of the characters wordBoundaryChar treats as a possible
+// continuation, so it proves nothing about the conditional `.-:/` rule that case
+// exercises.
+func TestRenderForAssistantReplacesAWholeWordOccurrenceInRationale(t *testing.T) {
+	source := "metric: mae\ntarget_series: sensor.ENERGY.Power\n" +
+		"rationale: >\n  This operator's baseline is graded against sensor.ENERGY.Power, " +
+		"the platform's main meter.\n"
+	rendered, err := experiments.RenderForAssistant(source)
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if strings.Contains(rendered, "sensor.ENERGY.Power") {
+		t.Errorf("rendered = %q, the value survived a whole-word mention in rationale", rendered)
+	}
+	if !strings.Contains(rendered, experiments.WithheldTargetSeries) {
+		t.Errorf("rendered = %q, want the marker where rationale named the value", rendered)
+	}
+}
+
+// The scaffold's own evaluation.yaml names no target series at all. The marker
+// has to stand there anyway: "set" and "not set" must not be distinguishable
+// from where the assistant sits, or the absence itself becomes the answer to the
+// choice §5.2 leaves to it (D38).
+func TestRenderForAssistantMarksTheTargetSeriesEvenWhenTheFileNamesNone(t *testing.T) {
+	source := "metric: baseline\ngoal: minimise\nthreshold: 0.0\n" +
+		"secondary_metrics: []\ntarget_series:\nprediction_field: prediction\nresolution: 1h\n"
+	rendered, err := experiments.RenderForAssistant(source)
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if !strings.Contains(rendered, "target_series: "+experiments.WithheldTargetSeries) {
+		t.Errorf("rendered = %q, want the marker even though the file set nothing", rendered)
+	}
+}
+
+// A criterion with no threshold carries no threshold line, rather than a
+// defaulted zero that would read as a value nobody wrote.
+func TestRenderForAssistantOmitsThresholdWhenTheFileNamesNone(t *testing.T) {
+	rendered, err := experiments.RenderForAssistant("metric: rmse\ngoal: minimise\n")
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if strings.Contains(rendered, "threshold:") {
+		t.Errorf("rendered = %q, want no threshold line: the file named none", rendered)
+	}
+}
+
+// A direction that is only inferred from the metric's name, never stated by the
+// file, does not appear either — an inferred goal would read as the developer's
+// own statement, which GoalStated exists to tell apart.
+func TestRenderForAssistantOmitsGoalWhenOnlyInferred(t *testing.T) {
+	rendered, err := experiments.RenderForAssistant("metric: rmse\nthreshold: 0.4\n")
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if strings.Contains(rendered, "goal:") {
+		t.Errorf("rendered = %q, want no goal line: rmse's direction is inferred, not stated",
+			rendered)
+	}
+}
+
+// The list form of a criterion renders exactly like the flat form that states
+// the same thing — RenderForAssistant reads the parsed CriteriaDocument, which
+// does not remember which shape produced it.
+func TestRenderForAssistantRendersTheListFormLikeTheFlatForm(t *testing.T) {
+	flat, err := experiments.RenderForAssistant("metric: rmse\ngoal: minimise\nthreshold: 0.4\n")
+	if err != nil {
+		t.Fatalf("RenderForAssistant(flat): %v", err)
+	}
+	list, err := experiments.RenderForAssistant(
+		"criteria:\n  - metric: rmse\n    goal: minimise\n    threshold: 0.4\n")
+	if err != nil {
+		t.Fatalf("RenderForAssistant(list): %v", err)
+	}
+	if flat != list {
+		t.Errorf("list form rendered = %q, want the same as the flat form %q", list, flat)
+	}
+}
+
+// A file ParseCriteria cannot read is refused whole rather than rendered in
+// part, the same fail-closed rule this package applies to a status elsewhere
+// (criteriaGitFailure) — there is no safe partial answer once the document is
+// not known.
+func TestRenderForAssistantFailsClosedOnAnUnparseableFile(t *testing.T) {
+	rendered, err := experiments.RenderForAssistant("metric: rmse\nnested:\n\tthreshold: 0.3\n")
+	if err == nil {
+		t.Fatal("an unparseable file was rendered instead of refused")
+	}
+	if rendered != "" {
+		t.Errorf("rendered = %q, want empty alongside the error", rendered)
+	}
+}
+
+// RenderForAssistant's own output has to be readable by the function it stands
+// in front of — otherwise a read_file call would hand the assistant YAML that
+// ODE itself could not read back on the next one.
+func TestRenderForAssistantOutputParsesAgain(t *testing.T) {
+	source := "metric: mae\ngoal: minimise\nthreshold: 30.0\n" +
+		"secondary_metrics:\n  - metric: mape\n    threshold: 0.2\n    goal: minimise\n" +
+		"target_series: sensor.ENERGY.Power\nprediction_field: prediction\nresolution: 1h\n" +
+		"rationale: >\n  Replace the metric and threshold with the ones this operator is\n" +
+		"  actually for.\n"
+	rendered, err := experiments.RenderForAssistant(source)
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	if _, err := experiments.ParseCriteria(rendered); err != nil {
+		t.Fatalf("ParseCriteria(RenderForAssistant(x)) = %v, want it to read its own output "+
+			"back without error\nrendered:\n%s", err, rendered)
+	}
+}
+
 // --- the grading, over a real working copy ---
 
 // A criterion the run met, which is the ordinary case and the one §5.13 documents

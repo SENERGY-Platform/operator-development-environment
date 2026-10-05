@@ -25,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
@@ -386,6 +388,238 @@ func ParseCriteria(source string) (CriteriaDocument, error) {
 	}
 
 	return document, nil
+}
+
+// WithheldTargetSeries stands in place of the developer's target series in every
+// RenderForAssistant output, whether or not the file names one at all.
+//
+// That last clause is the point of a marker over an empty value. An empty value
+// would read two different facts as the same text: "the developer has not set
+// this yet" — the scaffold's own default — and "something was withheld". A model
+// that had learned to tell the two apart by watching for a while would have
+// learned the developer's own answer to §5.2 by watching for absence instead of
+// asking, which is the exact shortcut this field exists to close. So the marker
+// is unconditional: RenderForAssistant writes it into every document it produces,
+// named or not, and "set" and "not set" are indistinguishable from where the
+// model sits (D38).
+const WithheldTargetSeries = "<withheld: the developer's target series>"
+
+// RenderForAssistant renders evaluation.yaml the way ODE understood it — the
+// parsed CriteriaDocument, written back out — rather than the bytes on disk, with
+// the developer's target series left out of every field it could appear in.
+//
+// A prior version of this function redacted the raw text instead: a key pass that
+// blanked whatever followed a target-series key, and a value pass that replaced
+// remaining literal occurrences of the parsed series. Both passes had to
+// reimplement, by hand and against raw text, distinctions ParseCriteria had
+// already made correctly once — and an adversarial review found five places
+// where the hand-rolled version disagreed with the parser it was supposed to be
+// shadowing: a key matched case-sensitively where ParseCriteria reads
+// `Target_Series:` the same as `target_series:`; a leading `- ` in a list item
+// was never stripped, so a target series written inside `secondary_metrics:`
+// passed through whole; a folded block scalar's value spans a line break in the
+// raw text, which a substring search across the unfolded string never sees as
+// one contiguous run; the value pass itself was case-sensitive, so a differently
+// cased repetition of the series in rationale survived; and it knew no word
+// boundary, so `target_series: power` turned `metric: power_mae` into
+// `metric: <withheld…>_mae` — mutilating a field D38 promises is untouched.
+//
+// Every one of those five is a property of running a second, informal parser
+// over text the real one had already read. Rendering from the parsed
+// CriteriaDocument instead does not close that list of cases; it removes the
+// list, because there is no second reading left to disagree with the first: what
+// ParseCriteria did not understand cannot appear in the output at all, whatever
+// spelling, nesting or case it used, and rationale is one normalised string by
+// the time it reaches this function rather than raw lines a search has to find
+// its way across.
+//
+// What is still a textual search is the value pass below, and deliberately so:
+// TargetSeries collapses to one string in the parsed document, and the file can
+// say it more than once — in whichever key actually named it, and again in
+// rationale, where a developer explaining a decision routinely repeats the value
+// they are explaining. valuePass runs case-insensitively and only at a word
+// boundary (see its own comment for what counts as one), which is what the
+// review's last two findings above asked for and the old value pass did not do.
+//
+// A file ParseCriteria cannot read is refused whole: there is no safe partial
+// rendering of a document this function does not have, the same fail-closed rule
+// criteriaGitFailure applies to a status rather than a rendering.
+func RenderForAssistant(text string) (string, error) {
+	document, err := ParseCriteria(text)
+	if err != nil {
+		return "", err
+	}
+	target := strings.TrimSpace(document.TargetSeries)
+
+	var out strings.Builder
+	out.WriteString("# ODE's own reading of evaluation.yaml, not its bytes: comments and\n" +
+		"# formatting are not part of this.\n")
+
+	if document.Primary != nil {
+		fmt.Fprintf(&out, "metric: %s\n", valuePass(document.Primary.Metric, target))
+		if document.Primary.GoalStated {
+			fmt.Fprintf(&out, "goal: %s\n", document.Primary.Goal())
+		}
+		if document.Primary.HasThreshold {
+			fmt.Fprintf(&out, "threshold: %s\n", formatThreshold(document.Primary.Threshold))
+		}
+	}
+
+	if len(document.Secondary) > 0 {
+		out.WriteString("secondary_metrics:\n")
+		for _, spec := range document.Secondary {
+			fmt.Fprintf(&out, "  - metric: %s\n", valuePass(spec.Metric, target))
+			if spec.GoalStated {
+				fmt.Fprintf(&out, "    goal: %s\n", spec.Goal())
+			}
+			if spec.HasThreshold {
+				fmt.Fprintf(&out, "    threshold: %s\n", formatThreshold(spec.Threshold))
+			}
+		}
+	} else {
+		out.WriteString("secondary_metrics: []\n")
+	}
+
+	// Always, whether or not the file names one at all (see WithheldTargetSeries).
+	fmt.Fprintf(&out, "target_series: %s\n", WithheldTargetSeries)
+	fmt.Fprintf(&out, "prediction_field: %s\n", valuePass(document.PredictionField, target))
+	fmt.Fprintf(&out, "resolution: %s\n", valuePass(document.Resolution, target))
+
+	if rationale := normaliseWhitespace(document.Rationale); rationale != "" {
+		fmt.Fprintf(&out, "rationale: >\n  %s\n", valuePass(rationale, target))
+	}
+
+	return out.String(), nil
+}
+
+// normaliseWhitespace collapses a parsed scalar to the single line
+// RenderForAssistant always writes it back out as. ParseCriteria already does
+// this for a folded (`>`) block scalar; a literal (`|`) one keeps its own line
+// breaks, and writing those straight into a single continuation line under `>`
+// would hand the result back to ParseCriteria as a dedented line the block
+// scalar does not own, which fails exactly the round-trip RenderForAssistant is
+// required to keep (see its own tests). Collapsing here rather than special
+// casing the two block styles is also what backs the package comment's claim
+// that rationale is one normalised string once it has been through this
+// function: a word-boundary search across it is then reliable in a way it never
+// was across the raw file, where the same value could straddle a line break.
+func normaliseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// formatThreshold renders a threshold the way a developer would type it.
+// strconv.FormatFloat with 'g' would slide into scientific notation past a
+// handful of digits, for a number nobody in this file ever writes that way; 'f'
+// with no fixed precision prints exactly the digits ParseCriteria's own
+// strconv.ParseFloat produced, no trailing noise added.
+func formatThreshold(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// valuePass replaces every case-insensitive, word-bounded occurrence of target in
+// text with WithheldTargetSeries. It is RenderForAssistant's only textual search,
+// run over one already-parsed field at a time rather than over the raw file (see
+// RenderForAssistant's own comment for why that distinction is the whole fix).
+//
+// Case-insensitive, because a developer explaining a decision in rationale does
+// not necessarily repeat a series name in the exact case they configured it in.
+// Word-bounded, because a substring match inside a longer identifier —
+// `target_series: power` beside `metric: power_mae` — would mutilate a field
+// D38 promises stays untouched: a match only counts when neither the character
+// immediately before it nor the one immediately after is a letter, a digit, `_`,
+// or one of `.-:/` *followed by* another identifier character in the same
+// direction (see wordBoundaryChar). `_` is a continuation unconditionally;
+// `.-:/` are not, so a sentence-ending period after the value — "… is
+// sensor.ENERGY.Power." — is a boundary, while the same dot inside
+// "sensor.ENERGY.Power.Max" is not. The start and the end of the field are
+// themselves always boundaries, so a value that is the whole field still
+// matches.
+//
+// A target shorter than three characters is left alone rather than searched for:
+// a two-character fragment turns up inside ordinary prose often enough that
+// redacting every occurrence would do more damage to rationale than it prevents.
+// This is a named limit, not a claim that nothing shorter can ever leak.
+func valuePass(text, target string) string {
+	if text == "" || utf8.RuneCountInString(target) < 3 {
+		return text
+	}
+
+	haystack := []rune(text)
+	lowerHaystack := []rune(strings.ToLower(text))
+	needle := []rune(strings.ToLower(target))
+
+	var out []rune
+	for i := 0; i < len(haystack); {
+		end := i + len(needle)
+		if end <= len(lowerHaystack) && runesEqual(lowerHaystack[i:end], needle) &&
+			!wordBoundaryChar(haystack, i-1, -1) && !wordBoundaryChar(haystack, end, +1) {
+			out = append(out, []rune(WithheldTargetSeries)...)
+			i = end
+			continue
+		}
+		out = append(out, haystack[i])
+		i++
+	}
+	return string(out)
+}
+
+func runesEqual(a, b []rune) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// wordBoundaryChar reports whether runes[i] continues an identifier or a dotted
+// platform path, approached from dir (-1 for the character before a match, +1
+// for the one after), so that a match adjoining it is a fragment rather than a
+// whole word. An index before the first rune or at/after the last is never one
+// of these characters — the start and the end of a field are boundaries by
+// definition, with nothing there to check.
+//
+// A letter, a digit or `_` is always a continuation, unconditionally — `_` has
+// to be, or a target series of `power` would leave `power_mae` half-withheld
+// (found by the first adversarial review). `.`, `-`, `:` and `/` continue only
+// when the character *beyond* them, one step further in the same direction, is
+// itself an identifier character: `sensor.ENERGY.Power.Max` keeps the dot as a
+// continuation because `Max` follows it, while `… is sensor.ENERGY.Power.` does
+// not, because nothing follows the sentence-ending period. Before this, every
+// one of the four was a continuation unconditionally, so a value at a sentence's
+// end was never masked at all — found by a second adversarial review. Checked
+// once per side of a match, with dir carrying which side, rather than as one
+// direction-blind rule: the character before a match and the one after it are
+// examined by looking further in opposite directions.
+func wordBoundaryChar(runes []rune, i, dir int) bool {
+	if i < 0 || i >= len(runes) {
+		return false
+	}
+	r := runes[i]
+	if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+		return true
+	}
+	switch r {
+	case '.', '-', ':', '/':
+		return identifierChar(runes, i+dir)
+	default:
+		return false
+	}
+}
+
+// identifierChar reports whether runes[i] is a letter, a digit or `_` — the
+// characters wordBoundaryChar looks for beyond a `.`, `-`, `:` or `/` to decide
+// whether that punctuation continues an identifier or ends one. Out of range is
+// never one of these, the same as wordBoundaryChar's own out-of-range answer.
+func identifierChar(runes []rune, i int) bool {
+	if i < 0 || i >= len(runes) {
+		return false
+	}
+	r := runes[i]
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 }
 
 // specOf reads one criterion out of a node, which may be a mapping or a bare

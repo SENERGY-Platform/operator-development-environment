@@ -18,6 +18,7 @@ package experiments_test
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -640,5 +641,87 @@ func TestMaskedForKeepsAPeakMemoryFigureTheDeveloperDeclared(t *testing.T) {
 	if masked.ResourceUsage.PeakMemoryMB != 1234 {
 		t.Errorf("resource_usage = %+v, want the declared figure kept",
 			masked.ResourceUsage)
+	}
+}
+
+// --- a criteria file that could not be read or parsed at all (D38, second review) ---
+//
+// yamlsubset.go's own parse errors quote the raw line that stopped them with %q,
+// on purpose: readCriteria wraps that error into criteria_unparseable's Detail,
+// and the developer's own unmasked route (svc.Results) needs the line to fix it.
+// criteria_unreadable's Detail can equally name whatever readCriteria's own
+// callers returned. Both left Metric empty, which is exactly what
+// withholdCriterion's ordinary shortcut let straight through unexamined — so the
+// raw line reached a model through summary.EvaluationCriteria and
+// get_experiment_results, the same class of leak D38 already closed for
+// read_file, on a route nobody had pointed the same fix at.
+
+// The value itself, not the wording of any message, is what has to be gone from
+// the masked JSON — the same standard the report that found this asked for.
+func TestMaskedForReplacesAnUnparseableCriteriaFilesRawLineWithFixedWords(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	// An unclosed quote around the target series: yamlsubset.go's unquoteYAML
+	// reports "line 2: %q opens a quote it does not close" with the broken value
+	// itself as the %q argument.
+	h.write("evaluation.yaml", "metric: rmse\ntarget_series: \"sensor.ENERGY.Power\n")
+	h.commit("Break the quote around the target series")
+
+	launched := h.launch()
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"rmse": 0.31})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary := summaryOf(t, h, launched.ID)
+	status := summary.EvaluationCriteria.Met.Status()
+	if status.Reason != experiments.ReasonCriteriaUnparseable {
+		t.Fatalf("reason = %q, want criteria_unparseable", status.Reason)
+	}
+	if !strings.Contains(status.Detail, "sensor.ENERGY.Power") {
+		t.Fatalf("this fixture does not exercise the leak: the unmasked detail = %q, "+
+			"want it to still carry the raw line", status.Detail)
+	}
+
+	for _, tier := range []exposure.Tier{exposure.L0, exposure.L1, exposure.L2} {
+		masked := summary.MaskedFor(tier)
+		if masked.EvaluationCriteria.Met.Known() {
+			t.Errorf("%s: met = %v, want no verdict from a file that was not read",
+				tier, masked.EvaluationCriteria.Met)
+		}
+		if reason := masked.EvaluationCriteria.Met.Status().Reason; reason != experiments.ReasonCriteriaUnparseable {
+			t.Errorf("%s: reason = %q, want it kept as criteria_unparseable — only the "+
+				"Detail is fixed text, not the reason", tier, reason)
+		}
+		encoded, err := json.Marshal(masked)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", tier, err)
+		}
+		if strings.Contains(string(encoded), "sensor.ENERGY.Power") {
+			t.Errorf("%s: masked JSON = %s, want the raw line gone — this is what "+
+				"get_experiment_results hands the model, at every tier, unconditionally",
+				tier, encoded)
+		}
+	}
+}
+
+// The developer's own route is unaffected: readCriteria's unmasked return still
+// carries the raw line, because the fix lives in withholdCriterion/MaskedFor, not
+// in readCriteria or yamlsubset.go — the two of which TestAnUnparseableCriteriaFileSaysWhatStoppedIt
+// (criteria_test.go) already pins for the "tab" case, kept green. This is the
+// same property for the target-series-shaped fixture above, stated as its own
+// test rather than folded into the masking assertions.
+func TestTheUnmaskedCriteriaSummaryStillCarriesAnUnparseableFilesRawLine(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml", "metric: rmse\ntarget_series: \"sensor.ENERGY.Power\n")
+	h.commit("Break the quote around the target series")
+
+	launched := h.launch()
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"rmse": 0.31})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary := summaryOf(t, h, launched.ID)
+	if !strings.Contains(summary.EvaluationCriteria.Met.Status().Detail, "sensor.ENERGY.Power") {
+		t.Errorf("unmasked detail = %q, want the developer's own route unaffected by the "+
+			"MaskedFor fix", summary.EvaluationCriteria.Met.Status().Detail)
 	}
 }

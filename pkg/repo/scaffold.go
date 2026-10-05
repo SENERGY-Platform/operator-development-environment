@@ -683,6 +683,12 @@ config_values:
 # to change it (§5.8) — an operator that grades itself against criteria an
 # assistant relaxed has not been evaluated. ODE reads it to say whether a run met
 # what you asked for, and stops there.
+#
+# The assistant never sees this file's bytes at all: a read hands it back ODE's
+# own reading of what is below, comments and formatting left out, with one field
+# missing everywhere it could appear — target_series, because it would hand the
+# assistant the answer to a choice it is meant to make itself (D38). metric,
+# threshold and the rest of this file are shown to it as ODE parsed them.
 
 # The metric a run is judged on. Without a data split it has to be a metric the
 # training actually logs, or a run will report it as absent rather than as failed.

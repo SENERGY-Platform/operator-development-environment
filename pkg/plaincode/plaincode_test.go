@@ -388,3 +388,48 @@ func TestTheReasonNamesWhatStoppedIt(t *testing.T) {
 		}
 	}
 }
+
+// MentionsFile finds a name by its last path component, case-insensitively, in
+// whatever literal spells it — the same comparison CredentialPath already makes
+// for its own closed set, here open to any name a caller passes in. See
+// run_code's use of it in pkg/tools/kernel.go.
+func TestMentionsFileFindsAPathByItsLastComponent(t *testing.T) {
+	for _, code := range []string{
+		`open("evaluation.yaml")`,
+		`open("./evaluation.yaml")`,
+		`open("jonah/pv/evaluation.yaml")`,
+		`open("EVALUATION.YAML")`,
+	} {
+		if !plaincode.MentionsFile(code, "evaluation.yaml") {
+			t.Errorf("%q was not recognised as naming evaluation.yaml", code)
+		}
+	}
+}
+
+// A name that merely resembles the target is not the target, the same
+// distinction TestReadFileRefusesACredentialPathWithoutAsking draws for
+// tokenizer.py. And a bare mention in a comment is not a literal at all —
+// literals() never sees inside one, which is what noCredentialPaths already
+// relies on above.
+func TestMentionsFileDoesNotMatchALookalikeName(t *testing.T) {
+	for _, code := range []string{
+		`open("evaluation_notes.py")`,
+		`open("my_evaluation.yaml_backup")`,
+		"# evaluation.yaml is read below\nopen(\"op.py\")",
+	} {
+		if plaincode.MentionsFile(code, "evaluation.yaml") {
+			t.Errorf("%q was misread as naming evaluation.yaml", code)
+		}
+	}
+}
+
+// The boundary, named rather than hidden: a path built at runtime is two
+// separate literals by the time literals() sees them, and MentionsFile reads
+// each independently — the same limit CredentialPath already documents for
+// itself.
+func TestMentionsFileDoesNotFollowAPathAssembledAtRuntime(t *testing.T) {
+	if plaincode.MentionsFile(`open("evaluation" + ".yaml")`, "evaluation.yaml") {
+		t.Error("a runtime-assembled path was treated as naming the file; " +
+			"this is a documented floor, not a regression")
+	}
+}

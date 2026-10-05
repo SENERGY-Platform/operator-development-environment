@@ -252,6 +252,42 @@ func TestRunCodeRefusesAnEmptyCell(t *testing.T) {
 	}
 }
 
+// The one cell run_code refuses outright regardless of confirmation: naming
+// evaluation.yaml is the same route to the developer's criteria that read_file's
+// own redaction closes (D38), and a developer's yes to run_code is not a yes to
+// that — the refusal happens before RunQueued, so the cell never reaches the
+// kernel to be run at all.
+func TestRunCodeRefusesACellThatNamesTheEvaluationCriteria(t *testing.T) {
+	fake := &fakeKernel{}
+	result := dispatchRunCode(t, runCodeSurface(t, fake, 0), "Bearer t",
+		`print(open("evaluation.yaml").read())`)
+
+	if result.Outcome != OutcomeInvalidInput {
+		t.Fatalf("outcome = %q, want %q", result.Outcome, OutcomeInvalidInput)
+	}
+	if len(fake.code) != 0 {
+		t.Errorf("the cell reached the kernel: %v", fake.code)
+	}
+}
+
+// The refusal is about the one path, not about a cell reading a file at all —
+// op.py is the developer's own operator code and run_code still runs a cell that
+// opens it.
+func TestRunCodeStillRunsACellThatReadsAnOrdinaryFile(t *testing.T) {
+	fake := &fakeKernel{events: []kernel.ExecutionEvent{
+		{Kind: kernel.KindDone, Status: kernel.StatusOK},
+	}}
+	result := dispatchRunCode(t, runCodeSurface(t, fake, 0), "Bearer t",
+		`print(open("op.py").read())`)
+
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	if len(fake.code) != 1 {
+		t.Errorf("code = %v, want the cell to have reached the kernel", fake.code)
+	}
+}
+
 // --- containment ---
 
 /*

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 )
@@ -514,6 +515,256 @@ func TestReadFileRefusesACredentialPathWithoutAsking(t *testing.T) {
 	if result := dispatchTool(t, registry, "read_file",
 		map[string]any{"path": "tokenizer.py"}); result.Outcome != OutcomeOK {
 		t.Errorf("tokenizer.py: outcome = %q, want it read", result.Outcome)
+	}
+}
+
+// evaluationReadSurface is readSurface with room for a real evaluation.yaml. The
+// small budget readSurface uses elsewhere in this file exists to exercise
+// windowing on purpose (TestReadFileWindowsALongFileAndSaysWhereToContinue), and
+// would truncate these fixtures before redaction could be observed at all.
+func evaluationReadSurface(t *testing.T, fake *fakeRepo) *Registry {
+	t.Helper()
+	registry, err := NewSurface(Deps{Repo: fake, RepoMaxReadBytes: 4096})
+	if err != nil {
+		t.Fatalf("NewSurface: %v", err)
+	}
+	return registry
+}
+
+// evaluation.yaml is read, not refused — refusing it outright would deny the
+// model the metric and threshold it needs to reason about a run — but what comes
+// back is ODE's own rendering of the parsed document, not the file's bytes, and
+// its target_series is never in it: that value would hand the model the answer
+// to a choice it is meant to make itself (§5.2, D38).
+func TestReadFileRendersTheEvaluationCriteriaWithoutTheTargetSeries(t *testing.T) {
+	const source = "metric: mae\ngoal: minimise\nthreshold: 30.0\n" +
+		"target_series: sensor.ENERGY.Power\nprediction_field: prediction\nresolution: 1h\n"
+	fake := &fakeRepo{files: map[string]repo.File{
+		"evaluation.yaml": {Path: "evaluation.yaml", Text: source, Size: int64(len(source))},
+	}}
+
+	result := dispatchTool(t, evaluationReadSurface(t, fake), "read_file",
+		map[string]any{"path": "evaluation.yaml"})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	read, ok := result.Content.(ReadFileResult)
+	if !ok {
+		t.Fatalf("content = %T, want a ReadFileResult", result.Content)
+	}
+	if strings.Contains(read.Text, "sensor.ENERGY.Power") {
+		t.Errorf("text = %q, still carries the target series", read.Text)
+	}
+	if len(read.Withheld) != 1 || read.Withheld[0] != "target_series" {
+		t.Errorf("withheld = %v, want [\"target_series\"]", read.Withheld)
+	}
+	if !read.Rendered {
+		t.Error("rendered = false, want true: this text is ODE's own reading of the file")
+	}
+	// metric and threshold are what the model reasons about a run with, and
+	// nothing here may take them away along with the one field that is withheld.
+	if !strings.Contains(read.Text, "metric: mae") || !strings.Contains(read.Text, "threshold: 30") {
+		t.Errorf("text = %q, lost a field besides target_series", read.Text)
+	}
+}
+
+// Every spelling of the path that write_file already refuses under
+// (TestWriteFileWillNotTouchTheEvaluationCriteria) is the same file for read_file
+// too, just rendered instead of refused.
+func TestReadFileRendersEvaluationCriteriaUnderEveryPathSpelling(t *testing.T) {
+	const source = "metric: mae\ntarget_series: sensor.ENERGY.Power\n"
+	fake := &fakeRepo{files: map[string]repo.File{
+		"evaluation.yaml":   {Path: "evaluation.yaml", Text: source, Size: int64(len(source))},
+		"./evaluation.yaml": {Path: "evaluation.yaml", Text: source, Size: int64(len(source))},
+		"Evaluation.yaml":   {Path: "evaluation.yaml", Text: source, Size: int64(len(source))},
+	}}
+	registry := evaluationReadSurface(t, fake)
+
+	for _, path := range []string{"evaluation.yaml", "./evaluation.yaml", "Evaluation.yaml"} {
+		result := dispatchTool(t, registry, "read_file", map[string]any{"path": path})
+		if result.Outcome != OutcomeOK {
+			t.Fatalf("reading %q: outcome = %q", path, result.Outcome)
+		}
+		read := result.Content.(ReadFileResult)
+		if strings.Contains(read.Text, "sensor.ENERGY.Power") {
+			t.Errorf("reading %q: text = %q, still carries the value", path, read.Text)
+		}
+		if len(read.Withheld) != 1 || read.Withheld[0] != "target_series" {
+			t.Errorf("reading %q: withheld = %v, want [\"target_series\"]", path, read.Withheld)
+		}
+		if !read.Rendered {
+			t.Errorf("reading %q: rendered = false, want true", path)
+		}
+	}
+}
+
+// A file that merely shares the extension is ordinary and unaffected — the
+// rendering is about the one path, not about every YAML file in the repository.
+func TestReadFileDoesNotRenderAnotherYAMLFile(t *testing.T) {
+	const source = "name: pv-forecast\ntarget_series: sensor.ENERGY.Power\n"
+	fake := &fakeRepo{files: map[string]repo.File{
+		"operator.yaml": {Path: "operator.yaml", Text: source, Size: int64(len(source))},
+	}}
+	result := dispatchTool(t, evaluationReadSurface(t, fake), "read_file",
+		map[string]any{"path": "operator.yaml"})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	read := result.Content.(ReadFileResult)
+	if read.Text != source {
+		t.Errorf("text = %q, want operator.yaml unchanged", read.Text)
+	}
+	if len(read.Withheld) != 0 {
+		t.Errorf("withheld = %v, want none for a file that is not evaluation.yaml", read.Withheld)
+	}
+	if read.Rendered {
+		t.Error("rendered = true, want false for a file that is not evaluation.yaml")
+	}
+	encoded, err := json.Marshal(read)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), `"rendered"`) {
+		t.Errorf("encoded = %s, want no rendered key at all", encoded)
+	}
+}
+
+// path.Base is what decides the match, the same as write_file's own check, so a
+// nested evaluation.yaml is caught too.
+func TestReadFileRendersEvaluationCriteriaInASubdirectory(t *testing.T) {
+	const source = "metric: mae\ntarget_series: sensor.ENERGY.Power\n"
+	fake := &fakeRepo{files: map[string]repo.File{
+		"jonah/pv/evaluation.yaml": {
+			Path: "jonah/pv/evaluation.yaml", Text: source, Size: int64(len(source)),
+		},
+	}}
+	result := dispatchTool(t, evaluationReadSurface(t, fake), "read_file",
+		map[string]any{"path": "jonah/pv/evaluation.yaml"})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	read := result.Content.(ReadFileResult)
+	if strings.Contains(read.Text, "sensor.ENERGY.Power") {
+		t.Errorf("text = %q, a nested evaluation.yaml was not rendered", read.Text)
+	}
+}
+
+// A window mid-file has to be cut from the rendering, and total_lines has to
+// describe the rendering it was cut from — ODE's own reading of the document,
+// not the original file's line count, which the window computation never sees
+// once RenderForAssistant has replaced text.
+func TestReadFileWindowsTheEvaluationCriteriaRendering(t *testing.T) {
+	source := "metric: mae\ngoal: minimise\nthreshold: 30.0\n" +
+		"target_series: sensor.ENERGY.Power\nprediction_field: prediction\nresolution: 1h\n" +
+		"rationale: >\n  Replace the metric and threshold with the ones this operator is\n" +
+		"  actually for.\n"
+	fake := &fakeRepo{files: map[string]repo.File{
+		"evaluation.yaml": {Path: "evaluation.yaml", Text: source, Size: int64(len(source))},
+	}}
+
+	rendered, err := experiments.RenderForAssistant(source)
+	if err != nil {
+		t.Fatalf("RenderForAssistant: %v", err)
+	}
+	renderedLines := strings.Split(strings.TrimSuffix(rendered, "\n"), "\n")
+
+	result := dispatchTool(t, evaluationReadSurface(t, fake), "read_file",
+		map[string]any{"path": "evaluation.yaml", "from_line": 3, "max_lines": 2})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	read := result.Content.(ReadFileResult)
+	if strings.Contains(read.Text, "sensor.ENERGY.Power") {
+		t.Errorf("windowed text = %q, still carries the value", read.Text)
+	}
+	if read.TotalLines != len(renderedLines) {
+		t.Errorf("total_lines = %d, want %d: the rendering's own line count, not the "+
+			"original file's", read.TotalLines, len(renderedLines))
+	}
+	if read.FromLine != 3 || read.Lines != 2 {
+		t.Fatalf("window = %+v, want lines 3-4", read)
+	}
+	if want := strings.Join(renderedLines[2:4], "\n"); read.Text != want {
+		t.Errorf("text = %q, want lines 3-4 of the rendering: %q", read.Text, want)
+	}
+}
+
+// A criteria file this package cannot parse cannot be rendered either, and the
+// same fail-closed rule this tool already applies elsewhere refuses the file
+// whole rather than showing whatever half of it was understood.
+func TestReadFileRefusesAnUnparseableEvaluationCriteria(t *testing.T) {
+	const source = "metric: rmse\nnested:\n\tthreshold: 0.3\n"
+	fake := &fakeRepo{files: map[string]repo.File{
+		"evaluation.yaml": {Path: "evaluation.yaml", Text: source, Size: int64(len(source))},
+	}}
+	result := dispatchTool(t, evaluationReadSurface(t, fake), "read_file",
+		map[string]any{"path": "evaluation.yaml"})
+	if result.Outcome != OutcomeInvalidInput {
+		t.Fatalf("outcome = %q, want invalid input", result.Outcome)
+	}
+	failure, _ := json.Marshal(result.Content)
+	if !strings.Contains(string(failure), "evaluation.yaml") {
+		t.Errorf("refusal = %s, want it to name the file that could not be shown", failure)
+	}
+}
+
+// Finding 1. yamlsubset.go quotes the raw line that stopped a parse with %q in
+// every error it returns, and execute (dispatch.go) puts an executor's error
+// into Failure{Error: err.Error()} verbatim. A target_series line missing its
+// colon fails to parse on exactly the line a developer meant to keep from the
+// model, and unlike TestReadFileRefusesAnUnparseableEvaluationCriteria above —
+// which only checks the refusal names the file — this test searches the failure
+// for the value itself, because a refusal that named the file correctly while
+// still quoting the line it was trying to keep hidden would still be the leak
+// finding 1 is about.
+func TestReadFileRefusalDoesNotQuoteTheLineThatFailedToParse(t *testing.T) {
+	const source = "metric: mae\ntarget_series sensor.ENERGY.Power\n"
+	fake := &fakeRepo{files: map[string]repo.File{
+		"evaluation.yaml": {Path: "evaluation.yaml", Text: source, Size: int64(len(source))},
+	}}
+	result := dispatchTool(t, evaluationReadSurface(t, fake), "read_file",
+		map[string]any{"path": "evaluation.yaml"})
+	if result.Outcome != OutcomeInvalidInput {
+		t.Fatalf("outcome = %q, want invalid input", result.Outcome)
+	}
+	failure, _ := json.Marshal(result.Content)
+	if strings.Contains(string(failure), "sensor.ENERGY.Power") {
+		t.Errorf("refusal = %s, quotes the value from the line that failed to parse", failure)
+	}
+	if strings.Contains(string(failure), "target_series sensor.ENERGY.Power") {
+		t.Errorf("refusal = %s, quotes the whole offending line", failure)
+	}
+}
+
+// The scaffold's own evaluation.yaml has target_series set to nothing, and the
+// marker still has to stand in the rendering: "set" and "not set" must not be
+// distinguishable from where the model sits (D38), so withheld and rendered are
+// populated exactly as they would be for a file that named a value.
+func TestReadFileMarksTheEvaluationCriteriaAsRenderedEvenWithNoTargetSeries(t *testing.T) {
+	const source = "metric: baseline\ngoal: minimise\nthreshold: 0.0\n" +
+		"secondary_metrics: []\ntarget_series:\nprediction_field: prediction\nresolution: 1h\n"
+	fake := &fakeRepo{files: map[string]repo.File{
+		"evaluation.yaml": {Path: "evaluation.yaml", Text: source, Size: int64(len(source))},
+	}}
+	result := dispatchTool(t, evaluationReadSurface(t, fake), "read_file",
+		map[string]any{"path": "evaluation.yaml"})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	read := result.Content.(ReadFileResult)
+	if len(read.Withheld) != 1 || read.Withheld[0] != "target_series" {
+		t.Errorf("withheld = %v, want [\"target_series\"] even though the file set nothing",
+			read.Withheld)
+	}
+	if !read.Rendered {
+		t.Error("rendered = false, want true even though the file set nothing")
+	}
+	if read.Text == source {
+		t.Error("text = the file's own bytes, want ODE's own rendering of it")
+	}
+	if !strings.Contains(read.Text, experiments.WithheldTargetSeries) {
+		t.Errorf("text = %q, want the marker even though the file named no target_series",
+			read.Text)
 	}
 }
 

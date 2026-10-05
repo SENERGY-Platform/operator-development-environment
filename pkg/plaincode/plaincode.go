@@ -319,6 +319,36 @@ func CredentialPath(p string) (string, bool) {
 }
 
 /*
+MentionsFile reports whether code names, in a string literal, a path whose last
+component is name — case-insensitively, the same comparison CredentialPath makes.
+
+Built for a caller with one specific file to refuse rather than a fixed list:
+unlike CredentialPath and noCredentialPaths, which each carry their own closed
+set of names, plaincode learns nothing about name here beyond what the caller
+passes in — pkg/tools' run_code is the caller, and evaluation.yaml is its own to
+know, not this package's (see kernel.go).
+
+Same standing as CredentialPath: a floor, not a boundary. It is built on
+literals(), the same extraction noCredentialPaths uses, so a comment mentioning
+the name is not a match (literals() never sees inside one) and a path assembled
+at runtime is: open("evaluation" + ".yaml") is two separate literals to
+literals() — "evaluation" and ".yaml" — neither of which ends in name, and it
+walks straight past this the same way a runtime-built credential path walks past
+CredentialPath.
+*/
+func MentionsFile(code, name string) bool {
+	target := strings.ToLower(name)
+	for _, literal := range literals(code) {
+		lower := strings.ToLower(strings.ReplaceAll(literal, "\\", "/"))
+		parts := strings.Split(lower, "/")
+		if parts[len(parts)-1] == target {
+			return true
+		}
+	}
+	return false
+}
+
+/*
 stripLiterals replaces the contents of string literals with spaces.
 
 Two reasons, and the second is the one that matters. Keywords inside a string are

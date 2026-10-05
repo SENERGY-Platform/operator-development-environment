@@ -391,13 +391,34 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 }
 
 // withholdCriterion blanks a graded criterion whose own metric this copy may not
-// carry, and reports whether it did.
+// carry, and reports whether it did. It also closes a second, unrelated leak on
+// the same field — see the first paragraph below — found by a second adversarial
+// review of D38.
 //
-// The verdict becomes an explicit non-result rather than false, which is D24's
-// rule one level up: "the value is not available to this reader" and "the run
-// missed the target" are different facts, and a bool would have made them the same
-// one. A criterion with no value to begin with is left alone — it already says
-// metric_not_reported, which is the truer reason.
+// A criterion whose Met came from readCriteria failing to read or parse
+// evaluation.yaml at all (criteria_unreadable, criteria_unparseable) carries the
+// developer's own words about why in its Detail, and for criteria_unparseable
+// those words quote the raw line that stopped the parse verbatim, with %q
+// (yamlsubset.go) — on purpose, because readCriteria's own caller, the
+// developer's unmasked results route, needs the line to fix it. That is the same
+// channel D38 already closed for read_file (pkg/tools/repo.go): a target_series
+// line broken just enough to fail to parse would otherwise hand a model back
+// exactly the value RenderForAssistant withholds everywhere else, and it did,
+// through summary.EvaluationCriteria/SecondaryCriteria and get_experiment_results
+// — nothing else on that path ever inspected Detail. This check runs first and
+// unconditionally, before the Metric == "" shortcut below: Metric is always empty
+// for these two reasons, which is exactly what that shortcut otherwise waves
+// through unexamined, and there is no tier at which a raw line from the file
+// belongs in a model's context — this is a visibility boundary, not a grading
+// rule, so it is not gated on tier or on a confirmed split the way the rest of
+// this function is.
+//
+// Below that, criterion.Met is graded and the verdict becomes an explicit
+// non-result rather than false, which is D24's rule one level up: "the value is
+// not available to this reader" and "the run missed the target" are different
+// facts, and a bool would have made them the same one. A criterion with no value
+// to begin with is left alone — it already says metric_not_reported, which is the
+// truer reason.
 //
 // A criterion whose value came from the D37 addendum's param channel
 // (libraryMetricValue, summary.go) is left alone too, and for a reason specific to
@@ -418,6 +439,13 @@ func withholdCriterion(
 	criterion Criterion, allowed map[string]struct{}, times map[string]int64,
 	cutoff int64, hasCutoff, split bool,
 ) (Criterion, bool) {
+	if reason := criterion.Met.Status().Reason; criteriaFileProblem(reason) {
+		criterion.Met = NotEvaluated(reason,
+			"%s could not be read or parsed for grading, so there is nothing here to show; "+
+				"it is unchanged in the Code pane and the developer's own results route has "+
+				"why", EvaluationCriteriaPath)
+		return criterion, true
+	}
 	if criterion.Metric == "" || criterion.Value == nil {
 		return criterion, false
 	}
@@ -433,6 +461,24 @@ func withholdCriterion(
 			"here to grade; the developer's own results route has it",
 		criterion.Metric)
 	return criterion, true
+}
+
+// criteriaFileProblem reports whether reason is a criterion's Met.Status().Reason
+// when evaluation.yaml itself could not be read or parsed — readCriteria's own
+// failure, not a fact about grading a criterion the file did name. Both leave
+// Metric empty, which is what lets them slip past withholdCriterion's ordinary
+// shortcut unless checked first; ReasonNoCriteriaFile and
+// ReasonNoDeveloperCredential also leave Metric empty but carry no line out of
+// the file — their Detail is fixed prose naming a commit or a missing token, never
+// an `err` quoting the document — so they are not in this set and pass through
+// unmasked as before.
+func criteriaFileProblem(reason CriterionReason) bool {
+	switch reason {
+	case ReasonCriteriaUnreadable, ReasonCriteriaUnparseable:
+		return true
+	default:
+		return false
+	}
 }
 
 // memorySourceMetric reads the metric name back out of
