@@ -14,7 +14,6 @@
       "envFile": "${workspaceFolder}/.env",
       "env": {
         "DEBUG": "true",
-        "API_PORT": "8080",
         "CLAUDE_CLI_ENABLED": "true",
       }
     },
