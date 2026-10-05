@@ -112,10 +112,10 @@ exposure tiers of ยง3.2 enforced before any tool runs, and the admin limits of ย
 ### Without an API key
 
 The local `claude` CLI is the development path, and it needs no key. It reaches
-ODE's tools over MCP, so `public_url` has to be something the CLI can resolve:
+ODE's tools over MCP at `api_port` on localhost, which needs no configuring:
 
 ```bash
-CLAUDE_CLI_ENABLED=true PUBLIC_URL=http://localhost:8080 ./ode -config config.json
+CLAUDE_CLI_ENABLED=true ./ode -config config.json
 ```
 
 Startup logs what came up:

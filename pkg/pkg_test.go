@@ -178,3 +178,18 @@ func TestStartM8NeedsAKernelAndARepositoryButDoesNotRefuseWithoutThem(t *testing
 		t.Error("the experiment surface was built without a pod to package a repository in")
 	}
 }
+
+// The CLI provider is a subprocess of this process, so its MCP client reaches
+// ODE at whatever port ODE listens on. public_url used to supply that address,
+// which made it a second copy of api_port: a developer moving the listener off
+// 8080 left the CLI dialling 8080 with nothing there, and nothing in startup
+// said so, because a non-empty public_url looks configured.
+func TestTheMcpEndpointFollowsApiPortAndIgnoresPublicUrl(t *testing.T) {
+	endpoint := mcpEndpoint(&configuration.ConfigStruct{
+		ApiPort:   "8081",
+		PublicUrl: "http://localhost:8080",
+	})
+	if endpoint != "http://localhost:8081/mcp" {
+		t.Errorf("mcpEndpoint = %q, want the api_port one", endpoint)
+	}
+}

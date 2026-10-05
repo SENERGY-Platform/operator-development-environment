@@ -570,10 +570,6 @@ func startM3(
 			return err
 		}
 		deps.MCP = server.Handler(api.AuthenticateMCP(config.RequiredRealmRole))
-		if mcpEndpoint(config) == "" {
-			slog.Warn("the claude CLI provider is enabled but public_url is not set: " +
-				"the CLI will run in text-only advisory mode because it cannot reach ODE's MCP endpoint")
-		}
 	}
 
 	slog.Info("llm surface ready",
@@ -1243,11 +1239,13 @@ func cliTurnTimeout(config configuration.Config) (time.Duration, error) {
 	return parsed, nil
 }
 
+// mcpEndpoint is where the CLI provider's MCP client reaches ODE. The CLI is a
+// subprocess of this process, so it reaches the listener at its own port however
+// the outside world addresses ODE. Deriving it from api_port keeps the port in
+// one place: public_url used to hold a second copy, and a port changed in only
+// one of the two left the CLI pointed at nothing, with no error to say so.
 func mcpEndpoint(config configuration.Config) string {
-	if config.PublicUrl == "" {
-		return ""
-	}
-	return mcp.Endpoint(config.PublicUrl)
+	return mcp.Endpoint("http://localhost:" + config.ApiPort)
 }
 
 func modelPrices(configured []configuration.ModelPrice) []llm.ModelPrice {

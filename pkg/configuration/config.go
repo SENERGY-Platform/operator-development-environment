@@ -190,7 +190,8 @@ type ConfigStruct struct {
 	CompatibleTools   bool         `json:"compatible_tools"`
 
 	// The local `claude` CLI, for development without an API key. Reaches ODE's
-	// tools over MCP, so PublicUrl has to be set for its tools to work.
+	// tools over MCP at ApiPort on localhost — it is a subprocess of this process,
+	// so there is no address to configure for it.
 	ClaudeCliEnabled bool     `json:"claude_cli_enabled"`
 	ClaudeCliBinary  string   `json:"claude_cli_binary"`
 	ClaudeCliModels  []string `json:"claude_cli_models"`
@@ -201,8 +202,9 @@ type ConfigStruct struct {
 	// when chat_confirmation_timeout no longer fits.
 	ClaudeCliTimeout string `json:"claude_cli_timeout"`
 
-	// PublicUrl is how a subprocess reaches this ODE. Needed only by the CLI
-	// provider, which points the CLI's MCP client back at /mcp.
+	// PublicUrl is ODE's own externally reachable base URL. It is read only to
+	// derive the GitHub callback when GithubRedirectUri is empty; the CLI
+	// provider's MCP endpoint comes from ApiPort, not from here.
 	PublicUrl string `json:"public_url"`
 
 	// LlmMaxTokens bounds one response; LlmEffort maps to Anthropic's
