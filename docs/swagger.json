@@ -2346,9 +2346,84 @@
                 }
             }
         },
+        "/input-topics/candidates": {
+            "post": {
+                "description": "Every device this caller may execute (§5.1), sorted path match\nfirst, then function-and-aspect match, then no match, and by\ndisplay name within a group. Reads no series and no\navailability: the fit is the same device-type walk Retarget\napplies to mapping 0 (experiments.FitOf), so a developer can see\nevery device instead of the first ten and choose one with no\nmatch to pick a service and variable by hand.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "experiments"
+                ],
+                "summary": "Devices a topic could move to, with the fit already computed",
+                "parameters": [
+                    {
+                        "description": "the topic to move, and a device search",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.inputTopicCandidatesBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.inputTopicCandidatesResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "a malformed topic, or a negative limit or offset",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "the platform refused this user the topic's own device",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
         "/input-topics/resolve": {
             "post": {
-                "description": "Without device_id, describes the topic against the device it\nalready names. With device_id, rewrites the topic — its name,\nfilterValue and every mapping source — for that device, deriving\nthe counterpart variable from the target device type rather than\nassuming a name or a path survives a device change. Reads the\ntopic's own device under Execute (§5.1: this route decides which\nhistory a run will read), and with device_id present, the target\ndevice the same way.",
+                "description": "Without device_id, describes the topic against the device it\nalready names. With device_id, rewrites the topic — its name,\nfilterValue and every mapping source — for that device, deriving\nthe counterpart variable from the target device type rather than\nassuming a name or a path survives a device change. With\nservice_id also given, the target service is fixed rather than\nderived from mapping 0, and a mapping with no counterpart there is\nguessed instead of refused (RetargetToService) — every guessed\nmapping comes back with guessed=true and a warning naming it.\nservice_id without device_id is a client error. Reads the topic's\nown device under Execute (§5.1: this route decides which history a\nrun will read), and with device_id present, the target device the\nsame way.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2361,7 +2436,7 @@
                 "summary": "Describe or retarget one launch_experiment input topic",
                 "parameters": [
                     {
-                        "description": "the topic, and optionally the device to move it to",
+                        "description": "the topic, and optionally the device (and service) to move it to",
                         "name": "request",
                         "in": "body",
                         "required": true,
@@ -2378,7 +2453,7 @@
                         }
                     },
                     "400": {
-                        "description": "a malformed topic, or one that cannot be derived",
+                        "description": "a malformed topic, one that cannot be derived, or service_id without device_id",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -5725,6 +5800,55 @@
                 }
             }
         },
+        "api.inputTopicCandidate": {
+            "type": "object",
+            "properties": {
+                "device": {
+                    "$ref": "#/definitions/experiments.ResolvedDevice"
+                },
+                "fit": {
+                    "$ref": "#/definitions/experiments.Fit"
+                }
+            }
+        },
+        "api.inputTopicCandidatesBody": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "description": "Limit is how many devices to list; zero means defaultCandidateDeviceLimit,\ndevices.MaxLimit is the ceiling.",
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "search": {
+                    "type": "string"
+                },
+                "topic": {
+                    "$ref": "#/definitions/experiments.InputTopic"
+                }
+            }
+        },
+        "api.inputTopicCandidatesResponse": {
+            "type": "object",
+            "properties": {
+                "candidates": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.inputTopicCandidate"
+                    }
+                },
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
         "api.launchBody": {
             "type": "object",
             "properties": {
@@ -5881,6 +6005,9 @@
             "type": "object",
             "properties": {
                 "device_id": {
+                    "type": "string"
+                },
+                "service_id": {
                     "type": "string"
                 },
                 "topic": {
@@ -6757,6 +6884,39 @@
                 "ReasonLogsUnavailable"
             ]
         },
+        "experiments.Fit": {
+            "type": "object",
+            "properties": {
+                "match": {
+                    "$ref": "#/definitions/experiments.FitMatch"
+                },
+                "reason": {
+                    "description": "Reason says why nothing could be derived. Set for FitNone only.",
+                    "type": "string"
+                },
+                "service": {
+                    "description": "Service is where a move to this device would land, and it is set whatever\nMatch says — the two answer different questions. Match is how the topic's\nfirst mapping found its counterpart, or that it found none; Service is the\nservice the move will read, derived where there was a counterpart and the\nfirst one that can carry the topic where there was not. Naming it in both\ncases is what makes a FitNone row pickable rather than a warning:\nRetargetToService refuses a device it can derive nothing for unless it is\ntold which service to use, so the caller hands this back and the move\nresolves.\n\nA pointer, and nil where no service resolves at all — the origin-side\nfailures, where nothing on this device type is the problem, and a device type\nthat can carry the topic on none of its services. Absent rather than an empty\nResolvedService{}, which a truthiness check would read as a landing service.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/experiments.ResolvedService"
+                        }
+                    ]
+                }
+            }
+        },
+        "experiments.FitMatch": {
+            "type": "string",
+            "enum": [
+                "path",
+                "semantics",
+                "none"
+            ],
+            "x-enum-varnames": [
+                "FitPath",
+                "FitSemantics",
+                "FitNone"
+            ]
+        },
         "experiments.Frame": {
             "type": "object",
             "properties": {
@@ -6973,6 +7133,13 @@
                 "service": {
                     "$ref": "#/definitions/experiments.ResolvedService"
                 },
+                "services": {
+                    "description": "Services are every service of Device's own device type, in the order the\ndevice type itself declares them (see servicesOf). A developer uses this to\nmove the topic onto another service of the same device by hand — the\nlaunch card's service Select — without the picker having to keep a whole\ndevice type in memory just to offer the list.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/experiments.ResolvedService"
+                    }
+                },
                 "topic": {
                     "$ref": "#/definitions/experiments.InputTopic"
                 },
@@ -7015,6 +7182,10 @@
                 },
                 "function_id": {
                     "type": "string"
+                },
+                "guessed": {
+                    "description": "Guessed is true when RetargetToService could not find a counterpart for\nthis mapping on the chosen service and picked a queryable variable by\nposition instead (see RetargetToService and defaultVariable). It is the\none place ODE stops deriving and starts guessing, so a developer reading\nthe launch card needs to see it before approving.",
+                    "type": "boolean"
                 },
                 "source": {
                     "type": "string"

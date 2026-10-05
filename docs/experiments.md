@@ -308,8 +308,22 @@ The counterpart variable on the new device type is looked for in a fixed order:
 first the same path on one of its services, then — failing that — the variable
 with the same **function and aspect** as the original, which is what "reads the
 same thing" means when two device types name it differently. Failing both, the
-topic is refused, naming the mapping that has no counterpart, and the developer
-declines instead of approving something that would read nothing.
+topic is refused, naming the mapping that has no counterpart.
+
+`FitOf` is that search offered on its own, without the rewrite: it answers whether
+a move to a device would resolve, and which service it would land on, from the two
+device types alone. `POST /input-topics/candidates` runs it over every device the
+caller has Execute on, which is what lets the picker sort by fit and still list the
+rest.
+
+**It answers for the whole topic, not for its first mapping.** Deriving mapping 0
+is not enough to know whether the move resolves: mapping 0 picks the service and
+every later mapping then has to come out of that one, so a device type carrying
+the first reading on a service too narrow for the rest refuses the topic. `FitOf`
+therefore finishes by running the move it is about to promise and reports the
+refusal instead of the match — a row promising a landing service is promising one
+the move will actually reach. The dry run walks the same two device types the
+search already walked and costs no platform call.
 
 A characteristic that differs between the two is a **warning, not a conversion**.
 Operator Lib converts nothing, so an operator pointed at a device publishing
@@ -320,6 +334,32 @@ inserted a factor would be changing the data under code it cannot see.
 
 Every mapping of one topic has to land on the same service, because a topic is one
 Kafka topic and cannot read two.
+
+### Naming the service is what lets a developer move a topic anywhere
+
+The refusal above is right as long as nobody said where to land. It is wrong as the
+last word: a developer who knows a device carries the reading, under a function and
+aspect nobody modelled the same way twice, would be told no by a rule that only
+knows what the ontology declares.
+
+So `resolve` takes an optional `service_id`, and with one present the derivation
+changes shape. The service is no longer searched for — it is given — and each
+mapping is resolved inside it: same path first, then same function and aspect, and
+failing both **the first queryable variable of that service that no other mapping
+already took**, preferring one of the same type. Such a mapping is marked
+`guessed`, and carries a warning naming it, the service and the variable.
+
+This is the one place in ODE where a derivation stops deriving. Three things keep
+it honest. It happens only when a developer named the service, never on the
+assistant's path — `launch_experiment` reaches `Retarget` with no service and gets
+the refusal unchanged. Every guess is labelled in the answer rather than inferable
+from it, so the card can mark the row rather than present it as resolved. And the
+result is still a proposal: the developer approves it, with the variable select
+for every mapping sitting right there.
+
+A service with no queryable variable at all is still refused. There would be
+nothing to choose from, and a guess out of an empty set is not a weaker derivation
+but a fabrication.
 
 ### A mapping's `source` is not a `Variable.Path`, and nothing here says what it is
 

@@ -30,9 +30,15 @@ import (
 // launch_experiment card shows this rather than the raw InputTopic, and moving a
 // topic to another device is a Retarget call that returns the same shape.
 type Resolved struct {
-	Topic    InputTopic        `json:"topic"`
-	Device   ResolvedDevice    `json:"device"`
-	Service  ResolvedService   `json:"service"`
+	Topic   InputTopic      `json:"topic"`
+	Device  ResolvedDevice  `json:"device"`
+	Service ResolvedService `json:"service"`
+	// Services are every service of Device's own device type, in the order the
+	// device type itself declares them (see servicesOf). A developer uses this to
+	// move the topic onto another service of the same device by hand — the
+	// launch card's service Select — without the picker having to keep a whole
+	// device type in memory just to offer the list.
+	Services []ResolvedService `json:"services,omitempty"`
 	Mappings []ResolvedMapping `json:"mappings"`
 	// Alternatives are the matched service's other queryable variables, written
 	// in the same source convention as the topic's own mappings (mapping 0's,
@@ -65,6 +71,12 @@ type ResolvedMapping struct {
 	CharacteristicID string `json:"characteristic_id,omitempty"`
 	FunctionID       string `json:"function_id,omitempty"`
 	AspectID         string `json:"aspect_id,omitempty"`
+	// Guessed is true when RetargetToService could not find a counterpart for
+	// this mapping on the chosen service and picked a queryable variable by
+	// position instead (see RetargetToService and defaultVariable). It is the
+	// one place ODE stops deriving and starts guessing, so a developer reading
+	// the launch card needs to see it before approving.
+	Guessed bool `json:"guessed,omitempty"`
 }
 
 // Alternative is one other variable of the matched service, offered so a
@@ -74,6 +86,121 @@ type Alternative struct {
 	VariableName string `json:"variable_name"`
 	VariablePath string `json:"variable_path"`
 	Unit         string `json:"unit,omitempty"`
+}
+
+// FitMatch is how closely a candidate device answers the same thing an input
+// topic's first mapping already reads. The same three outcomes findCounterpart
+// has always distinguished internally — FitMatch and Fit just give them names
+// an API response can carry.
+type FitMatch string
+
+const (
+	// FitPath is a variable on the candidate device with the same Path as the
+	// topic's own mapping-0 variable.
+	FitPath FitMatch = "path"
+	// FitSemantics is a variable with no path match but the same FunctionID and
+	// AspectID.
+	FitSemantics FitMatch = "semantics"
+	// FitNone is neither: the topic cannot be moved to this device without a
+	// developer choosing a service and variable by hand.
+	FitNone FitMatch = "none"
+)
+
+// Fit is one device's answer to "could this topic move here", computed without
+// retargeting anything.
+type Fit struct {
+	Match FitMatch `json:"match"`
+	// Service is where a move to this device would land, and it is set whatever
+	// Match says — the two answer different questions. Match is how the topic's
+	// first mapping found its counterpart, or that it found none; Service is the
+	// service the move will read, derived where there was a counterpart and the
+	// first one that can carry the topic where there was not. Naming it in both
+	// cases is what makes a FitNone row pickable rather than a warning:
+	// RetargetToService refuses a device it can derive nothing for unless it is
+	// told which service to use, so the caller hands this back and the move
+	// resolves.
+	//
+	// A pointer, and nil where no service resolves at all — the origin-side
+	// failures, where nothing on this device type is the problem, and a device type
+	// that can carry the topic on none of its services. Absent rather than an empty
+	// ResolvedService{}, which a truthiness check would read as a landing service.
+	Service *ResolvedService `json:"service,omitempty"`
+	// Reason says why nothing could be derived. Set for FitNone only.
+	Reason string `json:"reason,omitempty"`
+}
+
+// FitOf answers whether moving this topic to this device would resolve, and how
+// its first mapping found its counterpart, so a candidate listing can rank every
+// device a developer may execute without retargeting each one to find out. It
+// reads only the two device types topic and from/to already carry: no series,
+// no platform call.
+//
+// It ends by running the move it is about to promise. Deriving mapping 0 is not
+// enough to know the answer: mapping 0 alone picks the service, and every later
+// mapping then has to come out of that one service, because a topic is one Kafka
+// topic. A device type that carries the first reading on a service too narrow for
+// the rest refuses the whole topic — and a row that had reported FitPath on
+// mapping 0 would have promised a move that fails on the click. The dry run costs
+// nothing a caller is not already paying: it walks the same two device types, and
+// the listing does one platform call for all of them together.
+func FitOf(topic InputTopic, from, to models.ExtendedDevice) Fit {
+	if from.DeviceType == nil || to.DeviceType == nil {
+		return Fit{Match: FitNone, Reason: "one of the two devices carries no device type"}
+	}
+	if len(topic.Mappings) == 0 {
+		return Fit{Match: FitNone, Reason: "the topic has no mapping to match"}
+	}
+
+	originService, ok := findService(*from.DeviceType, topic.Name)
+	if !ok {
+		return Fit{Match: FitNone, Reason: fmt.Sprintf("no service on device type %s is named %s", from.DeviceTypeId, topic.Name)}
+	}
+
+	first := topic.Mappings[0]
+	origin, _, ok := resolveOriginVariable(*from.DeviceType, originService.Id, first.Source)
+	if !ok {
+		return Fit{Match: FitNone, Reason: fmt.Sprintf("mapping %s (%s) names no variable on %s", first.Dest, first.Source, originService.Name)}
+	}
+
+	target, bySemantics, ok := findCounterpart(*to.DeviceType, origin)
+	if !ok {
+		return Fit{
+			Match:   FitNone,
+			Reason:  "no variable with the same path or the same function and aspect",
+			Service: firstLandableService(topic, from, to),
+		}
+	}
+	targetService, ok := serviceByID(*to.DeviceType, target.ServiceID)
+	if !ok {
+		// Unreachable in practice for the reason findCounterpart's own comment
+		// gives: it only ever returns a variable profiler.DeviceTypeVariables
+		// built from to.DeviceType.Services, so its ServiceID always names one.
+		return Fit{Match: FitNone, Reason: fmt.Sprintf("matched service %s not found on device type %s", target.ServiceID, to.DeviceTypeId)}
+	}
+
+	// The service the click will send, so the dry run is the call the click makes
+	// and not a stricter cousin of it: with a serviceID present a later mapping
+	// that finds no counterpart is guessed rather than refused.
+	if _, err := RetargetToService(topic, from, to, targetService.Id); err != nil {
+		return Fit{
+			Match: FitNone,
+			// The error already names the mapping and the service it could not be
+			// placed on, which is what the row's tooltip has to say. Only the
+			// sentinel wrapper is dropped — "invalid experiment request" tells a
+			// developer reading a device list nothing.
+			Reason: strings.TrimPrefix(err.Error(), ErrInvalidRequest.Error()+": "),
+			// Not targetService: that is the one that just refused. Offering it back
+			// would fail on the click for the second time, having said it was
+			// pickable.
+			Service: firstLandableService(topic, from, to),
+		}
+	}
+
+	match := FitPath
+	if bySemantics {
+		match = FitSemantics
+	}
+	return Fit{Match: match, Service: &ResolvedService{ID: targetService.Id, Name: targetService.Name}}
 }
 
 // ValidateResolvableTopic is the shape check Describe and Retarget both start
@@ -147,6 +274,7 @@ func Describe(topic InputTopic, device models.ExtendedDevice) (Resolved, error) 
 		Topic:        topic,
 		Device:       resolvedDeviceOf(device),
 		Service:      ResolvedService{ID: service.Id, Name: service.Name},
+		Services:     servicesOf(*device.DeviceType),
 		Mappings:     resolvedMappings,
 		Alternatives: alternativesOf(service, firstTransform, resolvedMappings),
 		Warnings:     warnings,
@@ -154,15 +282,32 @@ func Describe(topic InputTopic, device models.ExtendedDevice) (Resolved, error) 
 }
 
 // Retarget rewrites a topic for another device, deriving its name, filterValue
-// and every mapping source from the new device's type.
-//
-// Every mapping has to land on the same service the first one does: a topic is
-// one Kafka topic and cannot read two. So mapping 0 alone picks the target
-// service (by path, else by function and aspect — see findCounterpart), and
-// every later mapping is resolved against that one service only; a mapping with
-// no counterpart there refuses the whole topic rather than silently reading a
-// second service.
+// and every mapping source from the new device's type. It is RetargetToService
+// with no serviceID, so mapping 0 alone still picks the target service — by
+// path, else by function and aspect, see findCounterpart — the way it always
+// has; existing callers see no change in behaviour.
 func Retarget(topic InputTopic, from, to models.ExtendedDevice) (Resolved, error) {
+	return RetargetToService(topic, from, to, "")
+}
+
+// RetargetToService is Retarget with the target service fixed by the caller
+// instead of derived from mapping 0's own match. A developer reaches this from
+// the launch card's service Select once they already know which service they
+// want; deriving it through mapping 0 first would refuse a service that fits
+// their intent just because mapping 0's own variable happens to have no
+// counterpart there.
+//
+// Every mapping still has to land on serviceID — a topic is one Kafka topic and
+// cannot read two — but with serviceID set, a mapping with no counterpart no
+// longer refuses the whole topic the way Retarget's own derivation does.
+// Instead it falls back to a guess: the first queryable variable of serviceID
+// that no other mapping of this topic already reads, preferring one whose Type
+// matches the origin variable's (see defaultVariable). This is a guess, not a
+// derivation — the mapping comes back with Guessed set and the response carries
+// a warning naming it, because nothing here confirms the chosen variable holds
+// what the mapping's dest expects. A service with no queryable variable left to
+// guess from still refuses with ErrInvalidRequest: there is nothing to choose.
+func RetargetToService(topic InputTopic, from, to models.ExtendedDevice, serviceID string) (Resolved, error) {
 	if err := ValidateResolvableTopic(topic); err != nil {
 		return Resolved{}, err
 	}
@@ -187,30 +332,62 @@ func Retarget(topic InputTopic, from, to models.ExtendedDevice) (Resolved, error
 			"%w: mapping %s (%s) names no variable on %s",
 			ErrInvalidRequest, first.Dest, first.Source, originService.Name)
 	}
-	firstTarget, bySemantics, ok := findCounterpart(*to.DeviceType, firstOrigin)
-	if !ok {
-		return Resolved{}, fmt.Errorf(
-			"%w: mapping %s (%s) has no counterpart on device type %s",
-			ErrInvalidRequest, first.Dest, first.Source, to.DeviceTypeId)
-	}
-	targetService, ok := serviceByID(*to.DeviceType, firstTarget.ServiceID)
-	if !ok {
-		// Unreachable in practice: findCounterpart only ever returns a variable
-		// profiler.DeviceTypeVariables built from to.DeviceType.Services, so its
-		// ServiceID always names one of them.
-		return Resolved{}, fmt.Errorf(
-			"%w: matched service %s not found on device type %s",
-			ErrInvalidRequest, firstTarget.ServiceID, to.DeviceTypeId)
+
+	var targetService models.Service
+	var firstTarget profiler.Variable
+	var firstBySemantics, firstGuessed bool
+
+	if serviceID == "" {
+		firstTarget, firstBySemantics, ok = findCounterpart(*to.DeviceType, firstOrigin)
+		if !ok {
+			return Resolved{}, fmt.Errorf(
+				"%w: mapping %s (%s) has no counterpart on device type %s",
+				ErrInvalidRequest, first.Dest, first.Source, to.DeviceTypeId)
+		}
+		targetService, ok = serviceByID(*to.DeviceType, firstTarget.ServiceID)
+		if !ok {
+			// Unreachable in practice: findCounterpart only ever returns a variable
+			// profiler.DeviceTypeVariables built from to.DeviceType.Services, so its
+			// ServiceID always names one of them.
+			return Resolved{}, fmt.Errorf(
+				"%w: matched service %s not found on device type %s",
+				ErrInvalidRequest, firstTarget.ServiceID, to.DeviceTypeId)
+		}
+	} else {
+		targetService, ok = serviceByID(*to.DeviceType, serviceID)
+		if !ok {
+			return Resolved{}, fmt.Errorf(
+				"%w: service %s is not on device type %s", ErrInvalidRequest, serviceID, to.DeviceTypeId)
+		}
+		firstTarget, firstBySemantics, ok = findCounterpartInService(targetService, firstOrigin)
+		if !ok {
+			def, defOk := defaultVariable(targetService, firstOrigin.Type, nil)
+			if !defOk {
+				return Resolved{}, fmt.Errorf(
+					"%w: mapping %s (%s) has no counterpart on %s, and %s has no queryable variable left to guess one from",
+					ErrInvalidRequest, first.Dest, first.Source, targetService.Name, targetService.Name)
+			}
+			firstTarget = def
+			firstGuessed = true
+		}
 	}
 
 	resolvedMappings := make([]ResolvedMapping, 0, len(topic.Mappings))
 	newMappings := make([]TopicMapping, 0, len(topic.Mappings))
 	var warnings []string
+	usedPaths := make(map[string]bool, len(topic.Mappings))
 
-	appendMapping := func(dest string, origin, target profiler.Variable, transform sourceTransform, bySemantics bool) {
+	appendMapping := func(dest string, origin, target profiler.Variable, transform sourceTransform, bySemantics, guessed bool) {
 		newSource := transform.apply(target.Path)
 		newMappings = append(newMappings, TopicMapping{Dest: dest, Source: newSource})
-		resolvedMappings = append(resolvedMappings, resolvedMappingOf(dest, newSource, target))
+		resolved := resolvedMappingOf(dest, newSource, target)
+		resolved.Guessed = guessed
+		resolvedMappings = append(resolvedMappings, resolved)
+		usedPaths[target.Path] = true
+		if guessed {
+			warnings = append(warnings, guessedWarning(dest, targetService.Name, target.Path))
+			return
+		}
 		warnings = append(warnings, counterpartWarnings(dest, origin, target, bySemantics)...)
 	}
 
@@ -220,7 +397,7 @@ func Retarget(topic InputTopic, from, to models.ExtendedDevice) (Resolved, error
 	if w := envelopeWarning(first.Dest, firstTransform, first.Source, firstOrigin.Path); w != "" {
 		warnings = append(warnings, w)
 	}
-	appendMapping(first.Dest, firstOrigin, firstTarget, firstTransform, bySemantics)
+	appendMapping(first.Dest, firstOrigin, firstTarget, firstTransform, firstBySemantics, firstGuessed)
 
 	for _, mapping := range topic.Mappings[1:] {
 		origin, transform, ok := resolveOriginVariable(*from.DeviceType, originService.Id, mapping.Source)
@@ -236,12 +413,23 @@ func Retarget(topic InputTopic, from, to models.ExtendedDevice) (Resolved, error
 				ErrInvalidRequest, mapping.Dest, mapping.Source, first.Dest, first.Source)
 		}
 		target, sem, ok := findCounterpartInService(targetService, origin)
+		guessed := false
 		if !ok {
-			return Resolved{}, fmt.Errorf(
-				"%w: mapping %s (%s) has no counterpart on %s, so the topic would have to read a second service",
-				ErrInvalidRequest, mapping.Dest, mapping.Source, targetService.Name)
+			if serviceID == "" {
+				return Resolved{}, fmt.Errorf(
+					"%w: mapping %s (%s) has no counterpart on %s, so the topic would have to read a second service",
+					ErrInvalidRequest, mapping.Dest, mapping.Source, targetService.Name)
+			}
+			def, defOk := defaultVariable(targetService, origin.Type, usedPaths)
+			if !defOk {
+				return Resolved{}, fmt.Errorf(
+					"%w: mapping %s (%s) has no counterpart on %s, and %s has no queryable variable left to guess one from",
+					ErrInvalidRequest, mapping.Dest, mapping.Source, targetService.Name, targetService.Name)
+			}
+			target = def
+			guessed = true
 		}
-		appendMapping(mapping.Dest, origin, target, transform, sem)
+		appendMapping(mapping.Dest, origin, target, transform, sem, guessed)
 	}
 
 	newTopic := InputTopic{
@@ -255,6 +443,7 @@ func Retarget(topic InputTopic, from, to models.ExtendedDevice) (Resolved, error
 		Topic:        newTopic,
 		Device:       resolvedDeviceOf(to),
 		Service:      ResolvedService{ID: targetService.Id, Name: targetService.Name},
+		Services:     servicesOf(*to.DeviceType),
 		Mappings:     resolvedMappings,
 		Alternatives: alternativesOf(targetService, firstTransform, resolvedMappings),
 		Warnings:     warnings,
@@ -436,6 +625,33 @@ func findCounterpartInService(service models.Service, origin profiler.Variable) 
 	return profiler.Variable{}, false, false
 }
 
+// defaultVariable is RetargetToService's fallback for a mapping that has no
+// counterpart on the service the caller fixed: the first queryable variable
+// that no other mapping of this same resolution has already claimed (used),
+// preferring one whose Type matches the origin variable's. used may be nil,
+// which reads as "nothing claimed yet" — the state mapping 0 starts from.
+//
+// This is a guess, not a derivation, so the caller marks whatever it returns
+// Guessed and warns about it; defaultVariable itself only picks, it does not
+// judge whether the pick is any good.
+func defaultVariable(service models.Service, preferType models.Type, used map[string]bool) (profiler.Variable, bool) {
+	var fallback profiler.Variable
+	haveFallback := false
+	for _, v := range profiler.ServiceVariables(service) {
+		if !v.Queryable || used[v.Path] {
+			continue
+		}
+		if v.Type == preferType {
+			return v, true
+		}
+		if !haveFallback {
+			fallback = v
+			haveFallback = true
+		}
+	}
+	return fallback, haveFallback
+}
+
 func resolvedMappingOf(dest, source string, v profiler.Variable) ResolvedMapping {
 	return ResolvedMapping{
 		Dest: dest, Source: source,
@@ -454,6 +670,43 @@ func resolvedDeviceOf(device models.ExtendedDevice) ResolvedDevice {
 		DeviceTypeID:   device.DeviceTypeId,
 		DeviceTypeName: devices.TypeName(device),
 	}
+}
+
+// servicesOf lists every service of a device type, in the order the device type
+// itself declares them. Unsorted on purpose, unlike profiler.DeviceTypeVariables:
+// this is what a developer picks a service from directly, not a derived
+// ranking, so reordering it would just make the Select jump around from one
+// resolve to the next for no reason the developer could see.
+func servicesOf(dt models.DeviceType) []ResolvedService {
+	out := make([]ResolvedService, 0, len(dt.Services))
+	for _, s := range dt.Services {
+		out = append(out, ResolvedService{ID: s.Id, Name: s.Name})
+	}
+	return out
+}
+
+// firstLandableService is the service a move to this device can actually use when
+// nothing was derived, proven by running the move rather than by a property that
+// stands in for it. Nil means no service on this device type can carry the topic,
+// which is the honest answer and the one that keeps a row from promising a move it
+// cannot make.
+//
+// The device type's own order decides, and the walk stops at the first service
+// that works: the caller needs one service to hand back, not a ranking, and the
+// developer's recourse if it is the wrong one is the card's service select. Each
+// attempt is the same walk over the same two device types the fit already made —
+// no series, no platform call — but it is a walk per service, so stopping early is
+// worth the line it costs.
+func firstLandableService(topic InputTopic, from, to models.ExtendedDevice) *ResolvedService {
+	if to.DeviceType == nil {
+		return nil
+	}
+	for _, s := range to.DeviceType.Services {
+		if _, err := RetargetToService(topic, from, to, s.Id); err == nil {
+			return &ResolvedService{ID: s.Id, Name: s.Name}
+		}
+	}
+	return nil
 }
 
 // alternativesOf lists a service's other queryable variables, written in the
@@ -506,4 +759,15 @@ func counterpartWarnings(dest string, origin, target profiler.Variable, bySemant
 		out = append(out, w)
 	}
 	return out
+}
+
+// guessedWarning is RetargetToService's warning for a mapping defaultVariable
+// had to pick for: it names the mapping, says nothing could be derived on the
+// service, and says the variable was chosen by position rather than by reading
+// anything about it — the three things counterpartWarnings would otherwise say
+// do not apply, because this branch never found a match to compare against.
+func guessedWarning(dest, serviceName, path string) string {
+	return fmt.Sprintf(
+		"mapping %s: nothing could be derived on %s, so %s was guessed by position among its queryable variables",
+		dest, serviceName, path)
 }

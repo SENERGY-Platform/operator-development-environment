@@ -27,6 +27,12 @@
     "id": "urn:infai:ses:service:it-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
     "name": "readings"
   },
+  "services": [
+    {
+      "id": "urn:infai:ses:service:it-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "name": "readings"
+    }
+  ],
   "topic": {
     "filterType": "DeviceId",
     "filterValue": "urn:infai:ses:device:input-topics-b",

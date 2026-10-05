@@ -25,10 +25,10 @@ import {
   type ChatSession,
   type DataSplit,
   type InputTopic,
+  type InputTopicFit,
   type Limits,
   type PendingConfirmation,
   type ProviderInfo,
-  type QuickProfileList,
   type ResolvedAlternative,
   type ResolvedInputTopic,
   type Session,
@@ -80,13 +80,8 @@ import { announce } from "./attention";
 import { CodeView } from "./codeview";
 import { LaunchedRunsCard, launchedExperimentId, useLaunchedRuns } from "./experiments";
 import { Markdown } from "./markdown";
-import {
-  CandidateRow,
-  DEFAULT_DEVICE_LIMIT,
-  DeviceLabel,
-  seriesKey,
-} from "./profiler";
-import { Cancelled, odeSocket, profilerSocket, type SocketState } from "./ws";
+import { DeviceLabel } from "./profiler";
+import { Cancelled, odeSocket, type SocketState } from "./ws";
 import { setParam, useParam } from "./router";
 import { Busy, Muted, Pane, Section, dateTime, describe, num, shortId, useLoad } from "./ui";
 import { useConversationPairing, useWorkbenches } from "./workbench";
@@ -3201,11 +3196,15 @@ function LaunchTopicCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topicKey]);
 
-  const moveTo = async (deviceId: string) => {
+  // Also how the service `Select` below moves this topic: it names the same
+  // device the card already shows and the service the developer picked, and a
+  // service change is otherwise exactly what a device change is — a new
+  // `service_id` for the resolve route to read against.
+  const moveTo = async (deviceId: string, serviceId?: string) => {
     setMoving(true);
     setMoveError(null);
     try {
-      const resolved = await api.resolveInputTopic(topic, deviceId);
+      const resolved = await api.resolveInputTopic(topic, deviceId, serviceId);
       resolvedFor.current = JSON.stringify(resolved.topic);
       setPreview(resolved);
       onChange(resolved.topic);
@@ -3264,9 +3263,6 @@ function LaunchTopicCard({
     );
   }
 
-  const firstMapping = preview.mappings[0] as ResolvedInputTopic["mappings"][number] | undefined;
-  const filterable = Boolean(firstMapping?.function_id && firstMapping?.aspect_id);
-
   return (
     <div className="launch-topic flex flex-col gap-1.5 rounded-md border bg-muted/30 p-2">
       <div className="launch-topic-device flex flex-wrap items-center gap-2 text-sm">
@@ -3290,13 +3286,37 @@ function LaunchTopicCard({
           <CollapsibleContent className="launch-topic-picker mt-2 w-full">
             <DevicePicker
               session={session}
-              functionId={filterable ? firstMapping?.function_id : undefined}
-              aspectId={filterable ? firstMapping?.aspect_id : undefined}
-              onPick={(deviceId) => void moveTo(deviceId)}
+              topic={topic}
+              onPick={(deviceId, serviceId) => void moveTo(deviceId, serviceId)}
             />
           </CollapsibleContent>
         </Collapsible>
       </div>
+      {/* Only where the device type actually offers a choice: a single-service type
+          would show a control that can only ever be set to what it already is. */}
+      {preview.services && preview.services.length > 1 && (
+        <div className="launch-topic-service flex flex-wrap items-center gap-2 text-xs">
+          <span className="muted-inline text-muted-foreground">Service</span>
+          <Select
+            value={preview.service.id}
+            onValueChange={(value) => {
+              if (value === null || value === preview.service.id) return;
+              void moveTo(preview.device.id, value);
+            }}
+          >
+            <SelectTrigger size="sm" aria-label="Service" className="launch-topic-service-select w-auto">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {preview.services.map((service) => (
+                <SelectItem key={service.id} value={service.id}>
+                  {service.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
       {moving && <Busy>Moving this input…</Busy>}
       {moveError && <p className="launch-topic-move-error text-xs text-destructive">{moveError}</p>}
       {preview.mappings.map((mapping, index) => (
@@ -3310,6 +3330,14 @@ function LaunchTopicCard({
           <code className="muted-inline text-muted-foreground">{mapping.variable_path}</code>
           {mapping.unit && (
             <span className="muted-inline text-muted-foreground">({mapping.unit})</span>
+          )}
+          {mapping.guessed && (
+            <span
+              className="tag warn inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs text-foreground"
+              title="Nothing on this service matched this mapping by path or by function and aspect; ODE defaulted to a queryable variable by position rather than refuse the move."
+            >
+              guessed
+            </span>
           )}
           {preview.alternatives && preview.alternatives.length > 0 && (
             <Select
@@ -3349,75 +3377,118 @@ function LaunchTopicCard({
 }
 
 /**
+ * The debounce on the picker's search box.
+ *
+ * Every keystroke is a full `POST /input-topics/candidates` — the device
+ * repository does the filtering, not the browser — so typing "leiste" without
+ * this would cost one read per letter for a query only the last one answers.
+ */
+const DEVICE_PICKER_SEARCH_DEBOUNCE_MS = 300;
+
+/** How a candidate's fit reads on the row: the two derivable kinds get a plain
+ * tag, "none" the same warning tone `CandidateRow` gives an unreadable series —
+ * it is still a row the developer can click, just one the move may refuse. */
+function FitBadge({ fit }: { fit: InputTopicFit }) {
+  if (fit.match === "none") {
+    return (
+      <span
+        className="tag warn inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs text-foreground"
+        title={fit.reason}
+      >
+        no match
+      </span>
+    );
+  }
+  return (
+    <span className="tag inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs">
+      {fit.match === "path" ? "path" : "function + aspect"}
+    </span>
+  );
+}
+
+/**
  * DevicePicker is the candidate list D9's "Move to another device" opens.
  *
- * Not `CandidatesPane` itself (profiler.tsx): that component is not exported —
- * it is the Data pane's own filter form, search box and window controls bundled
- * together, none of which apply to picking one device for one topic. This reuses
- * its exact fetch (`quick_profiles` over the socket, at tier L0) and its row
- * (`CandidateRow`), which are exported, rather than reimplementing either.
+ * Every device the developer has Execute on is offered, not only however many the
+ * device repository happens to list first — the search box is the way to reach
+ * one further down, since this route carries no paging on the frontend side
+ * (docs/experiments.md). The fit shown on each row is `pkg/experiments/retarget.go`'s
+ * own rule, computed once here and applied again — unchanged — by the move a click
+ * triggers, so a row that reads "path" or "function + aspect" is not a browser-side
+ * guess about what will happen next.
  */
 function DevicePicker({
   session,
-  functionId,
-  aspectId,
+  topic,
   onPick,
 }: {
   session: ChatSession;
-  /** Both present filters to comparable series; either absent leaves the list
-   * unfiltered — filtering on nothing would match nothing and read as "there are
-   * no comparable series", which is a different and false claim. */
-  functionId?: string;
-  aspectId?: string;
-  onPick: (deviceId: string) => void;
+  topic: InputTopic;
+  onPick: (deviceId: string, serviceId?: string) => void;
 }) {
+  const [inputValue, setInputValue] = useState("");
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(inputValue), DEVICE_PICKER_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [inputValue]);
+
   const load = useCallback(
-    (signal: AbortSignal) =>
-      profilerSocket.request<QuickProfileList>(
-        "quick_profiles",
-        { limit: DEFAULT_DEVICE_LIMIT },
-        signal,
-      ),
-    [],
+    () => api.inputTopicCandidates(topic, search || undefined),
+    [topic, search],
   );
   const { data, error, loading } = useLoad(load);
 
-  if (loading) return <Busy>Reading candidate devices…</Busy>;
-  if (error) return <Muted>{error}</Muted>;
-  if (!data) return null;
-
-  const filtered =
-    functionId && aspectId
-      ? data.candidates.filter(
-          (c) => c.declared.function_id === functionId && c.declared.aspect_id === aspectId,
-        )
-      : data.candidates;
-
-  // The series of the session's confirmed selection, pinned at the top: the
-  // frozen target the protocol wants is exactly the one already confirmed.
-  const confirmed = new Set(
-    (session.selection?.series ?? []).map((s) => `${s.device_id}|${s.service_id}|${s.variable_path}`),
-  );
-  const ordered = [...filtered].sort(
-    (a, b) => Number(confirmed.has(seriesKey(b))) - Number(confirmed.has(seriesKey(a))),
-  );
+  // The device of the session's confirmed selection, pinned at the top: the
+  // frozen target the protocol wants is exactly the one already confirmed. This
+  // listing is one row per device rather than per series, so a device is all
+  // there is to match a confirmed series on.
+  const confirmed = new Set((session.selection?.series ?? []).map((s) => s.device_id));
+  const ordered = data
+    ? [...data.candidates].sort(
+        (a, b) => Number(confirmed.has(b.device.id)) - Number(confirmed.has(a.device.id)),
+      )
+    : [];
 
   return (
     <div className="device-picker flex flex-col gap-1">
-      {!(functionId && aspectId) && (
-        <Muted>Showing every candidate: this input names no function or aspect to match on.</Muted>
+      <Input
+        value={inputValue}
+        onChange={(event) => setInputValue(event.target.value)}
+        placeholder="Search devices…"
+        aria-label="Search devices"
+        className="device-picker-search"
+      />
+      {loading && <Busy>Reading candidate devices…</Busy>}
+      {error && <Muted>{error}</Muted>}
+      {!loading && !error && ordered.length === 0 && (
+        // Not "no comparable series": that would say something about the plant.
+        // This says something about the search, which is the only reason a
+        // developer with Execute on every device would ever see an empty list.
+        <Muted>No devices match this search.</Muted>
       )}
-      {ordered.length === 0 && <Muted>No comparable series among the candidates.</Muted>}
       {ordered.length > 0 && (
         <Table>
           <TableBody>
-            {ordered.map((candidate, index) => (
-              <CandidateRow
-                key={seriesKey(candidate)}
-                candidate={candidate}
-                rank={index + 1}
-                onSelect={() => onPick(candidate.series_ref.device_id)}
-              />
+            {ordered.map((candidate) => (
+              // The fit's service goes along on every row, not only the ones that
+              // match: on a "no match" it is what turns the row from a warning
+              // into a pick, since the route refuses a device it can derive
+              // nothing for unless it is told which service to read. Which service
+              // it is stays correctable on the card, where the select sits beside
+              // the mappings it decides.
+              <TableRow
+                key={candidate.device.id}
+                onClick={() => onPick(candidate.device.id, candidate.fit.service?.id)}
+              >
+                <TableCell title={candidate.device.id}>
+                  <DeviceLabel device={candidate.device} fallbackId={candidate.device.id} />
+                </TableCell>
+                <TableCell>
+                  <FitBadge fit={candidate.fit} />
+                </TableCell>
+              </TableRow>
             ))}
           </TableBody>
         </Table>

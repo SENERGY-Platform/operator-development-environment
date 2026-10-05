@@ -372,6 +372,10 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		// wildcard — the same reason /quick-profiles sits beside /profiles
 		// rather than under it (see :219 above).
 		secured.POST("/input-topics/resolve", handleResolveInputTopic(deps.Devices))
+		// The DevicePicker's device search, next to /resolve because it answers
+		// the same question about the same kind of thing — a topic and a
+		// device — without retargeting either one.
+		secured.POST("/input-topics/candidates", handleInputTopicCandidates(deps.Devices))
 
 		experimentRoutes := secured.Group("/experiments")
 		experimentRoutes.POST("", handleLaunchExperiment(deps.Experiments))

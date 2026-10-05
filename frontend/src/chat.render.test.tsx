@@ -23,6 +23,7 @@ import {
   workbenchLabel,
   type ChatSession,
   type InputTopic,
+  type InputTopicCandidate,
   type ProviderInfo,
   type ResolvedInputTopic,
   type Session,
@@ -148,12 +149,12 @@ let resolveRetarget: ResolvedInputTopic = inputTopicResolved as ResolvedInputTop
 /** Set to fail the next retarget, for the refused-move test. A move that cannot
  *  be derived has to leave the topic as it was rather than half-applied. */
 let resolveRetargetError: string | null = null;
-/** Every call the card made to the resolve route, as [topic, deviceId]. */
-let resolveCalls: [InputTopic, string | undefined][] = [];
-/** What `quick_profiles` answers the device picker with. */
-let quickCandidates: Record<string, unknown>[] = [];
-/** Every request the device picker made over the socket. */
-let quickProfileRequests: { type: string; payload: unknown }[] = [];
+/** Every call the card made to the resolve route, as [topic, deviceId, serviceId]. */
+let resolveCalls: [InputTopic, string | undefined, string | undefined][] = [];
+/** What `POST /input-topics/candidates` answers the device picker with. */
+let candidateDevices: InputTopicCandidate[] = [];
+/** Every call the device picker made to the candidates route, as [topic, search]. */
+let candidateRequests: [InputTopic, string | undefined][] = [];
 /** Every payload `chat_confirm` streamed, so a test can check `input` travelled
  *  with it. */
 let chatConfirmPayloads: Record<string, unknown>[] = [];
@@ -234,18 +235,6 @@ const fakeSocket = {
         listeners = listeners.filter((entry) => entry !== listener);
       };
     },
-    async request(type: string, payload: unknown) {
-      quickProfileRequests.push({ type, payload });
-      return {
-        candidates: quickCandidates,
-        skipped: [],
-        reads: { availability: 0, usage: 0, values: 0 },
-        coverage_window: { from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z" },
-        devices_listed: quickCandidates.length,
-        total_devices: quickCandidates.length,
-        device_limit: 10,
-      };
-    },
     stream(
       type: string,
       payload: unknown,
@@ -321,8 +310,8 @@ vi.mock("./api", async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
-      resolveInputTopic: async (topic: InputTopic, deviceId?: string) => {
-        resolveCalls.push([topic, deviceId]);
+      resolveInputTopic: async (topic: InputTopic, deviceId?: string, serviceId?: string) => {
+        resolveCalls.push([topic, deviceId, serviceId]);
         if (!deviceId) {
           if (resolvePreviewError) throw new Error(resolvePreviewError);
           if (!resolvePreview) throw new Error("no preview configured for this test");
@@ -330,6 +319,15 @@ vi.mock("./api", async (importOriginal) => {
         }
         if (resolveRetargetError) throw new Error(resolveRetargetError);
         return resolveRetarget;
+      },
+      inputTopicCandidates: async (topic: InputTopic, search?: string) => {
+        candidateRequests.push([topic, search]);
+        return {
+          candidates: candidateDevices,
+          total: candidateDevices.length,
+          limit: 100,
+          offset: 0,
+        };
       },
       chatSessions: async () => ({ sessions: listed }),
       renameChatSession: async (id: string, title: string) => {
@@ -525,8 +523,8 @@ beforeEach(() => {
   resolveRetarget = inputTopicResolved as ResolvedInputTopic;
   resolveRetargetError = null;
   resolveCalls = [];
-  quickCandidates = [];
-  quickProfileRequests = [];
+  candidateDevices = [];
+  candidateRequests = [];
 });
 
 afterEach(async () => {
@@ -2536,37 +2534,33 @@ function previewOf(topic: InputTopic, deviceName: string): ResolvedInputTopic {
   };
 }
 
-/** A quick_profiles candidate, with only the fields CandidateRow and DeviceLabel
- *  actually read. */
-function candidate(deviceId: string, name: string, functionId: string, aspectId: string) {
-  const notComputed = { status: "not_computed", reason: "insufficient_coverage", detail: "" };
+/** An `/input-topics/candidates` row, with only the fields DeviceLabel and the
+ *  picker's own fit badge actually read. Defaults to a "path" fit landing on the
+ *  same service the retarget fixture itself resolves to, since that is the
+ *  service most of these tests want a click to carry. */
+function candidate(
+  deviceId: string,
+  name: string,
+  fit: InputTopicCandidate["fit"] = {
+    match: "path",
+    service: { id: "urn:infai:ses:service:it-bbbb", name: "readings" },
+  },
+): InputTopicCandidate {
   return {
-    series_ref: {
-      device_id: deviceId,
-      service_id: "urn:infai:ses:service:it-bbbb",
-      variable_path: "value.power",
-    },
-    device: { name, device_type_id: "dt-b", device_type_name: "Meter" },
-    tier: "L0",
-    availability: notComputed,
-    volume: notComputed,
-    declared: {
-      characteristic_id: "ch-kilowatt",
-      unit: "kW",
-      unit_source: "ontology",
-      min_value: notComputed,
-      max_value: notComputed,
-      type: "number",
-      function_id: functionId,
-      aspect_id: aspectId,
-    },
-    interaction: "event",
-    liveness: { connection_state: "online", last_value_age_s: notComputed, basis: "" },
-    ontology_completeness: { status: "complete", missing: [] },
-    rank_hints: { span_days: 10, coverage_proxy: 0.9, is_live: true, score: 0.8 },
-    queryable: true,
-    provenance: {},
+    device: { id: deviceId, name, device_type_id: "dt-b", device_type_name: "Meter" },
+    fit,
   };
+}
+
+/** A candidate with no variable comparable by path or by function and aspect on
+ *  any service of the target device type — still listed, still clickable, and
+ *  still naming the service the move would use, which is what the click sends. */
+function unmatchedCandidate(deviceId: string, name: string): InputTopicCandidate {
+  return candidate(deviceId, name, {
+    match: "none",
+    reason: "no variable with the same path or the same function and aspect",
+    service: { id: "urn:infai:ses:service:it-bbbb", name: "readings" },
+  });
 }
 
 /** The device the fixture retarget answer moves the topic to. */
@@ -2604,7 +2598,7 @@ it("a launch_experiment card offers the editor; another tool's card does not", a
 
 it("moving a topic to a device replaces the row with the route's answer, and approving sends input on the socket", async () => {
   resolvePreview = previewOf(TOPIC_A, "PV Inverter");
-  quickCandidates = [candidate(DEVICE_B_ID, "Meter", "fn-power", "aspect-pv")];
+  candidateDevices = [candidate(DEVICE_B_ID, "Meter")];
   pending = [launchConfirmation([TOPIC_A])];
 
   const host = await open();
@@ -2613,7 +2607,7 @@ it("moving a topic to a device replaces the row with the route's answer, and app
 
   await press(host, "Move to another device");
   await settle(5);
-  expect(quickProfileRequests.length).toBeGreaterThan(0);
+  expect(candidateRequests.length).toBeGreaterThan(0);
 
   const row = [...host.querySelectorAll(".device-picker tr")].find((r) =>
     r.textContent?.includes("Meter"),
@@ -2623,6 +2617,9 @@ it("moving a topic to a device replaces the row with the route's answer, and app
   await settle(5);
 
   expect(resolveCalls.at(-1)?.[1]).toBe(DEVICE_B_ID);
+  // The candidate's own fit named the service, so the click carried it rather
+  // than asking the route to derive it a second time.
+  expect(resolveCalls.at(-1)?.[2]).toBe("urn:infai:ses:service:it-bbbb");
   // The row now shows what the route answered, not what was proposed.
   expect(host.textContent).toContain("Meter");
   expect(host.textContent).not.toContain("PV Inverter");
@@ -2647,7 +2644,7 @@ it("moving a topic to a device replaces the row with the route's answer, and app
 
 it("a held launch_experiment confirmation sends the edited input through decide, not a second stream", async () => {
   resolvePreview = previewOf(TOPIC_A, "PV Inverter");
-  quickCandidates = [candidate(DEVICE_B_ID, "Meter", "fn-power", "aspect-pv")];
+  candidateDevices = [candidate(DEVICE_B_ID, "Meter")];
   pending = [{ ...launchConfirmation([TOPIC_A]), out_of_band: true }];
 
   const host = await open();
@@ -2697,18 +2694,54 @@ it("a topic that fails to resolve falls back to its raw JSON, and the card still
 });
 
 /*
- * A topic whose first mapping names no function or aspect: filtering on nothing
- * would match nothing and read as "there are no comparable series", which is a
- * different and false claim — so the picker shows every candidate instead, and
- * says why it is not narrowed.
+ * Matching moved server-side (pkg/experiments/retarget.go's FitOf) and is no
+ * longer a browser filter over a fixed page of candidates: a device with no
+ * variable comparable by path or by function and aspect is still offered, since
+ * refusing to list it would make the picker a second place — after the old
+ * client-side filter it replaces — that decided a device did not count before
+ * the developer ever saw it.
  */
-it("a topic with no function or aspect offers every candidate, unfiltered, with a note", async () => {
-  const preview = previewOf(TOPIC_A, "PV Inverter");
-  preview.mappings[0] = { ...preview.mappings[0], function_id: undefined, aspect_id: undefined };
-  resolvePreview = preview;
-  quickCandidates = [
-    candidate("urn:infai:ses:device:input-topics-b", "Meter", "fn-power", "aspect-pv"),
-    candidate("urn:infai:ses:device:input-topics-c", "Oven", "fn-temperature", "aspect-kitchen"),
+it("a device with no comparable variable is still listed in the picker and is clickable", async () => {
+  resolvePreview = previewOf(TOPIC_A, "PV Inverter");
+  candidateDevices = [unmatchedCandidate("urn:infai:ses:device:input-topics-b", "Oven")];
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+
+  await press(host, "Move to another device");
+  await settle(5);
+
+  const row = [...host.querySelectorAll(".device-picker tr")].find((r) =>
+    r.textContent?.includes("Oven"),
+  ) as HTMLElement | undefined;
+  expect(row, "the unmatched device is not in the picker").not.toBeUndefined();
+  expect(row?.textContent).toContain("no match");
+
+  await act(async () => row?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await settle(5);
+
+  // The click carries the service the fit named. Without one the route would
+  // refuse — it derives nothing here, by definition of this fit — so sending it is
+  // what separates a listed row from a pickable one. Which service it is stays
+  // correctable on the card, where the service select sits beside the mappings.
+  expect(resolveCalls.at(-1)?.[1]).toBe("urn:infai:ses:device:input-topics-b");
+  expect(resolveCalls.at(-1)?.[2]).toBe("urn:infai:ses:service:it-bbbb");
+});
+
+/*
+ * Not every "none" is rescuable. When the reason lies with the origin topic —
+ * a service the origin device type does not have, a mapping naming no variable
+ * there — no service on *this* device changes the outcome, so the backend names
+ * none and the click sends none rather than inventing one.
+ */
+it("a device named no service is clicked without one", async () => {
+  resolvePreview = previewOf(TOPIC_A, "PV Inverter");
+  candidateDevices = [
+    candidate("urn:infai:ses:device:input-topics-b", "Oven", {
+      match: "none",
+      reason: "mapping value (value.power) names no variable on readings",
+    }),
   ];
   pending = [launchConfirmation([TOPIC_A])];
 
@@ -2718,10 +2751,14 @@ it("a topic with no function or aspect offers every candidate, unfiltered, with 
   await press(host, "Move to another device");
   await settle(5);
 
-  expect(host.textContent).toContain("names no function or aspect");
-  const rows = [...host.querySelectorAll(".device-picker tr")];
-  expect(rows.map((r) => r.textContent).join("|")).toContain("Meter");
-  expect(rows.map((r) => r.textContent).join("|")).toContain("Oven");
+  const row = [...host.querySelectorAll(".device-picker tr")].find((r) =>
+    r.textContent?.includes("Oven"),
+  ) as HTMLElement | undefined;
+  await act(async () => row?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await settle(5);
+
+  expect(resolveCalls.at(-1)?.[1]).toBe("urn:infai:ses:device:input-topics-b");
+  expect(resolveCalls.at(-1)?.[2]).toBeUndefined();
 });
 
 /*
@@ -2748,9 +2785,9 @@ it("pins the session's confirmed selection at the top of the candidate list", as
       : s,
   );
   resolvePreview = previewOf(TOPIC_A, "PV Inverter");
-  quickCandidates = [
-    candidate("urn:infai:ses:device:input-topics-b", "Meter", "fn-power", "aspect-pv"),
-    candidate("urn:infai:ses:device:input-topics-c", "Confirmed Device", "fn-power", "aspect-pv"),
+  candidateDevices = [
+    candidate("urn:infai:ses:device:input-topics-b", "Meter"),
+    candidate("urn:infai:ses:device:input-topics-c", "Confirmed Device"),
   ];
   pending = [launchConfirmation([TOPIC_A])];
 
@@ -2773,7 +2810,7 @@ it("pins the session's confirmed selection at the top of the candidate list", as
  */
 it("a move the route refuses is reported and leaves the topic as it was", async () => {
   resolvePreview = previewOf(TOPIC_A, "PV Inverter");
-  quickCandidates = [candidate(DEVICE_B_ID, "Meter", "fn-power", "aspect-pv")];
+  candidateDevices = [candidate(DEVICE_B_ID, "Meter")];
   resolveRetargetError = "mapping value has no counterpart on device type dt-b";
   pending = [launchConfirmation([TOPIC_A])];
 
@@ -2797,6 +2834,71 @@ it("a move the route refuses is reported and leaves the topic as it was", async 
   expect(host.textContent).not.toContain("Meter (");
   expect(buttonNamed(host, "Approve with changes")).toBeUndefined();
   expect(buttonNamed(host, "Approve")).not.toBeUndefined();
+});
+
+/*
+ * The service select is the free choice §5.1 (retarget.go's RetargetToService)
+ * exists for: a developer who wants a different service than the one derivation
+ * landed on, on the very device already shown, without a card that pretends
+ * there was nothing left to choose because it stayed on the default service.
+ */
+it("changing the service select resolves the topic again against the chosen service", async () => {
+  const preview = previewOf(TOPIC_A, "PV Inverter");
+  preview.services = [
+    { id: "urn:infai:ses:service:it-aaaa", name: "readings" },
+    { id: "urn:infai:ses:service:it-aaab", name: "totals" },
+  ];
+  resolvePreview = preview;
+  // Reused for the service change too: the point of this test is which call was
+  // made, not what a real backend would answer for a totals service.
+  resolveRetarget = {
+    ...preview,
+    service: { id: "urn:infai:ses:service:it-aaab", name: "totals" },
+  };
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+
+  const trigger = host.querySelector(".launch-topic-service-select") as HTMLElement | null;
+  expect(trigger, "no service select for a device type with more than one service").not.toBeNull();
+  await act(async () => trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await settle(5);
+
+  const option = [...document.querySelectorAll("[role='option']")].find((o) =>
+    o.textContent?.includes("totals"),
+  ) as HTMLElement | undefined;
+  expect(option, "the other service was not offered").not.toBeUndefined();
+  await act(async () => {
+    for (const type of ["pointerdown", "pointerup", "click"]) {
+      option?.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+    }
+  });
+  await settle(5);
+
+  expect(resolveCalls.at(-1)?.[1]).toBe(preview.device.id);
+  expect(resolveCalls.at(-1)?.[2]).toBe("urn:infai:ses:service:it-aaab");
+  expect(host.textContent).toContain("totals");
+});
+
+/*
+ * A mapping RetargetToService could derive nothing for and defaulted by position
+ * is the one place ODE stops deriving and starts guessing (docs/experiments.md),
+ * and the card has to say so at the mapping rather than let a guess pass as a
+ * derivation.
+ */
+it("a guessed mapping is flagged the same way an unreadable series is", async () => {
+  const preview = previewOf(TOPIC_A, "PV Inverter");
+  preview.mappings[0] = { ...preview.mappings[0], guessed: true };
+  resolvePreview = preview;
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+
+  const flag = host.querySelector(".launch-topic-mapping .tag.warn");
+  expect(flag, "no guessed flag on the mapping").not.toBeNull();
+  expect(flag?.textContent).toBe("guessed");
 });
 
 /*

@@ -250,3 +250,332 @@ func TestResolveInputTopicRejectsATokenWithoutTheDeveloperRole(t *testing.T) {
 		t.Errorf("status = %d, want 403", w.Code)
 	}
 }
+
+// service_id only means anything against a device_id: on its own it names a
+// service on a device type the request never gives, so it is a client error
+// rather than a silently ignored field.
+func TestResolveInputTopicRejectsServiceIDWithoutDeviceID(t *testing.T) {
+	h := inputTopicsHarness(t, []models.ExtendedDevice{
+		inputTopicsMeterDevice(inputTopicsDeviceA, "dt-a", inputTopicsServiceA),
+	})
+
+	body := inputTopicBody(inputTopicsDeviceA)
+	body["service_id"] = inputTopicsServiceB
+	w := h.post(t, "/input-topics/resolve", body, "developer")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400; body %s", w.Code, w.Body.String())
+	}
+}
+
+// inputTopicsTwoServiceMeter has one service whose variable matches
+// inputTopicsMeterDevice's power by path, and a second service that matches
+// nothing — the shape that proves service_id, not mapping 0's own derivation,
+// decides which service a retarget lands on.
+func inputTopicsTwoServiceMeter(deviceID, deviceTypeID, matchServiceID, otherServiceID string) models.ExtendedDevice {
+	return models.ExtendedDevice{
+		Device:          models.Device{Id: deviceID, Name: "Two-service meter", DeviceTypeId: deviceTypeID},
+		ConnectionState: models.ConnectionStateOnline,
+		Permissions:     models.Permissions{Read: true, Execute: true},
+		DeviceType: &models.DeviceType{
+			Id: deviceTypeID, Name: "Two-service meter",
+			Services: []models.Service{
+				{
+					Id: matchServiceID, Name: "matching", Interaction: models.EVENT,
+					Outputs: []models.Content{{
+						ContentVariable: models.ContentVariable{
+							Id: "cv-root", Name: "value", Type: models.Structure,
+							SubContentVariables: []models.ContentVariable{{
+								Id: "cv-power", Name: "power", Type: models.Float,
+								CharacteristicId: "ch-watt", FunctionId: "fn-power", AspectId: "aspect-pv",
+							}},
+						},
+					}},
+				},
+				{
+					Id: otherServiceID, Name: "other", Interaction: models.EVENT,
+					Outputs: []models.Content{{
+						ContentVariable: models.ContentVariable{
+							Id: "cv-humidity", Name: "humidity", Type: models.Float,
+							CharacteristicId: "ch-percent", FunctionId: "fn-humidity", AspectId: "aspect-room",
+						},
+					}},
+				},
+			},
+		},
+	}
+}
+
+// Without service_id, mapping 0 would derive the "matching" service on its own
+// (see TestResolveInputTopicRetargetsToAnotherDevice). Asking for the "other"
+// service instead proves the API layer actually forwards service_id to
+// RetargetToService rather than ignoring it: the mapping lands there anyway,
+// guessed, because "other" has no counterpart for it.
+func TestResolveInputTopicRetargetsToTheRequestedServiceEvenWithoutACounterpart(t *testing.T) {
+	matchServiceID := "urn:infai:ses:service:two-service-match-aaaa"
+	otherServiceID := "urn:infai:ses:service:two-service-other-aaaa"
+	deviceB := "urn:infai:ses:device:two-service-target"
+	h := inputTopicsHarness(t, []models.ExtendedDevice{
+		inputTopicsMeterDevice(inputTopicsDeviceA, "dt-a", inputTopicsServiceA),
+		inputTopicsTwoServiceMeter(deviceB, "dt-two-service", matchServiceID, otherServiceID),
+	})
+
+	body := inputTopicBody(inputTopicsDeviceA)
+	body["device_id"] = deviceB
+	body["service_id"] = otherServiceID
+	w := h.post(t, "/input-topics/resolve", body, "developer")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body %s", w.Code, w.Body.String())
+	}
+	resolved := decodeResolved(t, w.Body.Bytes())
+	if resolved.Service.ID != otherServiceID {
+		t.Errorf("service = %q, want the requested service %s even without a counterpart there",
+			resolved.Service.ID, otherServiceID)
+	}
+	if len(resolved.Mappings) != 1 || !resolved.Mappings[0].Guessed {
+		t.Errorf("mappings = %+v, want the one mapping guessed", resolved.Mappings)
+	}
+}
+
+// --- /input-topics/candidates ---
+
+// inputTopicsSemanticMeter matches inputTopicsMeterDevice's power variable by
+// function and aspect only, under a different path and a different
+// characteristic — a "semantics" fit, never a "path" one.
+func inputTopicsSemanticMeter(deviceID, deviceTypeID, serviceID string) models.ExtendedDevice {
+	return models.ExtendedDevice{
+		Device:          models.Device{Id: deviceID, Name: "Renamed meter", DeviceTypeId: deviceTypeID},
+		ConnectionState: models.ConnectionStateOnline,
+		Permissions:     models.Permissions{Read: true, Execute: true},
+		DeviceType: &models.DeviceType{
+			Id: deviceTypeID, Name: "Renamed meter",
+			Services: []models.Service{{
+				Id: serviceID, Name: "readings", Interaction: models.EVENT,
+				Outputs: []models.Content{{
+					ContentVariable: models.ContentVariable{
+						Id: "cv-reading", Name: "reading", Type: models.Structure,
+						SubContentVariables: []models.ContentVariable{{
+							Id: "cv-watt", Name: "watt", Type: models.Float,
+							CharacteristicId: "ch-kilowatt", FunctionId: "fn-power", AspectId: "aspect-pv",
+						}},
+					},
+				}},
+			}},
+		},
+	}
+}
+
+// inputTopicsUnrelatedMeter matches inputTopicsMeterDevice's power variable on
+// nothing: different path, different function, different aspect — a "none" fit.
+func inputTopicsUnrelatedMeter(deviceID, deviceTypeID, serviceID string) models.ExtendedDevice {
+	return models.ExtendedDevice{
+		Device:          models.Device{Id: deviceID, Name: "Unrelated", DeviceTypeId: deviceTypeID},
+		ConnectionState: models.ConnectionStateOnline,
+		Permissions:     models.Permissions{Read: true, Execute: true},
+		DeviceType: &models.DeviceType{
+			Id: deviceTypeID, Name: "Unrelated",
+			Services: []models.Service{{
+				Id: serviceID, Name: "readings", Interaction: models.EVENT,
+				Outputs: []models.Content{{
+					ContentVariable: models.ContentVariable{
+						Id: "cv-humidity", Name: "humidity", Type: models.Float,
+						CharacteristicId: "ch-percent", FunctionId: "fn-humidity", AspectId: "aspect-room",
+					},
+				}},
+			}},
+		},
+	}
+}
+
+// candidatesBody is the /input-topics/candidates request for
+// inputTopicsMeterDevice(inputTopicsDeviceA)'s topic, with an optional search.
+func candidatesBody(search string) map[string]any {
+	return map[string]any{
+		"topic":  inputTopicBody(inputTopicsDeviceA)["topic"],
+		"search": search,
+	}
+}
+
+type candidateFit struct {
+	Match   string `json:"match"`
+	Reason  string `json:"reason"`
+	Service *struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"service"`
+}
+
+type candidateResponse struct {
+	Candidates []struct {
+		Device struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"device"`
+		Fit candidateFit `json:"fit"`
+	} `json:"candidates"`
+	Total  int64 `json:"total"`
+	Limit  int64 `json:"limit"`
+	Offset int64 `json:"offset"`
+}
+
+func decodeCandidates(t *testing.T, body []byte) candidateResponse {
+	t.Helper()
+	var resp candidateResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode: %v; body %s", err, body)
+	}
+	return resp
+}
+
+// TestWriteInputTopicCandidatesContractFixture captures one response covering
+// all three fit outcomes, the same discipline
+// TestWriteInputTopicContractFixture applies to /resolve: a capture missing
+// one of "path", "semantics" or "none" would let the frontend's picker type
+// drift on a variant no capture ever showed it.
+func TestWriteInputTopicCandidatesContractFixture(t *testing.T) {
+	dir := os.Getenv("ODE_WRITE_CONTRACT")
+	if dir == "" {
+		t.Skip("set ODE_WRITE_CONTRACT to the fixture directory to regenerate")
+	}
+	h := inputTopicsHarness(t, []models.ExtendedDevice{
+		inputTopicsMeterDevice(inputTopicsDeviceA, "dt-a", inputTopicsServiceA),
+		inputTopicsSemanticMeter("urn:infai:ses:device:input-topics-semantic", "dt-semantic",
+			"urn:infai:ses:service:it-semantic-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+		inputTopicsUnrelatedMeter("urn:infai:ses:device:input-topics-none", "dt-none",
+			"urn:infai:ses:service:it-none-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+	})
+
+	w := h.post(t, "/input-topics/candidates", candidatesBody(""), "developer")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body %s", w.Code, w.Body.String())
+	}
+	resp := decodeCandidates(t, w.Body.Bytes())
+	var sawPath, sawSemantics, sawNone bool
+	for _, c := range resp.Candidates {
+		switch c.Fit.Match {
+		case "path":
+			sawPath = true
+		case "semantics":
+			sawSemantics = true
+		case "none":
+			sawNone = true
+		}
+	}
+	if !sawPath || !sawSemantics || !sawNone {
+		t.Fatalf("candidates = %+v, want all three fit outcomes captured so the frontend types every one of them",
+			resp.Candidates)
+	}
+
+	var parsed any
+	if err := json.Unmarshal(w.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	writeFixtureValue(t, dir, "input_topic_candidates.json", parsed)
+}
+
+// A path match sorts before a semantic match, which sorts before no match at
+// all, regardless of what order the device repository served the devices in
+// or how their display names compare — the fix for the picker only ever
+// showing the first ten devices, unsorted by fit, that this route replaces.
+func TestInputTopicCandidatesSortsPathBeforeSemanticsBeforeNone(t *testing.T) {
+	pathServiceID := "urn:infai:ses:service:cand-path-aaaa"
+	semanticServiceID := "urn:infai:ses:service:cand-semantic-aaaa"
+	noneServiceID := "urn:infai:ses:service:cand-none-aaaa"
+
+	// Deliberately named against the fit order: alphabetically the "none" device
+	// would sort first and the "path" device last, so seeing path, then
+	// semantics, then none proves the fit group decides, not the name.
+	pathDevice := inputTopicsMeterDevice("urn:infai:ses:device:cand-path", "dt-cand-path", pathServiceID)
+	pathDevice.Name, pathDevice.DisplayName = "Zebra Path", "Zebra Path"
+	semanticDevice := inputTopicsSemanticMeter("urn:infai:ses:device:cand-semantic", "dt-cand-semantic", semanticServiceID)
+	semanticDevice.Name, semanticDevice.DisplayName = "Mango Semantic", "Mango Semantic"
+	noneDevice := inputTopicsUnrelatedMeter("urn:infai:ses:device:cand-none", "dt-cand-none", noneServiceID)
+	noneDevice.Name, noneDevice.DisplayName = "Apple None", "Apple None"
+
+	h := inputTopicsHarness(t, []models.ExtendedDevice{
+		inputTopicsMeterDevice(inputTopicsDeviceA, "dt-a", inputTopicsServiceA),
+		noneDevice, semanticDevice, pathDevice,
+	})
+
+	w := h.post(t, "/input-topics/candidates", candidatesBody(""), "developer")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body %s", w.Code, w.Body.String())
+	}
+	resp := decodeCandidates(t, w.Body.Bytes())
+
+	indexOf := func(name string) int {
+		for i, c := range resp.Candidates {
+			if c.Device.Name == name {
+				return i
+			}
+		}
+		t.Fatalf("candidates = %+v, want a device named %q", resp.Candidates, name)
+		return -1
+	}
+	pathIdx, semanticIdx, noneIdx := indexOf("Zebra Path"), indexOf("Mango Semantic"), indexOf("Apple None")
+	if !(pathIdx < semanticIdx && semanticIdx < noneIdx) {
+		t.Errorf("order = path:%d semantics:%d none:%d, want path before semantics before none",
+			pathIdx, semanticIdx, noneIdx)
+	}
+	// A device at the bottom of the list is still pickable, and this is what makes
+	// it so: the card sends this service back as service_id and the move resolves
+	// against it instead of refusing.
+	none := resp.Candidates[noneIdx].Fit
+	if none.Service == nil || none.Service.ID != noneServiceID {
+		t.Errorf("service on the unmatched candidate = %+v, want its one service", none.Service)
+	}
+}
+
+func TestInputTopicCandidatesPassesSearchThrough(t *testing.T) {
+	h := inputTopicsHarness(t, []models.ExtendedDevice{
+		inputTopicsMeterDevice(inputTopicsDeviceA, "dt-a", inputTopicsServiceA),
+	})
+
+	w := h.post(t, "/input-topics/candidates", candidatesBody("leiste"), "developer")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body %s", w.Code, w.Body.String())
+	}
+	if h.devices.gotListOptions.Search != "leiste" {
+		t.Errorf("search = %q, want %q", h.devices.gotListOptions.Search, "leiste")
+	}
+}
+
+// §5.1: a candidate ODE cannot read data from is not a candidate a developer
+// can retarget onto, so the listing has to claim Execute, not Read.
+func TestInputTopicCandidatesListsUnderExecute(t *testing.T) {
+	h := inputTopicsHarness(t, []models.ExtendedDevice{
+		inputTopicsMeterDevice(inputTopicsDeviceA, "dt-a", inputTopicsServiceA),
+	})
+
+	w := h.post(t, "/input-topics/candidates", candidatesBody(""), "developer")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body %s", w.Code, w.Body.String())
+	}
+	if h.devices.gotListOptions.Permission != models.Execute {
+		t.Errorf("permission = %q, want execute", string(h.devices.gotListOptions.Permission))
+	}
+}
+
+// A 403 reading the topic's own device means "you may not see that device",
+// the same distinction TestResolveInputTopicForwardsADeviceReadRefusal checks
+// for /resolve.
+func TestInputTopicCandidatesForwardsAForbiddenDeviceRead(t *testing.T) {
+	h := inputTopicsHarness(t, nil)
+	h.devices.err = errors.New("forbidden")
+	h.devices.code = http.StatusForbidden
+
+	w := h.post(t, "/input-topics/candidates", candidatesBody(""), "developer")
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403; body %s", w.Code, w.Body.String())
+	}
+}
+
+func TestInputTopicCandidatesForwardsANotFoundDeviceRead(t *testing.T) {
+	h := inputTopicsHarness(t, nil)
+	h.devices.err = errors.New("not found")
+	h.devices.code = http.StatusNotFound
+
+	w := h.post(t, "/input-topics/candidates", candidatesBody(""), "developer")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404; body %s", w.Code, w.Body.String())
+	}
+}

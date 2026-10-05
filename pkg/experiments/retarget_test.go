@@ -493,3 +493,256 @@ func TestRetargetRefusesMappingsThatDisagreeAboutTheMessageShape(t *testing.T) {
 		t.Errorf("error = %v, want it to say a topic is one message shape", err)
 	}
 }
+
+// --- FitOf ---
+
+// twoUnrelatedVariablesDevice carries two variables that match neither
+// oneServiceDevice's power (fn-power/aspect-pv) nor its total
+// (fn-energy/aspect-pv) by path or by semantics, so a topic aimed at it can
+// only ever be guessed from position — the shape RetargetToService's fallback
+// needs two of, to prove a second guessed mapping does not collide with the
+// first. cv-flow sorts before cv-temp (profiler.ServiceVariables orders by
+// ContentVariable id), so "flow" is always the first unclaimed candidate.
+func twoUnrelatedVariablesDevice(deviceID, deviceTypeID, serviceID string) models.ExtendedDevice {
+	return models.ExtendedDevice{
+		Device:          models.Device{Id: deviceID, Name: "Two unrelated", DeviceTypeId: deviceTypeID},
+		ConnectionState: models.ConnectionStateOnline,
+		Permissions:     models.Permissions{Read: true, Execute: true},
+		DeviceType: &models.DeviceType{
+			Id: deviceTypeID, Name: "Two unrelated",
+			Services: []models.Service{{
+				Id: serviceID, Name: "readings", Interaction: models.EVENT,
+				Outputs: []models.Content{{
+					ContentVariable: models.ContentVariable{
+						Id: "cv-root", Name: "value", Type: models.Structure,
+						SubContentVariables: []models.ContentVariable{
+							{
+								Id: "cv-flow", Name: "flow", Type: models.Float,
+								CharacteristicId: "ch-flow", FunctionId: "fn-flow", AspectId: "aspect-room",
+							},
+							{
+								Id: "cv-temp", Name: "temp", Type: models.Float,
+								CharacteristicId: "ch-temp", FunctionId: "fn-temp", AspectId: "aspect-room",
+							},
+						},
+					},
+				}},
+			}},
+		},
+	}
+}
+
+// emptyServiceDevice has one service with no outputs at all — the shape
+// RetargetToService's fallback needs to prove it refuses rather than guessing
+// when a service has nothing queryable to guess from.
+func emptyServiceDevice(deviceID, deviceTypeID, serviceID string) models.ExtendedDevice {
+	return models.ExtendedDevice{
+		Device:          models.Device{Id: deviceID, Name: "Empty", DeviceTypeId: deviceTypeID},
+		ConnectionState: models.ConnectionStateOnline,
+		Permissions:     models.Permissions{Read: true, Execute: true},
+		DeviceType: &models.DeviceType{
+			Id: deviceTypeID, Name: "Empty",
+			Services: []models.Service{{
+				Id: serviceID, Name: "readings", Interaction: models.EVENT,
+				Outputs: []models.Content{},
+			}},
+		},
+	}
+}
+
+// FitOf is the same rule findCounterpart already applies inside Retarget,
+// exposed so a candidate listing can compute it per device without retargeting
+// each one. These three tests are its path, semantic and no-match outcomes —
+// TestRetargetPreservesEachSourceConvention and
+// TestRetargetMatchesBySemanticsAndWarnsOnCharacteristicChange already cover
+// the same rule from inside Retarget itself.
+func TestFitOfMatchesByPath(t *testing.T) {
+	from := oneServiceDevice(fromDeviceID, fromTypeID, fromServiceID)
+	toServiceID := "urn:infai:ses:service:fit-path-aaaa"
+	to := oneServiceDevice("urn:infai:ses:device:fit-path", "dt-fit-path", toServiceID)
+
+	fit := experiments.FitOf(powerTopic("value.power"), from, to)
+	if fit.Match != experiments.FitPath {
+		t.Fatalf("match = %q, want %q", fit.Match, experiments.FitPath)
+	}
+	if fit.Service == nil || fit.Service.ID != toServiceID {
+		t.Errorf("service = %+v, want the matched service %s", fit.Service, toServiceID)
+	}
+	if fit.Reason != "" {
+		t.Errorf("reason = %q, want none on a path match", fit.Reason)
+	}
+}
+
+func TestFitOfMatchesBySemantics(t *testing.T) {
+	from := oneServiceDevice(fromDeviceID, fromTypeID, fromServiceID)
+	toServiceID := "urn:infai:ses:service:fit-semantic-aaaa"
+	to := renamedPowerDevice("urn:infai:ses:device:fit-semantic", "dt-fit-semantic", toServiceID)
+
+	fit := experiments.FitOf(powerTopic("value.power"), from, to)
+	if fit.Match != experiments.FitSemantics {
+		t.Fatalf("match = %q, want %q", fit.Match, experiments.FitSemantics)
+	}
+	if fit.Service == nil || fit.Service.ID != toServiceID {
+		t.Errorf("service = %+v, want the matched service %s", fit.Service, toServiceID)
+	}
+}
+
+// A device that matches on neither path nor function and aspect reports
+// FitNone with the reason text the /input-topics/candidates response carries
+// verbatim (see docs/... and the JSON contract fixture).
+func TestFitOfReportsNoMatch(t *testing.T) {
+	from := oneServiceDevice(fromDeviceID, fromTypeID, fromServiceID)
+	to := unrelatedDevice("urn:infai:ses:device:fit-none", "dt-fit-none",
+		"urn:infai:ses:service:fit-none-aaaa")
+
+	fit := experiments.FitOf(powerTopic("value.power"), from, to)
+	if fit.Match != experiments.FitNone {
+		t.Fatalf("match = %q, want %q", fit.Match, experiments.FitNone)
+	}
+	if fit.Reason != "no variable with the same path or the same function and aspect" {
+		t.Errorf("reason = %q", fit.Reason)
+	}
+	// Named anyway, and that is what makes this device pickable: the card hands the
+	// service back as serviceID and RetargetToService guesses from there.
+	if fit.Service == nil || fit.Service.ID != "urn:infai:ses:service:fit-none-aaaa" {
+		t.Fatalf("service = %+v, want the one service this topic can land on", fit.Service)
+	}
+	if _, err := experiments.RetargetToService(powerTopic("value.power"), from, to, fit.Service.ID); err != nil {
+		t.Errorf("the offered service does not resolve: %v", err)
+	}
+}
+
+// A fit is about the whole topic, not about its first mapping.
+//
+// Mapping 0 alone picks the service, and every later mapping has to come out of
+// that one service. Here the power counterpart sits on a service that carries
+// nothing else, so the energy mapping has neither a counterpart nor a spare
+// variable to be guessed from and the move refuses. Reporting FitPath because
+// mapping 0 matched would put a row in the picker that promises a landing service
+// and fails on the click.
+func TestFitOfReportsNoMatchWhenALaterMappingCannotLandOnTheMatchedService(t *testing.T) {
+	from := oneServiceDevice(fromDeviceID, fromTypeID, fromServiceID)
+	to := splitAcrossTwoServices("urn:infai:ses:device:fit-split", "dt-fit-split",
+		"urn:infai:ses:service:fit-split-power", "urn:infai:ses:service:fit-split-total")
+	topic := meterTopic("value.power", "value.total")
+
+	fit := experiments.FitOf(topic, from, to)
+	if fit.Match != experiments.FitNone {
+		t.Fatalf("match = %q, want %q: mapping 0 matches by path, but the topic does not resolve",
+			fit.Match, experiments.FitNone)
+	}
+	if !strings.Contains(fit.Reason, "total_out") {
+		t.Errorf("reason = %q, want the mapping that could not be placed", fit.Reason)
+	}
+	if strings.Contains(fit.Reason, experiments.ErrInvalidRequest.Error()) {
+		t.Errorf("reason = %q, want the sentinel wrapper dropped", fit.Reason)
+	}
+	// The service named back is the one the topic can land on, not the one that
+	// just refused. Handing power-readings back would fail on the click a second
+	// time, having said the row was pickable.
+	if fit.Service == nil || fit.Service.Name != "total-readings" {
+		t.Fatalf("service = %+v, want the service the topic can land on", fit.Service)
+	}
+	if _, err := experiments.RetargetToService(topic, from, to, fit.Service.ID); err != nil {
+		t.Errorf("the offered service does not resolve: %v", err)
+	}
+
+	// The claim the fit makes is the one the click tests, so the two have to agree.
+	if _, err := experiments.Retarget(topic, from, to); err == nil {
+		t.Error("Retarget succeeded where FitOf reported no match")
+	}
+}
+
+// A FitNone that no service choice can rescue names none. The origin topic names
+// a service the origin device type does not have, so RetargetToService refuses
+// before it ever looks at the target — naming one would promise a move that cannot
+// happen.
+func TestFitOfNamesNoServiceWhenTheOriginIsWhatFails(t *testing.T) {
+	from := oneServiceDevice(fromDeviceID, fromTypeID, fromServiceID)
+	to := oneServiceDevice("urn:infai:ses:device:fit-origin", "dt-fit-origin",
+		"urn:infai:ses:service:fit-origin-aaaa")
+
+	topic := powerTopic("value.power")
+	topic.Name = "urn_infai_ses_service_not_on_the_origin"
+
+	fit := experiments.FitOf(topic, from, to)
+	if fit.Match != experiments.FitNone {
+		t.Fatalf("match = %q, want %q", fit.Match, experiments.FitNone)
+	}
+	if fit.Service != nil {
+		t.Errorf("service = %+v, want none when the origin is what fails", fit.Service)
+	}
+}
+
+// --- RetargetToService ---
+
+// A service with no counterpart for either mapping still resolves: each
+// mapping falls back to the first queryable variable nothing else has claimed,
+// marked Guessed, with a warning naming it. The second mapping proves the
+// fallback does not hand out the same variable twice.
+func TestRetargetToServiceGuessesADefaultWhenTheChosenServiceHasNoCounterpart(t *testing.T) {
+	from := oneServiceDevice(fromDeviceID, fromTypeID, fromServiceID)
+	toServiceID := "urn:infai:ses:service:guess-target-aaaa"
+	to := twoUnrelatedVariablesDevice("urn:infai:ses:device:guess-target", "dt-guess-target", toServiceID)
+
+	resolved, err := experiments.RetargetToService(
+		meterTopic("value.power", "value.total"), from, to, toServiceID)
+	if err != nil {
+		t.Fatalf("RetargetToService: %v", err)
+	}
+	if len(resolved.Mappings) != 2 {
+		t.Fatalf("mappings = %+v", resolved.Mappings)
+	}
+	first, second := resolved.Mappings[0], resolved.Mappings[1]
+	if !first.Guessed || !second.Guessed {
+		t.Errorf("guessed = %v/%v, want both mappings guessed", first.Guessed, second.Guessed)
+	}
+	if first.VariablePath == second.VariablePath {
+		t.Errorf("both mappings guessed %q, want the second to skip a variable the first already claimed",
+			first.VariablePath)
+	}
+	if first.VariablePath != "value.flow" {
+		t.Errorf("first guess = %q, want the first unclaimed queryable variable (value.flow)", first.VariablePath)
+	}
+	var namedFirst, namedSecond bool
+	for _, w := range resolved.Warnings {
+		if strings.Contains(w, "power_out") && strings.Contains(w, "guessed") {
+			namedFirst = true
+		}
+		if strings.Contains(w, "total_out") && strings.Contains(w, "guessed") {
+			namedSecond = true
+		}
+	}
+	if !namedFirst || !namedSecond {
+		t.Errorf("warnings = %v, want one naming each guessed mapping", resolved.Warnings)
+	}
+}
+
+func TestRetargetToServiceRefusesAnUnknownService(t *testing.T) {
+	from := oneServiceDevice(fromDeviceID, fromTypeID, fromServiceID)
+	to := oneServiceDevice("urn:infai:ses:device:unknown-service", "dt-unknown-service",
+		"urn:infai:ses:service:unknown-service-real")
+
+	_, err := experiments.RetargetToService(powerTopic("value.power"), from, to,
+		"urn:infai:ses:service:does-not-exist")
+	if !errors.Is(err, experiments.ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest", err)
+	}
+	if !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("error = %q, want it to name the missing service", err.Error())
+	}
+}
+
+func TestRetargetToServiceRefusesWhenTheServiceHasNoQueryableVariableToGuessFrom(t *testing.T) {
+	from := oneServiceDevice(fromDeviceID, fromTypeID, fromServiceID)
+	toServiceID := "urn:infai:ses:service:empty-target-aaaa"
+	to := emptyServiceDevice("urn:infai:ses:device:empty-target", "dt-empty-target", toServiceID)
+
+	_, err := experiments.RetargetToService(powerTopic("value.power"), from, to, toServiceID)
+	if !errors.Is(err, experiments.ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest", err)
+	}
+	if !strings.Contains(err.Error(), "power_out") {
+		t.Errorf("error = %q, want it to name the failing mapping's dest", err.Error())
+	}
+}

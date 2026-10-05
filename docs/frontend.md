@@ -443,23 +443,65 @@ per mapping naming the variable, its path and its unit — resolved through
 holds ids and a developer judging which series a run will read needs names.
 
 That card is also where a topic can be moved to another device before approving.
-The candidate list is the Data pane's own, over `quick_profiles`, narrowed to the
-function and aspect of the topic's first mapping so that only comparable series
-are offered, with the session's confirmed selection pinned at the top. **No id is
-shown or typed anywhere on it**: the topic name, the device and every mapping
-source follow from the device that was picked — the derivation is in
+**No id is shown or typed anywhere on it**: the topic name, the device and every
+mapping source follow from the device that was picked — the derivation is in
 [experiments.md](experiments.md), and the decision mechanism in
 [chat-and-streaming.md](chat-and-streaming.md).
 
-Three failure shapes are worth knowing, because each is a state a developer can
-actually reach. A topic whose preview call fails falls back to the plain JSON
-dump for that topic and the card still decides — a preview is an aid, and losing
-it must not cost the developer the decision. A topic whose first mapping declares
-no function or aspect offers the candidate list unfiltered with a note saying why,
-because filtering on nothing would show an empty list, which reads as "there are
-no comparable series" and is a different and false claim. And a move the route
-refuses reports the mapping that has no counterpart and leaves the topic as it
-was, rather than applying half of it.
+#### Every device the developer may read is offered, and the fit is a fact rather than a filter
+
+The picker lists `POST /input-topics/candidates`: every device the caller has
+Execute on, up to a hundred per call, with a search box for the ones beyond that.
+Each row carries how well the device fits the topic — the same rule the move
+itself applies, `FitOf` in `pkg/experiments/retarget.go`, run once on the server
+rather than guessed in the browser. Rows are sorted by that fit, path before
+function-and-aspect before no match, with the session's confirmed selection pinned
+on top.
+
+**Every row is selectable, including the ones that do not fit.** This replaced a
+candidate list that read the Data pane's `quick_profiles` and filtered it in the
+browser on the function and aspect of the topic's first mapping. Two things were
+wrong with that, and they compounded: the filter ran over however many devices the
+listing happened to expand first — ten, because each one costs an availability
+call — and a device that measured the right thing under a different aspect was
+dropped from those ten. What a developer saw was "No comparable series among the
+candidates", which sounds like a statement about the plant and was a statement
+about ten unexamined devices.
+
+Nothing here reads a series, so nothing here costs an availability call and the
+hundred-device default is not a wall-clock decision. That also means the picker
+has no span, coverage, liveness or score column: those belong to a `QuickProfile`,
+and judging a series that way is the Data pane's job.
+
+#### Choosing the service, and the one place ODE guesses
+
+A move lands on one service, because a topic is one Kafka topic. Every row names
+that service, whatever its badge says: derived from the counterpart where there
+was one, and the first service that can carry the topic where there was none. The
+click sends it, and sending it — rather than the listing — is what makes a `no
+match` row more than a warning: the route refuses a device it can derive nothing
+for unless it is told which service to read. The service was tried server-side
+before it was offered, so it resolves.
+
+The card then shows a service select beside the mappings whenever the target
+device type has more than one, so the first service is a starting point and not a
+verdict. Each mapping the derivation could not resolve is marked `guessed` and
+carries a warning naming it. That is the one place ODE stops deriving and starts
+choosing by position; [experiments.md](experiments.md) says why it is worth it.
+
+A `no match` is not always rescuable. When the reason lies with the origin topic —
+a service the origin device type does not have, a mapping naming no variable there
+— no service on the target changes the outcome, so the route offers none and the
+click sends none.
+
+#### Three failure shapes
+
+Each is a state a developer can actually reach. A topic whose preview call fails
+falls back to the plain JSON dump for that topic and the card still decides — a
+preview is an aid, and losing it must not cost the developer the decision. An
+empty picker says the *search* matched nothing, never that there are no comparable
+series. And a move the route refuses reports what it could not resolve and leaves
+the topic as it was, rather than applying half of it.
 
 ### Two runs on one conversation: the later one owns the view
 

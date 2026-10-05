@@ -1,0 +1,53 @@
+{
+  "candidates": [
+    {
+      "device": {
+        "device_type_id": "dt-a",
+        "device_type_name": "Meter",
+        "id": "urn:infai:ses:device:input-topics-a",
+        "name": "Meter"
+      },
+      "fit": {
+        "match": "path",
+        "service": {
+          "id": "urn:infai:ses:service:it-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "name": "readings"
+        }
+      }
+    },
+    {
+      "device": {
+        "device_type_id": "dt-semantic",
+        "device_type_name": "Renamed meter",
+        "id": "urn:infai:ses:device:input-topics-semantic",
+        "name": "Renamed meter"
+      },
+      "fit": {
+        "match": "semantics",
+        "service": {
+          "id": "urn:infai:ses:service:it-semantic-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "name": "readings"
+        }
+      }
+    },
+    {
+      "device": {
+        "device_type_id": "dt-none",
+        "device_type_name": "Unrelated",
+        "id": "urn:infai:ses:device:input-topics-none",
+        "name": "Unrelated"
+      },
+      "fit": {
+        "match": "none",
+        "reason": "no variable with the same path or the same function and aspect",
+        "service": {
+          "id": "urn:infai:ses:service:it-none-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          "name": "readings"
+        }
+      }
+    }
+  ],
+  "limit": 100,
+  "offset": 0,
+  "total": 3
+}

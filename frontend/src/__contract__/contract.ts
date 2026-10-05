@@ -25,6 +25,7 @@ import type {
   ExperimentLogs,
   ExperimentSummary,
   Interpretation,
+  InputTopicCandidateList,
   KernelFiles,
   KernelStatus,
   LLMProfileView,
@@ -79,6 +80,7 @@ import experimentLogs from "./experiment_logs.json";
 import experimentResults from "./experiment_results.json";
 import experimentResultsFailed from "./experiment_results_failed.json";
 import experimentList from "./experiments.json";
+import inputTopicCandidates from "./input_topic_candidates.json";
 import inputTopicResolved from "./input_topic_resolved.json";
 import kernelFiles from "./kernel_files.json";
 import kernelStatus from "./kernel_status.json";
@@ -196,6 +198,10 @@ export const checked = {
   // mapping with a unit reference would leave `unit` untested, since this device
   // type's variables declare a characteristic but no unit reference.
   inputTopicResolved: inputTopicResolved satisfies Loose<ResolvedInputTopic>,
+  // The candidate listing behind the device picker (pkg/api/input_topics.go's
+  // POST /input-topics/candidates), emitted the same way inputTopicResolved above
+  // is — by the API test harness's writeFixtureValue, not captured by hand.
+  inputTopicCandidates: inputTopicCandidates satisfies Loose<InputTopicCandidateList>,
 
   // M9. Emitted by the API test harness through the *real* poller and the real
   // chat engine, so the injected summary, the proposal's fingerprint and the

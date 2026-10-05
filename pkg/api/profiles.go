@@ -56,6 +56,18 @@ const (
 	defaultDeviceLimit = 10
 	// maxDeviceLimit is the ceiling on that override.
 	maxDeviceLimit = 200
+
+	// defaultCandidateDeviceLimit is how many devices
+	// /input-topics/candidates lists by default.
+	//
+	// A hundred rather than defaultDeviceLimit's ten: that ten is sized around
+	// the wall clock of one data-availability call per device, and this route
+	// reads no series and no availability at all — the argument that keeps
+	// quick-profiles small does not apply here. The ceiling is devices.MaxLimit
+	// (1000), because the actual cost this route pays is a single, larger
+	// device-repository response with FullDt set, not a fan-out of platform
+	// calls.
+	defaultCandidateDeviceLimit = 100
 )
 
 // @Summary		Where a device has data

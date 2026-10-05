@@ -2157,6 +2157,14 @@ export interface ResolvedMapping {
   characteristic_id?: string;
   function_id?: string;
   aspect_id?: string;
+  /**
+   * True where the target service had no counterpart for this mapping at all —
+   * neither the same path nor the same function and aspect — and the backend
+   * defaulted to the service's first unclaimed queryable variable instead. The one
+   * place ODE stops deriving and starts guessing (docs/experiments.md), so it is
+   * always accompanied by a warning naming the mapping.
+   */
+  guessed?: boolean;
 }
 
 /** One other variable of the matched service, offered so a developer can correct
@@ -2179,6 +2187,59 @@ export interface ResolvedInputTopic {
   mappings: ResolvedMapping[];
   alternatives?: ResolvedAlternative[];
   warnings?: string[];
+  /**
+   * Every service the target device type has, so a developer can move this topic
+   * onto one `RetargetToService` could derive nothing for, without the picker
+   * needing to know about device types at all — it only ever sees this device's
+   * own answer.
+   */
+  services?: ResolvedService[];
+}
+
+/**
+ * How well a candidate device fits an input topic, computed by the same rule a
+ * move to it would apply (pkg/experiments/retarget.go's `FitOf`): first whether a
+ * service has a variable at the same path, then whether one shares the mapping's
+ * function and aspect. Neither present is `"none"`, and the row is still
+ * selectable — it just may not resolve.
+ */
+export type InputTopicFitMatch = "path" | "semantics" | "none";
+
+export interface InputTopicFit {
+  match: InputTopicFitMatch;
+  /**
+   * Where a move to this device would land — present whatever `match` says, since
+   * the two answer different questions. `match` is how the topic's first mapping
+   * found its counterpart, or that it found none; this is the service the move
+   * will read, and on a `"none"` it is what makes the row pickable rather than a
+   * warning: `resolveInputTopic` refuses a device it can derive nothing for unless
+   * it is told which service to use, so the picker sends this back and the card's
+   * own service select takes over from there.
+   *
+   * Tried server-side, so sending it resolves. Absent only where no service
+   * changes the outcome: a `"none"` whose reason lies with the *origin* topic, and
+   * a device type on which nothing can carry this topic at all.
+   */
+  service?: ResolvedService;
+  /** Why nothing could be derived. Present only when `match` is "none". */
+  reason?: string;
+}
+
+/** One row of `POST /input-topics/candidates`: a device the developer has Execute
+ * on, with how it fits the topic being moved. */
+export interface InputTopicCandidate {
+  device: ResolvedDevice;
+  fit: InputTopicFit;
+}
+
+/** The answer of `POST /input-topics/candidates`. Sorted server-side — path, then
+ * semantics, then none, alphabetically within a group — so the picker only has to
+ * pin the session's confirmed selection on top of what it was handed. */
+export interface InputTopicCandidateList {
+  candidates: InputTopicCandidate[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 /** A Ray job's state, in Ray's own vocabulary (§5.12).
@@ -2857,14 +2918,36 @@ export const api = {
    * device id — rewrites it for that device (docs/experiments.md). Without `deviceId`
    * this is a preview of the topic as proposed; with one it is a move.
    *
+   * `serviceId` forces the move onto a service `Retarget` could derive nothing
+   * for, rather than leaving the developer with a refusal: a mapping with no
+   * counterpart on that service is filled with a positional default and reported
+   * `guessed`, so the card can flag it rather than let it pass as derived
+   * (docs/experiments.md). Ignored without `deviceId` — there is nothing to
+   * retarget onto yet.
+   *
    * 400 for a topic that cannot be derived (a malformed topic, or a mapping with
-   * no counterpart on the target device type); the caller shows that and leaves
-   * the topic unchanged rather than retrying.
+   * no counterpart at all and no `serviceId` given to default it against); the
+   * caller shows that and leaves the topic unchanged rather than retrying.
    */
-  resolveInputTopic: (topic: InputTopic, deviceId?: string) =>
+  resolveInputTopic: (topic: InputTopic, deviceId?: string, serviceId?: string) =>
     post<ResolvedInputTopic>("/input-topics/resolve", {
       topic,
       device_id: deviceId ?? "",
+      service_id: serviceId ?? "",
+    }),
+
+  /**
+   * Every device the developer has Execute on, ranked by how well it fits an input
+   * topic's mappings — computed server-side by the same rule a move applies, so
+   * "comparable" here means what it will mean when the move actually runs
+   * (docs/experiments.md). `search` narrows the device-repository listing itself;
+   * there is no paging on this side, so it is also how a developer reaches a
+   * device beyond the first page rather than a client-side filter over one.
+   */
+  inputTopicCandidates: (topic: InputTopic, search?: string) =>
+    post<InputTopicCandidateList>("/input-topics/candidates", {
+      topic,
+      search: search || undefined,
     }),
 
   experiments: (limit?: number) =>

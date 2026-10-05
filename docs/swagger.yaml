@@ -184,6 +184,40 @@ definitions:
           type: string
         type: array
     type: object
+  api.inputTopicCandidate:
+    properties:
+      device:
+        $ref: '#/definitions/experiments.ResolvedDevice'
+      fit:
+        $ref: '#/definitions/experiments.Fit'
+    type: object
+  api.inputTopicCandidatesBody:
+    properties:
+      limit:
+        description: |-
+          Limit is how many devices to list; zero means defaultCandidateDeviceLimit,
+          devices.MaxLimit is the ceiling.
+        type: integer
+      offset:
+        type: integer
+      search:
+        type: string
+      topic:
+        $ref: '#/definitions/experiments.InputTopic'
+    type: object
+  api.inputTopicCandidatesResponse:
+    properties:
+      candidates:
+        items:
+          $ref: '#/definitions/api.inputTopicCandidate'
+        type: array
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
+    type: object
   api.launchBody:
     properties:
       entrypoint:
@@ -303,6 +337,8 @@ definitions:
   api.resolveInputTopicBody:
     properties:
       device_id:
+        type: string
+      service_id:
         type: string
       topic:
         $ref: '#/definitions/experiments.InputTopic'
@@ -1061,6 +1097,42 @@ definitions:
     - ReasonNoTraceback
     - ReasonNoOutput
     - ReasonLogsUnavailable
+  experiments.Fit:
+    properties:
+      match:
+        $ref: '#/definitions/experiments.FitMatch'
+      reason:
+        description: Reason says why nothing could be derived. Set for FitNone only.
+        type: string
+      service:
+        allOf:
+        - $ref: '#/definitions/experiments.ResolvedService'
+        description: |-
+          Service is where a move to this device would land, and it is set whatever
+          Match says — the two answer different questions. Match is how the topic's
+          first mapping found its counterpart, or that it found none; Service is the
+          service the move will read, derived where there was a counterpart and the
+          first one that can carry the topic where there was not. Naming it in both
+          cases is what makes a FitNone row pickable rather than a warning:
+          RetargetToService refuses a device it can derive nothing for unless it is
+          told which service to use, so the caller hands this back and the move
+          resolves.
+
+          A pointer, and nil where no service resolves at all — the origin-side
+          failures, where nothing on this device type is the problem, and a device type
+          that can carry the topic on none of its services. Absent rather than an empty
+          ResolvedService{}, which a truthiness check would read as a landing service.
+    type: object
+  experiments.FitMatch:
+    enum:
+    - path
+    - semantics
+    - none
+    type: string
+    x-enum-varnames:
+    - FitPath
+    - FitSemantics
+    - FitNone
   experiments.Frame:
     properties:
       file:
@@ -1255,6 +1327,16 @@ definitions:
         type: array
       service:
         $ref: '#/definitions/experiments.ResolvedService'
+      services:
+        description: |-
+          Services are every service of Device's own device type, in the order the
+          device type itself declares them (see servicesOf). A developer uses this to
+          move the topic onto another service of the same device by hand — the
+          launch card's service Select — without the picker having to keep a whole
+          device type in memory just to offer the list.
+        items:
+          $ref: '#/definitions/experiments.ResolvedService'
+        type: array
       topic:
         $ref: '#/definitions/experiments.InputTopic'
       warnings:
@@ -1283,6 +1365,14 @@ definitions:
         type: string
       function_id:
         type: string
+      guessed:
+        description: |-
+          Guessed is true when RetargetToService could not find a counterpart for
+          this mapping on the chosen service and picked a queryable variable by
+          position instead (see RetargetToService and defaultVariable). It is the
+          one place ODE stops deriving and starts guessing, so a developer reading
+          the launch card needs to see it before approving.
+        type: boolean
       source:
         type: string
       unit:
@@ -5279,6 +5369,61 @@ paths:
       summary: Liveness
       tags:
       - meta
+  /input-topics/candidates:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Every device this caller may execute (§5.1), sorted path match
+        first, then function-and-aspect match, then no match, and by
+        display name within a group. Reads no series and no
+        availability: the fit is the same device-type walk Retarget
+        applies to mapping 0 (experiments.FitOf), so a developer can see
+        every device instead of the first ten and choose one with no
+        match to pick a service and variable by hand.
+      parameters:
+      - description: the topic to move, and a device search
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.inputTopicCandidatesBody'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.inputTopicCandidatesResponse'
+        "400":
+          description: a malformed topic, or a negative limit or offset
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: the platform refused this user the topic's own device
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Devices a topic could move to, with the fit already computed
+      tags:
+      - experiments
   /input-topics/resolve:
     post:
       consumes:
@@ -5288,12 +5433,18 @@ paths:
         already names. With device_id, rewrites the topic — its name,
         filterValue and every mapping source — for that device, deriving
         the counterpart variable from the target device type rather than
-        assuming a name or a path survives a device change. Reads the
-        topic's own device under Execute (§5.1: this route decides which
-        history a run will read), and with device_id present, the target
-        device the same way.
+        assuming a name or a path survives a device change. With
+        service_id also given, the target service is fixed rather than
+        derived from mapping 0, and a mapping with no counterpart there is
+        guessed instead of refused (RetargetToService) — every guessed
+        mapping comes back with guessed=true and a warning naming it.
+        service_id without device_id is a client error. Reads the topic's
+        own device under Execute (§5.1: this route decides which history a
+        run will read), and with device_id present, the target device the
+        same way.
       parameters:
-      - description: the topic, and optionally the device to move it to
+      - description: the topic, and optionally the device (and service) to move it
+          to
         in: body
         name: request
         required: true
@@ -5307,7 +5458,8 @@ paths:
           schema:
             $ref: '#/definitions/experiments.Resolved'
         "400":
-          description: a malformed topic, or one that cannot be derived
+          description: a malformed topic, one that cannot be derived, or service_id
+            without device_id
           schema:
             additionalProperties:
               type: string
