@@ -551,6 +551,13 @@ dev = ["pytest"]
 
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+# "package = false" above keeps the modules out of the environment, and pytest
+# puts the test file's own directory on sys.path rather than the repository root.
+# Without this line "pytest" cannot import op, and only "python -m pytest" works,
+# because that form adds the working directory itself.
+pythonpath = ["."]
 `,
 
 	"Dockerfile": `# The operator image. Built and pushed by .github/workflows/build.yml.

@@ -135,6 +135,22 @@ func TestThePinReachesTheProjectFile(t *testing.T) {
 	}
 }
 
+// The README and the test file both tell the developer to run bare "pytest". That
+// only imports op if the repository root is on sys.path, which nothing else in the
+// scaffold puts there: the modules sit at the root and "package = false" keeps them
+// out of the environment.
+func TestTheDocumentedPytestInvocationCanImportTheOperator(t *testing.T) {
+	rendered := renderTestScaffold(t)
+	if !strings.Contains(rendered["pyproject.toml"], `pythonpath = ["."]`) {
+		t.Errorf("pyproject.toml does not put the repository root on sys.path:\n%s", rendered["pyproject.toml"])
+	}
+	for _, name := range []string{"README.md", "tests/test_op.py"} {
+		if !strings.Contains(rendered[name], "uv run --extra dev pytest") {
+			t.Errorf("%s does not name the tested invocation", name)
+		}
+	}
+}
+
 // The operator skeleton has to be the shape Operator Lib actually calls, or it is
 // a file that looks right and never runs.
 func TestTheOperatorSkeletonImplementsWhatOperatorLibCalls(t *testing.T) {
