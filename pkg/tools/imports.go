@@ -26,7 +26,7 @@ import (
 	"time"
 
 	flowengine "github.com/SENERGY-Platform/analytics-flow-engine/lib"
-	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
+	dsmodel "github.com/SENERGY-Platform/device-selection/v2/pkg/model"
 	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/imports"

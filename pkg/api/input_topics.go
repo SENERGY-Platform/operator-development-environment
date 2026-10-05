@@ -22,7 +22,7 @@ import (
 	"sort"
 	"strings"
 
-	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
+	drmodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 	"github.com/gin-gonic/gin"
 

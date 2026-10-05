@@ -19,7 +19,7 @@ package imports
 import (
 	"testing"
 
-	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
+	dsmodel "github.com/SENERGY-Platform/device-selection/v2/pkg/model"
 	"github.com/SENERGY-Platform/models/go/models"
 )
 

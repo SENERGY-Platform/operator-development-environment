@@ -22,9 +22,9 @@ import (
 	"strings"
 	"testing"
 
-	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
-	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
-	"github.com/SENERGY-Platform/device-selection/pkg/model/devicemodel"
+	drmodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
+	dsmodel "github.com/SENERGY-Platform/device-selection/v2/pkg/model"
+	"github.com/SENERGY-Platform/device-selection/v2/pkg/model/devicemodel"
 	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 )

@@ -22,7 +22,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/SENERGY-Platform/device-repository/lib/model"
+	"github.com/SENERGY-Platform/device-repository/v3/lib/model"
 )
 
 // An empty criteria list is the one call to this endpoint that is actively

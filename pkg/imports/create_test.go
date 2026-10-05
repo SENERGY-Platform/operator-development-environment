@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
+	dsmodel "github.com/SENERGY-Platform/device-selection/v2/pkg/model"
 	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 )

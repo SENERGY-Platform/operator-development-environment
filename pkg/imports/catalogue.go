@@ -20,7 +20,7 @@ import (
 	"sort"
 	"strings"
 
-	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
+	dsmodel "github.com/SENERGY-Platform/device-selection/v2/pkg/model"
 )
 
 // What a caller can say about an import type before anything has been deployed

@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
+	drmodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
 )
 
 // The one query parameter this client exists for. device-selection's own Go

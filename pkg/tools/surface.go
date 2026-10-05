@@ -21,8 +21,8 @@ import (
 	"encoding/json"
 	"time"
 
-	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
-	dsmodel "github.com/SENERGY-Platform/device-selection/pkg/model"
+	drmodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
+	dsmodel "github.com/SENERGY-Platform/device-selection/v2/pkg/model"
 	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 

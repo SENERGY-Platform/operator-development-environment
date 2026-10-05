@@ -20,7 +20,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/SENERGY-Platform/device-repository/lib/model"
+	"github.com/SENERGY-Platform/device-repository/v3/lib/model"
 )
 
 // ErrNoCriteria refuses a query with nothing to filter on.
