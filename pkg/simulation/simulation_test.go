@@ -19,6 +19,8 @@ package simulation_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -379,5 +381,50 @@ func TestAnOversizedUploadIsRefusedBeforeItIsSent(t *testing.T) {
 	}
 	if moses.Count("POST", "/datasets") != 0 {
 		t.Error("the oversized upload reached MOSES anyway")
+	}
+}
+
+// A success status carrying a body that never was JSON is reported as what the
+// simulator said, not as what the decoder made of it. Pattern taken from
+// device-selection, which returns a refusal under the status code of the previous
+// successful call (SNRGY-4750); MOSES has not been seen doing this.
+func TestASuccessCodeCarryingANonJSONBodyIsAnUpstreamError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("forbidden\n"))
+	}))
+	defer server.Close()
+
+	service := simulation.New(server.URL, simulation.Options{HTTPClient: server.Client()})
+	_, err := service.List(context.Background(), token)
+
+	var upstream *simulation.UpstreamError
+	if !errors.As(err, &upstream) {
+		t.Fatalf("err = %v, want an UpstreamError", err)
+	}
+	if upstream.Code != http.StatusOK {
+		t.Errorf("code = %d, want the status that actually arrived", upstream.Code)
+	}
+	if !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("err = %v, want the body quoted: it is the whole content of the answer", err)
+	}
+	if strings.Contains(err.Error(), "invalid character") {
+		t.Errorf("err = %v, want the refusal rather than a decoder message", err)
+	}
+}
+
+// The lenient half: a body that parses is an answer whatever type it was sent
+// under, so a wrong or missing Content-Type never costs a valid response.
+func TestJSONUnderAPlainTextContentTypeIsStillDecoded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	service := simulation.New(server.URL, simulation.Options{HTTPClient: server.Client()})
+	if _, err := service.List(context.Background(), token); err != nil {
+		t.Fatalf("List: %v", err)
 	}
 }

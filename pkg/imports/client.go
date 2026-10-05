@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -34,6 +35,9 @@ import (
 )
 
 const defaultTimeout = 30 * time.Second
+
+// detailLimit bounds how much of an upstream body is quoted back in an error.
+const detailLimit = 4096
 
 // SelectionClient calls device-selection's selectables query.
 //
@@ -311,18 +315,14 @@ func (c *RepositoryClient) ListImportTypes(ctx context.Context, token string, op
 	}
 
 	endpoint := c.baseURL + "/import-types"
-	raw, header, err := doRawWithHeader(ctx, c.http, c.timeout, token, http.MethodGet, endpoint, query, nil)
+	raw, header, status, err := doRawWithHeader(ctx, c.http, c.timeout, token, http.MethodGet, endpoint, query, nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	found := []dsmodel.ImportType{}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &found); err != nil {
-			return nil, 0, &UpstreamError{
-				Resource: endpoint,
-				Code:     http.StatusOK,
-				Err:      fmt.Errorf("decoding response: %w", err),
-			}
+			return nil, 0, decodeFailure(endpoint, status, header, raw, err)
 		}
 	}
 
@@ -352,7 +352,7 @@ func timeoutOrDefault(timeout time.Duration) time.Duration {
 
 func do[T any](ctx context.Context, client *http.Client, timeout time.Duration, token, method, endpoint string, query url.Values, body []byte) (T, error) {
 	var result T
-	raw, err := doRaw(ctx, client, timeout, token, method, endpoint, query, body)
+	raw, header, status, err := doRawWithHeader(ctx, client, timeout, token, method, endpoint, query, body)
 	if err != nil {
 		return result, err
 	}
@@ -361,24 +361,53 @@ func do[T any](ctx context.Context, client *http.Client, timeout time.Duration, 
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if err := decoder.Decode(&result); err != nil {
-		return result, &UpstreamError{
-			Resource: endpoint,
-			Code:     http.StatusOK,
-			Err:      fmt.Errorf("decoding response: %w", err),
-		}
+		return result, decodeFailure(endpoint, status, header, raw, err)
 	}
 	return result, nil
 }
 
+// decodeFailure tells a body that never was JSON from one that is JSON and
+// broken, because only the second is worth describing as a decoding error.
+//
+// A success status can carry an upstream refusal. device-selection returns an
+// error raised while resolving an import type with the status code of the
+// preceding *successful* call rather than with one of its own, so `forbidden`
+// from import-repository arrives as 200 text/plain (v0.0.27,
+// pkg/controller/imports.go:143, and the same at :150 and :157). Decoded, that
+// reads "invalid character 'o' in literal false", which names a byte where the
+// body already names the refusal — so the body is reported instead, under the
+// status that actually arrived.
+//
+// Only a body that failed to decode is classified this way, never one that
+// parsed. net/http sniffs a Content-Type onto an answer that declares none, and
+// a service that sends JSON without announcing it would otherwise be refused over
+// a header it never set.
+func decodeFailure(endpoint string, status int, header http.Header, raw []byte, err error) error {
+	mediaType, _, parseErr := mime.ParseMediaType(header.Get("Content-Type"))
+	if parseErr == nil && mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
+		return &UpstreamError{
+			Resource: endpoint,
+			Code:     status,
+			Err:      fmt.Errorf("%s: %s", mediaType, strings.TrimSpace(string(raw[:min(len(raw), detailLimit)]))),
+		}
+	}
+	return &UpstreamError{
+		Resource: endpoint,
+		Code:     status,
+		Err:      fmt.Errorf("decoding response: %w", err),
+	}
+}
+
 func doRaw(ctx context.Context, client *http.Client, timeout time.Duration, token, method, endpoint string, query url.Values, body []byte) ([]byte, error) {
-	raw, _, err := doRawWithHeader(ctx, client, timeout, token, method, endpoint, query, body)
+	raw, _, _, err := doRawWithHeader(ctx, client, timeout, token, method, endpoint, query, body)
 	return raw, err
 }
 
-// doRawWithHeader is doRaw for the one endpoint whose answer is incomplete
-// without a header: import-repository reports the total of a type listing in
-// X-Total-Count rather than in the body.
-func doRawWithHeader(ctx context.Context, client *http.Client, timeout time.Duration, token, method, endpoint string, query url.Values, body []byte) ([]byte, http.Header, error) {
+// doRawWithHeader is doRaw for the callers that cannot read the body alone:
+// import-repository reports the total of a type listing in X-Total-Count rather
+// than in the body, and every JSON caller needs the status and the Content-Type
+// to tell an answer from an upstream error wearing a success code.
+func doRawWithHeader(ctx context.Context, client *http.Client, timeout time.Duration, token, method, endpoint string, query url.Values, body []byte) ([]byte, http.Header, int, error) {
 	// Always bounded. A caller that passed a deadline-free context would otherwise
 	// wait forever, the same reasoning pkg/timeseries applies.
 	if timeout > 0 {
@@ -393,7 +422,7 @@ func doRawWithHeader(ctx context.Context, client *http.Client, timeout time.Dura
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
 	if err != nil {
-		return nil, nil, fmt.Errorf("imports: building request for %s: %w", endpoint, err)
+		return nil, nil, 0, fmt.Errorf("imports: building request for %s: %w", endpoint, err)
 	}
 	if query != nil {
 		req.URL.RawQuery = query.Encode()
@@ -407,18 +436,18 @@ func doRawWithHeader(ctx context.Context, client *http.Client, timeout time.Dura
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, &UpstreamError{Resource: endpoint, Code: 0, Err: err}
+		return nil, nil, 0, &UpstreamError{Resource: endpoint, Code: 0, Err: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode > 299 {
-		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, resp.Header, &UpstreamError{
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, detailLimit))
+		return nil, resp.Header, resp.StatusCode, &UpstreamError{
 			Resource: endpoint,
 			Code:     resp.StatusCode,
 			Err:      fmt.Errorf("%s", strings.TrimSpace(string(detail))),
 		}
 	}
 	raw, err := io.ReadAll(resp.Body)
-	return raw, resp.Header, err
+	return raw, resp.Header, resp.StatusCode, err
 }

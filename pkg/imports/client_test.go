@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	drmodel "github.com/SENERGY-Platform/device-repository/lib/model"
@@ -381,5 +382,55 @@ func TestTheTypeListingReportsAnUpstreamFailure(t *testing.T) {
 	var upstream *UpstreamError
 	if !errors.As(err, &upstream) || upstream.Code != http.StatusForbidden {
 		t.Fatalf("err = %v, want an UpstreamError carrying 403", err)
+	}
+}
+
+// The failure that motivated errIfNotJSON. device-selection returns an error
+// raised while resolving an import type with the status code of the preceding
+// successful call, so import-repository's `forbidden` arrives as 200 text/plain.
+// Handed to the decoder it became "invalid character 'o' in literal false", which
+// describes a byte rather than the refusal it is.
+func TestASuccessCodeCarryingANonJSONBodyIsAnUpstreamError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// http.Error's own shape, which is what device-selection reaches for.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("forbidden\n"))
+	}))
+	defer server.Close()
+
+	client := NewSelectionClient(server.URL, ClientOptions{HTTPClient: server.Client()})
+	_, err := client.QueryImports(context.Background(), testToken,
+		[]drmodel.FilterCriteria{{FunctionId: "fn-temperature"}})
+
+	var upstream *UpstreamError
+	if !errors.As(err, &upstream) {
+		t.Fatalf("err = %v, want an UpstreamError", err)
+	}
+	if upstream.Code != http.StatusOK {
+		t.Errorf("code = %d, want the status that actually arrived", upstream.Code)
+	}
+	if !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("err = %v, want the upstream body quoted: it is the whole content of the answer", err)
+	}
+	if strings.Contains(err.Error(), "invalid character") {
+		t.Errorf("err = %v, want the refusal rather than a decoder message", err)
+	}
+}
+
+// The lenient half of the same rule. net/http sniffs text/plain onto an answer
+// that declares no type, so a service that sends JSON without announcing it would
+// be refused over a header it never set if the type were read before the body.
+func TestJSONWithoutAContentTypeIsStillDecoded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header()["Content-Type"] = nil
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	client := NewSelectionClient(server.URL, ClientOptions{HTTPClient: server.Client()})
+	if _, err := client.QueryImports(context.Background(), testToken,
+		[]drmodel.FilterCriteria{{FunctionId: "fn-temperature"}}); err != nil {
+		t.Fatalf("QueryImports: %v", err)
 	}
 }

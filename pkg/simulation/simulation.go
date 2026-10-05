@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -93,12 +94,12 @@ func (s *Service) MaxDatasetBytes() int { return s.maxDatasetBytes }
 
 // List is every environment the developer owns, ordered by name.
 func (s *Service) List(ctx context.Context, token string) ([]Environment, error) {
-	raw, err := s.do(ctx, token, http.MethodGet, "/environments", nil, nil, "")
+	raw, arrived, err := s.do(ctx, token, http.MethodGet, "/environments", nil, nil, "")
 	if err != nil {
 		return nil, err
 	}
 	found := []Environment{}
-	if err := decodeInto(raw, &found, "/environments"); err != nil {
+	if err := decodeInto(raw, arrived, &found, "/environments"); err != nil {
 		return nil, err
 	}
 	return found, nil
@@ -118,12 +119,12 @@ func (s *Service) Get(ctx context.Context, token, id string) (Environment, error
 		return Environment{}, fmt.Errorf("%w: an environment id is required", ErrInvalidRequest)
 	}
 	endpoint := "/environments/" + url.PathEscape(id)
-	raw, err := s.do(ctx, token, http.MethodGet, endpoint, nil, nil, "")
+	raw, arrived, err := s.do(ctx, token, http.MethodGet, endpoint, nil, nil, "")
 	if err != nil {
 		return Environment{}, err
 	}
 	var env Environment
-	if err := decodeInto(raw, &env, endpoint); err != nil {
+	if err := decodeInto(raw, arrived, &env, endpoint); err != nil {
 		return Environment{}, err
 	}
 	if field, drifted := unknownField(raw); drifted {
@@ -149,12 +150,12 @@ func (s *Service) Create(ctx context.Context, token string, env Environment) (En
 	if err != nil {
 		return Environment{}, fmt.Errorf("simulation: encoding the environment: %w", err)
 	}
-	raw, err := s.do(ctx, token, http.MethodPost, "/environments", nil, body, "application/json")
+	raw, arrived, err := s.do(ctx, token, http.MethodPost, "/environments", nil, body, "application/json")
 	if err != nil {
 		return Environment{}, err
 	}
 	var created Environment
-	if err := decodeInto(raw, &created, "/environments"); err != nil {
+	if err := decodeInto(raw, arrived, &created, "/environments"); err != nil {
 		return Environment{}, err
 	}
 	return created, nil
@@ -179,7 +180,7 @@ func (s *Service) Replace(ctx context.Context, token string, env Environment) (E
 		return Environment{}, fmt.Errorf("simulation: encoding the environment: %w", err)
 	}
 	endpoint := "/environments/" + url.PathEscape(env.ID)
-	raw, err := s.do(ctx, token, http.MethodPut, endpoint, nil, body, "application/json")
+	raw, arrived, err := s.do(ctx, token, http.MethodPut, endpoint, nil, body, "application/json")
 	if err != nil {
 		var upstream *UpstreamError
 		if errors.As(err, &upstream) && upstream.Code == http.StatusConflict {
@@ -192,7 +193,7 @@ func (s *Service) Replace(ctx context.Context, token string, env Environment) (E
 		return Environment{}, err
 	}
 	var stored Environment
-	if err := decodeInto(raw, &stored, endpoint); err != nil {
+	if err := decodeInto(raw, arrived, &stored, endpoint); err != nil {
 		return Environment{}, err
 	}
 	return stored, nil
@@ -205,7 +206,7 @@ func (s *Service) Delete(ctx context.Context, token, id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("%w: an environment id is required", ErrInvalidRequest)
 	}
-	_, err := s.do(ctx, token, http.MethodDelete, "/environments/"+url.PathEscape(id), nil, nil, "")
+	_, _, err := s.do(ctx, token, http.MethodDelete, "/environments/"+url.PathEscape(id), nil, nil, "")
 	return err
 }
 
@@ -231,12 +232,12 @@ func (s *Service) State(ctx context.Context, token, id string) (EnvironmentState
 		return EnvironmentState{}, fmt.Errorf("%w: an environment id is required", ErrInvalidRequest)
 	}
 	endpoint := "/environments/" + url.PathEscape(id) + "/state"
-	raw, err := s.do(ctx, token, http.MethodGet, endpoint, nil, nil, "")
+	raw, arrived, err := s.do(ctx, token, http.MethodGet, endpoint, nil, nil, "")
 	if err != nil {
 		return EnvironmentState{}, err
 	}
 	var state EnvironmentState
-	if err := decodeInto(raw, &state, endpoint); err != nil {
+	if err := decodeInto(raw, arrived, &state, endpoint); err != nil {
 		return EnvironmentState{}, err
 	}
 	return state, nil
@@ -258,7 +259,7 @@ func (s *Service) Patch(ctx context.Context, token, id string, change StateChang
 	if err != nil {
 		return fmt.Errorf("simulation: encoding the state change: %w", err)
 	}
-	_, err = s.do(ctx, token, http.MethodPatch,
+	_, _, err = s.do(ctx, token, http.MethodPatch,
 		"/environments/"+url.PathEscape(id)+"/state", nil, body, "application/json")
 	return err
 }
@@ -284,12 +285,12 @@ func (s *Service) Backfill(ctx context.Context, token, id string, from, to time.
 		return BackfillStatus{}, fmt.Errorf("simulation: encoding the window: %w", err)
 	}
 	endpoint := "/environments/" + url.PathEscape(id) + "/backfill"
-	raw, err := s.do(ctx, token, http.MethodPost, endpoint, nil, body, "application/json")
+	raw, arrived, err := s.do(ctx, token, http.MethodPost, endpoint, nil, body, "application/json")
 	if err != nil {
 		return BackfillStatus{}, err
 	}
 	var status BackfillStatus
-	if err := decodeInto(raw, &status, endpoint); err != nil {
+	if err := decodeInto(raw, arrived, &status, endpoint); err != nil {
 		return BackfillStatus{}, err
 	}
 	return status, nil
@@ -306,12 +307,12 @@ func (s *Service) BackfillStatusOf(ctx context.Context, token, id string) (Backf
 		return BackfillStatus{}, fmt.Errorf("%w: an environment id is required", ErrInvalidRequest)
 	}
 	endpoint := "/environments/" + url.PathEscape(id) + "/backfill"
-	raw, err := s.do(ctx, token, http.MethodGet, endpoint, nil, nil, "")
+	raw, arrived, err := s.do(ctx, token, http.MethodGet, endpoint, nil, nil, "")
 	if err != nil {
 		return BackfillStatus{}, err
 	}
 	var status BackfillStatus
-	if err := decodeInto(raw, &status, endpoint); err != nil {
+	if err := decodeInto(raw, arrived, &status, endpoint); err != nil {
 		return BackfillStatus{}, err
 	}
 	return status, nil
@@ -361,12 +362,12 @@ func CheckWindow(from, to time.Time, now time.Time) error {
 // the ones publishing through the protocol MOSES itself publishes through, which
 // is what makes them simulatable at all.
 func (s *Service) DeviceTypes(ctx context.Context, token string) ([]DeviceType, error) {
-	raw, err := s.do(ctx, token, http.MethodGet, "/device-types", nil, nil, "")
+	raw, arrived, err := s.do(ctx, token, http.MethodGet, "/device-types", nil, nil, "")
 	if err != nil {
 		return nil, err
 	}
 	found := []DeviceType{}
-	if err := decodeInto(raw, &found, "/device-types"); err != nil {
+	if err := decodeInto(raw, arrived, &found, "/device-types"); err != nil {
 		return nil, err
 	}
 	return found, nil
@@ -376,12 +377,12 @@ func (s *Service) DeviceTypes(ctx context.Context, token string) ([]DeviceType, 
 
 // Datasets lists the uploaded timeseries the developer owns.
 func (s *Service) Datasets(ctx context.Context, token string) ([]Dataset, error) {
-	raw, err := s.do(ctx, token, http.MethodGet, "/datasets", nil, nil, "")
+	raw, arrived, err := s.do(ctx, token, http.MethodGet, "/datasets", nil, nil, "")
 	if err != nil {
 		return nil, err
 	}
 	found := []Dataset{}
-	if err := decodeInto(raw, &found, "/datasets"); err != nil {
+	if err := decodeInto(raw, arrived, &found, "/datasets"); err != nil {
 		return nil, err
 	}
 	return found, nil
@@ -393,12 +394,12 @@ func (s *Service) Dataset(ctx context.Context, token, id string) (Dataset, error
 		return Dataset{}, fmt.Errorf("%w: a dataset id is required", ErrInvalidRequest)
 	}
 	endpoint := "/datasets/" + url.PathEscape(id)
-	raw, err := s.do(ctx, token, http.MethodGet, endpoint, nil, nil, "")
+	raw, arrived, err := s.do(ctx, token, http.MethodGet, endpoint, nil, nil, "")
 	if err != nil {
 		return Dataset{}, err
 	}
 	var dataset Dataset
-	if err := decodeInto(raw, &dataset, endpoint); err != nil {
+	if err := decodeInto(raw, arrived, &dataset, endpoint); err != nil {
 		return Dataset{}, err
 	}
 	return dataset, nil
@@ -430,12 +431,12 @@ func (s *Service) UploadDataset(ctx context.Context, token, name, timezone strin
 	if timezone != "" {
 		query.Set("tz", timezone)
 	}
-	raw, err := s.do(ctx, token, http.MethodPost, "/datasets", query, content, "text/plain")
+	raw, arrived, err := s.do(ctx, token, http.MethodPost, "/datasets", query, content, "text/plain")
 	if err != nil {
 		return Dataset{}, err
 	}
 	var dataset Dataset
-	if err := decodeInto(raw, &dataset, "/datasets"); err != nil {
+	if err := decodeInto(raw, arrived, &dataset, "/datasets"); err != nil {
 		return Dataset{}, err
 	}
 	return dataset, nil
@@ -448,27 +449,55 @@ func (s *Service) DeleteDataset(ctx context.Context, token, id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("%w: a dataset id is required", ErrInvalidRequest)
 	}
-	_, err := s.do(ctx, token, http.MethodDelete, "/datasets/"+url.PathEscape(id), nil, nil, "")
+	_, _, err := s.do(ctx, token, http.MethodDelete, "/datasets/"+url.PathEscape(id), nil, nil, "")
 	return err
 }
 
 // ---- transport ----
 
-func decodeInto(raw []byte, into any, endpoint string) error {
+// detailLimit bounds how much of an upstream body is quoted back in an error.
+const detailLimit = 8192
+
+// answer is what a decode needs from a response besides its body: the status that
+// actually arrived, and the type the simulator declared for what it sent.
+type answer struct {
+	status int
+	header http.Header
+}
+
+func decodeInto(raw []byte, from answer, into any, endpoint string) error {
 	if len(raw) == 0 {
 		return nil
 	}
 	if err := json.Unmarshal(raw, into); err != nil {
+		// A body that never was JSON is reported as the upstream error it is, under
+		// the status that arrived rather than an assumed 200. A success code can
+		// carry a refusal: device-selection does exactly that, and the decoder then
+		// describes a byte where the body already names the reason (SNRGY-4750).
+		// MOSES has not been seen doing it — this is the reporting, not a claim about
+		// the simulator.
+		//
+		// Only a failed decode is classified this way. A body that parses is an
+		// answer whatever it was announced as, and an answer that declares no type at
+		// all is left to the decoder.
+		mediaType, _, parseErr := mime.ParseMediaType(from.header.Get("Content-Type"))
+		if parseErr == nil && mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
+			return &UpstreamError{
+				Resource: endpoint,
+				Code:     from.status,
+				Err:      fmt.Errorf("%s: %s", mediaType, strings.TrimSpace(string(raw[:min(len(raw), detailLimit)]))),
+			}
+		}
 		return &UpstreamError{
 			Resource: endpoint,
-			Code:     http.StatusOK,
+			Code:     from.status,
 			Err:      fmt.Errorf("decoding response: %w", err),
 		}
 	}
 	return nil
 }
 
-func (s *Service) do(ctx context.Context, token, method, path string, query url.Values, body []byte, contentType string) ([]byte, error) {
+func (s *Service) do(ctx context.Context, token, method, path string, query url.Values, body []byte, contentType string) ([]byte, answer, error) {
 	// Always bounded, the way pkg/imports and pkg/timeseries are: a caller that
 	// passed a deadline-free context would otherwise wait forever on a simulator
 	// that is provisioning devices.
@@ -485,7 +514,7 @@ func (s *Service) do(ctx context.Context, token, method, path string, query url.
 	}
 	request, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
 	if err != nil {
-		return nil, fmt.Errorf("simulation: building request for %s: %w", endpoint, err)
+		return nil, answer{}, fmt.Errorf("simulation: building request for %s: %w", endpoint, err)
 	}
 	if query != nil {
 		request.URL.RawQuery = query.Encode()
@@ -499,12 +528,14 @@ func (s *Service) do(ctx context.Context, token, method, path string, query url.
 
 	response, err := s.http.Do(request)
 	if err != nil {
-		return nil, &UpstreamError{Resource: path, Code: 0, Err: err}
+		return nil, answer{}, &UpstreamError{Resource: path, Code: 0, Err: err}
 	}
 	defer response.Body.Close()
 
+	arrived := answer{status: response.StatusCode, header: response.Header}
+
 	if response.StatusCode > 299 {
-		detail, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
+		detail, _ := io.ReadAll(io.LimitReader(response.Body, detailLimit))
 		upstream := &UpstreamError{
 			Resource: path,
 			Code:     response.StatusCode,
@@ -515,9 +546,10 @@ func (s *Service) do(ctx context.Context, token, method, path string, query url.
 		// no" into "zones[0].assets[1].channels[0].source.profile.hour_factors must have
 		// 24 entries". Wrapping it as invalid input here keeps the paths attached.
 		if response.StatusCode == http.StatusBadRequest {
-			return nil, fmt.Errorf("%w: %s", ErrInvalidRequest, upstream.Err.Error())
+			return nil, arrived, fmt.Errorf("%w: %s", ErrInvalidRequest, upstream.Err.Error())
 		}
-		return nil, upstream
+		return nil, arrived, upstream
 	}
-	return io.ReadAll(response.Body)
+	raw, err := io.ReadAll(response.Body)
+	return raw, arrived, err
 }
