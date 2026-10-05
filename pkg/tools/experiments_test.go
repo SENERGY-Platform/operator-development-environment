@@ -156,6 +156,7 @@ func TestEveryToolOfSection58IsImplementedWithItsServicesPresent(t *testing.T) {
 		Charts:        &fakeCharts{},
 		Relations:     &fakeRelations{},
 		Repo:          &fakeRepo{},
+		Library:       &fakeLibrary{},
 		Experiments:   &fakeExperiments{},
 		Simulation:    &fakeSimulation{},
 	})
@@ -181,9 +182,12 @@ func TestEveryToolOfSection58IsImplementedWithItsServicesPresent(t *testing.T) {
 	// that drives a running one, two for a backfill and one that uploads example
 	// data for a channel to replay, plus list_files and read_file — the working
 	// copy's read half, which §5.8 left out and whose absence made run_code the only
-	// way for a model to see the operator it was working on.
-	if got := len(registry.Definitions()); got != 43 {
-		t.Errorf("declared %d tools, want 43", got)
+	// way for a model to see the operator it was working on — plus git_status and
+	// the two operator_lib reads, list_lib_files and read_lib_file, which close the
+	// same gap for the working copy's git state and for a library the developer did
+	// not write.
+	if got := len(registry.Definitions()); got != 46 {
+		t.Errorf("declared %d tools, want 46", got)
 	}
 }
 

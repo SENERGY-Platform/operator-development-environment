@@ -223,6 +223,14 @@ type ScaffoldState struct {
 	Complete bool `json:"complete"`
 }
 
+// Commit is one commit from the repository's history.
+type Commit struct {
+	SHA     string `json:"sha"`
+	Subject string `json:"subject"`
+	Date    string `json:"date"`
+	Author  string `json:"author"`
+}
+
 // CommitResult is one commit, made.
 type CommitResult struct {
 	SHA     string `json:"sha"`

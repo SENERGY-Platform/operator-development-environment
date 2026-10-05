@@ -474,3 +474,70 @@ func TestLockReasonIsNeverEmptyAndKeepsTheLastLine(t *testing.T) {
 		})
 	}
 }
+
+func TestParseCommitsReadsLogWithSpacesAndSpecialChars(t *testing.T) {
+	// Real git log output with four fields separated by unit separator:
+	// SHA, subject (with spaces and special chars), author date (ISO 8601), author name.
+	output := strings.Join([]string{
+		"abc123def456\x1fFix(profiler): bound the raw pass\x1f2026-08-20T10:00:00+02:00\x1fJonah Windolph",
+		"def456ghi789\x1fAdd operator with spaces and @#$ chars\x1f2026-08-20T09:15:00+02:00\x1fJonah Windolph",
+		"ghi789jkl012\x1fInitial scaffold\x1f2026-08-20T09:00:00+02:00\x1fJonah Windolph",
+	}, "\n")
+
+	commits := parseCommits(output)
+	if len(commits) != 3 {
+		t.Fatalf("commits count = %d, want 3", len(commits))
+	}
+
+	// First commit (most recent first in the output).
+	if commits[0].SHA != "abc123def456" {
+		t.Errorf("commit 0 SHA = %q", commits[0].SHA)
+	}
+	if commits[0].Subject != "Fix(profiler): bound the raw pass" {
+		t.Errorf("commit 0 subject = %q", commits[0].Subject)
+	}
+	if commits[0].Date != "2026-08-20T10:00:00+02:00" {
+		t.Errorf("commit 0 date = %q", commits[0].Date)
+	}
+	if commits[0].Author != "Jonah Windolph" {
+		t.Errorf("commit 0 author = %q", commits[0].Author)
+	}
+
+	// Subject with spaces and special characters is preserved.
+	if commits[1].Subject != "Add operator with spaces and @#$ chars" {
+		t.Errorf("commit 1 subject = %q", commits[1].Subject)
+	}
+}
+
+func TestParseCommitsSkipsLinesWithWrongFieldCount(t *testing.T) {
+	// Output with some malformed lines.
+	output := strings.Join([]string{
+		"abc123\x1fGood commit\x1f2026-08-20T10:00:00+02:00\x1fJonah",
+		"def456\x1fMalformed with only three fields\x1f2026-08-20T09:00:00+02:00",
+		"ghi789\x1fGood commit 2\x1f2026-08-20T08:00:00+02:00\x1fJonah",
+		"jkl012\x1fOnly two fields\x1f2026-08-20",
+	}, "\n")
+
+	commits := parseCommits(output)
+	// Should get two commits (skip the two malformed ones).
+	if len(commits) != 2 {
+		t.Fatalf("commits count = %d, want 2", len(commits))
+	}
+	if commits[0].Subject != "Good commit" {
+		t.Errorf("commit 0 subject = %q", commits[0].Subject)
+	}
+	if commits[1].Subject != "Good commit 2" {
+		t.Errorf("commit 1 subject = %q", commits[1].Subject)
+	}
+}
+
+func TestParseCommitsHandlesEmptyOutput(t *testing.T) {
+	commits := parseCommits("")
+	if len(commits) != 0 {
+		t.Fatalf("commits from empty output = %d, want 0", len(commits))
+	}
+	// Verify it returns a slice, not nil.
+	if commits == nil {
+		t.Error("parseCommits returned nil instead of empty slice")
+	}
+}

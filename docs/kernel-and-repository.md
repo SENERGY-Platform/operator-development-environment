@@ -309,6 +309,37 @@ executing in the same workbench it reports a busy kernel rather than waiting it
 out — the trade the section above describes, now reachable by a tool as well as by
 the pane.
 
+## git_status, list_lib_files and read_lib_file, and what they answer
+
+Three tools join `read_file` and `list_files` as the reading surface for what sits
+outside the working copy or is part of the platform's own state:
+
+- **`git_status`** at **L0 with no confirmation** answers the current branch,
+  uncommitted changes as the pane reports them, and the five most recent commits.
+  Without it the only route to any of that was a cell: in one measured session
+  (2026-09-23), two of the three `run_code` cells that read a file of the working
+  copy were doing it beside a `git status` in the same cell, because the git half
+  had no tool and the file read came along for the confirmation that was being
+  spent anyway. What is absent is as deliberate as what is here — nothing commits,
+  stages, pushes or fetches, for the reason `tools.Repo` holds no such method.
+- **`list_lib_files` and `read_lib_file`** at **L0 with no confirmation** answer
+  what Operator Lib's source contains. What they
+  read is the version installed in the JupyterHub singleuser image at build time
+  (see `singleuser-image/Dockerfile`, ARG `OPERATOR_LIB_REF`). An experiment
+  launched from the workbench resolves Operator Lib from the repository's own pin
+  via `uv run`, which can diverge from the image — both can be the right answer,
+  and both can be used for different reasons. Because they can diverge, every
+  answer from these tools names the version it read. Modifying Operator Lib is
+  denied server-side (`modify_operator_lib` in `pkg/tools/registry.go:358`) because
+  the library is platform code; reading it remains unaffected, because the read is
+  confined to informing the model about the environment it will work in.
+
+The three of them answer what a single file cannot: the state of the repository
+around it, and the library its code is written against. That is the half of the
+exploratory cell that no tool used to cover — and the half of the measured 22
+confirmed cells that was not a rule being broken, because until now there was
+nothing else to reach for.
+
 ## write_file, and what it cannot do
 
 `write_file` is §5.8's sixteenth implemented tool, at tier **L0** with no

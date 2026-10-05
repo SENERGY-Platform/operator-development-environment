@@ -31,6 +31,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/imports"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/library"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/plaincode"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
@@ -181,12 +182,17 @@ type (
 		Workspace() string
 	}
 
-	// Repo is the working copy (§5.11). Three methods, and where the line falls
-	// matters more than how many there are: this interface reads the working copy
-	// and writes one file of it, and it holds **no git operation at all**. Nothing
-	// here commits, stages, pushes, fetches, discards a change or selects a
-	// repository, and a method that did would be the first step towards a model that
-	// publishes — which §5.11 item 5 makes a developer's action.
+	// Repo is the working copy (§5.11). Five methods, and where the line falls
+	// matters more than how many there are: this interface reads the working copy,
+	// writes one file of it, and reads git's own state — and it holds **no git
+	// operation that changes anything**. Nothing here commits, stages, pushes,
+	// fetches, discards a change or selects a repository, and a method that did
+	// would be the first step towards a model that publishes — which §5.11 item 5
+	// makes a developer's action. Status and Log only read; git_status is what
+	// calls Status, and it does so with Fetch: false, so even the one read here
+	// that could reach the network stays off — a tool call that fetched on every
+	// invocation would be exactly the side effect this boundary means to have
+	// none of.
 	//
 	// It was one method until the read half arrived, and the reason for the read
 	// half is worth recording. Without it the only way for a model to see the
@@ -197,10 +203,33 @@ type (
 	// cells that ran a subprocess, an import or a shell escape to do something the
 	// developer could have read in the pane — and every one of them cost a prompt
 	// that taught them to stop reading the prompts.
+	//
+	// Status and Log arrived for the same reason. A run measured on 2026-09-23
+	// confirmed three cells that opened a working-copy file beside a `git status`
+	// in the same cell, because there was no tool for the git status half — the
+	// file half already had list_files and read_file, and the cell still cost a
+	// confirmation for the other one.
 	Repo interface {
 		Files(ctx context.Context, req repo.Request) (repo.FileTree, error)
 		ReadFile(ctx context.Context, req repo.Request, path string) (repo.File, error)
 		WriteFile(ctx context.Context, req repo.Request, path string, content []byte) (repo.WriteResult, error)
+		Status(ctx context.Context, req repo.StatusRequest) (repo.Status, error)
+		Log(ctx context.Context, req repo.Request, limit int) ([]repo.Commit, error)
+	}
+
+	// Library reads operator_lib's own source out of the developer's pod (see
+	// pkg/library) — the package the singleuser image installed, not necessarily
+	// what a launched experiment resolves from the repository's own pin
+	// (docs/operator-lib-versions.md). Two methods, matching pkg/library's own
+	// shape, and both read-only: the package has no write half to expose.
+	//
+	// The same measured run that justified Status and Log above justified this:
+	// 15 of its 22 confirmed cells existed only to print a file of operator_lib's
+	// source, because there was no tool for a read the developer's own code did
+	// not need a confirmation to make sense of.
+	Library interface {
+		Files(ctx context.Context, ref kernel.Ref) (library.Listing, error)
+		ReadFile(ctx context.Context, ref kernel.Ref, path string, maxBytes int) (library.File, error)
 	}
 
 	// Experiments is the Ray and MLflow surface (§5.12). Three methods, and the
@@ -303,6 +332,7 @@ type Deps struct {
 	Charts        Charts
 	Relations     Relations
 	Repo          Repo
+	Library       Library
 	Experiments   Experiments
 	Simulation    Simulation
 
@@ -344,11 +374,13 @@ type Deps struct {
 	// here and off there would waive the confirmation on cells that still carry the
 	// token, which is the one combination that must not be reachable.
 	ContainCells bool
-	// RepoMaxReadBytes bounds what one read_file returns. The same reasoning as
-	// above, against a different ceiling: pkg/repo lets the Code pane read a
-	// megabyte because an editor shows a megabyte, and a model that read one would
-	// spend a session's context on a single file. What the bound produces is a
-	// window and the line to continue from, never a silent cut.
+	// RepoMaxReadBytes bounds what one read_file or read_lib_file returns. The
+	// same reasoning as above, against a different ceiling: pkg/repo lets the Code
+	// pane read a megabyte because an editor shows a megabyte, and a model that
+	// read one would spend a session's context on a single file. What the bound
+	// produces is a window and the line to continue from, never a silent cut.
+	// read_lib_file also hands it to Library.ReadFile as the byte budget for the
+	// raw read out of the pod, ahead of the same windowing applied on top.
 	RepoMaxReadBytes int
 }
 
@@ -1195,6 +1227,75 @@ func NewSurface(deps Deps) (*Registry, error) {
 			}`),
 			Unavailable: "requires github_client_id and a Hub",
 			executor:    ifPresent(s.writeFile, deps.Repo),
+		},
+		Definition{
+			Name: "git_status",
+			Description: "Read the working copy's git state: branch, upstream, how far " +
+				"ahead and behind it is, the changes exactly as the Code pane's own status " +
+				"view shows them, HEAD with its subject and date, and the five most recent " +
+				"commits. No diff and no file content — read_file is for that.\n\n" +
+				"This calls no fetch, so ahead/behind is the divergence ODE last knew " +
+				"about rather than a fresh comparison against the remote: `fetched` in the " +
+				"result is always false here, on purpose, so this tool costs no network " +
+				"round trip of its own. Ask the developer to refresh the pane for a " +
+				"current count.\n\n" +
+				"Nothing here commits, stages, pushes, fetches or discards a change, and " +
+				"nothing selects a repository — those are REST routes in the Code pane, " +
+				"and which of them to use is the developer's own decision.\n\n" +
+				"Use this rather than a cell that runs `git status` or `git log`: the same " +
+				"read, with no confirmation and no platform token in the kernel.",
+			Effect:      "read git status and recent log",
+			MinTier:     L0,
+			Schema:      json.RawMessage(`{"type": "object", "properties": {}}`),
+			Unavailable: "requires github_client_id and a Hub",
+			executor:    ifPresent(s.gitStatus, deps.Repo),
+		},
+		Definition{
+			Name: "list_lib_files",
+			Description: "List operator_lib's own source tree as it is installed in the " +
+				"developer's pod: every file with its size, path relative to the " +
+				"package's own root. The result names the version read.\n\n" +
+				"This is the library the kernel's cells import, which is not always what a " +
+				"launched experiment trains against: an experiment resolves operator_lib " +
+				"through `uv run` from the repository's own pin, and the two can diverge " +
+				"(docs/operator-lib-versions.md). Say which one you mean when it matters.\n\n" +
+				"Use this rather than a cell that walks site-packages: the same listing, " +
+				"with no confirmation and no platform token in the kernel.",
+			Effect:      "read operator_lib's file tree",
+			MinTier:     L0,
+			Schema:      json.RawMessage(`{"type": "object", "properties": {}}`),
+			Unavailable: "requires a Hub",
+			executor:    ifPresent(s.listLibFiles, deps.Library),
+		},
+		Definition{
+			Name: "read_lib_file",
+			Description: "Read one file of operator_lib's own source, installed in the " +
+				"developer's pod, by a path relative to the package's own root as " +
+				"list_lib_files reports it. The result names the version read — see " +
+				"list_lib_files for how that can differ from what a launched experiment " +
+				"trains against.\n\n" +
+				"The answer is a window, not always the whole file, on the same terms as " +
+				"read_file: it carries at most a few thousand bytes and reports " +
+				"total_lines and the from_line to continue at.\n\n" +
+				"A deployment whose pod has no operator_lib installed refuses outright, " +
+				"and so does a path that is not under the package's own root or that " +
+				"list_lib_files would not have listed — call list_lib_files first and " +
+				"read one of the paths it actually returns.\n\n" +
+				"Use this rather than a cell that prints a library file: the same read, " +
+				"with no confirmation and no platform token in the kernel.",
+			Effect:  "read one file of operator_lib's source",
+			MinTier: L0,
+			Schema: json.RawMessage(`{
+			  "type": "object",
+			  "properties": {
+			    "path": {"type": "string", "description": "Path relative to operator_lib's own root, as list_lib_files reports it."},
+			    "from_line": {"type": "integer", "description": "First line to return, 1-based. Omit it for the start of the file; pass the from_line a truncated answer reports to continue."},
+			    "max_lines": {"type": "integer", "description": "At most this many lines. Omit it to fill the byte budget, which is usually what you want."}
+			  },
+			  "required": ["path"]
+			}`),
+			Unavailable: "requires a Hub",
+			executor:    ifPresent(s.readLibFile, deps.Library),
 		},
 		Definition{
 			Name: "run_code",

@@ -477,11 +477,17 @@ func TestSurfaceDeclaresTheWholeAllowList(t *testing.T) {
 		"delete_export":          {L0, true},
 		// The working copy. All three at L0 with no confirmation, and the two reads
 		// are weaker than the write beside them: the developer's own code on their own
-		// storage, no platform data in it, and no git operation anywhere in the
-		// interface behind them.
-		"list_files":             {L0, false},
-		"read_file":              {L0, false},
-		"write_file":             {L0, false},
+		// storage, and no platform data in it.
+		"list_files": {L0, false},
+		"read_file":  {L0, false},
+		"write_file": {L0, false},
+		// git's own state, and operator_lib's source out of the pod. At L0 with no
+		// confirmation on the same footing as the three above: no platform data, and
+		// nothing behind them that changes anything — git_status reads the checkout
+		// and runs no fetch, and the two library reads write nothing at all.
+		"git_status":             {L0, false},
+		"list_lib_files":         {L0, false},
+		"read_lib_file":          {L0, false},
 		"run_code":               {L0, true},
 		"launch_experiment":      {L0, true},
 		"get_experiment_results": {L0, false},

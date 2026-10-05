@@ -65,14 +65,18 @@ grep -c 'Confirm:\s*true' pkg/tools/surface.go   # confirmed
 grep -c '^\s*Definition{' pkg/tools/surface.go   # declared
 ```
 
-At the time of writing, fifteen of forty-three — `run_code`, `launch_experiment`,
+At the time of writing, fifteen of forty-six — `run_code`, `launch_experiment`,
 both proposals, the import and export writes, and every simulation write. What
-survives is the read surface — including `list_files` and `read_file`, which read
-the working copy and ask nobody — plus `write_file` and `render_chart`.
+survives is the read surface — `list_files` and `read_file` for the working copy,
+`git_status` for its branch, changes and recent commits, `list_lib_files` and
+`read_lib_file` for Operator Lib's source, and `render_chart` — plus `write_file`
+for the working copy.
 
-### Git is not on the tool surface at all
+### No git tool changes anything
 
-`write_file` writes into the working copy and stages nothing. Commit, push, stash,
+`write_file` writes into the working copy and stages nothing, and `git_status`
+reads the checkout without touching it — it runs no fetch, so its ahead and behind
+counts are those of the last fetch and say so. Commit, push, stash,
 fetch, scaffold, the commit-message draft and workbench management are REST routes
 under `/repo` and `/workbenches` ([api.go:320-345](../pkg/api/api.go#L320-L345)),
 because §5.11 makes them the developer's explicit actions. An external client can

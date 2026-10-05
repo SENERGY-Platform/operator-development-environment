@@ -40,6 +40,7 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/imports"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/interpret"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/library"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/mcp"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
@@ -456,6 +457,7 @@ func startM3(
 		Charts:              chartsOrNil(deps.Charts),
 		Relations:           relationsOrNil(deps.Relations),
 		Repo:                repoOrNil(repoService),
+		Library:             libraryOrNil(kernelService),
 		Experiments:         experimentsOrNil(experimentService),
 		Simulation:          simulationOrNil(simulationService),
 		ProfileTokenBudget:  int(config.ToolProfileTokenBudget),
@@ -1353,6 +1355,21 @@ func kernelOrNil(service *kernel.Service) tools.Kernel {
 		return nil
 	}
 	return service
+}
+
+// libraryOrNil keeps list_lib_files and read_lib_file declared-but-unavailable
+// in a deployment without a Hub, for the reason kernelOrNil documents.
+//
+// It has to guard on kernelService rather than on a *library.Service it built
+// first: library.New always returns a non-nil pointer, so a nil check after
+// building one would never trigger, and the tools would be advertised against
+// a service with nothing to run its helper program in — the same footgun
+// ifPresent's own comment names for a typed nil in an interface field.
+func libraryOrNil(kernelService *kernel.Service) tools.Library {
+	if kernelService == nil {
+		return nil
+	}
+	return library.New(kernelService, library.Options{})
 }
 
 // rankerOrNil hands the resolver an interface that is actually nil when there is

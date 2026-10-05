@@ -45,6 +45,36 @@ type fakeRepo struct {
 	tree  repo.FileTree
 	files map[string]repo.File
 	reads []string
+
+	// status is what Status answers, and statusErr its error — kept separate from
+	// err above so a test can make Status succeed while Log fails (or the reverse)
+	// without the two tangling.
+	status     repo.Status
+	statusErr  error
+	statusReqs []repo.StatusRequest
+
+	// commits is what Log answers, and logErr its error.
+	commits  []repo.Commit
+	logErr   error
+	logReqs  []repo.Request
+	logLimit []int
+}
+
+func (f *fakeRepo) Status(_ context.Context, req repo.StatusRequest) (repo.Status, error) {
+	f.statusReqs = append(f.statusReqs, req)
+	if f.statusErr != nil {
+		return repo.Status{}, f.statusErr
+	}
+	return f.status, nil
+}
+
+func (f *fakeRepo) Log(_ context.Context, req repo.Request, limit int) ([]repo.Commit, error) {
+	f.logReqs = append(f.logReqs, req)
+	f.logLimit = append(f.logLimit, limit)
+	if f.logErr != nil {
+		return nil, f.logErr
+	}
+	return f.commits, nil
 }
 
 func (f *fakeRepo) Files(_ context.Context, _ repo.Request) (repo.FileTree, error) {
@@ -567,5 +597,286 @@ func TestWriteFileForwardsTheServicesRefusal(t *testing.T) {
 	}
 	if !errors.Is(fake.err, repo.ErrNoRepository) {
 		t.Fatal("the fake was not asked")
+	}
+}
+
+// ---- git_status ----
+
+func gitStatusSurface(t *testing.T, fake *fakeRepo) *Registry {
+	t.Helper()
+	registry, err := NewSurface(Deps{Repo: fake})
+	if err != nil {
+		t.Fatalf("NewSurface: %v", err)
+	}
+	return registry
+}
+
+func TestGitStatusIsAvailableAtL0WithoutAConfirmation(t *testing.T) {
+	registry := gitStatusSurface(t, &fakeRepo{})
+	definition, found := registry.Lookup("git_status")
+	if !found {
+		t.Fatal("git_status is not in the registry")
+	}
+	if definition.MinTier != L0 || definition.Confirm {
+		t.Errorf("git_status = tier %s confirm %v, want L0 without confirmation",
+			definition.MinTier, definition.Confirm)
+	}
+	if !definition.Implemented() {
+		t.Fatal("git_status has no executor")
+	}
+	if definition.Unavailable != "" {
+		t.Errorf("unavailable = %q, want it cleared once the executor is there",
+			definition.Unavailable)
+	}
+}
+
+// Without a repo service git_status is declared-but-unavailable, the same
+// degradation the other repository tools have.
+func TestGitStatusStaysUnavailableWithoutARepoService(t *testing.T) {
+	registry, err := NewSurface(Deps{})
+	if err != nil {
+		t.Fatalf("NewSurface: %v", err)
+	}
+	definition, found := registry.Lookup("git_status")
+	if !found {
+		t.Fatal("git_status left the documented surface")
+	}
+	if definition.Implemented() {
+		t.Error("git_status has an executor without a repo service behind it")
+	}
+	if definition.Unavailable == "" {
+		t.Error("git_status does not say why it cannot be called")
+	}
+	for _, available := range registry.Available(L0) {
+		if available.Name == "git_status" {
+			t.Error("git_status was offered to a provider without a repo service")
+		}
+	}
+}
+
+// The normal case: a cloned, dirty working copy with a few commits behind it.
+func TestGitStatusReportsTheWorkingCopy(t *testing.T) {
+	fake := &fakeRepo{
+		status: repo.Status{
+			Cloned:      true,
+			Branch:      "main",
+			Upstream:    "origin/main",
+			Ahead:       2,
+			Behind:      1,
+			Head:        "abc123",
+			HeadSubject: "fix: something",
+			HeadDate:    "2026-09-20T10:00:00Z",
+			Remote:      "https://github.com/jonah/pv-forecast.git",
+			Dirty:       true,
+			Changes: []repo.Change{
+				{Path: "op.py", Kind: "modified", Unstaged: true},
+			},
+			Fetched: false,
+			Scaffold: repo.ScaffoldState{
+				Present: []string{"op.py"}, Missing: []string{"evaluation.yaml"}, Complete: false,
+			},
+		},
+		commits: []repo.Commit{
+			{SHA: "abc123", Subject: "fix: something", Date: "2026-09-20T10:00:00Z", Author: "jonah"},
+		},
+	}
+	result := dispatchTool(t, gitStatusSurface(t, fake), "git_status", map[string]any{})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	status, ok := result.Content.(GitStatusResult)
+	if !ok {
+		t.Fatalf("content = %T, want a GitStatusResult", result.Content)
+	}
+	if !status.Cloned || status.Branch != "main" || status.Upstream != "origin/main" {
+		t.Errorf("status = %+v", status)
+	}
+	if status.Ahead != 2 || status.Behind != 1 {
+		t.Errorf("ahead/behind = %d/%d, want 2/1", status.Ahead, status.Behind)
+	}
+	if status.Head != "abc123" || status.HeadSubject != "fix: something" {
+		t.Errorf("head = %+v", status)
+	}
+	// A remote with no credential in it passes through unchanged, so the
+	// redaction below is not mistaken for a general rewrite of the field.
+	if status.Remote != "https://github.com/jonah/pv-forecast.git" {
+		t.Errorf("remote = %q, want the origin unchanged", status.Remote)
+	}
+	if status.Fetched {
+		t.Error("fetched = true, want false: git_status must never fetch")
+	}
+	if len(status.Changes) != 1 || status.ChangesCount != 1 || status.Changes[0].Path != "op.py" {
+		t.Errorf("changes = %+v, want the one change", status.Changes)
+	}
+	if status.Scaffold.Complete || len(status.Scaffold.Missing) != 1 {
+		t.Errorf("scaffold = %+v, want the incomplete scaffold forwarded", status.Scaffold)
+	}
+	if len(status.Commits) != 1 || status.Commits[0].SHA != "abc123" {
+		t.Errorf("commits = %+v, want the one commit", status.Commits)
+	}
+
+	// Fetch: false has to reach the service on every call — that is the one
+	// network side effect this tool must never introduce.
+	if len(fake.statusReqs) != 1 || fake.statusReqs[0].Fetch {
+		t.Errorf("status request = %+v, want Fetch: false", fake.statusReqs)
+	}
+	if len(fake.logLimit) != 1 || fake.logLimit[0] != gitStatusLogLimit {
+		t.Errorf("log limit = %v, want [%d]", fake.logLimit, gitStatusLogLimit)
+	}
+}
+
+func TestGitStatusReportsAnUnclonedWorkingCopy(t *testing.T) {
+	fake := &fakeRepo{status: repo.Status{Cloned: false}}
+	result := dispatchTool(t, gitStatusSurface(t, fake), "git_status", map[string]any{})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	status := result.Content.(GitStatusResult)
+	if status.Cloned {
+		t.Error("cloned = true, want false for a PVC with no checkout")
+	}
+}
+
+// A freshly scaffolded repository is unborn: a branch with no commits yet.
+func TestGitStatusReportsAnUnbornBranch(t *testing.T) {
+	fake := &fakeRepo{status: repo.Status{Cloned: true, Branch: "main", Unborn: true}}
+	result := dispatchTool(t, gitStatusSurface(t, fake), "git_status", map[string]any{})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	status := result.Content.(GitStatusResult)
+	if !status.Unborn {
+		t.Error("unborn = false, want true")
+	}
+	if len(status.Commits) != 0 {
+		t.Errorf("commits = %+v, want none for a branch with nothing on it yet", status.Commits)
+	}
+}
+
+// A working copy with more changes than the cap must say so rather than
+// silently showing a partial list as if it were complete.
+func TestGitStatusTruncatesALongChangeList(t *testing.T) {
+	changes := make([]repo.Change, maxGitStatusChanges+37)
+	for i := range changes {
+		changes[i] = repo.Change{Path: fmt.Sprintf("file%03d.py", i), Kind: "modified", Unstaged: true}
+	}
+	fake := &fakeRepo{status: repo.Status{Cloned: true, Branch: "main", Changes: changes}}
+	result := dispatchTool(t, gitStatusSurface(t, fake), "git_status", map[string]any{})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	status := result.Content.(GitStatusResult)
+	if !status.ChangesTruncated {
+		t.Error("changes_truncated = false, want true past the cap")
+	}
+	if len(status.Changes) != maxGitStatusChanges {
+		t.Errorf("changes = %d, want the cap of %d", len(status.Changes), maxGitStatusChanges)
+	}
+	if status.ChangesCount != len(changes) {
+		t.Errorf("changes_count = %d, want %d", status.ChangesCount, len(changes))
+	}
+	if status.Hint == "" {
+		t.Error("a truncated change list carries no hint")
+	}
+}
+
+// A log that fails after the status already succeeded must not cost the rest
+// of the answer.
+func TestGitStatusReportsWhenTheLogFailsButStatusSucceeds(t *testing.T) {
+	fake := &fakeRepo{
+		status: repo.Status{Cloned: true, Branch: "main"},
+		logErr: kernel.ErrBusy,
+	}
+	result := dispatchTool(t, gitStatusSurface(t, fake), "git_status", map[string]any{})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v, want the status half to still answer",
+			result.Outcome, result.Content)
+	}
+	status := result.Content.(GitStatusResult)
+	if status.Branch != "main" {
+		t.Errorf("branch = %q, want the status half unaffected by the log failure", status.Branch)
+	}
+	if len(status.Commits) != 0 {
+		t.Errorf("commits = %+v, want none when the log failed", status.Commits)
+	}
+	if status.Hint == "" {
+		t.Error("a failed log carries no hint explaining why there are no commits")
+	}
+}
+
+// A status that fails outright is a failure — unlike the log, there is no
+// good half of the answer to salvage.
+func TestGitStatusForwardsAFailedStatus(t *testing.T) {
+	fake := &fakeRepo{statusErr: repo.ErrNoRepository}
+	result := dispatchTool(t, gitStatusSurface(t, fake), "git_status", map[string]any{})
+	if result.Outcome == OutcomeOK || !result.IsError {
+		t.Fatalf("outcome = %q, want a failure the model can read", result.Outcome)
+	}
+	if len(fake.logReqs) != 0 {
+		t.Error("Log was called after Status had already failed")
+	}
+}
+
+// Finding 2. A remote a developer set up outside ODE can carry a credential in
+// its userinfo — redact (pkg/repo/git.go) never sees it, because that only
+// strips ODE's own token — and this tool's answer joins a stored conversation
+// nobody confirms first. The credential must not survive into the result.
+func TestGitStatusStripsACredentialFromTheRemoteURL(t *testing.T) {
+	fake := &fakeRepo{status: repo.Status{
+		Cloned: true, Branch: "main",
+		Remote: "https://x-access-token:ghp_secrettoken@github.com/jonah/pv-forecast.git",
+	}}
+	result := dispatchTool(t, gitStatusSurface(t, fake), "git_status", map[string]any{})
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	status := result.Content.(GitStatusResult)
+	if strings.Contains(status.Remote, "ghp_secrettoken") || strings.Contains(status.Remote, "x-access-token") {
+		t.Fatalf("remote = %q, still carries the credential", status.Remote)
+	}
+	if status.Remote != "https://github.com/jonah/pv-forecast.git" {
+		t.Errorf("remote = %q, want the origin with only the credential removed", status.Remote)
+	}
+
+	// The same check on the raw JSON the model actually receives, in case a
+	// field the struct assertion above does not cover carried the value too.
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "ghp_secrettoken") {
+		t.Fatalf("encoded result = %s, still carries the credential", encoded)
+	}
+}
+
+// git's scp-like syntax ("user@host:path") is not a URL and net/url refuses it,
+// but it is the ordinary shape of an ssh remote and its user name is a login
+// rather than a credential — so it survives. A remote that is neither a URL nor
+// that shape is dropped rather than passed through half-filtered, and so is an
+// scp remote whose userinfo carries a password: losing the origin is a smaller
+// cost than risking a credential this tool failed to recognise as one.
+func TestGitStatusKeepsAnSSHRemoteAndDropsWhatItCannotRead(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		remote string
+		want   string
+	}{
+		{"scp syntax", "git@github.com:jonah/pv-forecast.git", "git@github.com:jonah/pv-forecast.git"},
+		{"scp syntax with a password", "git:ghp_secrettoken@github.com:jonah/pv-forecast.git", ""},
+		{"neither a URL nor scp syntax", "http://%%zz/not a url", ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fake := &fakeRepo{status: repo.Status{
+				Cloned: true, Branch: "main", Remote: testCase.remote,
+			}}
+			result := dispatchTool(t, gitStatusSurface(t, fake), "git_status", map[string]any{})
+			if result.Outcome != OutcomeOK {
+				t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+			}
+			status := result.Content.(GitStatusResult)
+			if status.Remote != testCase.want {
+				t.Errorf("remote = %q, want %q", status.Remote, testCase.want)
+			}
+		})
 	}
 }

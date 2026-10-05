@@ -19,6 +19,7 @@ package repo_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -936,5 +937,312 @@ func TestACommitRefusedPartWayThroughStagesNothing(t *testing.T) {
 		"diff", "--cached", "--name-only"))
 	if staged != "" {
 		t.Errorf("the refused commit left %q staged", staged)
+	}
+}
+
+// Log returns the recent commits of the working copy.
+func TestLogReturnsRecentCommits(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	h.createAndCommit(t, "pv-forecast", "Initial scaffold")
+
+	// Make additional commits with various subject types.
+	files := map[string]string{
+		"op.py":   "# operator with spaces\n",
+		"test.py": "# test with special chars: @#$\n",
+		"doc.md":  "# documentation\n",
+	}
+	for file, content := range files {
+		if err := os.WriteFile(h.path("jonah", "pv-forecast", file),
+			[]byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", file, err)
+		}
+	}
+	if _, err := h.service.Commit(context.Background(), repo.CommitRequest{
+		Request: h.request(), Message: "Add operator with spaces and @#$ chars",
+	}); err != nil {
+		t.Fatalf("Commit 2: %v", err)
+	}
+
+	if err := os.WriteFile(h.path("jonah", "pv-forecast", "config.yaml"),
+		[]byte("debug: true\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := h.service.Commit(context.Background(), repo.CommitRequest{
+		Request: h.request(), Message: "Update configuration",
+	}); err != nil {
+		t.Fatalf("Commit 3: %v", err)
+	}
+
+	// Normal case: get multiple commits.
+	commits, err := h.service.Log(context.Background(), h.request(), 3)
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if len(commits) != 3 {
+		t.Fatalf("commits count = %d, want 3", len(commits))
+	}
+
+	// The most recent commit is first.
+	if commits[0].Subject != "Update configuration" {
+		t.Errorf("newest commit subject = %q, want 'Update configuration'", commits[0].Subject)
+	}
+	// Commits have all required fields.
+	for i, c := range commits {
+		if c.SHA == "" {
+			t.Errorf("commit %d: SHA is empty", i)
+		}
+		if c.Subject == "" {
+			t.Errorf("commit %d: Subject is empty", i)
+		}
+		if c.Date == "" {
+			t.Errorf("commit %d: Date is empty", i)
+		}
+		if c.Author == "" {
+			t.Errorf("commit %d: Author is empty", i)
+		}
+	}
+	// Subject with special characters is preserved.
+	if commits[1].Subject != "Add operator with spaces and @#$ chars" {
+		t.Errorf("commit subject = %q", commits[1].Subject)
+	}
+}
+
+// Log returns an empty list for a repository with no commits (unborn branch).
+func TestLogReturnsEmptyForUnbornBranch(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+
+	// Create but don't commit.
+	if _, err := h.service.Create(context.Background(), repo.CreateRequest{
+		Request: h.request(), Name: "empty-repo", Scaffold: true,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	commits, err := h.service.Log(context.Background(), h.request(), 5)
+	if err != nil {
+		t.Fatalf("Log on unborn branch: %v", err)
+	}
+	if len(commits) != 0 {
+		t.Fatalf("commits on unborn branch = %v, want empty list", commits)
+	}
+}
+
+// Log returns an empty list when no checkout directory exists, even though a
+// repository is linked.
+func TestLogReturnsEmptyWhenNoCheckout(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+
+	// Create a repository but then delete the checkout directory to simulate
+	// a case where the link exists but the working copy is gone.
+	h.createAndCommit(t, "pv-forecast", "Initial commit")
+
+	if err := os.RemoveAll(h.path("jonah", "pv-forecast")); err != nil {
+		t.Fatalf("remove checkout: %v", err)
+	}
+
+	commits, err := h.service.Log(context.Background(), h.request(), 5)
+	if err != nil {
+		t.Fatalf("Log with no checkout: %v", err)
+	}
+	if len(commits) != 0 {
+		t.Fatalf("commits with no checkout = %v, want empty list", commits)
+	}
+}
+
+// Log respects the limit parameter: <= 0 uses default, > max is capped.
+func TestLogRespectsLimit(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	h.createAndCommit(t, "pv-forecast", "Initial scaffold")
+
+	// Make many commits.
+	for i := 0; i < 25; i++ {
+		if err := os.WriteFile(h.path("jonah", "pv-forecast", fmt.Sprintf("file%d.txt", i)),
+			[]byte(fmt.Sprintf("content %d\n", i)), 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		if _, err := h.service.Commit(context.Background(), repo.CommitRequest{
+			Request: h.request(), Message: fmt.Sprintf("Commit %d", i+1),
+		}); err != nil {
+			t.Fatalf("Commit: %v", err)
+		}
+	}
+
+	// limit <= 0 should use default (5).
+	commits, err := h.service.Log(context.Background(), h.request(), 0)
+	if err != nil {
+		t.Fatalf("Log with limit 0: %v", err)
+	}
+	if len(commits) != 5 {
+		t.Errorf("commits with limit 0 = %d, want default 5", len(commits))
+	}
+
+	commits, err = h.service.Log(context.Background(), h.request(), -1)
+	if err != nil {
+		t.Fatalf("Log with limit -1: %v", err)
+	}
+	if len(commits) != 5 {
+		t.Errorf("commits with limit -1 = %d, want default 5", len(commits))
+	}
+
+	// limit > max should be capped at max (20).
+	commits, err = h.service.Log(context.Background(), h.request(), 100)
+	if err != nil {
+		t.Fatalf("Log with limit 100: %v", err)
+	}
+	if len(commits) != 20 {
+		t.Errorf("commits with limit 100 = %d, want capped at 20", len(commits))
+	}
+
+	// Normal case: return exactly what was asked for.
+	commits, err = h.service.Log(context.Background(), h.request(), 7)
+	if err != nil {
+		t.Fatalf("Log with limit 7: %v", err)
+	}
+	if len(commits) != 7 {
+		t.Errorf("commits with limit 7 = %d, want 7", len(commits))
+	}
+}
+
+// timeoutOn is a pod that answers one git subcommand with a timeout instead of
+// running it, once armed — the same shape busyOn above uses for a refusal,
+// standing in for a real timeout on a large history without an actual clock
+// elapsing in the test.
+type timeoutOn struct {
+	pod        repo.Workspace
+	subcommand string
+
+	mux   sync.Mutex
+	armed bool
+}
+
+func (w *timeoutOn) arm() {
+	w.mux.Lock()
+	defer w.mux.Unlock()
+	w.armed = true
+}
+
+func (w *timeoutOn) matches(argv []string) bool {
+	w.mux.Lock()
+	defer w.mux.Unlock()
+	if !w.armed {
+		return false
+	}
+	for _, argument := range argv {
+		if argument == w.subcommand {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *timeoutOn) Command(
+	ctx context.Context, ref kernel.Ref, cmd kernel.Command,
+) (kernel.CommandResult, error) {
+	if w.matches(cmd.Argv) {
+		// ExitCode is left non-zero so any call site that still checked it (rather
+		// than TimedOut) the old way would not mistake this for a clean success.
+		return kernel.CommandResult{TimedOut: true, ExitCode: -1}, nil
+	}
+	return w.pod.Command(ctx, ref, cmd)
+}
+
+func (w *timeoutOn) CommandBatch(
+	ctx context.Context, ref kernel.Ref, cmds []kernel.Command,
+) ([]kernel.CommandResult, error) {
+	return w.pod.CommandBatch(ctx, ref, cmds)
+}
+
+func (w *timeoutOn) Tree(ctx context.Context, ref kernel.Ref, req kernel.TreeRequest) (kernel.Node, error) {
+	return w.pod.Tree(ctx, ref, req)
+}
+
+func (w *timeoutOn) ReadFile(
+	ctx context.Context, ref kernel.Ref, path string, maxBytes int,
+) (kernel.FileContent, error) {
+	return w.pod.ReadFile(ctx, ref, path, maxBytes)
+}
+
+func (w *timeoutOn) WriteFile(
+	ctx context.Context, ref kernel.Ref, path string, content []byte,
+) (kernel.Node, error) {
+	return w.pod.WriteFile(ctx, ref, path, content)
+}
+
+func (w *timeoutOn) MakeDir(ctx context.Context, ref kernel.Ref, path string) (kernel.Node, error) {
+	return w.pod.MakeDir(ctx, ref, path)
+}
+
+func (w *timeoutOn) Remove(ctx context.Context, ref kernel.Ref, path string, recursive bool) error {
+	return w.pod.Remove(ctx, ref, path, recursive)
+}
+
+func (w *timeoutOn) Workspace() string { return w.pod.Workspace() }
+
+// Finding 1. A timeout on `git log` must read as a failure, not as "no commits
+// yet": a large history that ran out of time looks nothing like a fresh
+// repository, and folding the two together would hide the one case a developer
+// most needs to know about — the log ODE could not finish reading.
+func TestLogReportsATimeoutAsAnError(t *testing.T) {
+	var timeout *timeoutOn
+	h := newHarnessWith(t, func(pod repo.Workspace) repo.Workspace {
+		timeout = &timeoutOn{pod: pod, subcommand: "log"}
+		return timeout
+	})
+	h.connect()
+	// Built and committed before arming: the harness's own setup reads the head
+	// commit through a `git log` of its own (Commit's SHA lookup), and arming
+	// first would fold that into the same timeout instead of exercising the one
+	// under test.
+	h.createAndCommit(t, "pv-forecast", "Scaffold the operator")
+	timeout.arm()
+
+	commits, err := h.service.Log(context.Background(), h.request(), 5)
+	if err == nil {
+		t.Fatal("Log: want an error when git log times out")
+	}
+	if commits != nil {
+		t.Errorf("commits = %v, want nil on a timeout", commits)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("err = %v, want it to say the log timed out", err)
+	}
+}
+
+// Finding 1. A git failure that is not "no commits yet" — a corrupt object
+// database, here — must not be reported as an empty history either: only the
+// one recognised, benign case collapses to an empty list, and a corrupt
+// checkout is a different one.
+func TestLogReportsAGitFailureOtherThanNoCommitsAsAnError(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	h.createAndCommit(t, "pv-forecast", "Scaffold the operator")
+
+	// Still a repository (isRepository stays true — that check does not read any
+	// object), but `git log` itself cannot resolve HEAD to a commit any more.
+	objects := filepath.Join(h.path("jonah", "pv-forecast"), ".git", "objects")
+	if err := os.Rename(objects, objects+".bak"); err != nil {
+		t.Fatalf("rename objects: %v", err)
+	}
+	if err := os.Mkdir(objects, 0o755); err != nil {
+		t.Fatalf("mkdir objects: %v", err)
+	}
+
+	commits, err := h.service.Log(context.Background(), h.request(), 5)
+	if err == nil {
+		t.Fatal("Log: want an error for a corrupt object database, not an empty list")
+	}
+	if commits != nil {
+		t.Errorf("commits = %v, want nil on a failure", commits)
+	}
+	var gitErr *repo.GitError
+	if !errors.As(err, &gitErr) {
+		t.Fatalf("err = %v (%T), want a *repo.GitError", err, err)
+	}
+	if strings.Contains(err.Error(), "does not have any commits yet") {
+		t.Errorf("err = %v, a real failure was folded into the unborn-branch case", err)
 	}
 }

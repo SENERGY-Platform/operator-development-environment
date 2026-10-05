@@ -27,6 +27,13 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 )
 
+const (
+	// defaultLogLimit is the number of commits returned when limit <= 0.
+	defaultLogLimit = 5
+	// maxLogLimit is the maximum number of commits returned regardless of the requested limit.
+	maxLogLimit = 20
+)
+
 // git, run in the developer's pod.
 //
 // Three details in here are the ones worth reviewing.
@@ -496,6 +503,31 @@ func parseHead(output string) (sha, subject, date string) {
 		return strings.TrimSpace(output), "", ""
 	}
 	return parts[0], parts[1], parts[2]
+}
+
+// parseCommits reads `git log --pretty=format:%H%x1f%s%x1f%aI%x1f%an`, one line per commit.
+// Lines with the wrong field count are skipped, because a skip is an anomaly to report in
+// a log rather than fail the whole answer.
+func parseCommits(output string) []Commit {
+	commits := []Commit{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\x1f")
+		// Exactly 4 fields: SHA, subject, date, author.
+		if len(parts) != 4 {
+			continue
+		}
+		commits = append(commits, Commit{
+			SHA:     parts[0],
+			Subject: parts[1],
+			Date:    parts[2],
+			Author:  parts[3],
+		})
+	}
+	return commits
 }
 
 // pushRefspec is what a push should name.

@@ -19,7 +19,9 @@ package tools
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
@@ -224,38 +226,17 @@ func (s *surface) readFile(ctx context.Context, req Request) (any, error) {
 		return result, nil
 	}
 
-	from := in.FromLine
-	if from <= 0 {
-		from = 1
-	}
-	if from > len(lines) {
+	window, from, cut, pastEnd := windowLines(lines, in.FromLine, in.MaxLines, s.deps.RepoMaxReadBytes)
+	if pastEnd {
 		// An error rather than an empty window, because the two would read the same
 		// to a model — "nothing there" — and only one of them is true.
 		return nil, fmt.Errorf("%w: from_line %d is past the end of %s, which has %d lines",
 			ErrInvalidInput, from, file.Path, len(lines))
 	}
 	result.FromLine = from
-
-	window := lines[from-1:]
-	if in.MaxLines > 0 && len(window) > in.MaxLines {
-		window = window[:in.MaxLines]
+	if cut {
 		result.Truncated = true
 	}
-	// The byte budget applies to whole lines. A window cut mid-line would hand the
-	// model a truncated statement that looks like the file's own, which is worse
-	// than a shorter window.
-	budget := s.deps.RepoMaxReadBytes
-	kept, spent := 0, 0
-	for _, line := range window {
-		cost := len(line) + 1
-		if kept > 0 && spent+cost > budget {
-			result.Truncated = true
-			break
-		}
-		kept++
-		spent += cost
-	}
-	window = window[:kept]
 
 	result.Lines = len(window)
 	result.Text = strings.Join(window, "\n")
@@ -294,6 +275,51 @@ func splitLines(text string) ([]string, bool) {
 	}
 	trailing := strings.HasSuffix(text, "\n")
 	return strings.Split(strings.TrimSuffix(text, "\n"), "\n"), trailing
+}
+
+// windowLines returns the requested window of lines — fromLine (1-based) cut
+// to at most maxLines, then cut again to fit budget bytes on a line boundary —
+// shared by read_file and read_lib_file so the one rule about what a window is
+// lives in one place rather than as two copies that could drift.
+//
+// fromLine <= 0 means the start of the file, matching read_file's own
+// contract. pastEnd reports fromLine beyond the last line; the caller returns
+// its own error for that, because read_file and read_lib_file name a
+// different noun (the repository path or the library path) in the refusal
+// that follows. cut says whether either bound actually shortened the window,
+// which is what the caller turns into Truncated — kept separate from pastEnd
+// because the two read completely differently to a model: one found less than
+// asked for, the other asked for something that is not there.
+func windowLines(lines []string, fromLine, maxLines, budget int) (window []string, from int, cut, pastEnd bool) {
+	from = fromLine
+	if from <= 0 {
+		from = 1
+	}
+	if from > len(lines) {
+		return nil, from, false, true
+	}
+
+	window = lines[from-1:]
+	if maxLines > 0 && len(window) > maxLines {
+		window = window[:maxLines]
+		cut = true
+	}
+	// The byte budget applies to whole lines. A window cut mid-line would hand the
+	// model a truncated statement that looks like the file's own, which is worse
+	// than a shorter window. At least one line is always kept, even over budget,
+	// so a single long line does not produce an empty answer.
+	kept, spent := 0, 0
+	for _, line := range window {
+		cost := len(line) + 1
+		if kept > 0 && spent+cost > budget {
+			cut = true
+			break
+		}
+		kept++
+		spent += cost
+	}
+	window = window[:kept]
+	return window, from, cut, false
 }
 
 // ---- write_file (L0, no confirmation) ----
@@ -378,6 +404,217 @@ func (s *surface) writeFile(ctx context.Context, req Request) (any, error) {
 		Repository: written.Repository,
 		Hint: "the file is in the working copy and is not committed; the developer " +
 			"reviews and commits it",
+	}
+	return result, nil
+}
+
+// ---- git_status (L0, no confirmation) ----
+//
+// One more read beside list_files and read_file above, on the same argument:
+// git's own state of the working copy is exactly what the Code pane's status
+// view already shows a developer, and before this tool the only way for a
+// model to see it was a `git status` or `git log` cell — confirmed, and
+// carrying the developer's platform token in the kernel for a read that needs
+// none of it. A run measured on 2026-09-23 confirmed three such cells, each
+// one opening a working-copy file beside a git status in the same call.
+//
+// The executor calls Status with Fetch: false on purpose. A fetch is a network
+// round trip to GitHub, and §5.11's "no hidden side effect" would not survive
+// a tool a model can call any number of times each quietly reaching the
+// remote; the pane itself only fetches when the developer opens it or asks for
+// a refresh, and this tool follows the same rule rather than making an
+// exception for itself.
+
+// maxGitStatusChanges bounds the changes list one answer carries, the same
+// argument as maxListedFiles against a different list: a working copy with
+// hundreds of uncommitted changes is not one a model should reason over
+// wholesale, and what is cut is reported rather than silently dropped.
+const maxGitStatusChanges = 200
+
+// gitStatusLogLimit is how many recent commits git_status asks Log for,
+// passed explicitly rather than left at Log's own default. The tool's
+// description promises "the five most recent commits", and that promise must
+// not drift silently if pkg/repo's own default limit is ever changed for a
+// reason that has nothing to do with this tool.
+const gitStatusLogLimit = 5
+
+// redactRemoteOrigin strips a userinfo credential out of a remote URL before it
+// reaches this tool's answer.
+//
+// The filtering sits here rather than in pkg/repo, on purpose: the Code pane
+// reads Status.Remote too, and showing a developer their own origin — including
+// a credential they put there themselves outside ODE — is the pane's business,
+// not a leak. redact (pkg/repo/git.go) already strips ODE's own token from git's
+// output, but it cannot help with this: a developer who points origin at
+// `https://x-access-token:ghp_xxx@github.com/org/repo.git` by hand has embedded
+// a credential redact never sees, because it only knows the token ODE itself
+// issued. What changes at this boundary is that the *answer* joins a stored
+// conversation nobody confirms first, which is exactly the line read_file draws
+// around a credential path a few lines up — so the same line is drawn here.
+//
+// net/url does the parsing rather than a hand-rolled cut on "@" or ":", because
+// a URL is not reliably split by scanning for either character (a path segment
+// or a query value can contain both).
+//
+// The one form net/url will not parse is git's scp syntax, `git@github.com:org/
+// repo.git`, which it rejects on the colon in the first path segment — and that
+// is the ordinary shape of an ssh remote, not an exotic one, so dropping every
+// such origin would lose the address for every repository a developer brought
+// over ssh. It is matched separately: the part before the "@" is a user name
+// there, and a user name alone is not a credential. Only when it carries a
+// password — the `user:password@host` form — is it dropped. Anything that is
+// neither a URL nor scp syntax is dropped whole rather than passed through
+// half-filtered.
+func redactRemoteOrigin(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	// parsed.Host, not err == nil: url.Parse accepts `git:secret@host:path` as an
+	// opaque URL — scheme "git", everything after the colon untouched in Opaque —
+	// so a credential would survive clearing User, which an opaque URL does not
+	// use. A remote worth filtering this way has an authority; anything else goes
+	// to the scp branch below and is judged there.
+	if parsed, err := url.Parse(raw); err == nil && parsed.Host != "" {
+		parsed.User = nil
+		return parsed.String()
+	}
+	match := scpRemote.FindStringSubmatch(raw)
+	if match == nil {
+		return ""
+	}
+	// match[1] is the userinfo, which in scp syntax is a login. A colon in it is
+	// a password, and this is the one case where the address goes with it: there
+	// is no scp form of "the same remote without the credential" that is still
+	// the remote the developer configured.
+	if strings.Contains(match[1], ":") {
+		return ""
+	}
+	return raw
+}
+
+// scpRemote is git's scp-like remote syntax, `[user@]host:path`, which is not a
+// URL. Anchored and deliberately narrow: a host with no slash in it, a colon,
+// and a path.
+var scpRemote = regexp.MustCompile(`^([^/@]+)@([^/:]+):(.+)$`)
+
+// GitStatusResult is the working copy's git state, on the same terms as the
+// Code pane's own status view, plus the recent log. No diff and no file
+// content — read_file is for that.
+type GitStatusResult struct {
+	// Cloned is false when the PVC has no checkout at all.
+	Cloned   bool   `json:"cloned"`
+	Branch   string `json:"branch,omitempty"`
+	Upstream string `json:"upstream,omitempty"`
+	Ahead    int    `json:"ahead"`
+	Behind   int    `json:"behind"`
+	Diverged bool   `json:"diverged"`
+	Detached bool   `json:"detached"`
+	Unborn   bool   `json:"unborn"`
+
+	Head        string `json:"head,omitempty"`
+	HeadSubject string `json:"head_subject,omitempty"`
+	HeadDate    string `json:"head_date,omitempty"`
+
+	// Remote has any userinfo credential stripped by redactRemoteOrigin before it
+	// gets here — see the comment on that function for why the filtering sits at
+	// this layer rather than in pkg/repo.
+	Remote         string `json:"remote,omitempty"`
+	RemoteMismatch bool   `json:"remote_mismatch,omitempty"`
+
+	Dirty bool `json:"dirty"`
+	// Changes is cut at maxGitStatusChanges; ChangesCount is what git itself
+	// reported before that cut, the same Count/len(Files) pair ListFilesResult
+	// uses for the same reason.
+	Changes          []repo.Change `json:"changes"`
+	ChangesCount     int           `json:"changes_count"`
+	ChangesTruncated bool          `json:"changes_truncated,omitempty"`
+
+	// Fetched is always false: this tool calls Status with Fetch: false, so Ahead
+	// and Behind are the divergence ODE last knew about, not a fresh comparison
+	// against the remote.
+	Fetched bool `json:"fetched"`
+
+	Scaffold repo.ScaffoldState `json:"scaffold"`
+
+	// Commits is at most gitStatusLogLimit entries, newest first. Empty with Hint
+	// set when Log failed after Status already succeeded — a log failure must
+	// not cost the rest of an otherwise good answer.
+	Commits []repo.Commit `json:"commits"`
+	Hint    string        `json:"hint,omitempty"`
+}
+
+func (s *surface) gitStatus(ctx context.Context, req Request) (any, error) {
+	req.Progress("repo", "reading git status")
+	status, err := s.deps.Repo.Status(ctx, repo.StatusRequest{
+		Request: repo.Request{
+			Bearer:      req.Token,
+			UserSub:     req.UserSub,
+			WorkbenchID: req.WorkbenchID,
+		},
+		// Never true here — see the package comment above this section.
+		Fetch: false,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	result := GitStatusResult{
+		Cloned:         status.Cloned,
+		Branch:         status.Branch,
+		Upstream:       status.Upstream,
+		Ahead:          status.Ahead,
+		Behind:         status.Behind,
+		Diverged:       status.Diverged,
+		Detached:       status.Detached,
+		Unborn:         status.Unborn,
+		Head:           status.Head,
+		HeadSubject:    status.HeadSubject,
+		HeadDate:       status.HeadDate,
+		Remote:         redactRemoteOrigin(status.Remote),
+		RemoteMismatch: status.RemoteMismatch,
+		Dirty:          status.Dirty,
+		Changes:        status.Changes,
+		ChangesCount:   len(status.Changes),
+		Fetched:        status.Fetched,
+		Scaffold:       status.Scaffold,
+		Commits:        []repo.Commit{},
+	}
+	if result.Changes == nil {
+		result.Changes = []repo.Change{}
+	}
+	if len(result.Changes) > maxGitStatusChanges {
+		result.Changes = result.Changes[:maxGitStatusChanges]
+		result.ChangesTruncated = true
+		result.Hint = fmt.Sprintf(
+			"the change list is incomplete: %d of %d changes are shown; ask the developer "+
+				"which part of the working copy matters rather than assuming these are all "+
+				"of them", len(result.Changes), result.ChangesCount)
+	}
+
+	req.Progress("repo", "reading recent commits")
+	commits, err := s.deps.Repo.Log(ctx, repo.Request{
+		Bearer:      req.Token,
+		UserSub:     req.UserSub,
+		WorkbenchID: req.WorkbenchID,
+	}, gitStatusLogLimit)
+	if err != nil {
+		// A log failure must not cost the rest of the answer: the developer's branch,
+		// upstream and changes are already known good at this point, and refusing the
+		// whole call over the log would throw that away for a part read_file's own
+		// error-forwarding precedent says should just be named instead.
+		note := "the commit log could not be read: " + err.Error()
+		if result.Hint == "" {
+			result.Hint = note
+		} else {
+			result.Hint += ". " + note
+		}
+		return result, nil
+	}
+	result.Commits = commits
+	if result.Commits == nil {
+		// A branch with no commits yet (Unborn) answers with a nil slice from
+		// pkg/repo; the model reads an empty list rather than a JSON null either way.
+		result.Commits = []repo.Commit{}
 	}
 	return result, nil
 }

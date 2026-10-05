@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -533,6 +534,66 @@ func (s *Service) Unlink(ctx context.Context, req Request) error {
 	bench.Link = Link{}
 	bench.LastUsedAt = s.now()
 	return s.store.PutWorkbench(ctx, bench)
+}
+
+// Log returns the most recent commits of the checkout.
+//
+// limit takes defaultLogLimit when it is not positive and is capped at
+// maxLogLimit. A directory that is no repository answers with an empty list and
+// no error — the caller has Status for that. A branch with no commits yet
+// answers the same way, but only that case: git reports it on stderr with "does
+// not have any commits yet", and that exact wording is what is matched below,
+// rather than treating every non-zero exit as the same normal state. A timeout,
+// a corrupt object, or a permissions problem in .git all exit non-zero too, and
+// folding them into the same empty list would make a broken repository
+// indistinguishable from a fresh one; both come back as an error instead.
+func (s *Service) Log(ctx context.Context, req Request, limit int) ([]Commit, error) {
+	link, err := s.linkFor(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	token, err := s.tokenFor(ctx, req.UserSub)
+	if err != nil {
+		return nil, err
+	}
+	checkout := s.git(req, link.WorkbenchID, link.Path, token)
+
+	present, err := checkout.isRepository(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return []Commit{}, nil
+	}
+
+	if limit <= 0 {
+		limit = defaultLogLimit
+	}
+	if limit > maxLogLimit {
+		limit = maxLogLimit
+	}
+
+	args := []string{"log", "-n", strconv.Itoa(limit), "--pretty=format:%H%x1f%s%x1f%aI%x1f%an"}
+	result, err := checkout.attempt(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	if result.TimedOut {
+		return nil, fmt.Errorf("repo: git log timed out after %s", s.opts.CommandTimeout)
+	}
+	// attempt rather than run, because a non-zero exit is not automatically a
+	// failure: the one legitimate case is a branch with no commits yet, matched by
+	// git's own wording on stderr. Anything else that made git exit non-zero is
+	// reported through the package's usual failure path rather than folded into
+	// the same empty answer.
+	if result.ExitCode != 0 {
+		if strings.Contains(result.Stderr, "does not have any commits yet") {
+			return []Commit{}, nil
+		}
+		return nil, checkout.failure(args, result)
+	}
+
+	return parseCommits(result.Stdout), nil
 }
 
 func (s *Service) statusOf(
