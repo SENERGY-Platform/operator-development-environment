@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/kernel"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/simulation"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
@@ -67,6 +68,21 @@ func (promptSimulation) UploadDataset(context.Context, string, string, string, [
 	return simulation.Dataset{}, nil
 }
 func (promptSimulation) MaxDatasetBytes() int { return 1 << 20 }
+
+// promptKernel is a kernel that runs nothing. What is under test is whether the
+// prompt rules out the substitution at all, which turns on run_code being
+// implemented rather than on anything the kernel does.
+type promptKernel struct{}
+
+func (promptKernel) RunQueued(context.Context, kernel.Ref, string) (<-chan kernel.ExecutionEvent, error) {
+	return nil, nil
+}
+
+func (promptKernel) ReadFile(context.Context, kernel.Ref, string, int) (kernel.FileContent, error) {
+	return kernel.FileContent{}, nil
+}
+
+func (promptKernel) Workspace() string { return "data/ode" }
 
 func promptRegistry(t *testing.T, deps tools.Deps) *tools.Registry {
 	t.Helper()
@@ -175,5 +191,46 @@ func TestEverySimulationToolCarriesAUsableSchema(t *testing.T) {
 			t.Errorf("%s carries a $ref; the shared source shape is inlined on purpose",
 				definition.Name)
 		}
+	}
+}
+
+// Repository reads are now routed through tools, so a cell is only a fallback for
+// a refused read at the tier or training end. Dispatch cannot catch either: a cell
+// is a legal L0 call whatever it contains, so the prompt is the only control.
+func TestThePromptRulesOutRunCodeAsASubstituteForATool(t *testing.T) {
+	// L2 deliberately: nothing is beyond L2, so the paragraph that says not to
+	// attempt a blocked call is absent here and a training-end refusal is still
+	// reachable. This is the tier where the substitution has the least standing in the
+	// rest of the prompt.
+	prompt := systemPrompt(
+		promptRegistry(t, tools.Deps{Kernel: promptKernel{}}), Session{Tier: tools.L2}, true)
+
+	for _, expected := range []string{
+		"not a substitute for these tools",
+		// Named explicitly: list_files, read_file, git_status, list_lib_files,
+		// read_lib_file are the reading surface that makes cells unnecessary.
+		"list_files",
+		"git_status",
+		"list_lib_files",
+		"read_lib_file",
+		// The fallback case: when all tools refuse, run_code reaches a refused read.
+		"do not write the cell",
+		"name the tool that refused",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Errorf("the prompt does not say %q, so the assistant might not know "+
+				"which tools to reach for instead of run_code", expected)
+		}
+	}
+}
+
+// A deployment with no jupyterhub_url has no substitution to forbid, and the
+// paragraph would be where the model first heard of one.
+func TestThePromptSaysNothingAboutRunCodeWithoutAKernel(t *testing.T) {
+	prompt := systemPrompt(promptRegistry(t, tools.Deps{}), Session{Tier: tools.L0}, true)
+	// A phrase from the paragraph itself rather than a near-miss of it: an assertion
+	// on wording the block no longer uses would pass however the gate behaved.
+	if strings.Contains(prompt, "not a substitute for these tools") {
+		t.Error("a deployment without a kernel is warned off a run_code detour it cannot take")
 	}
 }

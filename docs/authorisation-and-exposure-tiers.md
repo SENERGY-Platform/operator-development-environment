@@ -565,6 +565,20 @@ L0. The control is the developer's confirmation, not the tier — the same contr
 D11 puts on every other consequential action — and it is why every execution is
 a decision rather than a default.
 
+Above that sits an instruction rather than a gate. The system prompt tells the
+model that `run_code` is not a substitute for a tool. Repository files,
+repository status, and Operator Lib metadata come from `list_files`, `read_file`,
+`git_status`, `list_lib_files` and `read_lib_file` — all at **L0 with no
+confirmation**. Those tools move the model's first question from "I need to look
+at the code; shall I write a cell?" to "what does the repository hold?" When none
+of those tools answers — specifically, when a read the tier or training end
+refused — then a cell reaches what a tool cannot. The instruction is prose
+because it cannot be anything else: the cell is a legal L0 call whatever it
+contains, so `Dispatch` sees nothing to stop, and the one gate left is a
+confirmation the developer answers dozens of times an afternoon. It is in
+`pkg/chat/prompt.go` and only where a kernel is configured; a deployment without
+`jupyterhub_url` is not warned off a route it does not have.
+
 What ODE does do is keep the accidents out of the record: the platform token is
 redacted from what `run_code` returns, so a `print(os.environ)` while debugging
 does not put a live credential into a conversation that is persisted to Postgres.

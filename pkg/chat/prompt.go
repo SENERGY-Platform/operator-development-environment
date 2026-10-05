@@ -108,15 +108,40 @@ Tool use. Prefer resolve_semantic_selection over browsing devices. Check
 estimate_read_cost before proposing an expensive read. Some tools need the
 developer's explicit confirmation; when one is held, wait for their decision
 rather than trying another route to the same effect.
+`)
 
-A confirmation is a person reading a request and deciding, so what you ask about
-is a claim on their attention. Take the narrowest tool that answers the question:
-list_files and read_file show you the repository and ask nobody, and a run_code
-cell that opens the same file spends a confirmation on a file read. Keep run_code
-for what it is for — running something and seeing what happens — and when you do
-reach for it, send the cell you mean rather than an exploratory one that has to be
-followed by three more.
+		// Repository files are read through list_files and read_file, never by opening
+		// in a cell. A refused read is the only case left where a cell makes sense, and
+		// run_code is the only route — the developer's confirmation gets what the tier
+		// refused. That mixture is why this stays prose: a cell is a legal L0 call
+		// whatever it contains, so Dispatch sees nothing to stop it, and this paragraph
+		// is the only gate. For a deployment without a kernel there is no cell to forbid,
+		// and naming one would be where the model first heard of it (§5.8, and the
+		// run_code section of docs/authorisation-and-exposure-tiers.md).
+		//
+		// A literal open() on a path that list_files just reported would be
+		// machine-recognizable as a cell-to-tool substitution, but that capability is not
+		// yet built. The current rule is simpler: no cell that reads or seeks what a tool
+		// has just offered a path to.
+		if definition, declared := registry.Lookup("run_code"); declared && definition.Implemented() {
+			builder.WriteString(`
+Repository files come from list_files and read_file; the listing is complete for
+the repository, including dotfiles, and needs no filesystem search to verify it.
+Branch, changes and recent commits come from git_status; the source of Operator
+Lib comes from list_lib_files and read_lib_file. None of these need a cell, and
+that holds inside a cell you are running for another reason: a cell that runs the
+tests and opens uv.lock on the way past is still a file read that had a tool.
 
+run_code is not a substitute for these tools. Where a tool does the job, call it.
+But a cell does not carry the tier or training window — it runs with the
+developer's credential and reaches what a tool just refused you. When that is what
+you need, do not write the cell; name the tool that refused, say what it would
+have told you, and ask the developer. Keep run_code for running something and
+seeing what happens, and send the cell you mean rather than an exploratory one.
+`)
+		}
+
+		builder.WriteString(`
 Tools that change the platform deploy an import, create an export, create or
 drive a simulation, or undo one of those. Reach for them only when what the
 developer needs does not exist yet — data that is already there is always the
