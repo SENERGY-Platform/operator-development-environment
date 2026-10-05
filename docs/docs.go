@@ -2918,6 +2918,7 @@ const docTemplate = `{
         },
         "/ontology/aspect-tree": {
             "get": {
+                "description": "Each tree node carries aspect_class_id (empty when unclassified), and\nclasses names every aspect class the device repository declares — not\nonly the ones a node in this tree references — so the SPA can render an\nempty class row rather than silently omitting the class (SNRGY-4648).",
                 "produces": [
                     "application/json"
                 ],
@@ -7178,8 +7179,11 @@ const docTemplate = `{
         "experiments.ResolvedMapping": {
             "type": "object",
             "properties": {
-                "aspect_id": {
-                    "type": "string"
+                "aspect_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "characteristic_id": {
                     "type": "string"
@@ -7646,6 +7650,9 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
+                "aspect_class_id": {
+                    "type": "string"
+                },
                 "child_ids": {
                     "type": "array",
                     "items": {
@@ -7786,6 +7793,17 @@ const docTemplate = `{
                 },
                 "write": {
                     "type": "boolean"
+                }
+            }
+        },
+        "ontology.AspectRef": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
                 }
             }
         },
@@ -8910,11 +8928,11 @@ const docTemplate = `{
         "relations.Member": {
             "type": "object",
             "properties": {
-                "aspect_id": {
-                    "type": "string"
-                },
-                "aspect_name": {
-                    "type": "string"
+                "aspects": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/ontology.AspectRef"
+                    }
                 },
                 "device_name": {
                     "type": "string"
@@ -9218,11 +9236,11 @@ const docTemplate = `{
         "relations.SetMember": {
             "type": "object",
             "properties": {
-                "aspect_id": {
-                    "type": "string"
-                },
-                "aspect_name": {
-                    "type": "string"
+                "aspects": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/ontology.AspectRef"
+                    }
                 },
                 "characteristic_id": {
                     "description": "CharacteristicID is canonical and never fabricated (§5.4.11).",

@@ -19,6 +19,7 @@ package selection
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -182,7 +183,7 @@ func option(serviceID, path, characteristicID, functionID, aspectID string) drmo
 // meterSelectables answers a single criterion the way the device repository
 // would: only the paths whose function and aspect the criterion actually names.
 func meterSelectables(criterion drmodel.FilterCriteria) []drmodel.DeviceTypeSelectable {
-	if criterion.AspectId != "" && criterion.AspectId != "kitchen" {
+	if ids := criterion.AspectIds; len(ids) > 0 && !containsID(ids, "kitchen") {
 		return []drmodel.DeviceTypeSelectable{}
 	}
 	if criterion.Interaction != "" && criterion.Interaction != models.EVENT {
@@ -388,11 +389,20 @@ func criteriaPairs(sent [][]drmodel.FilterCriteria) []string {
 	out := []string{}
 	for _, call := range sent {
 		for _, criterion := range call {
-			out = append(out, criterion.FunctionId+"|"+criterion.AspectId)
+			out = append(out, criterion.FunctionId+"|"+strings.Join(criterion.AspectIds, ","))
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+func containsID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }
 
 func hasNote(notes []string, fragment string) bool {
@@ -492,11 +502,11 @@ func TestAspectDescendantsAreNotSentAsCriteria(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("requests = %d, want 1 for one aspect and no function", len(sent))
 	}
-	if sent[0][0].AspectId != "pv" {
-		t.Errorf("aspect = %q, want pv", sent[0][0].AspectId)
+	if len(sent[0][0].AspectIds) != 1 || sent[0][0].AspectIds[0] != "pv" {
+		t.Errorf("aspect = %v, want [pv]", sent[0][0].AspectIds)
 	}
 	for _, call := range sent {
-		if call[0].AspectId == "inverter" {
+		if containsID(call[0].AspectIds, "inverter") {
 			t.Error("a descendant aspect was sent as its own criterion")
 		}
 	}
@@ -566,8 +576,104 @@ func TestBuildCriteriaKeepsTheStrongestCombinations(t *testing.T) {
 	if len(criteria) != 2 {
 		t.Fatalf("criteria = %v, want 2", criteria)
 	}
-	if criteria[0].FunctionID != "fn-strong" || criteria[0].AspectID != "as-strong" {
+	if criteria[0].FunctionID != "fn-strong" ||
+		len(criteria[0].AspectIDs) != 1 || criteria[0].AspectIDs[0] != "as-strong" {
 		t.Errorf("first = %+v, want the two strongest matches paired", criteria[0])
+	}
+}
+
+// --- aspect classes (SNRGY-4648) ---
+
+// Two aspects of different classes describe one variable that has to carry
+// both: the platform criterion ANDs the ids of one aspectCombo, which is why
+// they land in a single criterion rather than two.
+func TestAspectCombinationsANDsAcrossDifferentClasses(t *testing.T) {
+	combos := aspectCombinations([]ontology.AspectMatch{
+		{Id: "pv", AspectClassId: "class-location", Matched: ontology.Matched{Score: 1}},
+		{Id: "inverter-role", AspectClassId: "class-device-role", Matched: ontology.Matched{Score: 0.5}},
+	})
+	if len(combos) != 1 {
+		t.Fatalf("combos = %+v, want exactly one: the cartesian product of two singleton classes", combos)
+	}
+	if want := []string{"inverter-role", "pv"}; !reflect.DeepEqual(combos[0].ids, want) {
+		t.Errorf("ids = %v, want %v sorted", combos[0].ids, want)
+	}
+	if combos[0].score != 1.5 {
+		t.Errorf("score = %v, want the sum 1.5", combos[0].score)
+	}
+}
+
+// Two aspects of the *same* class are alternatives — a variable carries at most
+// one aspect per classified hierarchy — so they produce separate criteria
+// rather than being ANDed together.
+func TestAspectCombinationsOfTheSameClassAreSeparateAlternatives(t *testing.T) {
+	combos := aspectCombinations([]ontology.AspectMatch{
+		{Id: "upstairs", AspectClassId: "class-location", Matched: ontology.Matched{Score: 1}},
+		{Id: "downstairs", AspectClassId: "class-location", Matched: ontology.Matched{Score: 0.8}},
+	})
+	if len(combos) != 2 {
+		t.Fatalf("combos = %+v, want two separate criteria, one per aspect of the class", combos)
+	}
+	ids := []string{combos[0].ids[0], combos[1].ids[0]}
+	sort.Strings(ids)
+	if !reflect.DeepEqual(ids, []string{"downstairs", "upstairs"}) {
+		t.Errorf("ids = %v, want each aspect alone", ids)
+	}
+}
+
+// An unclassified aspect is unrelated to any other match by definition and
+// always forms its own criterion, never crossed with a classified combination.
+func TestAspectCombinationsKeepAnUnclassifiedAspectAlone(t *testing.T) {
+	combos := aspectCombinations([]ontology.AspectMatch{
+		{Id: "pv", AspectClassId: "class-location", Matched: ontology.Matched{Score: 1}},
+		{Id: "kitchen", Matched: ontology.Matched{Score: 1}},
+	})
+	if len(combos) != 2 {
+		t.Fatalf("combos = %+v, want the classified aspect and the unclassified one as two separate combinations", combos)
+	}
+	for _, combo := range combos {
+		if len(combo.ids) != 1 {
+			t.Errorf("combo = %+v, want a single id: nothing here should have been crossed", combo)
+		}
+	}
+}
+
+// buildCriteria sends a classed combination's AspectIDs as one criterion, which
+// is what makes the cap and the platform request agree about what "PV
+// generation" means: a variable classified under both PV and a measuring role,
+// not any variable under either.
+func TestBuildCriteriaANDsAClassedAspectCombinationIntoOneCriterion(t *testing.T) {
+	aspects := []ontology.AspectMatch{
+		{Id: "pv", AspectClassId: "class-location", Matched: ontology.Matched{Score: 1}},
+		{Id: "generation-role", AspectClassId: "class-device-role", Matched: ontology.Matched{Score: 1}},
+	}
+	criteria, dropped := buildCriteria(nil, aspects, nil, models.EVENT, 12)
+	if dropped != 0 || len(criteria) != 1 {
+		t.Fatalf("criteria = %+v, dropped = %d, want exactly one criterion", criteria, dropped)
+	}
+	want := []string{"generation-role", "pv"}
+	if !reflect.DeepEqual(criteria[0].AspectIDs, want) {
+		t.Errorf("aspect_ids = %v, want %v ANDed into one criterion", criteria[0].AspectIDs, want)
+	}
+}
+
+// The cap keeps the strongest combinations even when some of them are classed:
+// the classed combination's score is the sum of its parts, and it must survive
+// the cap ahead of a weaker unclassified one.
+func TestBuildCriteriaCappingKeepsTheStrongestClassedCombination(t *testing.T) {
+	aspects := []ontology.AspectMatch{
+		{Id: "pv", AspectClassId: "class-location", Matched: ontology.Matched{Score: 1}},
+		{Id: "generation-role", AspectClassId: "class-device-role", Matched: ontology.Matched{Score: 1}},
+		{Id: "weak-unclassified", Matched: ontology.Matched{Score: 0.1}},
+	}
+	criteria, dropped := buildCriteria(nil, aspects, nil, models.EVENT, 1)
+	if dropped != 1 || len(criteria) != 1 {
+		t.Fatalf("criteria = %+v, dropped = %d, want the weaker combination dropped", criteria, dropped)
+	}
+	want := []string{"generation-role", "pv"}
+	if !reflect.DeepEqual(criteria[0].AspectIDs, want) {
+		t.Errorf("aspect_ids = %v, want the classed combination (score 2) to survive over the "+
+			"unclassified one (score 0.1)", criteria[0].AspectIDs)
 	}
 }
 
@@ -586,8 +692,8 @@ func TestBuildCriteriaLeavesUnresolvedDimensionsOpen(t *testing.T) {
 	if len(criteria) != 1 {
 		t.Fatalf("criteria = %v, want one", criteria)
 	}
-	if criteria[0].AspectID != "" {
-		t.Errorf("aspect = %q, want it left empty so the platform does not filter on it", criteria[0].AspectID)
+	if len(criteria[0].AspectIDs) != 0 {
+		t.Errorf("aspect = %v, want it left empty so the platform does not filter on it", criteria[0].AspectIDs)
 	}
 }
 
@@ -773,8 +879,8 @@ func TestTheMatchedIdentityIsReconciledBeforeGapsAreJudged(t *testing.T) {
 		t.Fatalf("selectables = %v, want one", paths(result.Selectables))
 	}
 	selectable := result.Selectables[0]
-	if selectable.AspectID != "kitchen" {
-		t.Errorf("aspect = %q, want the one the criterion matched on", selectable.AspectID)
+	if len(selectable.Aspects) != 1 || selectable.Aspects[0].ID != "kitchen" {
+		t.Errorf("aspects = %+v, want the one the criterion matched on", selectable.Aspects)
 	}
 	if selectable.OntologyCompleteness.Status != profiler.CompletenessComplete {
 		t.Errorf("completeness = %+v, want complete: the aspect is known", selectable.OntologyCompleteness)

@@ -47,6 +47,18 @@ import (
 // The step that actually does the semantic work is the caller's: explicit ids
 // bypass all of this (see ExplicitFunctions), which is how the LLM uses it once it
 // has read the ontology itself.
+//
+// A function is scored against three labels, not two: display name, name, and
+// — BasisConcept — its concept's own name. The third exists because of the
+// 2026-09-04 migration, which named every concept's generated function
+// `Get-<Concept>`/`Set-<Concept>` and suffixed every function it superseded
+// with `-deprecated`. "get"/"set" are stopwords already, so a current
+// function's only real label was always its concept name in different
+// clothing; the explicit label just stops that from being an accident of
+// naming. The suffix is stripped before scoring on all three labels — scoring
+// the word "deprecated" would penalise exactly the functions existing device
+// types still point at by id — and reported back in Deprecated, which the
+// stripped name no longer carries.
 
 const (
 	defaultMatchLimit = 5
@@ -67,8 +79,25 @@ const (
 const (
 	BasisDisplayName = "display_name"
 	BasisName        = "name"
-	BasisExplicitID  = "explicit_id"
+	// BasisConcept is a function matched by its concept's name rather than its
+	// own. It exists for the migration of 2026-09-04: a concept's generated
+	// function is named "Get-<Concept>"/"Set-<Concept>", and "get"/"set" are
+	// stopwords, so the concept name is otherwise the function's only real
+	// label — the third label here just makes that label explicit instead of
+	// leaving it to be reconstructed by stripping a prefix.
+	BasisConcept    = "concept"
+	BasisExplicitID = "explicit_id"
 )
+
+// deprecatedFunctionSuffix marks a function the 2026-09-04 migration kept
+// behind a concept's current one: upstream unexports the matching constant
+// (device-repository/lib/database/mongo/migration.go,
+// deprecatedFunctionNameSuffix), so it is reproduced here. The function still
+// has a device type pointing at it by id, so it stays in the match result —
+// just marked, and with the suffix stripped before scoring (see
+// deprecationAwareLabels), since "deprecated" is not a word an intent means to
+// search for.
+const deprecatedFunctionSuffix = "-deprecated"
 
 // Matched is the evidence behind one text-to-ontology resolution. It travels
 // with every match for the same reason a detector's evidence travels with its
@@ -81,19 +110,31 @@ type Matched struct {
 }
 
 type FunctionMatch struct {
-	Id        string  `json:"id"`
-	Name      string  `json:"name"`
-	RdfType   string  `json:"rdf_type"`
-	ConceptId string  `json:"concept_id"`
-	Matched   Matched `json:"matched"`
+	Id        string `json:"id"`
+	Name      string `json:"name"`
+	RdfType   string `json:"rdf_type"`
+	ConceptId string `json:"concept_id"`
+	// Deprecated is true for a function the 2026-09-04 migration superseded with
+	// a concept's current one, named `Get-<Concept>`/`Set-<Concept>`. It still
+	// matches — an existing device type may point at it by id — but a caller
+	// choosing a function for a new mapping should prefer the current one.
+	Deprecated bool    `json:"deprecated,omitempty"`
+	Matched    Matched `json:"matched"`
 }
 
 // AspectMatch carries DescendantsIncluded because it is always true and worth
 // stating: the device repository expands an aspect criterion to the node plus
 // every descendant, so selecting "Building" selects its rooms too.
+//
+// AspectClassId is empty for an unclassified aspect. Where set, buildCriteria
+// groups matches of the same class as alternatives and ANDs across classes
+// (SNRGY-4648): a node classifies at most one aspect of a given hierarchy
+// per variable, so two matches of the same class describe the same slot and two
+// of different classes describe different ones.
 type AspectMatch struct {
 	Id                  string  `json:"id"`
 	Name                string  `json:"name"`
+	AspectClassId       string  `json:"aspect_class_id,omitempty"`
 	DescendantsIncluded bool    `json:"descendants_included"`
 	Matched             Matched `json:"matched"`
 }
@@ -203,16 +244,15 @@ func MatchIntent(snap *Snapshot, intent Intent) IntentMatch {
 	if intent.IncludeControlling {
 		functions = append(append([]models.Function{}, functions...), snap.ControllingFunctions...)
 	}
+	conceptNames := conceptNamesByID(snap.Concepts)
 	for _, f := range functions {
-		matched, ok := bestMatch(asked,
-			label{BasisDisplayName, f.DisplayName},
-			label{BasisName, f.Name})
+		matched, ok := bestMatch(asked, deprecationAwareLabels(f, conceptNames[f.ConceptId])...)
 		if !ok || matched.Score < minScore {
 			continue
 		}
 		out.Functions = append(out.Functions, FunctionMatch{
 			Id: f.Id, Name: functionName(f), RdfType: f.RdfType, ConceptId: f.ConceptId,
-			Matched: matched,
+			Deprecated: isDeprecatedFunction(f), Matched: matched,
 		})
 	}
 	sortMatches(out.Functions, func(m FunctionMatch) (float64, string, string) {
@@ -226,7 +266,8 @@ func MatchIntent(snap *Snapshot, intent Intent) IntentMatch {
 			continue
 		}
 		out.Aspects = append(out.Aspects, AspectMatch{
-			Id: node.Id, Name: node.Name, DescendantsIncluded: true, Matched: matched,
+			Id: node.Id, Name: node.Name, AspectClassId: node.AspectClassId,
+			DescendantsIncluded: true, Matched: matched,
 		})
 	}
 	sortMatches(out.Aspects, func(m AspectMatch) (float64, string, string) {
@@ -298,7 +339,7 @@ func ExplicitFunctions(snap *Snapshot, ids []string) (matches []FunctionMatch, u
 		}
 		matches = append(matches, FunctionMatch{
 			Id: f.Id, Name: functionName(f), RdfType: f.RdfType, ConceptId: f.ConceptId,
-			Matched: explicit(),
+			Deprecated: isDeprecatedFunction(f), Matched: explicit(),
 		})
 	}
 	return matches, unknown
@@ -322,7 +363,8 @@ func ExplicitAspects(snap *Snapshot, ids []string) (matches []AspectMatch, unkno
 			continue
 		}
 		matches = append(matches, AspectMatch{
-			Id: node.Id, Name: node.Name, DescendantsIncluded: true, Matched: explicit(),
+			Id: node.Id, Name: node.Name, AspectClassId: node.AspectClassId,
+			DescendantsIncluded: true, Matched: explicit(),
 		})
 	}
 	return matches, unknown
@@ -359,6 +401,41 @@ func functionName(f models.Function) string {
 		return f.DisplayName
 	}
 	return f.Name
+}
+
+// isDeprecatedFunction reports whether the 2026-09-04 migration kept this
+// function behind its concept's current one, by the suffix it stamped on the
+// name at the same time (see deprecatedFunctionSuffix).
+func isDeprecatedFunction(f models.Function) bool {
+	return strings.HasSuffix(f.Name, deprecatedFunctionSuffix)
+}
+
+// deprecationAwareLabels is a function's labels for scoring: display name,
+// name and the concept's own name, each with deprecatedFunctionSuffix stripped
+// — scoring "deprecated" as a word would dilute every deprecated function's
+// score by exactly the word that makes it findable, which is backwards. The
+// suffix is kept in the *reported* name (functionName): stripping it there too
+// would hide the one thing Deprecated exists to surface.
+//
+// conceptName is empty for a function with no concept, or one whose concept
+// the snapshot does not carry; scoreLabel already treats an empty label as no
+// match, so passing it unconditionally costs nothing.
+func deprecationAwareLabels(f models.Function, conceptName string) []label {
+	return []label{
+		{BasisDisplayName, strings.TrimSuffix(f.DisplayName, deprecatedFunctionSuffix)},
+		{BasisName, strings.TrimSuffix(f.Name, deprecatedFunctionSuffix)},
+		{BasisConcept, conceptName},
+	}
+}
+
+// conceptNamesByID indexes a snapshot's concepts by id, once, so naming a
+// function's concept is a map lookup rather than a scan per function.
+func conceptNamesByID(concepts []models.ConceptWithCharacteristics) map[string]string {
+	out := make(map[string]string, len(concepts))
+	for _, c := range concepts {
+		out[c.Id] = c.Name
+	}
+	return out
 }
 
 // --- scoring ---

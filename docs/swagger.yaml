@@ -1357,8 +1357,10 @@ definitions:
     type: object
   experiments.ResolvedMapping:
     properties:
-      aspect_id:
-        type: string
+      aspect_ids:
+        items:
+          type: string
+        type: array
       characteristic_id:
         type: string
       dest:
@@ -1820,6 +1822,8 @@ definitions:
         items:
           type: string
         type: array
+      aspect_class_id:
+        type: string
       child_ids:
         items:
           type: string
@@ -1912,6 +1916,13 @@ definitions:
         type: boolean
       write:
         type: boolean
+    type: object
+  ontology.AspectRef:
+    properties:
+      id:
+        type: string
+      name:
+        type: string
     type: object
   profiler.ActivityClassification:
     enum:
@@ -2825,10 +2836,10 @@ definitions:
     type: object
   relations.Member:
     properties:
-      aspect_id:
-        type: string
-      aspect_name:
-        type: string
+      aspects:
+        items:
+          $ref: '#/definitions/ontology.AspectRef'
+        type: array
       device_name:
         type: string
       kind:
@@ -3087,10 +3098,10 @@ definitions:
     type: object
   relations.SetMember:
     properties:
-      aspect_id:
-        type: string
-      aspect_name:
-        type: string
+      aspects:
+        items:
+          $ref: '#/definitions/ontology.AspectRef'
+        type: array
       characteristic_id:
         description: CharacteristicID is canonical and never fabricated (§5.4.11).
         type: string
@@ -5770,6 +5781,11 @@ paths:
       - ontology
   /ontology/aspect-tree:
     get:
+      description: |-
+        Each tree node carries aspect_class_id (empty when unclassified), and
+        classes names every aspect class the device repository declares — not
+        only the ones a node in this tree references — so the SPA can render an
+        empty class row rather than silently omitting the class (SNRGY-4648).
       produces:
       - application/json
       responses:

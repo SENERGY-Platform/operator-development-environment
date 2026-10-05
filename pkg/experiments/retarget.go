@@ -23,6 +23,7 @@ import (
 	"github.com/SENERGY-Platform/models/go/models"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 )
 
@@ -63,14 +64,14 @@ type ResolvedService struct {
 
 // ResolvedMapping is one mapping with the variable it reads, named.
 type ResolvedMapping struct {
-	Dest             string `json:"dest"`
-	Source           string `json:"source"`
-	VariableName     string `json:"variable_name"`
-	VariablePath     string `json:"variable_path"`
-	Unit             string `json:"unit,omitempty"`
-	CharacteristicID string `json:"characteristic_id,omitempty"`
-	FunctionID       string `json:"function_id,omitempty"`
-	AspectID         string `json:"aspect_id,omitempty"`
+	Dest             string   `json:"dest"`
+	Source           string   `json:"source"`
+	VariableName     string   `json:"variable_name"`
+	VariablePath     string   `json:"variable_path"`
+	Unit             string   `json:"unit,omitempty"`
+	CharacteristicID string   `json:"characteristic_id,omitempty"`
+	FunctionID       string   `json:"function_id,omitempty"`
+	AspectIDs        []string `json:"aspect_ids,omitempty"`
 	// Guessed is true when RetargetToService could not find a counterpart for
 	// this mapping on the chosen service and picked a queryable variable by
 	// position instead (see RetargetToService and defaultVariable). It is the
@@ -99,7 +100,7 @@ const (
 	// topic's own mapping-0 variable.
 	FitPath FitMatch = "path"
 	// FitSemantics is a variable with no path match but the same FunctionID and
-	// AspectID.
+	// the same aspect set.
 	FitSemantics FitMatch = "semantics"
 	// FitNone is neither: the topic cannot be moved to this device without a
 	// developer choosing a service and variable by hand.
@@ -594,11 +595,11 @@ func findCounterpart(toType models.DeviceType, origin profiler.Variable) (profil
 			return v, false, true
 		}
 	}
-	if origin.FunctionID == "" || origin.AspectID == "" {
+	if origin.FunctionID == "" || len(origin.AspectIDs) == 0 {
 		return profiler.Variable{}, false, false
 	}
 	for _, v := range profiler.DeviceTypeVariables(toType) {
-		if v.FunctionID == origin.FunctionID && v.AspectID == origin.AspectID {
+		if v.FunctionID == origin.FunctionID && ontology.EqualAspectSets(v.AspectIDs, origin.AspectIDs) {
 			return v, true, true
 		}
 	}
@@ -614,11 +615,11 @@ func findCounterpartInService(service models.Service, origin profiler.Variable) 
 			return v, false, true
 		}
 	}
-	if origin.FunctionID == "" || origin.AspectID == "" {
+	if origin.FunctionID == "" || len(origin.AspectIDs) == 0 {
 		return profiler.Variable{}, false, false
 	}
 	for _, v := range profiler.ServiceVariables(service) {
-		if v.FunctionID == origin.FunctionID && v.AspectID == origin.AspectID {
+		if v.FunctionID == origin.FunctionID && ontology.EqualAspectSets(v.AspectIDs, origin.AspectIDs) {
 			return v, true, true
 		}
 	}
@@ -659,7 +660,7 @@ func resolvedMappingOf(dest, source string, v profiler.Variable) ResolvedMapping
 		Unit:             v.UnitReference,
 		CharacteristicID: v.CharacteristicID,
 		FunctionID:       v.FunctionID,
-		AspectID:         v.AspectID,
+		AspectIDs:        v.AspectIDs,
 	}
 }
 

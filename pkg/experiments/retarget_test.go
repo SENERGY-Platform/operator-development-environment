@@ -212,7 +212,8 @@ func TestDescribeRendersATopicAgainstItsOwnDevice(t *testing.T) {
 	if m.VariableName != "power" || m.VariablePath != "value.power" {
 		t.Errorf("variable = %+v", m)
 	}
-	if m.CharacteristicID != "ch-watt" || m.FunctionID != "fn-power" || m.AspectID != "aspect-pv" {
+	if m.CharacteristicID != "ch-watt" || m.FunctionID != "fn-power" ||
+		len(m.AspectIDs) != 1 || m.AspectIDs[0] != "aspect-pv" {
 		t.Errorf("semantics = %+v", m)
 	}
 	if len(resolved.Warnings) != 0 {
@@ -350,6 +351,72 @@ func TestRetargetRefusesWhenNoCounterpartExists(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "power_out") {
 		t.Errorf("error = %q, want it to name the failing mapping's dest", err.Error())
+	}
+}
+
+// aspectSetDevice is oneServiceDevice's shape with an explicit aspect_ids list
+// instead of the deprecated single alias, for the alias-collision tests below.
+// The origin device (fromDeviceID) always uses this shape; onDifferentPath
+// gives the candidate a different content variable name so that only a
+// semantic match — never a path match — can find its counterpart.
+func aspectSetDevice(deviceID, deviceTypeID, serviceID string, aspectIDs []string, onDifferentPath bool) models.ExtendedDevice {
+	root, leaf, displayName := "value", "power", "Meter"
+	if onDifferentPath {
+		root, leaf, displayName = "reading", "watt", "Other meter"
+	}
+	return models.ExtendedDevice{
+		Device:          models.Device{Id: deviceID, Name: displayName, DeviceTypeId: deviceTypeID},
+		ConnectionState: models.ConnectionStateOnline,
+		Permissions:     models.Permissions{Read: true, Execute: true},
+		DeviceType: &models.DeviceType{
+			Id: deviceTypeID, Name: displayName,
+			Services: []models.Service{{
+				Id: serviceID, Name: "readings", Interaction: models.EVENT,
+				Outputs: []models.Content{{
+					ContentVariable: models.ContentVariable{
+						Id: "cv-root", Name: root, Type: models.Structure,
+						SubContentVariables: []models.ContentVariable{{
+							Id: "cv-leaf", Name: leaf, Type: models.Float,
+							CharacteristicId: "ch-watt", FunctionId: "fn-power", AspectIds: aspectIDs,
+						}},
+					},
+				}},
+			}},
+		},
+	}
+}
+
+// The exact counter-example docs/aspect-identity.md names: two variables share
+// only the alphabetically-first aspect id ("electricity") and are not the same
+// quantity, because the device repository's deprecated AspectId alias holds
+// only that one entry. The candidate's path differs from the origin's, so only
+// the semantic branch of findCounterpart can produce a match here — comparing
+// the alias instead of the whole set would wrongly treat "power [electricity,
+// kitchen]" and "power [electricity, living_room]" as the same series.
+func TestRetargetRefusesACounterpartThatOnlySharesTheAspectAlias(t *testing.T) {
+	from := aspectSetDevice(fromDeviceID, fromTypeID, fromServiceID, []string{"electricity", "kitchen"}, false)
+	to := aspectSetDevice("urn:infai:ses:device:to-alias", "dt-to-alias",
+		"urn:infai:ses:service:to-alias-aaaa", []string{"electricity", "living_room"}, true)
+
+	_, err := experiments.Retarget(powerTopic("value.power"), from, to)
+	if !errors.Is(err, experiments.ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest: the two devices share only the aspect alias, not the aspect set", err)
+	}
+}
+
+// The positive case beside the refusal above: the same aspect set, listed in a
+// different order on each side, still finds its counterpart by semantics.
+func TestRetargetMatchesByAspectSetRegardlessOfListOrder(t *testing.T) {
+	from := aspectSetDevice(fromDeviceID, fromTypeID, fromServiceID, []string{"electricity", "kitchen"}, false)
+	to := aspectSetDevice("urn:infai:ses:device:to-same-set", "dt-to-same-set",
+		"urn:infai:ses:service:to-same-set-aaaa", []string{"kitchen", "electricity"}, true)
+
+	resolved, err := experiments.Retarget(powerTopic("value.power"), from, to)
+	if err != nil {
+		t.Fatalf("Retarget: %v", err)
+	}
+	if len(resolved.Mappings) != 1 || resolved.Mappings[0].VariablePath != "reading.watt" {
+		t.Errorf("mappings = %+v, want the counterpart found by the same aspect set", resolved.Mappings)
 	}
 }
 

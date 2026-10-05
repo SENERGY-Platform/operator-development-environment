@@ -210,7 +210,17 @@ export interface AspectTreeNode {
   name: string;
   root_id: string;
   parent_id: string;
+  /** Set at the root and shared by the whole hierarchy; empty when unclassified. */
+  aspect_class_id: string;
   children: AspectTreeNode[] | null;
+}
+
+/** An aspect's id and name, without position in a hierarchy — what a variable's
+ * aspect list and an ontology class both are. Reused wherever one of those is all
+ * a caller needs. */
+export interface AspectRef {
+  id: string;
+  name: string;
 }
 
 export interface OntologyFunction {
@@ -219,6 +229,9 @@ export interface OntologyFunction {
   display_name: string;
   concept_id: string;
   rdf_type: string;
+  /** True for a function a migration renamed and kept for devices still
+   * referencing it under the old name (docs/component-design.md). */
+  deprecated?: boolean;
 }
 
 export interface Device {
@@ -363,7 +376,7 @@ export interface Declared {
   max_value: Value<number>;
   type: string;
   function_id?: string;
-  aspect_id?: string;
+  aspect_ids?: string[];
 }
 
 export interface Liveness {
@@ -853,6 +866,7 @@ export interface FunctionMatch {
   name: string;
   rdf_type: string;
   concept_id: string;
+  deprecated?: boolean;
   matched: Matched;
 }
 
@@ -860,6 +874,7 @@ export interface FunctionMatch {
 export interface AspectMatch {
   id: string;
   name: string;
+  aspect_class_id?: string;
   descendants_included: boolean;
   matched: Matched;
 }
@@ -878,7 +893,9 @@ export interface DeviceClassMatch {
  */
 export interface Criterion {
   function_id?: string;
-  aspect_id?: string;
+  /** One request per combination of classes (ANDed); same-class alternatives are
+   * separate criteria (SPEC decision 1). Not guaranteed sorted. */
+  aspect_ids?: string[];
   device_class_id?: string;
   interaction?: string;
   device_types: number;
@@ -897,8 +914,8 @@ export interface Selectable {
   interaction: string;
   type?: string;
   function_id?: string;
-  aspect_id?: string;
-  aspect_name?: string;
+  /** Sorted by id. */
+  aspects?: AspectRef[];
   queryable: boolean;
   reason?: string;
   ontology_completeness: Completeness;
@@ -1559,8 +1576,8 @@ export interface CandidateSetMember {
   device_type_name?: string;
   service_name?: string;
   function_id?: string;
-  aspect_id?: string;
-  aspect_name?: string;
+  /** Sorted by id. */
+  aspects?: AspectRef[];
   connection_state?: string;
   characteristic_id: string | null;
   unit: string;
@@ -1593,7 +1610,9 @@ export interface CandidateSet {
   notes: string[];
 }
 
-export interface AspectRef {
+/** One node of a proposal's subtree, in the hierarchy it was walked from — not an
+ * aspect's id and name alone, so distinct from `AspectRef`. */
+export interface AspectSubtreeNode {
   id: string;
   name: string;
   parent_id?: string;
@@ -1604,7 +1623,7 @@ export interface RelationProposal {
   aspect_id: string;
   aspect_name: string;
   include_descendants: boolean;
-  subtree: AspectRef[];
+  subtree: AspectSubtreeNode[];
   sets: CandidateSet[];
   candidate_devices: CandidateDevice[];
   ontology_gaps: OntologyGap[];
@@ -1656,8 +1675,8 @@ export interface RelationMember {
   label: string;
   device_name?: string;
   service_name?: string;
-  aspect_id?: string;
-  aspect_name?: string;
+  /** Sorted by id. */
+  aspects?: AspectRef[];
   profile_id: string;
   unit: string;
   kind: ValueKind | "";
@@ -2156,7 +2175,7 @@ export interface ResolvedMapping {
   unit?: string;
   characteristic_id?: string;
   function_id?: string;
-  aspect_id?: string;
+  aspect_ids?: string[];
   /**
    * True where the target service had no counterpart for this mapping at all —
    * neither the same path nor the same function and aspect — and the backend
@@ -2609,7 +2628,8 @@ export interface ExperimentLogs {
 
 export const api = {
   session: () => get<Session>("/session"),
-  aspectTree: () => get<{ tree: AspectTreeNode[] }>("/ontology/aspect-tree"),
+  aspectTree: () =>
+    get<{ tree: AspectTreeNode[]; classes: AspectRef[] }>("/ontology/aspect-tree"),
   functions: (rdfType: "measuring" | "controlling" = "measuring") =>
     get<{ functions: OntologyFunction[]; rdf_type: string }>(
       `/ontology/functions?rdf_type=${rdfType}`,

@@ -148,6 +148,9 @@ there before deriving a service's behaviour from its code again.
   not compute a unit conversion
 - [docs/relations.md](docs/relations.md) — where a candidate set comes from, and
   how much its grouping is worth
+- [docs/aspect-identity.md](docs/aspect-identity.md) — why two variables are
+  compared by their whole aspect set rather than by the deprecated single-aspect
+  alias, and the counter-example that breaks the alias
 - [docs/experiments.md](docs/experiments.md) — a run is submitted from a commit or
   it is not submitted, and why a cell that logs to MLflow is still not a run
 - [docs/operator-lib-versions.md](docs/operator-lib-versions.md) — why only the

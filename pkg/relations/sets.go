@@ -58,8 +58,7 @@ type SetMember struct {
 	DeviceTypeName  string                 `json:"device_type_name,omitempty"`
 	ServiceName     string                 `json:"service_name,omitempty"`
 	FunctionID      string                 `json:"function_id,omitempty"`
-	AspectID        string                 `json:"aspect_id,omitempty"`
-	AspectName      string                 `json:"aspect_name,omitempty"`
+	Aspects         []ontology.AspectRef   `json:"aspects,omitempty"`
 	ConnectionState models.ConnectionState `json:"connection_state,omitempty"`
 
 	// CharacteristicID is canonical and never fabricated (§5.4.11).
@@ -346,7 +345,7 @@ func setMembers(
 				dropped++
 				continue
 			}
-			if selectable.AspectID != "" && !allowed[selectable.AspectID] {
+			if len(selectable.Aspects) > 0 && !anyAspectAllowed(selectable.Aspects, allowed) {
 				continue
 			}
 			ref := profiler.SeriesRef{
@@ -366,8 +365,7 @@ func setMembers(
 				DeviceTypeName:   device.DeviceTypeName,
 				ServiceName:      selectable.ServiceName,
 				FunctionID:       selectable.FunctionID,
-				AspectID:         selectable.AspectID,
-				AspectName:       selectable.AspectName,
+				Aspects:          selectable.Aspects,
 				ConnectionState:  device.ConnectionState,
 				CharacteristicID: selectable.CharacteristicID,
 				Unit:             selectable.Unit,
@@ -591,14 +589,38 @@ func aspectPath(subtree []AspectRef, nodeID string) []string {
 	return path
 }
 
+// filterByAspect keeps the members whose aspect set contains the node: a
+// variable classified under several aspects at once belongs under every one of
+// them, not just the alphabetically first (SNRGY-4648).
 func filterByAspect(members []SetMember, aspectID string) []SetMember {
 	out := []SetMember{}
 	for _, member := range members {
-		if member.AspectID == aspectID {
+		if hasAspect(member.Aspects, aspectID) {
 			out = append(out, member)
 		}
 	}
 	return out
+}
+
+func hasAspect(aspects []ontology.AspectRef, id string) bool {
+	for _, a := range aspects {
+		if a.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// anyAspectAllowed reports whether a selectable belongs under the requested
+// subtree: a variable classified under several aspects is included as soon as
+// one of them is allowed, the same way a single-aspect variable always was.
+func anyAspectAllowed(aspects []ontology.AspectRef, allowed map[string]bool) bool {
+	for _, a := range aspects {
+		if allowed[a.ID] {
+			return true
+		}
+	}
+	return false
 }
 
 // aspectEmptyNote names the reason nothing was found, rather than leaving an empty

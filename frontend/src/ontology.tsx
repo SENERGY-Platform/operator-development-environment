@@ -14,8 +14,15 @@
  * limitations under the License.
  */
 
-import { useCallback, useState } from "react";
-import { api, deviceLabel, type AspectTreeNode, type Device, type OntologyFunction } from "./api";
+import { useCallback, useMemo, useState } from "react";
+import {
+  api,
+  deviceLabel,
+  type AspectRef,
+  type AspectTreeNode,
+  type Device,
+  type OntologyFunction,
+} from "./api";
 import { setParam, useParam } from "./router";
 import { Busy, Muted, Pane, useLoad } from "./ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -43,19 +50,80 @@ export function OntologyView() {
   );
 }
 
+/** One class's row in the tree: its root aspects, or none for a class the
+ * ontology declares but nothing is classified under yet. */
+interface AspectClassGroup {
+  id: string;
+  name: string;
+  roots: AspectTreeNode[];
+}
+
+/** The id groupByClass gives the roots with no `aspect_class_id` — never a real
+ * aspect class, so a class actually using it could not be confused with it. */
+const UNCLASSIFIED = "";
+
+/**
+ * Buckets the tree's root nodes under the class each was classified into, root
+ * rather than node because `aspect_class_id` is only ever set at the root and
+ * shared down the whole hierarchy. Every class is given a row even
+ * with no roots, so an ontology class with nothing classified under it yet is
+ * still visible rather than silently absent. Unclassified roots are grouped last.
+ */
+function groupByClass(tree: AspectTreeNode[], classes: AspectRef[]): AspectClassGroup[] {
+  const byId = new Map<string, AspectClassGroup>();
+  for (const cls of classes) {
+    byId.set(cls.id, { id: cls.id, name: cls.name, roots: [] });
+  }
+  const unclassified: AspectTreeNode[] = [];
+  for (const root of tree) {
+    if (!root.aspect_class_id) {
+      unclassified.push(root);
+      continue;
+    }
+    let group = byId.get(root.aspect_class_id);
+    if (!group) {
+      // A root names a class the class listing did not — shown by its id rather
+      // than dropped, since that would silently lose roots from the tree.
+      group = { id: root.aspect_class_id, name: root.aspect_class_id, roots: [] };
+      byId.set(root.aspect_class_id, group);
+    }
+    group.roots.push(root);
+  }
+  const groups = [...byId.values()];
+  if (unclassified.length > 0) {
+    groups.push({ id: UNCLASSIFIED, name: "Unclassified", roots: unclassified });
+  }
+  return groups;
+}
+
 function AspectTreePane() {
-  const load = useCallback(() => api.aspectTree().then((r) => r.tree), []);
+  const load = useCallback(() => api.aspectTree(), []);
   const { data, error, loading } = useLoad(load);
+  const groups = useMemo(
+    () => (data ? groupByClass(data.tree, data.classes) : []),
+    [data],
+  );
 
   return (
     <Pane title="Aspects" subtitle="Hierarchical subsystems from the platform ontology">
       {loading && <Busy>Loading…</Busy>}
       {error && <Muted>{error}</Muted>}
-      {data && data.length === 0 && <Muted>The ontology contains no aspects.</Muted>}
-      {data && data.length > 0 && (
+      {data && groups.length === 0 && <Muted>The ontology contains no aspects.</Muted>}
+      {data && groups.length > 0 && (
         <ul className="tree">
-          {data.map((node) => (
-            <TreeNode key={node.id} node={node} />
+          {groups.map((group) => (
+            <li key={group.id || "unclassified"}>
+              <div className="tree-row">
+                <span className="tree-name font-medium">{group.name}</span>
+              </div>
+              {group.roots.length > 0 && (
+                <ul>
+                  {group.roots.map((node) => (
+                    <TreeNode key={node.id} node={node} />
+                  ))}
+                </ul>
+              )}
+            </li>
           ))}
         </ul>
       )}
@@ -149,7 +217,12 @@ function FunctionsPane() {
       {data && (
         <ul className="list flex flex-col gap-1">
           {data.map((fn: OntologyFunction) => (
-            <li key={fn.id}>{fn.display_name || fn.name || fn.id}</li>
+            <li key={fn.id}>
+              {fn.display_name || fn.name || fn.id}
+              {fn.deprecated && (
+                <span className="muted-inline text-xs text-muted-foreground"> deprecated</span>
+              )}
+            </li>
           ))}
         </ul>
       )}

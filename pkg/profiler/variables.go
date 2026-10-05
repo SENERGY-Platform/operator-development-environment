@@ -21,6 +21,8 @@ import (
 	"sort"
 
 	"github.com/SENERGY-Platform/models/go/models"
+
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 )
 
 // Variable is one addressable series discovered from a device type's service
@@ -39,8 +41,12 @@ type Variable struct {
 	CharacteristicID string `json:"characteristic_id"`
 	UnitReference    string `json:"unit_reference,omitempty"`
 	FunctionID       string `json:"function_id,omitempty"`
-	AspectID         string `json:"aspect_id,omitempty"`
-	Void             bool   `json:"void,omitempty"`
+	// AspectIDs is read through ontology.AspectIDs wherever it is built (see
+	// newVariable, ExportVariables), so it is always sorted and deduplicated — a
+	// variable carries a set, not a list, and findCounterpart/sameQuantity compare
+	// it as one (SNRGY-4648).
+	AspectIDs []string `json:"aspect_ids,omitempty"`
+	Void      bool     `json:"void,omitempty"`
 
 	// Queryable is false when the column exists in the database but cannot be
 	// read as a scalar series. Reason says which case it is; reporting it beats
@@ -164,7 +170,7 @@ func newVariable(service models.Service, cv models.ContentVariable, path string)
 		CharacteristicID: cv.CharacteristicId,
 		UnitReference:    cv.UnitReference,
 		FunctionID:       cv.FunctionId,
-		AspectID:         cv.AspectId,
+		AspectIDs:        ontology.AspectIDs(cv.AspectIds, cv.AspectId),
 		Void:             cv.IsVoid,
 		Queryable:        true,
 	}

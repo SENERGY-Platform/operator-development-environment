@@ -44,9 +44,9 @@ type TypeVariable struct {
 	Type string `json:"type,omitempty"`
 	// CharacteristicID is canonical and never fabricated, as everywhere else here:
 	// it decides the unit, and an invented one authorises a wrong conversion.
-	CharacteristicID *string `json:"characteristic_id"`
-	FunctionID       string  `json:"function_id,omitempty"`
-	AspectID         string  `json:"aspect_id,omitempty"`
+	CharacteristicID *string  `json:"characteristic_id"`
+	FunctionID       string   `json:"function_id,omitempty"`
+	AspectIDs        []string `json:"aspect_ids,omitempty"`
 }
 
 // TypeVariables walks an import type's output into its addressable payload
@@ -70,7 +70,7 @@ func collectTypeVariables(out *[]TypeVariable, variable dsmodel.ImportContentVar
 				Type:             string(variable.Type),
 				CharacteristicID: characteristic(variable.CharacteristicId),
 				FunctionID:       variable.FunctionId,
-				AspectID:         variable.AspectId,
+				AspectIDs:        aspectIDs(variable.AspectIds, variable.AspectId),
 			})
 		}
 		return
@@ -113,12 +113,26 @@ func (c TypeCriterion) matches(variable TypeVariable) bool {
 	if c.FunctionID != "" && variable.FunctionID != c.FunctionID {
 		return false
 	}
-	if len(c.AspectIDs) == 0 {
-		return true
+	// Every aspect of the criterion has to be carried, as upstream ANDs them on
+	// one variable; any id of an aspect's subtree carries that aspect.
+	for _, want := range c.AspectIDs {
+		covered := c.AspectSubtrees[want]
+		if len(covered) == 0 {
+			covered = []string{want}
+		}
+		if !carriesAny(variable.AspectIDs, covered) {
+			return false
+		}
 	}
-	for _, id := range c.AspectIDs {
-		if variable.AspectID == id {
-			return true
+	return true
+}
+
+func carriesAny(have, covered []string) bool {
+	for _, h := range have {
+		for _, c := range covered {
+			if h == c {
+				return true
+			}
 		}
 	}
 	return false

@@ -23,6 +23,7 @@ import (
 	drmodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 )
 
@@ -84,7 +85,12 @@ func (m *deviceTypeMatch) merge(selectable drmodel.DeviceTypeSelectable) {
 // columns at all — the same enumeration a QuickProfile is built from. Using it
 // here means a selectable and the candidate that later carries it agree about
 // whether the variable can be read, instead of two walks drifting apart.
-func (m *deviceTypeMatch) selectables(index *profiler.OntologyIndex) []Selectable {
+//
+// aspectNames is the snapshot's aspect nodes indexed by id (see aspectNames in
+// imports.go). It is what names a variable's own declared aspect ids: the
+// walk only ever has the ids (ContentVariable.AspectIds), never a name, and a
+// declared-but-unnamed aspect would be a worse answer than one more lookup.
+func (m *deviceTypeMatch) selectables(index *profiler.OntologyIndex, aspectNames map[string]string) []Selectable {
 	outputs := map[string]map[string]profiler.Variable{}
 	for id, service := range m.services {
 		byPath := map[string]profiler.Variable{}
@@ -97,6 +103,14 @@ func (m *deviceTypeMatch) selectables(index *profiler.OntologyIndex) []Selectabl
 	out := make([]Selectable, 0, len(m.options))
 	for _, option := range m.options {
 		variable, found := outputs[option.ServiceId][option.Path]
+		// aspectsFromOption is set only when the walk found no variable at all: then
+		// the option is the sole source of the aspect, and it already carries the
+		// name, so naming it from the snapshot too would be a second lookup for data
+		// already in hand. Wherever a declared variable exists — found here, or
+		// reconciled from the option below by withOptionIdentity — its own id list
+		// is named from the snapshot instead, which is what keeps a classified
+		// aspect's name consistent regardless of which path produced the id.
+		aspectsFromOption := !found
 		if !found {
 			// Either an input path, or a device type whose services the query did not
 			// return. Both are reported rather than silently dropped; the constructed
@@ -116,7 +130,7 @@ func (m *deviceTypeMatch) selectables(index *profiler.OntologyIndex) []Selectabl
 				Interaction:      option.Interaction,
 				CharacteristicID: option.CharacteristicId,
 				FunctionID:       option.FunctionId,
-				AspectID:         option.AspectNode.Id,
+				AspectIDs:        ontology.AspectIDs(ontology.AspectNodeIDs(option.AspectNodes), option.AspectNode.Id),
 				Void:             option.IsVoid,
 				Queryable:        false,
 				Reason:           reasonNotAnOutput,
@@ -124,6 +138,13 @@ func (m *deviceTypeMatch) selectables(index *profiler.OntologyIndex) []Selectabl
 		}
 
 		variable = withOptionIdentity(variable, option)
+
+		var aspects []ontology.AspectRef
+		if aspectsFromOption {
+			aspects = ontology.AspectRefsFromNodes(option.AspectNodes, option.AspectNode)
+		} else {
+			aspects = ontology.AspectRefsByID(variable.AspectIDs, aspectNames)
+		}
 
 		semantics := profiler.ResolveUnits(variable, index, profiler.Provenance{})
 		selectable := Selectable{
@@ -137,8 +158,7 @@ func (m *deviceTypeMatch) selectables(index *profiler.OntologyIndex) []Selectabl
 			Interaction:          variable.Interaction,
 			Type:                 variable.Type,
 			FunctionID:           variable.FunctionID,
-			AspectID:             variable.AspectID,
-			AspectName:           option.AspectNode.Name,
+			Aspects:              aspects,
 			Queryable:            variable.Queryable,
 			Reason:               variable.Reason,
 			OntologyCompleteness: profiler.VariableCompleteness(variable, index),
@@ -172,8 +192,8 @@ func withOptionIdentity(variable profiler.Variable, option drmodel.ServicePathOp
 	if variable.FunctionID == "" {
 		variable.FunctionID = option.FunctionId
 	}
-	if variable.AspectID == "" {
-		variable.AspectID = option.AspectNode.Id
+	if len(variable.AspectIDs) == 0 {
+		variable.AspectIDs = ontology.AspectIDs(ontology.AspectNodeIDs(option.AspectNodes), option.AspectNode.Id)
 	}
 	if variable.Type == "" {
 		variable.Type = option.Type

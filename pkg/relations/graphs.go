@@ -525,13 +525,15 @@ func (r *neighbourResolver) members(ctx context.Context, token, deviceID string)
 			DeviceID: deviceID, ServiceID: variable.ServiceID, VariablePath: variable.Path,
 		}
 		members = append(members, SetMember{
-			Ref:              ref,
-			Label:            memberLabel(displayDeviceName(device), variable.Path),
-			DeviceName:       displayDeviceName(device),
-			DeviceTypeName:   device.DeviceType.Name,
-			ServiceName:      variable.ServiceName,
-			FunctionID:       variable.FunctionID,
-			AspectID:         variable.AspectID,
+			Ref:            ref,
+			Label:          memberLabel(displayDeviceName(device), variable.Path),
+			DeviceName:     displayDeviceName(device),
+			DeviceTypeName: device.DeviceType.Name,
+			ServiceName:    variable.ServiceName,
+			FunctionID:     variable.FunctionID,
+			// No name lookup here, as before: a graph neighbour is resolved from the
+			// device type alone, with no snapshot in hand to name the ids from.
+			Aspects:          ontology.AspectRefsByID(variable.AspectIDs, nil),
 			ConnectionState:  device.ConnectionState,
 			CharacteristicID: semantics.CharacteristicID,
 			Unit:             semantics.Unit,

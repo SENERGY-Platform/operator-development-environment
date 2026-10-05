@@ -419,8 +419,7 @@ func kitchenResolution() selection.Result {
 			Unit:             "W",
 			UnitSource:       profiler.UnitFromCharacteristic,
 			FunctionID:       "fn-power",
-			AspectID:         "kitchen",
-			AspectName:       "Kitchen",
+			Aspects:          []ontology.AspectRef{{ID: "kitchen", Name: "Kitchen"}},
 			Queryable:        true,
 		}},
 		CandidateDevices: []selection.CandidateDevice{
@@ -1144,7 +1143,7 @@ func TestCollidingMemberLabelsAreDisambiguated(t *testing.T) {
 		result.Selectables = append(result.Selectables, selection.Selectable{
 			DeviceTypeID: "dt-plug", ServiceID: service, ServiceName: service,
 			Path: "value.value", Unit: "A", UnitSource: profiler.UnitInferred,
-			AspectID: "kitchen", Queryable: true,
+			Aspects: []ontology.AspectRef{{ID: "kitchen", Name: "Kitchen"}}, Queryable: true,
 		})
 	}
 	result.Selectables[0].ServiceName = "svc-oven-1"
@@ -1408,7 +1407,7 @@ func TestIncludeDescendantsDecidesWhetherASiblingNodeCounts(t *testing.T) {
 	result.Selectables = append(result.Selectables, selection.Selectable{
 		DeviceTypeID: "dt-lamp", DeviceTypeName: "Lamp", ServiceID: "svc-lights",
 		Path: "value.power", Unit: "W", UnitSource: profiler.UnitFromCharacteristic,
-		AspectID: "kitchen-ceiling", AspectName: "Kitchen Ceiling", Queryable: true,
+		Aspects: []ontology.AspectRef{{ID: "kitchen-ceiling", Name: "Kitchen Ceiling"}}, Queryable: true,
 	})
 	result.CandidateDevices = []selection.CandidateDevice{
 		{DeviceID: "dev-oven", Name: "Oven", DeviceTypeID: "dt-plug"},
@@ -1480,7 +1479,8 @@ func TestTheMemberCapTakesOneSeriesPerDeviceFirst(t *testing.T) {
 	for _, path := range []string{"value.voltage", "value.current", "value.energy"} {
 		result.Selectables = append(result.Selectables, selection.Selectable{
 			DeviceTypeID: "dt-plug", ServiceID: "svc-oven", Path: path,
-			Unit: "V", UnitSource: profiler.UnitInferred, AspectID: "kitchen", Queryable: true,
+			Unit: "V", UnitSource: profiler.UnitInferred,
+			Aspects: []ontology.AspectRef{{ID: "kitchen", Name: "Kitchen"}}, Queryable: true,
 		})
 	}
 	h.selection.result = result
@@ -1506,12 +1506,36 @@ func TestTheMemberCapTakesOneSeriesPerDeviceFirst(t *testing.T) {
 	}
 }
 
+// A variable classified under two aspects at once belongs under both of them,
+// not just the first: filterByAspect is a membership test on the whole set,
+// never an equality test on a single id (SNRGY-4648).
+func TestFilterByAspectPutsAMemberWithTwoAspectsInBothNodeSets(t *testing.T) {
+	member := SetMember{
+		Ref:     profiler.SeriesRef{DeviceID: "dev-inverter", ServiceID: "svc", VariablePath: "value.power"},
+		Aspects: []ontology.AspectRef{{ID: "pv"}, {ID: "kitchen"}},
+	}
+	other := SetMember{
+		Ref:     profiler.SeriesRef{DeviceID: "dev-other", ServiceID: "svc", VariablePath: "value.power"},
+		Aspects: []ontology.AspectRef{{ID: "kitchen"}},
+	}
+	members := []SetMember{member, other}
+
+	pv := filterByAspect(members, "pv")
+	if len(pv) != 1 || pv[0].Ref.DeviceID != "dev-inverter" {
+		t.Errorf("pv set = %+v, want only the two-aspect member", pv)
+	}
+	kitchen := filterByAspect(members, "kitchen")
+	if len(kitchen) != 2 {
+		t.Errorf("kitchen set = %+v, want both members: the two-aspect one belongs under kitchen too", kitchen)
+	}
+}
+
 func TestAnUnqueryablePathIsLeftOutAndCounted(t *testing.T) {
 	h := newHarness(t)
 	result := kitchenResolution()
 	result.Selectables = append(result.Selectables, selection.Selectable{
 		DeviceTypeID: "dt-plug", ServiceID: "svc-oven", Path: "value.mode",
-		AspectID: "kitchen", Queryable: false, Reason: "not a service output",
+		Aspects: []ontology.AspectRef{{ID: "kitchen", Name: "Kitchen"}}, Queryable: false, Reason: "not a service output",
 	})
 	h.selection.result = result
 

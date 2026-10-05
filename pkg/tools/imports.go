@@ -280,8 +280,8 @@ func walkImportVariable(out *[]map[string]any, variable dsmodel.ImportContentVar
 		if variable.FunctionId != "" {
 			row["function_id"] = variable.FunctionId
 		}
-		if variable.AspectId != "" {
-			row["aspect_id"] = variable.AspectId
+		if ids := ontology.AspectIDs(variable.AspectIds, variable.AspectId); len(ids) > 0 {
+			row["aspect_ids"] = ids
 		}
 		if variable.UseAsTag {
 			row["use_as_tag"] = true
@@ -335,17 +335,11 @@ func (s *surface) listImportTypes(ctx context.Context, req Request) (any, error)
 	if in.FunctionID != "" || in.AspectID != "" {
 		criterion := imports.TypeCriterion{FunctionID: in.FunctionID}
 		if in.AspectID != "" {
-			// Expanded here because import-repository matches aspect ids literally,
-			// unlike the device repository. Without the subtree, an import type
-			// described against a child aspect is missing from the answer and nothing
-			// says so.
-			criterion.AspectIDs = s.aspectSubtree(ctx, req.Token, in.AspectID)
-			if len(criterion.AspectIDs) == 0 {
-				criterion.AspectIDs = []string{in.AspectID}
-				notes = append(notes, "the aspect subtree could not be read, so only the aspect "+
-					"itself was matched; an import type described against a narrower aspect below it "+
-					"is missing from this answer")
-			}
+			// Sent as a single-element list: the import-repository client asks for
+			// and_combine_criteria_aspect_ids, which expands this id's subtree
+			// server-side (see pkg/imports/client.go), so ODE no longer resolves it
+			// locally for the network request itself.
+			criterion.AspectIDs = []string{in.AspectID}
 		}
 		criteria = append(criteria, criterion)
 	}
@@ -360,9 +354,19 @@ func (s *surface) listImportTypes(ctx context.Context, req Request) (any, error)
 		return nil, err
 	}
 
+	// Expanded locally for importTypeView's own re-check of which variable
+	// matched: that is computed entirely from the already-fetched import types,
+	// with no further platform call, so the server-side expansion behind
+	// and_combine_criteria_aspect_ids cannot help it. Without this, a type
+	// described against a child of the requested aspect would show up with an
+	// empty matching_variables list despite having matched upstream.
+	displayCriteria, subtreeNote := s.expandAspectSubtrees(ctx, req.Token, criteria)
+	if subtreeNote != "" {
+		notes = append(notes, subtreeNote)
+	}
 	listed := make([]map[string]any, 0, len(result.Types))
 	for _, importType := range result.Types {
-		listed = append(listed, importTypeView(importType, criteria))
+		listed = append(listed, importTypeView(importType, displayCriteria))
 	}
 
 	note := "import types, not imports: nothing here is running and none of it carries data " +
@@ -391,19 +395,56 @@ func (s *surface) listImportTypes(ctx context.Context, req Request) (any, error)
 	return answer, nil
 }
 
-// aspectSubtree resolves an aspect id to itself plus its descendants, or nil if
-// the ontology could not be read. Nil is a degraded answer the caller reports
-// rather than an error: a narrower match still answers the question asked, and
-// failing the whole listing over it would be worse.
-func (s *surface) aspectSubtree(ctx context.Context, token, aspectID string) []string {
+// expandAspectSubtrees builds importTypeView's own copy of the criteria, with
+// each one's AspectSubtrees filled from the snapshot. It never
+// reaches the wire — see listImportTypes, which sends the bare criteria to
+// ListTypes and asks import-repository to expand them instead. This is purely
+// for the local re-check of which variable satisfied the query: that is
+// recomputed from the already-fetched import types, with no further platform
+// call, so the network parameter cannot help it and a type described against a
+// narrower aspect would otherwise show an empty matching_variables list despite
+// having matched upstream.
+//
+// A snapshot that cannot be read degrades to the bare criteria rather than
+// failing the whole listing, with a note: a narrower local match still answers
+// the question asked.
+func (s *surface) expandAspectSubtrees(ctx context.Context, token string, criteria []imports.TypeCriterion) ([]imports.TypeCriterion, string) {
+	needsExpansion := false
+	for _, c := range criteria {
+		if len(c.AspectIDs) > 0 {
+			needsExpansion = true
+			break
+		}
+	}
+	if !needsExpansion {
+		return criteria, ""
+	}
+
+	degradedNote := "the aspect subtree could not be read, so matching_variables only checked the " +
+		"aspect itself; a variable described against a narrower aspect below it may be missing from that list"
 	if s.deps.Ontology == nil {
-		return nil
+		return criteria, degradedNote
 	}
 	snap, err := s.deps.Ontology.Snapshot(ctx, token)
 	if err != nil || snap == nil {
-		return nil
+		return criteria, degradedNote
 	}
-	return ontology.AspectSubtreeIDs(snap.AspectNodes, aspectID)
+
+	out := make([]imports.TypeCriterion, len(criteria))
+	for i, c := range criteria {
+		out[i] = c
+		if len(c.AspectIDs) == 0 {
+			continue
+		}
+		subtrees := make(map[string][]string, len(c.AspectIDs))
+		for _, id := range c.AspectIDs {
+			if subtree := ontology.AspectSubtreeIDs(snap.AspectNodes, id); len(subtree) > 0 {
+				subtrees[id] = subtree
+			}
+		}
+		out[i].AspectSubtrees = subtrees
+	}
+	return out, ""
 }
 
 // importTypeView is one catalogue row.
@@ -445,8 +486,8 @@ func importTypeView(importType dsmodel.ImportType, criteria []imports.TypeCriter
 		if variable.FunctionID != "" {
 			entry["function_id"] = variable.FunctionID
 		}
-		if variable.AspectID != "" {
-			entry["aspect_id"] = variable.AspectID
+		if len(variable.AspectIDs) > 0 {
+			entry["aspect_ids"] = variable.AspectIDs
 		}
 		rows = append(rows, entry)
 	}

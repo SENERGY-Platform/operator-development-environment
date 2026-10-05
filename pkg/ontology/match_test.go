@@ -42,8 +42,8 @@ func matchSnapshot() *Snapshot {
 				RdfType: models.SES_ONTOLOGY_CONTROLLING_FUNCTION},
 		},
 		AspectNodes: []models.AspectNode{
-			node("pv", "PV System", ""),
-			node("inverter", "Inverter", "pv"),
+			classifiedNode("pv", "PV System", "", "class-pv"),
+			classifiedNode("inverter", "Inverter", "pv", "class-pv"),
 			node("kitchen", "Kitchen", ""),
 		},
 		DeviceClasses: []models.DeviceClass{
@@ -335,6 +335,69 @@ func TestEqualScoresOrderByName(t *testing.T) {
 	}
 }
 
+// The 2026-09-04 migration named a concept's generated function
+// "Get-<Concept>"/"Set-<Concept>" and suffixed every superseded duplicate with
+// "-deprecated". "get"/"set" are already stopwords, so before BasisConcept and
+// the suffix strip, "Get-Energy" scored a full 1.0 on "energy" but
+// "Get-Energy-deprecated" split into ["energy","deprecated"] and scored only
+// 0.5 — exactly at defaultMinScore, and below it for any concept name of two or
+// more words. Both must clear the floor, and only the second is marked.
+func TestMatchIntentScoresADeprecatedDuplicateTheSameAsItsCurrentFunction(t *testing.T) {
+	snap := &Snapshot{
+		MeasuringFunctions: []models.Function{
+			{Id: "fn-energy-current", Name: "Get-Energy", DisplayName: "Get-Energy",
+				ConceptId: "concept-energy", RdfType: models.SES_ONTOLOGY_MEASURING_FUNCTION},
+			{Id: "fn-energy-old", Name: "Get-Energy-deprecated", DisplayName: "Get-Energy-deprecated",
+				ConceptId: "concept-energy", RdfType: models.SES_ONTOLOGY_MEASURING_FUNCTION},
+		},
+		Concepts: []models.ConceptWithCharacteristics{{Id: "concept-energy", Name: "Energy"}},
+	}
+
+	match := MatchIntent(snap, Intent{Text: "energy"})
+	if len(match.Functions) != 2 {
+		t.Fatalf("functions = %v, want both the current and the deprecated function above the floor",
+			functionIDs(match.Functions))
+	}
+
+	byID := map[string]FunctionMatch{}
+	for _, m := range match.Functions {
+		byID[m.Id] = m
+	}
+	current, old := byID["fn-energy-current"], byID["fn-energy-old"]
+	if current.Deprecated {
+		t.Error("the current function must not be marked deprecated")
+	}
+	if !old.Deprecated {
+		t.Error("the superseded function must be marked deprecated")
+	}
+	if current.Matched.Score != 1 {
+		t.Errorf("current score = %v, want 1 via BasisConcept/the stripped name", current.Matched.Score)
+	}
+	if old.Matched.Score != 1 {
+		t.Errorf("deprecated score = %v, want 1: the suffix must not dilute it", old.Matched.Score)
+	}
+	// The suffix survives in the reported name: Deprecated is how a caller knows,
+	// not a silently cleaned-up label.
+	if old.Name != "Get-Energy-deprecated" {
+		t.Errorf("name = %q, want the suffix kept in the reported name", old.Name)
+	}
+}
+
+// Without BasisConcept, "Get-Energy" (no display name set) still scores 1.0 on
+// its own name once "get" is dropped as a stopword — this pins that the third
+// label is additive, not a substitute for the existing two.
+func TestMatchIntentStillMatchesByNameWithNoConcept(t *testing.T) {
+	snap := &Snapshot{
+		MeasuringFunctions: []models.Function{
+			{Id: "fn-no-concept", Name: "Get-Energy", RdfType: models.SES_ONTOLOGY_MEASURING_FUNCTION},
+		},
+	}
+	match := MatchIntent(snap, Intent{Text: "energy"})
+	if len(match.Functions) != 1 || match.Functions[0].Matched.Score != 1 {
+		t.Fatalf("functions = %+v, want fn-no-concept at score 1", match.Functions)
+	}
+}
+
 // --- explicit ids ---
 
 func TestExplicitFunctionsResolveWithoutMatching(t *testing.T) {
@@ -374,6 +437,9 @@ func TestExplicitAspectsAndDeviceClassesResolve(t *testing.T) {
 	}
 	if !aspects[0].DescendantsIncluded {
 		t.Error("an explicit aspect must still report that its subtree is included")
+	}
+	if aspects[0].AspectClassId != "class-pv" {
+		t.Errorf("aspect_class_id = %q, want class-pv from the snapshot", aspects[0].AspectClassId)
 	}
 
 	classes, unknown := ExplicitDeviceClasses(matchSnapshot(), []string{"dc-lamp"})

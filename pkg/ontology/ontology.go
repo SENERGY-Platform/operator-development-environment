@@ -48,6 +48,13 @@ type Client interface {
 	ListCharacteristics(options model.CharacteristicListOptions) ([]models.Characteristic, int64, error, int)
 	ListConceptsWithCharacteristics(options model.ConceptListOptions) ([]models.ConceptWithCharacteristics, int64, error, int)
 	GetDeviceClasses() ([]models.DeviceClass, error, int)
+	// ListAspectClasses pages the same way the other list methods here do: Limit
+	// and Offset in options, a total that this package ignores because the whole
+	// collection is read (see reload). A deployment whose device-repository paginates
+	// aspect classes differently from ListCharacteristics/ListConceptsWithCharacteristics
+	// would silently truncate this list — see the named assumption in the plan this
+	// implements.
+	ListAspectClasses(options model.AspectClassListOptions) ([]models.AspectClass, int64, error, int)
 	GetLastUpdateTimestamps(token string, userId string) ([]model.LastUpdateTimestamp, error, int)
 	// GetDeviceTypeSelectablesV2 is the semantic selection query of §5.2. It is
 	// listed among the tokenless reads for the same reason as the rest: it
@@ -74,6 +81,10 @@ type Snapshot struct {
 	Characteristics      []models.Characteristic             `json:"characteristics"`
 	Concepts             []models.ConceptWithCharacteristics `json:"concepts"`
 	DeviceClasses        []models.DeviceClass                `json:"device_classes"`
+	// AspectClasses is the new ontology resource of SNRGY-4648: a classification an
+	// aspect hierarchy carries at its root and every node below it (TreeNode.AspectClassId,
+	// AspectMatch.AspectClassId).
+	AspectClasses []models.AspectClass `json:"aspect_classes"`
 
 	LoadedAt time.Time `json:"loaded_at"`
 	// Generation is the newest platform update timestamp this snapshot was
@@ -259,6 +270,12 @@ func (r *Repository) reload(ctx context.Context, token string, seen *Snapshot) (
 		return nil, upstream("device-classes", err, code)
 	}
 	snap.DeviceClasses = deviceClasses
+
+	aspectClasses, _, err, code := client.ListAspectClasses(model.AspectClassListOptions{Limit: listPageSize})
+	if err != nil {
+		return nil, upstream("aspect-classes", err, code)
+	}
+	snap.AspectClasses = aspectClasses
 
 	// Stamp the generation now, so the first probe after this load has a real
 	// value to compare against instead of forcing an immediate second reload.

@@ -57,6 +57,7 @@ package relations
 import (
 	"time"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 )
 
@@ -183,10 +184,9 @@ type Member struct {
 	Ref   profiler.SeriesRef `json:"ref"`
 	Label string             `json:"label"`
 
-	DeviceName  string `json:"device_name,omitempty"`
-	ServiceName string `json:"service_name,omitempty"`
-	AspectID    string `json:"aspect_id,omitempty"`
-	AspectName  string `json:"aspect_name,omitempty"`
+	DeviceName  string               `json:"device_name,omitempty"`
+	ServiceName string               `json:"service_name,omitempty"`
+	Aspects     []ontology.AspectRef `json:"aspects,omitempty"`
 
 	// ProfileID is the SeriesProfile the state series was derived from, so a
 	// reader can go and look at the threshold rather than take it on trust.

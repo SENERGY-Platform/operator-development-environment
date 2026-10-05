@@ -18,6 +18,7 @@ package selection
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/SENERGY-Platform/models/go/models"
 
@@ -42,6 +43,17 @@ import (
 // Aspects are never expanded here. An aspect criterion already covers the node
 // and all its descendants upstream, so passing descendants as extra criteria
 // would AND a parent with its child and match nothing.
+//
+// Aspects are combined by class before that cross product (SNRGY-4648):
+// a device-repository criterion ANDs its AspectIds on one variable,
+// and a node classifies at most one aspect of a hierarchy per variable, so an
+// intent naming "PV" and "kitchen" — two different classes — means a variable
+// classified under both, not an unconstrained OR of the two. Two aspects of the
+// *same* class are alternatives instead, because a variable carries at most one
+// aspect per classified hierarchy: it cannot be both "upstairs" and "downstairs"
+// in a location hierarchy, so those become separate criteria. An unclassified
+// aspect is unrelated to any other match by definition and always forms its own
+// criterion alone, exactly as every aspect did before classes existed.
 func buildCriteria(
 	functions []ontology.FunctionMatch,
 	aspects []ontology.AspectMatch,
@@ -63,13 +75,7 @@ func buildCriteria(
 			functionSlots = append(functionSlots, slot{id: f.Id, score: f.Matched.Score})
 		}
 	}
-	aspectSlots := []slot{{}}
-	if len(aspects) > 0 {
-		aspectSlots = aspectSlots[:0]
-		for _, a := range aspects {
-			aspectSlots = append(aspectSlots, slot{id: a.Id, score: a.Matched.Score})
-		}
-	}
+	aspectCombos := aspectCombinations(aspects)
 	// Device classes are only ever explicit (see the note the resolver adds), so
 	// every one of them scores the same and contributes nothing to the ordering.
 	classSlots := []slot{{}}
@@ -82,16 +88,16 @@ func buildCriteria(
 
 	out = []Criterion{}
 	for _, function := range functionSlots {
-		for _, aspect := range aspectSlots {
+		for _, aspect := range aspectCombos {
 			for _, class := range classSlots {
-				if function.id == "" && aspect.id == "" && class.id == "" {
+				if function.id == "" && len(aspect.ids) == 0 && class.id == "" {
 					// Nothing resolved. Falling through would send one empty criterion,
 					// which upstream matches every device type on the platform.
 					continue
 				}
 				out = append(out, Criterion{
 					FunctionID:    function.id,
-					AspectID:      aspect.id,
+					AspectIDs:     aspect.ids,
 					DeviceClassID: class.id,
 					Interaction:   interaction,
 					score:         function.score + aspect.score + class.score,
@@ -101,8 +107,8 @@ func buildCriteria(
 	}
 
 	// Strongest first, so the cap drops the weakest combinations rather than
-	// whichever the map iteration happened to reach last. Ties break on the ids to
-	// keep a resolution reproducible.
+	// whichever the map iteration happened to reach last. Ties break on the joined
+	// ids to keep a resolution reproducible.
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].score != out[j].score {
 			return out[i].score > out[j].score
@@ -110,8 +116,8 @@ func buildCriteria(
 		if out[i].FunctionID != out[j].FunctionID {
 			return out[i].FunctionID < out[j].FunctionID
 		}
-		if out[i].AspectID != out[j].AspectID {
-			return out[i].AspectID < out[j].AspectID
+		if ai, aj := strings.Join(out[i].AspectIDs, ","), strings.Join(out[j].AspectIDs, ","); ai != aj {
+			return ai < aj
 		}
 		return out[i].DeviceClassID < out[j].DeviceClassID
 	})
@@ -121,4 +127,59 @@ func buildCriteria(
 		out = out[:max]
 	}
 	return out, dropped
+}
+
+// aspectCombo is one alternative way to narrow by aspect: the ids a single
+// criterion ANDs, and the combined score of the matches it came from.
+type aspectCombo struct {
+	ids   []string
+	score float64
+}
+
+// aspectCombinations groups matched or explicit aspects by aspect class and
+// turns them into the alternatives buildCriteria crosses with functions and
+// device classes. See buildCriteria's header for the reasoning.
+func aspectCombinations(aspects []ontology.AspectMatch) []aspectCombo {
+	if len(aspects) == 0 {
+		return []aspectCombo{{}}
+	}
+
+	var classOrder []string
+	byClass := map[string][]ontology.AspectMatch{}
+	combos := []aspectCombo{}
+
+	for _, a := range aspects {
+		if a.AspectClassId == "" {
+			// Unrelated to every other match by definition: always its own
+			// criterion, never crossed with another class.
+			combos = append(combos, aspectCombo{ids: []string{a.Id}, score: a.Matched.Score})
+			continue
+		}
+		if _, seen := byClass[a.AspectClassId]; !seen {
+			classOrder = append(classOrder, a.AspectClassId)
+		}
+		byClass[a.AspectClassId] = append(byClass[a.AspectClassId], a)
+	}
+	// Deterministic iteration order over the classes. It does not change which
+	// combinations exist, only the order they are built in, which the caller
+	// sorts afterwards anyway — but a map iterated directly would make that
+	// sort's input order (and so its stable ties) flap between runs.
+	sort.Strings(classOrder)
+
+	product := []aspectCombo{{}}
+	for _, class := range classOrder {
+		next := make([]aspectCombo, 0, len(product)*len(byClass[class]))
+		for _, existing := range product {
+			for _, a := range byClass[class] {
+				ids := append(append([]string{}, existing.ids...), a.Id)
+				sort.Strings(ids)
+				next = append(next, aspectCombo{ids: ids, score: existing.score + a.Matched.Score})
+			}
+		}
+		product = next
+	}
+	if len(classOrder) > 0 {
+		combos = append(combos, product...)
+	}
+	return combos
 }

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -67,7 +68,13 @@ func (s *surface) searchOntology(ctx context.Context, req Request) (any, error) 
 		"matched_functions":      match.Functions,
 		"matched_aspects":        match.Aspects,
 		"matched_device_classes": match.DeviceClasses,
-		"terms":                  match.Terms,
+		// aspect_classes names what matched_aspects' aspect_class_id refers to: the
+		// classification an aspect hierarchy carries at its root (SNRGY-4648). A
+		// variable carries at most one aspect per classified hierarchy, which is
+		// what buildCriteria's AND-over-classes rule (aspect_ids on
+		// resolve_semantic_selection) is grouping by.
+		"aspect_classes": sortedAspectClasses(snap.AspectClasses),
+		"terms":          match.Terms,
 		// The honest half: words the ontology had no wording for. An LLM that does
 		// not see this will assume its vocabulary matched and keep using it.
 		"unmatched_terms": match.UnmatchedTerms,
@@ -81,8 +88,22 @@ func (s *surface) searchOntology(ctx context.Context, req Request) (any, error) 
 			"controlling_functions": len(snap.ControllingFunctions),
 			"device_classes":        len(snap.DeviceClasses),
 			"characteristics":       len(snap.Characteristics),
+			"aspect_classes":        len(snap.AspectClasses),
 		},
 	}, nil
+}
+
+// sortedAspectClasses orders a snapshot's aspect classes by name so the answer
+// is reproducible rather than following the upstream listing's own order.
+func sortedAspectClasses(classes []models.AspectClass) []models.AspectClass {
+	out := append([]models.AspectClass{}, classes...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Id < out[j].Id
+	})
+	return out
 }
 
 // ---- resolve_semantic_selection (L0) ----

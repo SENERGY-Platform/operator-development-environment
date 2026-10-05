@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"gonum.org/v1/gonum/stat"
+
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 )
 
 const (
@@ -251,9 +253,15 @@ func varies(values []float64) bool {
 }
 
 // sameQuantity is the ontology's own claim that two variables measure the same
-// thing: the same function on the same aspect, or the same characteristic.
+// thing: the same function on the same aspect set, or the same characteristic.
+//
+// The aspect set is compared whole, not through the deprecated single-aspect
+// alias: two variables "power [electricity, kitchen]" and "power [electricity,
+// living_room]" share an alias — both alphabetically start with "electricity" —
+// and are not the same quantity. Both empty counts as equal, matching the
+// pre-SNRGY-4648 behaviour of comparing two empty aliases.
 func sameQuantity(a, b Variable) bool {
-	if a.FunctionID != "" && a.FunctionID == b.FunctionID && a.AspectID == b.AspectID {
+	if a.FunctionID != "" && a.FunctionID == b.FunctionID && ontology.EqualAspectSets(a.AspectIDs, b.AspectIDs) {
 		return true
 	}
 	return a.CharacteristicID != "" && a.CharacteristicID == b.CharacteristicID

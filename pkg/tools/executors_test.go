@@ -556,6 +556,48 @@ func TestSearchOntologyReportsUnmatchedTerms(t *testing.T) {
 	}
 }
 
+// search_ontology names the classes matched_aspects' aspect_class_id refers to,
+// sorted by name rather than in whatever order the snapshot happened to load
+// them (SNRGY-4648).
+func TestSearchOntologyNamesTheAspectClasses(t *testing.T) {
+	snapshot := &ontology.Snapshot{
+		MeasuringFunctions: []models.Function{{Id: "fn-power", Name: "Power", DisplayName: "Power"}},
+		AspectNodes: []models.AspectNode{
+			{Id: "pv", Name: "PV System", AspectClassId: "class-location"},
+		},
+		AspectClasses: []models.AspectClass{
+			{Id: "class-device-role", Name: "Device role"},
+			{Id: "class-location", Name: "Location"},
+		},
+	}
+	_, dispatcher := executorFor(t, Deps{Ontology: &fakeOntology{snapshot: snapshot}}, "search_ontology")
+
+	decoded := dispatchJSON(t, dispatcher, L0, "search_ontology", `{"query":"pv"}`)
+
+	classes, ok := decoded["aspect_classes"].([]any)
+	if !ok || len(classes) != 2 {
+		t.Fatalf("aspect_classes = %v, want both classes from the snapshot", decoded["aspect_classes"])
+	}
+	first, _ := classes[0].(map[string]any)
+	if first["name"] != "Device role" {
+		t.Errorf("first class = %v, want sorted by name", first)
+	}
+
+	aspects, ok := decoded["matched_aspects"].([]any)
+	if !ok || len(aspects) != 1 {
+		t.Fatalf("matched_aspects = %v, want the pv match", decoded["matched_aspects"])
+	}
+	matched, _ := aspects[0].(map[string]any)
+	if matched["aspect_class_id"] != "class-location" {
+		t.Errorf("matched aspect = %v, want aspect_class_id class-location", matched)
+	}
+
+	size, ok := decoded["ontology_size"].(map[string]any)
+	if !ok || size["aspect_classes"] != float64(2) {
+		t.Errorf("ontology_size = %v, want aspect_classes: 2", decoded["ontology_size"])
+	}
+}
+
 // The matcher keeps five matches per entity list by default and used to drop the
 // rest without saying how many there were. A tool result carrying five functions
 // and no total tells the model it has seen the ontology's whole answer, so it

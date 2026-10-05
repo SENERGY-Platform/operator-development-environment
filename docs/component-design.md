@@ -32,12 +32,13 @@ specification around it does.
 
 | Entity | Key fields | Role in ODE |
 |---|---|---|
-| `AspectNode` | `id`, `parent_id`, `child_ids`, `ancestor_ids`, `descendent_ids`, `root_id` | **Hierarchical** location/subsystem. Scopes multi-device analysis (§5.4) |
+| `AspectNode` | `id`, `parent_id`, `child_ids`, `ancestor_ids`, `descendent_ids`, `root_id`, `aspect_class_id` | **Hierarchical** location/subsystem. Scopes multi-device analysis (§5.4) |
+| `AspectClass` | `id`, `name` | Classifies an aspect hierarchy as a whole (same id on every node of it, SNRGY-4648). A variable carries at most one aspect per classified hierarchy, which is what lets `buildCriteria` AND across classes rather than guess |
 | `Function` | `id`, `concept_id`, `rdf_type` (`MEASURING` \| `CONTROLLING`), `display_name` | What is measured or controlled |
 | `Concept` | `base_characteristic_id`, `characteristic_ids`, **`conversions`** | Groups characteristics; carries the unit conversion graph |
 | `ConverterExtension` | `from`, `to`, `formula`, `distance`, `placeholder_name` | **Executable unit conversion** between characteristics |
 | `Characteristic` | `display_unit`, `min_value`, `max_value`, `allowed_values`, `type`, `sub_characteristics` | **Authoritative unit and range source** |
-| `ContentVariable` | `aspect_id`, `function_id`, `characteristic_id`, `unit_reference`, `path`, `type`, `sub_content_variables` | The leaf: an addressable series |
+| `ContentVariable` | `aspect_ids`, `function_id`, `characteristic_id`, `unit_reference`, `path`, `type`, `sub_content_variables` | The leaf: an addressable series. `aspect_ids` is a set — a variable can be classified under more than one hierarchy at once — read through `ontology.AspectIDs`, which also folds in the deprecated single-id `aspect_id` alias a platform-internal caller may still send |
 | `Service` | `interaction` (`event` \| `request` \| `event+request`), `inputs`, `outputs` | `event` ⇒ streamed to Kafka; determines whether a series exists at all |
 | `DeviceType` | `services`, `service_groups`, `device_class_id`, `attributes` | Device template |
 | `DeviceClass` | `id`, `name` | Kind of device (lamp, thermostat, meter) |
@@ -99,15 +100,18 @@ Implement as `resolve_semantic_selection(intent)`:
 ```json
 {
   "matched_functions": [{"id": "...", "name": "...", "rdf_type": "...", "concept_id": "..."}],
-  "matched_aspects": [{"id": "...", "name": "...", "descendants_included": true}],
+  "matched_aspects": [{"id": "...", "name": "...", "aspect_class_id": "...", "descendants_included": true}],
   "selectables": [{"device_type_id": "...", "service_id": "...", "path": "...",
-                   "characteristic_id": "...", "unit": "W", "interaction": "event"}],
+                   "characteristic_id": "...", "unit": "W", "interaction": "event",
+                   "aspects": [{"id": "...", "name": "..."}]}],
   "candidate_devices": [{"device_id": "...", "name": "...", "connection_state": "online",
                          "device_type_id": "...", "permissions": {...}}],
   "ontology_gaps": [{"device_type_id": "...", "missing": ["characteristic_id"],
                      "consequence": "unit must be inferred"}]
 }
 ```
+
+`matched_aspects` groups by `aspect_class_id` (SNRGY-4648): matches of the same class are alternatives and become separate criteria, matches of different classes describe one variable and are ANDed into one criterion's `aspect_ids`. An unclassified match is always its own criterion. `selectables.aspects` is sorted by id and carries every aspect a variable declares, not only the first.
 
 `ontology_gaps` implements D16: completeness is discovered at runtime, per device type, and reported rather than assumed.
 
@@ -121,7 +125,7 @@ An operator's input is not always a device. The platform also has **imports** �
 containerised adapters that pull data from outside and publish it to one Kafka
 topic — described by an **import type** the way a device is described by a device
 type, and carrying the same content variables with the same `function_id`,
-`aspect_id` and `characteristic_id`. Semantic selection therefore applies
+`aspect_ids` and `characteristic_id`. Semantic selection therefore applies
 unchanged, and one `resolve_semantic_selection` answers with both halves:
 `import_selectables` beside `selectables`, `import_candidates` beside
 `candidate_devices`.
@@ -180,9 +184,11 @@ import-repository's own `GET /import-types` with the same criteria and reports
 what matched with no instance in this answer, as `deployable_import_types`
 beside the two lists above. Two things about that endpoint are the caller's to
 absorb rather than device-selection's: it ANDs its criteria, so ODE sends one per
-combination and unions the answers, and it matches aspect ids literally, so ODE
-sends the aspect node together with its descendants. `list_import_types` is the
-same read by name or by id (§5.8).
+combination and unions the answers, and — unlike the device repository — it does
+not expand an aspect criterion to its subtree unless asked: ODE sends the bare id
+with `and_combine_criteria_aspect_ids=true` (import-repository v0.2.0) and the
+expansion happens server-side. `list_import_types` is the same read by name or
+by id (§5.8).
 
 **Wiring.** A resolved import variable becomes an operator input through
 `propose_operator_input` (§5.8), which emits the flow engine's node input:

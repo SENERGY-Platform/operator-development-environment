@@ -51,8 +51,12 @@
       "graph_node": "n-circuit",
       "members": [
         {
-          "aspect_id": "kitchen",
-          "aspect_name": "Kitchen",
+          "aspects": [
+            {
+              "id": "kitchen",
+              "name": "Kitchen"
+            }
+          ],
           "characteristic_id": "ch-watt",
           "connection_state": "online",
           "device_name": "Kitchen lights",
@@ -79,8 +83,12 @@
           "unit_source": "characteristic"
         },
         {
-          "aspect_id": "kitchen",
-          "aspect_name": "Kitchen",
+          "aspects": [
+            {
+              "id": "kitchen",
+              "name": "Kitchen"
+            }
+          ],
           "characteristic_id": "ch-watt",
           "connection_state": "online",
           "device_name": "Oven",
@@ -121,7 +129,12 @@
       "graph_node": "n-circuit",
       "members": [
         {
-          "aspect_id": "kitchen",
+          "aspects": [
+            {
+              "id": "kitchen",
+              "name": ""
+            }
+          ],
           "characteristic_id": "ch-watt",
           "connection_state": "online",
           "device_name": "Site meter",
@@ -147,8 +160,12 @@
           "unit_source": "characteristic"
         },
         {
-          "aspect_id": "kitchen",
-          "aspect_name": "Kitchen",
+          "aspects": [
+            {
+              "id": "kitchen",
+              "name": "Kitchen"
+            }
+          ],
           "characteristic_id": "ch-watt",
           "connection_state": "online",
           "device_name": "Oven",
@@ -175,8 +192,12 @@
           "unit_source": "characteristic"
         },
         {
-          "aspect_id": "kitchen",
-          "aspect_name": "Kitchen",
+          "aspects": [
+            {
+              "id": "kitchen",
+              "name": "Kitchen"
+            }
+          ],
           "characteristic_id": "ch-watt",
           "connection_state": "online",
           "device_name": "Kitchen lights",
@@ -217,8 +238,12 @@
       "devices": 2,
       "members": [
         {
-          "aspect_id": "kitchen",
-          "aspect_name": "Kitchen",
+          "aspects": [
+            {
+              "id": "kitchen",
+              "name": "Kitchen"
+            }
+          ],
           "characteristic_id": "ch-watt",
           "connection_state": "online",
           "device_name": "Kitchen lights",
@@ -236,8 +261,12 @@
           "unit_source": "characteristic"
         },
         {
-          "aspect_id": "kitchen",
-          "aspect_name": "Kitchen",
+          "aspects": [
+            {
+              "id": "kitchen",
+              "name": "Kitchen"
+            }
+          ],
           "characteristic_id": "ch-watt",
           "connection_state": "online",
           "device_name": "Oven",
@@ -271,8 +300,12 @@
       "devices": 2,
       "members": [
         {
-          "aspect_id": "kitchen",
-          "aspect_name": "Kitchen",
+          "aspects": [
+            {
+              "id": "kitchen",
+              "name": "Kitchen"
+            }
+          ],
           "characteristic_id": "ch-watt",
           "connection_state": "online",
           "device_name": "Kitchen lights",
@@ -290,8 +323,12 @@
           "unit_source": "characteristic"
         },
         {
-          "aspect_id": "kitchen",
-          "aspect_name": "Kitchen",
+          "aspects": [
+            {
+              "id": "kitchen",
+              "name": "Kitchen"
+            }
+          ],
           "characteristic_id": "ch-watt",
           "connection_state": "online",
           "device_name": "Oven",

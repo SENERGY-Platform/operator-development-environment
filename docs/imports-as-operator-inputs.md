@@ -29,7 +29,7 @@ four further settings that are a deployment's rather than an import's; see
 [configuration.md](configuration.md#creating-an-export).
 
 The behaviour depends on the versions pinned in `go.mod` —
-`device-selection v0.0.27`, `import-deploy v0.1.0`,
+`device-selection/v2 v2.0.2`, `import-deploy v0.1.0`,
 `analytics-flow-engine/lib v0.0.0-20251112135741` — because three of the four
 asymmetries below are properties of those services rather than of ODE.
 **analytics-serving is deliberately not among them**, which is the single most
@@ -81,14 +81,19 @@ talking to device-repository.
 Recorded because they come back the moment anyone considers calling
 import-repository directly.
 
-1. **No server-side aspect subtree expansion.** Unlike the device repository,
-   import-repository does not expand an aspect criterion over its descendants —
-   the caller sends the node plus every descendant id. *Absorbed by
-   device-selection* for discovery, and **by ODE for the type catalogue**, which
-   talks to import-repository directly: `ontology.AspectSubtreeIDs` expands the
-   node from the snapshot ODE already holds, so it costs no request. Sending the
-   bare node there is the failure this whole list is about — every import type
-   described against a child aspect is missing, and nothing says so.
+1. **No subtree expansion by default.** Unlike the device repository,
+   import-repository's criteria match an aspect id literally unless asked
+   otherwise. *Absorbed by device-selection* for discovery. **For the type
+   catalogue**, which talks to import-repository directly, ODE asks
+   `and_combine_criteria_aspect_ids=true` (import-repository v0.2.0,
+   `pkg/imports/client.go`) and sends the bare id: the expansion — and the AND
+   over several ids in one criterion — now happens server-side, at the cost of
+   nothing ODE has to compute. That parameter has no reach into asymmetry 3
+   below, though: once a type has matched, re-deriving *which variable*
+   satisfied the query is a pure, local computation over the already-fetched
+   type, with no further request to carry a parameter on — so that one re-check
+   still expands the subtree itself, from the snapshot ODE already holds
+   (`ontology.AspectSubtreeIDs`, used only there).
 2. **No device class, and every import path is an event.**
    `ImportTypeFilterCriteria` is `{function_id, aspect_ids}` and nothing else.
    *Not absorbed, and ODE's to report*: a resolution that narrows by
@@ -98,11 +103,15 @@ import-repository directly.
 3. **Type-level match, variable-level paths.** The criteria index is flattened
    per import type, so a *type* matches and the matching *paths* must be found by
    walking its output. *Absorbed by device-selection* for discovery, and **by ODE
-   for the type catalogue**, in `imports.MatchingVariables`. It is also the one
-   asymmetry that cannot be fully absorbed: a type can match because two of its
-   variables carry one criterion each, and then no single variable carries both.
-   That type is reported with an empty `matching_variables` and a note saying so,
-   rather than dropped — it matched, and reading it is the next step.
+   for the type catalogue**, in `imports.MatchingVariables`. The criteria this
+   runs against are a *locally* subtree-expanded copy (see asymmetry 1), never the
+   bare ones the network request sent — without that, a type matched through a
+   child aspect would come back with an empty `matching_variables` despite having
+   matched. It is also the one asymmetry that cannot be fully absorbed: a type can
+   match because two of its variables carry one criterion each, and then no
+   single variable carries both. That type is reported with an empty
+   `matching_variables` and a note saying so, rather than dropped — it matched,
+   and reading it is the next step.
 4. **No filter by import type on instances.** `GET /instances` has no
    `import_type_id` parameter and its `search` matches the instance name only, so
    type-to-instance is a client-side join over a full listing. *Absorbed by
@@ -463,7 +472,7 @@ knowing before either is upgraded.
 |---|---|---|
 | `idmodel.Instance` — the create and read body of import-deploy | `import-deploy v0.1.0`, pinned in `go.mod` | **Breaks this build.** A field that moved is a compile error here, before anything is deployed. |
 | `flowengine.NodeInput` — the operator input `propose_operator_input` emits | `analytics-flow-engine/lib`, pinned | **Breaks this build**, same reason. |
-| `dsmodel.ImportType`, `dsmodel.Selectable` — discovery and the type read | `device-selection v0.0.27`, pinned | **Breaks this build**, same reason. |
+| `dsmodel.ImportType`, `dsmodel.Selectable` — discovery and the type read | `device-selection/v2 v2.0.2`, pinned | **Breaks this build**, same reason. |
 | `imports.ServingRequest`, `imports.Export`, `imports.ExportDatabase` — everything analytics-serving | **declared in this repository**, because upstream's are gorm entities in an `internal` package with no JSON tags | **Breaks at runtime, on a real platform.** A renamed request field is a 400 whose body is a map of field names; a renamed response field silently reads as empty, and an empty export id is how ODE is told the caller had no access — so a rename there arrives looking like a permission refusal. |
 
 Two consequences follow, and both are the reason this table exists rather than a

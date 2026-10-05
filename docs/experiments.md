@@ -306,9 +306,13 @@ reads out of `data`, so rewriting it would break the code rather than repoint it
 
 The counterpart variable on the new device type is looked for in a fixed order:
 first the same path on one of its services, then — failing that — the variable
-with the same **function and aspect** as the original, which is what "reads the
-same thing" means when two device types name it differently. Failing both, the
-topic is refused, naming the mapping that has no counterpart.
+with the same **function and aspect set** as the original, which is what "reads
+the same thing" means when two device types name it differently. The whole set
+is compared, not the deprecated single-aspect alias: two variables classified
+under several aspects at once can share an alias — both alphabetically start
+with the same id — while measuring different things, and comparing the alias
+would call them the same quantity (SNRGY-4648). Failing both, the topic is
+refused, naming the mapping that has no counterpart.
 
 `FitOf` is that search offered on its own, without the rewrite: it answers whether
 a move to a device would resolve, and which service it would land on, from the two
@@ -344,10 +348,10 @@ knows what the ontology declares.
 
 So `resolve` takes an optional `service_id`, and with one present the derivation
 changes shape. The service is no longer searched for — it is given — and each
-mapping is resolved inside it: same path first, then same function and aspect, and
-failing both **the first queryable variable of that service that no other mapping
-already took**, preferring one of the same type. Such a mapping is marked
-`guessed`, and carries a warning naming it, the service and the variable.
+mapping is resolved inside it: same path first, then same function and aspect
+set, and failing both **the first queryable variable of that service that no
+other mapping already took**, preferring one of the same type. Such a mapping is
+marked `guessed`, and carries a warning naming it, the service and the variable.
 
 This is the one place in ODE where a derivation stops deriving. Three things keep
 it honest. It happens only when a developer named the service, never on the

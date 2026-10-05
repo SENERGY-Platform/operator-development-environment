@@ -72,12 +72,12 @@ type ExportColumnInfo struct {
 	// build, it would make every column of every export report as having no
 	// readable type — so a profile of an export refusing with "no column that can
 	// be read as a series" is the symptom to look for.
-	Type             string  `json:"type,omitempty"`
-	VariablePath     string  `json:"variable_path,omitempty"`
-	CharacteristicID *string `json:"characteristic_id"`
-	FunctionID       string  `json:"function_id,omitempty"`
-	AspectID         string  `json:"aspect_id,omitempty"`
-	Tag              bool    `json:"tag,omitempty"`
+	Type             string   `json:"type,omitempty"`
+	VariablePath     string   `json:"variable_path,omitempty"`
+	CharacteristicID *string  `json:"characteristic_id"`
+	FunctionID       string   `json:"function_id,omitempty"`
+	AspectIDs        []string `json:"aspect_ids,omitempty"`
+	Tag              bool     `json:"tag,omitempty"`
 }
 
 // ExportDefinition resolves one export by id.
@@ -171,7 +171,7 @@ func (s *Service) ExportDefinition(ctx context.Context, token string, exportID s
 		if variable, known := semantics[path]; known {
 			definition.Columns[i].CharacteristicID = variable.CharacteristicID
 			definition.Columns[i].FunctionID = variable.FunctionID
-			definition.Columns[i].AspectID = variable.AspectID
+			definition.Columns[i].AspectIDs = variable.AspectIDs
 		}
 	}
 	return definition, nil

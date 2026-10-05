@@ -30,6 +30,14 @@ func node(id, name, parent string) models.AspectNode {
 	return models.AspectNode{Id: id, Name: name, ParentId: parent, RootId: root}
 }
 
+// classifiedNode is node with an aspect class, the same on every node of one
+// hierarchy — which is how the device repository sets it (SNRGY-4648).
+func classifiedNode(id, name, parent, classID string) models.AspectNode {
+	n := node(id, name, parent)
+	n.AspectClassId = classID
+	return n
+}
+
 func TestAspectTreeNestsChildrenUnderTheirParent(t *testing.T) {
 	tree := AspectTree([]models.AspectNode{
 		node("building", "Building", ""),
@@ -135,10 +143,35 @@ func TestAspectTreeKeepsSiblingSubtreesSeparate(t *testing.T) {
 	}
 }
 
+// AspectTree carries each node's classification through unchanged, so the SPA
+// can group roots under their class without a second lookup.
+func TestAspectTreeCarriesTheAspectClassId(t *testing.T) {
+	tree := AspectTree([]models.AspectNode{
+		{Id: "pv", Name: "PV System", AspectClassId: "class-location"},
+		{Id: "inverter", Name: "Inverter", ParentId: "pv", RootId: "pv", AspectClassId: "class-location"},
+	})
+
+	if len(tree) != 1 || tree[0].AspectClassId != "class-location" {
+		t.Fatalf("root = %+v, want aspect_class_id carried from the source node", tree)
+	}
+	if len(tree[0].Children) != 1 || tree[0].Children[0].AspectClassId != "class-location" {
+		t.Fatalf("child = %+v, want the same aspect_class_id as its root", tree[0].Children)
+	}
+}
+
+// An unclassified aspect carries no class at all, which is distinguishable from
+// one whose class happens to be the empty string nowhere in this ontology.
+func TestAspectTreeLeavesAnUnclassifiedNodeWithNoAspectClassId(t *testing.T) {
+	tree := AspectTree([]models.AspectNode{node("kitchen", "Kitchen", "")})
+	if len(tree) != 1 || tree[0].AspectClassId != "" {
+		t.Fatalf("root = %+v, want no aspect_class_id", tree)
+	}
+}
+
 func TestAspectSubtreeIDsCarriesEveryLevelBelowTheNode(t *testing.T) {
-	// import-repository matches aspect ids literally, so what this returns is
-	// exactly what a criterion covers. A missing grandchild is an import type that
-	// silently does not match.
+	// A local re-check of which variable matched (imports.MatchingVariables) has
+	// to see every descendant, or a variable described against a grandchild
+	// silently fails to confirm a type the server already matched.
 	ids := AspectSubtreeIDs([]models.AspectNode{
 		node("house", "House", ""),
 		node("kitchen", "Kitchen", "house"),

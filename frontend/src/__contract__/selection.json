@@ -43,7 +43,7 @@
   "criteria": [
     {
       "function_id": "fn-power",
-      "aspect_id": "kitchen",
+      "aspect_ids": ["kitchen"],
       "interaction": "event",
       "device_types": 1
     }
@@ -61,8 +61,7 @@
       "interaction": "event",
       "type": "https://schema.org/Float",
       "function_id": "fn-power",
-      "aspect_id": "kitchen",
-      "aspect_name": "Kitchen",
+      "aspects": [{ "id": "kitchen", "name": "Kitchen" }],
       "queryable": true,
       "ontology_completeness": {
         "status": "complete",
@@ -122,7 +121,7 @@
         "max_value": 10000,
         "type": "https://schema.org/Float",
         "function_id": "fn-power",
-        "aspect_id": "kitchen"
+        "aspect_ids": ["kitchen"]
       },
       "interaction": "event",
       "liveness": {

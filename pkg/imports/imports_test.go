@@ -166,6 +166,11 @@ func TestQueryImportsFlattensPathOptionsPerInstance(t *testing.T) {
 		t.Errorf("instance/type = %q/%q, want the ids from the selectable",
 			found[0].InstanceID, found[0].ImportTypeID)
 	}
+	// The fixture sets only the deprecated single-node alias (AspectNode), never
+	// AspectNodes, so this also exercises the fallback.
+	if len(found[1].AspectIDs) != 1 || found[1].AspectIDs[0] != "kitchen" {
+		t.Errorf("aspect_ids = %v, want [kitchen] folded from the deprecated AspectNode alias", found[1].AspectIDs)
+	}
 }
 
 // A declared characteristic and an absent one are different answers; a fabricated

@@ -470,7 +470,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  "properties": {
 			    "intent": {"type": "string", "description": "What the data is needed for, e.g. \"forecast PV generation for this site\"."},
 			    "function_ids": {"type": "array", "items": {"type": "string"}, "description": "Pin specific functions instead of matching lexically."},
-			    "aspect_ids": {"type": "array", "items": {"type": "string"}, "description": "Pin specific aspects. An aspect already covers its whole subtree."},
+			    "aspect_ids": {"type": "array", "items": {"type": "string"}, "description": "Pin specific aspects. An aspect already covers its whole subtree. Aspects of the same classification class are alternatives (ORed); aspects of different classes must all be matched by one variable (ANDed), one per class — see search_ontology's aspect_class_id."},
 			    "device_class_ids": {"type": "array", "items": {"type": "string"}, "description": "Narrow by device class. Deliberate only: this ANDs with the rest."},
 			    "include_controlling": {"type": "boolean"},
 			    "device_limit": {"type": "integer", "description": "How many devices to expand. Each costs one availability call."},

@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/SENERGY-Platform/models/go/models"
+
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 )
 
 // --- detector 1: sampling ---
@@ -700,6 +702,47 @@ func TestTwoCopiesOfOneMeasurementAreRedundant(t *testing.T) {
 	)
 	if len(relationships) != 1 || relationships[0].Type != RelationRedundantWith {
 		t.Fatalf("relationships = %+v, want one redundant_with", relationships)
+	}
+}
+
+// sameQuantity used to compare the deprecated single-aspect alias, under which
+// "power [electricity, kitchen]" and "power [electricity, living_room]" share
+// the alphabetically-first id "electricity" and look like the same quantity.
+// Comparing the whole aspect set is the fix (SNRGY-4648), and this is the exact
+// counter-example docs/aspect-identity.md names.
+func TestSameQuantityComparesTheWholeAspectSetNotTheAlias(t *testing.T) {
+	kitchen := Variable{FunctionID: "fn-power", AspectIDs: []string{"electricity", "kitchen"}}
+	livingRoom := Variable{FunctionID: "fn-power", AspectIDs: []string{"electricity", "living_room"}}
+	if sameQuantity(kitchen, livingRoom) {
+		t.Error("two variables sharing only the alphabetically-first aspect must not count as the same quantity")
+	}
+}
+
+// AspectIDs is sorted at construction (ontology.AspectIDs), which is the
+// invariant sameQuantity's set comparison relies on rather than re-sorting on
+// every call — so this constructs both sides the way newVariable does, from the
+// same ids listed in a different order.
+func TestSameQuantityMatchesTheSameSetInAnyOrder(t *testing.T) {
+	a := Variable{FunctionID: "fn-power", AspectIDs: ontology.AspectIDs([]string{"electricity", "kitchen"}, "")}
+	b := Variable{FunctionID: "fn-power", AspectIDs: ontology.AspectIDs([]string{"kitchen", "electricity"}, "")}
+	if !sameQuantity(a, b) {
+		t.Error("the same aspect set listed in another order must still match")
+	}
+}
+
+func TestSameQuantityTreatsBothEmptyAspectSetsAsEqual(t *testing.T) {
+	a := Variable{FunctionID: "fn-power"}
+	b := Variable{FunctionID: "fn-power"}
+	if !sameQuantity(a, b) {
+		t.Error("two variables with no declared aspect at all should still match on function alone, as today's \"\" == \"\" does")
+	}
+}
+
+func TestSameQuantityStillMatchesOnCharacteristicAlone(t *testing.T) {
+	a := Variable{CharacteristicID: "ch-watt"}
+	b := Variable{CharacteristicID: "ch-watt"}
+	if !sameQuantity(a, b) {
+		t.Error("a shared characteristic is still a same-quantity claim without a function match")
 	}
 }
 

@@ -2526,7 +2526,7 @@ function previewOf(topic: InputTopic, deviceName: string): ResolvedInputTopic {
         unit: "W",
         characteristic_id: "ch-watt",
         function_id: "fn-power",
-        aspect_id: "aspect-pv",
+        aspect_ids: ["aspect-pv"],
       },
     ],
     alternatives: [],

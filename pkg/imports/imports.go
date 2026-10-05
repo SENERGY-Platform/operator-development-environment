@@ -57,6 +57,7 @@ import (
 	drmodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
 	dsmodel "github.com/SENERGY-Platform/device-selection/v2/pkg/model"
 	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
+	"github.com/SENERGY-Platform/models/go/models"
 )
 
 // ErrNoCriteria refuses a selectables query with nothing to filter on, for the
@@ -150,13 +151,18 @@ type InstanceListOptions struct {
 // interaction filter is either trivially satisfied or unsatisfiable, since every
 // import path is an event.
 //
-// AspectIDs is a list rather than an id because upstream expands nothing. The
-// device repository covers an aspect's whole subtree from the node alone; here
-// the node and its descendants are the caller's to send, and sending only the
-// node quietly excludes every type described against a child aspect.
+// AspectIDs are ANDed on one variable, each covering its own subtree: ListTypes
+// sends and_combine_criteria_aspect_ids=true, so import-repository reads them the
+// way the device repository reads a FilterCriteria (SNRGY-4648).
+//
+// AspectSubtrees never reaches the wire. It is the caller's map from each id in
+// AspectIDs to that aspect and its descendants, for MatchingVariables, which
+// re-checks already-fetched types locally and cannot ask upstream to expand
+// anything. An id without an entry covers only itself.
 type TypeCriterion struct {
-	FunctionID string   `json:"function_id"`
-	AspectIDs  []string `json:"aspect_ids,omitempty"`
+	FunctionID     string              `json:"function_id"`
+	AspectIDs      []string            `json:"aspect_ids,omitempty"`
+	AspectSubtrees map[string][]string `json:"-"`
 }
 
 type TypeListOptions struct {
@@ -282,8 +288,8 @@ type Selectable struct {
 	CharacteristicID *string `json:"characteristic_id"`
 	Type             string  `json:"type,omitempty"`
 
-	FunctionID string `json:"function_id,omitempty"`
-	AspectID   string `json:"aspect_id,omitempty"`
+	FunctionID string   `json:"function_id,omitempty"`
+	AspectIDs  []string `json:"aspect_ids,omitempty"`
 }
 
 // QueryImports resolves criteria to import selectables.
@@ -322,7 +328,7 @@ func (s *Service) QueryImports(ctx context.Context, token string, criteria []drm
 					CharacteristicID: characteristic(option.CharacteristicId),
 					Type:             string(option.Type),
 					FunctionID:       option.FunctionId,
-					AspectID:         option.AspectNode.Id,
+					AspectIDs:        aspectIDs(aspectNodeIDs(option.AspectNodes), option.AspectNode.Id),
 				})
 			}
 		}
@@ -496,4 +502,41 @@ func characteristic(id string) *string {
 		return nil
 	}
 	return &id
+}
+
+// aspectIDs folds a deprecated single-aspect alias into its list, the same rule
+// pkg/ontology.AspectIDs applies for the device-type side.
+//
+// It is a small local copy rather than a call to pkg/ontology: this package
+// reads only the platform's own wire shapes and nothing under pkg/ (see
+// exportSource in pkg/pkg.go), and importing the one helper would trade that
+// property for a few lines saved. Sorted and deduplicated for the same reason
+// the shared helper is: a caller comparing two id sets must get the same
+// answer regardless of which field supplied them.
+func aspectIDs(list []string, alias string) []string {
+	ids := list
+	if len(ids) == 0 && alias != "" {
+		ids = []string{alias}
+	}
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// aspectNodeIDs extracts the ids from a path option's plural aspect nodes, for
+// aspectIDs' list parameter when the alias is the option's singular node.
+func aspectNodeIDs(nodes []models.AspectNode) []string {
+	out := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, n.Id)
+	}
+	return out
 }

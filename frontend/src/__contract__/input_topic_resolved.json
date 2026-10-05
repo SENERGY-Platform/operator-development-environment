@@ -14,7 +14,9 @@
   },
   "mappings": [
     {
-      "aspect_id": "aspect-pv",
+      "aspect_ids": [
+        "aspect-pv"
+      ],
       "characteristic_id": "ch-kilowatt",
       "dest": "value",
       "function_id": "fn-power",

@@ -135,7 +135,7 @@ func weatherSelectable(path string) imports.Selectable {
 		CharacteristicID: &characteristic,
 		Type:             string(models.Float),
 		FunctionID:       "fn-temperature",
-		AspectID:         "kitchen",
+		AspectIDs:        []string{"kitchen"},
 	}
 }
 
@@ -223,10 +223,10 @@ func TestAnImportVariableResolvesItsUnitFromTheOntology(t *testing.T) {
 	if got := result.ImportSelectables[0].Unit; got != "°C" {
 		t.Errorf("unit = %q, want °C from characteristic ch-celsius", got)
 	}
-	if result.ImportSelectables[0].AspectName != "Kitchen" {
-		t.Errorf("aspect_name = %q, want Kitchen: device-selection resolves only the id for an "+
-			"import path, so ODE names it from its own snapshot",
-			result.ImportSelectables[0].AspectName)
+	aspects := result.ImportSelectables[0].Aspects
+	if len(aspects) != 1 || aspects[0].ID != "kitchen" || aspects[0].Name != "Kitchen" {
+		t.Errorf("aspects = %+v, want [{kitchen Kitchen}]: device-selection resolves only the id for "+
+			"an import path, so ODE names it from its own snapshot", aspects)
 	}
 }
 
@@ -533,6 +533,39 @@ func TestATypeWithNoInstanceIsReportedAsDeployable(t *testing.T) {
 	}
 }
 
+// The network query sends the bare aspect id and relies on import-repository's
+// and_combine_criteria_aspect_ids to expand it server-side (see
+// TestTheCatalogueIsAskedWithTheBareAspectID). That parameter cannot help the
+// *local* re-check of which variable satisfied the query, though: the type
+// below is described against "inverter", a child of the requested "pv", and
+// deployableImportType recomputes MatchingVariables entirely from the
+// already-fetched import type with no further platform call. Without expanding
+// the subtree for that local check too, this type would match (the server said
+// so) and then show an empty matching_variables list — correct Deployable=true,
+// wrong and confusing reason.
+func TestADeployableTypeDescribedAgainstAChildAspectStillShowsItsMatchingVariable(t *testing.T) {
+	childType := deployableType(weatherTypeID, "Open-Meteo history")
+	childType.Output.SubContentVariables[2].SubContentVariables[0].AspectId = "inverter"
+	imp := &fakeImports{types: []dsmodel.ImportType{childType}}
+	h := newImportHarness(t, imp)
+
+	result := resolve(t, h, Request{
+		Intent: "temperature pv system", FunctionIDs: []string{"fn-temperature"}, AspectIDs: []string{"pv"},
+	})
+
+	if len(result.DeployableImportTypes) != 1 {
+		t.Fatalf("deployable_import_types = %+v, want the type matched via the child aspect", result.DeployableImportTypes)
+	}
+	deployable := result.DeployableImportTypes[0]
+	if len(deployable.MatchingVariables) != 1 || deployable.MatchingVariables[0].Path != "value.temperature_2m" {
+		t.Errorf("matching_variables = %+v, want the variable described against the child aspect",
+			deployable.MatchingVariables)
+	}
+	if strings.Contains(deployable.Note, "no single variable") {
+		t.Errorf("note = %q, want it not to claim no variable matched: one did", deployable.Note)
+	}
+}
+
 func TestATypeThatIsAlreadyDeployedIsNotOfferedForDeployment(t *testing.T) {
 	// It is in import_candidates, where it carries a topic and a running status.
 	// Repeating it here would invite a second container for data the platform
@@ -578,10 +611,13 @@ func TestAnUndeployableTypeSaysWhyRatherThanBeingDropped(t *testing.T) {
 	}
 }
 
-func TestTheCatalogueIsAskedWithTheAspectSubtree(t *testing.T) {
-	// import-repository matches aspect ids literally, unlike the device
-	// repository. Sending only `pv` misses every import type described against
-	// `inverter`, with no error anywhere.
+// The catalogue criterion carries the bare requested id, unexpanded. The device
+// repository covers a criterion's whole subtree on its own; import-repository
+// does not, but ODE no longer expands it locally either — the import-repository
+// client asks for and_combine_criteria_aspect_ids, which ANDs a criterion's
+// aspect ids on one variable and expands each one's own subtree server-side
+// (see pkg/imports/client.go and its own test for that parameter).
+func TestTheCatalogueIsAskedWithTheBareAspectID(t *testing.T) {
 	imp := &fakeImports{}
 	h := newImportHarness(t, imp)
 
@@ -595,12 +631,8 @@ func TestTheCatalogueIsAskedWithTheAspectSubtree(t *testing.T) {
 		t.Fatal("the catalogue was not asked at all")
 	}
 	for _, criterion := range imp.typeCriteria {
-		found := map[string]bool{}
-		for _, id := range criterion.AspectIDs {
-			found[id] = true
-		}
-		if !found["pv"] || !found["inverter"] {
-			t.Errorf("aspect_ids = %v, want the node and its descendant", criterion.AspectIDs)
+		if len(criterion.AspectIDs) != 1 || criterion.AspectIDs[0] != "pv" {
+			t.Errorf("aspect_ids = %v, want exactly [pv], unexpanded", criterion.AspectIDs)
 		}
 	}
 }

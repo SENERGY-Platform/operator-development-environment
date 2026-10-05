@@ -101,9 +101,8 @@ type ImportSelectable struct {
 	UnitSource       profiler.UnitSource `json:"unit_source"`
 	Type             models.Type         `json:"type,omitempty"`
 
-	FunctionID string `json:"function_id,omitempty"`
-	AspectID   string `json:"aspect_id,omitempty"`
-	AspectName string `json:"aspect_name,omitempty"`
+	FunctionID string               `json:"function_id,omitempty"`
+	Aspects    []ontology.AspectRef `json:"aspects,omitempty"`
 
 	OntologyCompleteness profiler.Completeness `json:"ontology_completeness"`
 }
@@ -185,9 +184,8 @@ type ImportTypeVariable struct {
 	UnitSource       profiler.UnitSource `json:"unit_source"`
 	Type             models.Type         `json:"type,omitempty"`
 
-	FunctionID string `json:"function_id,omitempty"`
-	AspectID   string `json:"aspect_id,omitempty"`
-	AspectName string `json:"aspect_name,omitempty"`
+	FunctionID string               `json:"function_id,omitempty"`
+	Aspects    []ontology.AspectRef `json:"aspects,omitempty"`
 
 	OntologyCompleteness profiler.Completeness `json:"ontology_completeness"`
 }
@@ -281,7 +279,7 @@ func (r *Resolver) resolveImports(ctx context.Context, token string, criteria []
 func (c Criterion) importFilter() drmodel.FilterCriteria {
 	return drmodel.FilterCriteria{
 		FunctionId: c.FunctionID,
-		AspectId:   c.AspectID,
+		AspectIds:  c.AspectIDs,
 	}
 }
 
@@ -307,7 +305,7 @@ func importSelectables(found []imports.Selectable, index *profiler.OntologyIndex
 			// Streamed() false and mark every import variable unreadable.
 			Interaction: models.EVENT,
 			FunctionID:  selectable.FunctionID,
-			AspectID:    selectable.AspectID,
+			AspectIDs:   selectable.AspectIDs,
 			Queryable:   true,
 		}
 		if selectable.CharacteristicID != nil {
@@ -330,8 +328,7 @@ func importSelectables(found []imports.Selectable, index *profiler.OntologyIndex
 			UnitSource:           semantics.UnitSource,
 			Type:                 variable.Type,
 			FunctionID:           selectable.FunctionID,
-			AspectID:             selectable.AspectID,
-			AspectName:           aspectNames[selectable.AspectID],
+			Aspects:              ontology.AspectRefsByID(selectable.AspectIDs, aspectNames),
 			OntologyCompleteness: profiler.VariableCompleteness(variable, index),
 		})
 	}
@@ -433,10 +430,10 @@ type catalogue struct {
 //
 // One request per criterion and a union of the answers, for the reason
 // resolveImports sends one at a time: upstream ANDs a criteria list, so a
-// multi-criterion request asks for a type carrying all of it. The aspect subtree
-// is expanded here rather than upstream, because import-repository matches
-// aspect ids literally — the asymmetry device-selection absorbs for the
-// selectables half and nobody absorbs for this one.
+// multi-criterion request asks for a type carrying all of it. The aspect ids go
+// out bare: the import-repository client asks for and_combine_criteria_aspect_ids,
+// which ANDs them and expands each one's subtree server-side (see
+// pkg/imports/client.go).
 //
 // deployed is the set of import type ids this resolution already reported as
 // running instances. Those are dropped from the answer and kept in the count:
@@ -458,16 +455,11 @@ func (r *Resolver) deployableImportTypes(
 			// query rather than express it.
 			continue
 		}
-		filter := imports.TypeCriterion{FunctionID: criterion.FunctionID}
-		if criterion.AspectID != "" {
-			filter.AspectIDs = ontology.AspectSubtreeIDs(snap.AspectNodes, criterion.AspectID)
-			if len(filter.AspectIDs) == 0 {
-				// An aspect the snapshot does not carry. Sending the bare id asks a
-				// narrower question than the caller meant, which is still the question
-				// they asked; dropping it would ask a wider one they did not.
-				filter.AspectIDs = []string{criterion.AspectID}
-			}
-		}
+		// Sent unchanged: the import-repository client asks for
+		// and_combine_criteria_aspect_ids, which ANDs these ids and expands each
+		// one's subtree server-side (see pkg/imports/client.go), so ODE no longer
+		// resolves the subtree itself.
+		filter := imports.TypeCriterion{FunctionID: criterion.FunctionID, AspectIDs: criterion.AspectIDs}
 		if filter.FunctionID == "" && len(filter.AspectIDs) == 0 {
 			// Nothing to narrow on. Upstream reads an empty criterion as "any type with
 			// any criteria at all", which is every import type on the platform.
@@ -540,11 +532,18 @@ func (r *Resolver) deployableImportTypes(
 
 	out := make([]DeployableImportType, 0, len(matched))
 	names := aspectNames(snap)
+	// Expanded locally for the one thing the network parameter cannot reach: once
+	// a type has matched, deployableImportType re-derives *which variable* of it
+	// satisfied the query, entirely from the already-fetched import type — the
+	// server was never part of that computation. Reusing the bare filters there
+	// would silently show no matching variable for a type that matched because one
+	// of its variables carries a child of the requested aspect.
+	displayFilters := expandAspectSubtrees(filters, snap)
 	for _, importType := range matched {
 		if deployed[importType.Id] {
 			continue
 		}
-		out = append(out, deployableImportType(importType, filters, index, names))
+		out = append(out, deployableImportType(importType, displayFilters, index, names))
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
@@ -553,6 +552,32 @@ func (r *Resolver) deployableImportTypes(
 		return out[i].ImportTypeID < out[j].ImportTypeID
 	})
 	return out, catalogue{read: true, matched: len(matched), deployable: len(out)}, len(filters)
+}
+
+// expandAspectSubtrees copies a criteria list with each one's AspectSubtrees
+// filled from the snapshot, for the local re-check of which
+// variable of an already-matched type satisfied the query (see
+// deployableImportTypes). It never reaches the wire: the network request sends
+// the bare ids and asks import-repository to expand them instead.
+func expandAspectSubtrees(filters []imports.TypeCriterion, snap *ontology.Snapshot) []imports.TypeCriterion {
+	out := make([]imports.TypeCriterion, len(filters))
+	for i, filter := range filters {
+		out[i] = filter
+		if len(filter.AspectIDs) == 0 {
+			continue
+		}
+		subtrees := make(map[string][]string, len(filter.AspectIDs))
+		for _, id := range filter.AspectIDs {
+			// An aspect the snapshot does not carry gets no entry and covers only
+			// itself: a narrower question than the caller meant, which is still the
+			// question they asked; dropping it would ask a wider one they did not.
+			if subtree := ontology.AspectSubtreeIDs(snap.AspectNodes, id); len(subtree) > 0 {
+				subtrees[id] = subtree
+			}
+		}
+		out[i].AspectSubtrees = subtrees
+	}
+	return out
 }
 
 func deployableImportType(
@@ -601,7 +626,7 @@ func importTypeVariables(found []imports.TypeVariable, index *profiler.OntologyI
 			// topic, and an empty interaction would mark every variable unreadable.
 			Interaction: models.EVENT,
 			FunctionID:  variable.FunctionID,
-			AspectID:    variable.AspectID,
+			AspectIDs:   variable.AspectIDs,
 			Queryable:   true,
 		}
 		if variable.CharacteristicID != nil {
@@ -615,8 +640,7 @@ func importTypeVariables(found []imports.TypeVariable, index *profiler.OntologyI
 			UnitSource:           semantics.UnitSource,
 			Type:                 resolved.Type,
 			FunctionID:           variable.FunctionID,
-			AspectID:             variable.AspectID,
-			AspectName:           aspects[variable.AspectID],
+			Aspects:              ontology.AspectRefsByID(variable.AspectIDs, aspects),
 			OntologyCompleteness: profiler.VariableCompleteness(resolved, index),
 		})
 	}

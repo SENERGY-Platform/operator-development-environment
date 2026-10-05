@@ -37,12 +37,16 @@ type fakeClient struct {
 	functionCalls  atomic.Int32
 	timestampCalls atomic.Int32
 
-	aspects    []models.AspectNode
-	generation int64
+	aspects       []models.AspectNode
+	aspectClasses []models.AspectClass
+	generation    int64
 
-	aspectErr    error
-	aspectCode   int
-	timestampErr error
+	aspectErr        error
+	aspectCode       int
+	aspectClassErr   error
+	aspectClassCode  int
+	aspectClassCalls atomic.Int32
+	timestampErr     error
 
 	// selectableCalls records the criteria of every selectables query, which is
 	// how the tests check that ODE sends one criterion per request rather than a
@@ -83,8 +87,9 @@ type fakeClient struct {
 
 func newFakeClient() *fakeClient {
 	return &fakeClient{
-		aspects:    []models.AspectNode{node("building", "Building", "")},
-		generation: 1000,
+		aspects:       []models.AspectNode{node("building", "Building", "")},
+		aspectClasses: []models.AspectClass{{Id: "class-location", Name: "Location"}},
+		generation:    1000,
 	}
 }
 
@@ -99,6 +104,16 @@ func (f *fakeClient) GetAspectNodes() ([]models.AspectNode, error, int) {
 	f.mux.Lock()
 	defer f.mux.Unlock()
 	return f.aspects, nil, 200
+}
+
+func (f *fakeClient) ListAspectClasses(model.AspectClassListOptions) ([]models.AspectClass, int64, error, int) {
+	f.aspectClassCalls.Add(1)
+	if f.aspectClassErr != nil {
+		return nil, 0, f.aspectClassErr, f.aspectClassCode
+	}
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	return f.aspectClasses, int64(len(f.aspectClasses)), nil, 200
 }
 
 func (f *fakeClient) GetFunctionsByType(rdfType string) ([]models.Function, error, int) {
@@ -258,6 +273,9 @@ func TestSnapshotLoadsTheWholeOntology(t *testing.T) {
 	}
 	if len(snap.Characteristics) != 1 || len(snap.Concepts) != 1 || len(snap.DeviceClasses) != 1 {
 		t.Errorf("snapshot is missing parts: %+v", snap)
+	}
+	if len(snap.AspectClasses) != 1 || snap.AspectClasses[0].Id != "class-location" {
+		t.Errorf("AspectClasses = %+v, want the one class the fake lists", snap.AspectClasses)
 	}
 	if snap.LoadedAt.IsZero() {
 		t.Error("LoadedAt was not stamped")
@@ -429,6 +447,19 @@ func TestSnapshotReportsWhichUpstreamResourceFailed(t *testing.T) {
 	}
 	if upstreamErr.Code != 503 {
 		t.Errorf("Code = %d, want 503", upstreamErr.Code)
+	}
+}
+
+func TestSnapshotReportsAFailedAspectClassLoad(t *testing.T) {
+	fake := newFakeClient()
+	fake.aspectClassErr = errors.New("boom")
+	fake.aspectClassCode = 503
+	repo := New(staticFactory(fake), Options{})
+
+	_, err := repo.Snapshot(context.Background(), testToken)
+	var upstreamErr *UpstreamError
+	if !errors.As(err, &upstreamErr) || upstreamErr.Resource != "aspect-classes" {
+		t.Fatalf("error = %v, want an *UpstreamError for aspect-classes", err)
 	}
 }
 

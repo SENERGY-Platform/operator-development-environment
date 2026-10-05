@@ -310,12 +310,16 @@ func TestTheTypeListingSendsCriteriaAsJSONAndReadsTheTotalFromTheHeader(t *testi
 	if sent[0]["function_id"] != "fn-temperature" {
 		t.Errorf("function_id = %v", sent[0]["function_id"])
 	}
-	// The subtree goes on the wire, because import-repository expands nothing. A
-	// criterion carrying only the node is an answer missing every type described
-	// against a child aspect.
 	aspects, _ := sent[0]["aspect_ids"].([]any)
 	if len(aspects) != 2 {
-		t.Errorf("aspect_ids = %v, want the node and its descendant", sent[0]["aspect_ids"])
+		t.Errorf("aspect_ids = %v, want both ids in the criteria parameter unchanged", sent[0]["aspect_ids"])
+	}
+	// and_combine_criteria_aspect_ids ANDs those ids on one variable and expands
+	// each one's own subtree server-side; without it the caller would have to
+	// expand the subtree itself before sending the id list.
+	if values["and_combine_criteria_aspect_ids"] != "true" {
+		t.Errorf("and_combine_criteria_aspect_ids = %q, want true whenever criteria are sent",
+			values["and_combine_criteria_aspect_ids"])
 	}
 
 	if len(found) != 1 || found[0].Id != "type-1" {
@@ -368,6 +372,12 @@ func TestTheTypeListingPassesIDsThrough(t *testing.T) {
 	}
 	if values["ids"] != "type-1,type-2" {
 		t.Errorf("ids = %q, want a comma-joined list", values["ids"])
+	}
+	// No criteria, nothing for the parameter to AND — sending it anyway would be
+	// a no-op on the wire, but its absence here is what shows the client does not
+	// always set it unconditionally.
+	if _, sent := values["and_combine_criteria_aspect_ids"]; sent {
+		t.Error("and_combine_criteria_aspect_ids was sent without any criteria")
 	}
 }
 

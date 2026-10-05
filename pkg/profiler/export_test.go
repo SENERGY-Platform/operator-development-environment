@@ -63,7 +63,7 @@ func weatherExport() ExportDefinition {
 		Columns: []ExportColumn{
 			{
 				Column: "irradiance", Type: "float", VariablePath: "value.ghi",
-				CharacteristicID: &watt, FunctionID: "fn-power", AspectID: "aspect-pv",
+				CharacteristicID: &watt, FunctionID: "fn-power", AspectIDs: []string{"aspect-pv"},
 			},
 			{Column: "station", Type: "string", VariablePath: "value.station", Tag: true},
 		},

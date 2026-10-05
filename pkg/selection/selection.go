@@ -248,23 +248,30 @@ type Result struct {
 }
 
 // Criterion is one FilterCriteria as sent, plus what it found.
+//
+// AspectIDs can carry more than one id for one criterion: buildCriteria groups
+// matched or explicit aspects by their aspect class and takes one id per class,
+// so a criterion over two classified aspects ("PV" and "kitchen", say, from
+// different hierarchies) asks the platform to AND them on one variable, which is
+// what device-repository's and import-repository's own AspectIds lists already
+// mean (see buildCriteria).
 type Criterion struct {
 	FunctionID    string             `json:"function_id,omitempty"`
-	AspectID      string             `json:"aspect_id,omitempty"`
+	AspectIDs     []string           `json:"aspect_ids,omitempty"`
 	DeviceClassID string             `json:"device_class_id,omitempty"`
 	Interaction   models.Interaction `json:"interaction,omitempty"`
 	DeviceTypes   int                `json:"device_types"`
 
 	// score orders the cross product so the strongest combinations survive the
-	// cap. Not part of the document: it is the sum of two match scores and means
-	// nothing on its own.
+	// cap. Not part of the document: it is the sum of the matched entities' own
+	// scores and means nothing on its own.
 	score float64
 }
 
 func (c Criterion) filter() drmodel.FilterCriteria {
 	return drmodel.FilterCriteria{
 		FunctionId:    c.FunctionID,
-		AspectId:      c.AspectID,
+		AspectIds:     c.AspectIDs,
 		DeviceClassId: c.DeviceClassID,
 		Interaction:   c.Interaction,
 	}
@@ -293,8 +300,11 @@ type Selectable struct {
 	Type             models.Type         `json:"type,omitempty"`
 
 	FunctionID string `json:"function_id,omitempty"`
-	AspectID   string `json:"aspect_id,omitempty"`
-	AspectName string `json:"aspect_name,omitempty"`
+	// Aspects is the variable's declared aspect set, named and sorted by id (see
+	// series.go). More than one entry means the variable is classified under
+	// several aspect hierarchies at once — a PV inverter under both "location" and
+	// "device role", say — not that it is uncertain which one applies.
+	Aspects []ontology.AspectRef `json:"aspects,omitempty"`
 
 	// Queryable is false when the path exists in the ontology but is not a
 	// readable scalar series — a service input, a JSONB list column, a
@@ -500,8 +510,9 @@ func (r *Resolver) Resolve(ctx context.Context, token string, req Request) (Resu
 	}
 	result.Reads.Selectables = len(criteria)
 
+	names := aspectNames(snap)
 	for _, deviceType := range sortedDeviceTypes(matched) {
-		result.Selectables = append(result.Selectables, deviceType.selectables(index)...)
+		result.Selectables = append(result.Selectables, deviceType.selectables(index, names)...)
 	}
 	result.OntologyGaps = ontologyGaps(result.Selectables)
 

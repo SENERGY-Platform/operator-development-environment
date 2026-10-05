@@ -1447,7 +1447,7 @@ func (s exportSource) ExportDefinition(
 			VariablePath:     column.VariablePath,
 			CharacteristicID: column.CharacteristicID,
 			FunctionID:       column.FunctionID,
-			AspectID:         column.AspectID,
+			AspectIDs:        column.AspectIDs,
 			Tag:              column.Tag,
 		})
 	}

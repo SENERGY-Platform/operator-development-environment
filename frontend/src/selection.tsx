@@ -322,7 +322,13 @@ function Resolution({ result }: { result: SelectionResult }) {
               {result.criteria.map((criterion: Criterion) => (
                 <TableRow key={criterionKey(criterion)}>
                   <TableCell>{criterion.function_id ? shortId(criterion.function_id) : <Any />}</TableCell>
-                  <TableCell>{criterion.aspect_id ? shortId(criterion.aspect_id) : <Any />}</TableCell>
+                  <TableCell>
+                    {criterion.aspect_ids && criterion.aspect_ids.length > 0 ? (
+                      criterion.aspect_ids.map((id) => shortId(id)).join(", ")
+                    ) : (
+                      <Any />
+                    )}
+                  </TableCell>
                   <TableCell className="numeric text-right tabular-nums">{criterion.device_types}</TableCell>
                 </TableRow>
               ))}
@@ -340,7 +346,8 @@ function Resolution({ result }: { result: SelectionResult }) {
 }
 
 function criterionKey(criterion: Criterion): string {
-  return `${criterion.function_id ?? ""}|${criterion.aspect_id ?? ""}|${criterion.device_class_id ?? ""}`;
+  const aspects = [...(criterion.aspect_ids ?? [])].sort().join(",");
+  return `${criterion.function_id ?? ""}|${aspects}|${criterion.device_class_id ?? ""}`;
 }
 
 function Any() {
@@ -470,7 +477,9 @@ function Resolved({ result }: { result: SelectionResult }) {
                   <TableCell>
                     {selectable.unit || <span className="muted-inline text-xs text-muted-foreground">unknown</span>}
                   </TableCell>
-                  <TableCell>{selectable.aspect_name || shortId(selectable.aspect_id ?? "")}</TableCell>
+                  <TableCell>
+                    {(selectable.aspects ?? []).map((aspect) => aspect.name || shortId(aspect.id)).join(", ")}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

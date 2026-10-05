@@ -514,7 +514,9 @@ function CandidateSetCard({
             <span className="muted ml-6 block text-xs text-muted-foreground">
               {member.device_name}
               {member.unit ? ` · ${member.unit}` : ""}
-              {member.aspect_name ? ` · ${member.aspect_name}` : ""}
+              {member.aspects && member.aspects.length > 0
+                ? ` · ${member.aspects.map((aspect) => aspect.name || shortId(aspect.id)).join(", ")}`
+                : ""}
             </span>
           </li>
         ))}

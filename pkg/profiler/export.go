@@ -102,11 +102,11 @@ type ExportColumn struct {
 	// which is what an export definition declares. It is mapped onto the
 	// platform's content variable types here, because that is what the detectors
 	// switch on.
-	Type             string  `json:"type,omitempty"`
-	VariablePath     string  `json:"variable_path,omitempty"`
-	CharacteristicID *string `json:"characteristic_id,omitempty"`
-	FunctionID       string  `json:"function_id,omitempty"`
-	AspectID         string  `json:"aspect_id,omitempty"`
+	Type             string   `json:"type,omitempty"`
+	VariablePath     string   `json:"variable_path,omitempty"`
+	CharacteristicID *string  `json:"characteristic_id,omitempty"`
+	FunctionID       string   `json:"function_id,omitempty"`
+	AspectIDs        []string `json:"aspect_ids,omitempty"`
 	// Tag marks a column the export worker writes as an indexed label rather than
 	// a measurement. It is still a series and is still profiled — a tag that
 	// changes is a state series — but it is reported so that a reader knows why a
@@ -145,7 +145,7 @@ func ExportVariables(columns []ExportColumn) []Variable {
 			Path:        name,
 			Name:        name,
 			FunctionID:  column.FunctionID,
-			AspectID:    column.AspectID,
+			AspectIDs:   column.AspectIDs,
 			Queryable:   true,
 		}
 		if column.CharacteristicID != nil {

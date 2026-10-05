@@ -278,9 +278,11 @@ func (c *RepositoryClient) ReadImportType(ctx context.Context, token string, id 
 //   - The criteria list is ANDed, one $elemMatch per entry, so a type must carry
 //     every criterion. Alternatives are separate requests, unioned by the caller —
 //     the same rule the selectables half already follows for a different reason.
-//   - An aspect criterion is matched literally: there is no subtree expansion
-//     here, so the caller sends the node together with its descendants (see
-//     ontology.AspectSubtreeIDs).
+//   - Within one criterion, and_combine_criteria_aspect_ids (set below whenever
+//     criteria are sent) ANDs the aspect ids on one variable and expands each id's
+//     own subtree server-side; without it the list is an OR with no subtree
+//     expansion at all (import-repository v0.2.0,
+//     docs/criteria-aspect-ids-and-the-and-parameter.md).
 //   - The total arrives in X-Total-Count rather than in the body.
 //
 // Decoded into device-selection's ImportType for the reason ReadImportType is:
@@ -312,6 +314,13 @@ func (c *RepositoryClient) ListImportTypes(ctx context.Context, token string, op
 		// A query parameter carrying JSON, which is the endpoint's own shape rather
 		// than a choice here.
 		query.Set("criteria", string(encoded))
+		// ANDs a criterion's aspect ids on one variable and expands each one's own
+		// subtree server-side, instead of the default OR with no subtree expansion
+		// (import-repository v0.2.0, docs/criteria-aspect-ids-and-the-and-parameter.md).
+		// Set whenever criteria are sent, which is what buildCriteria's per-class
+		// AspectIDs — and a bare one-id criterion's own subtree — both need; it has
+		// no effect when Criteria is empty.
+		query.Set("and_combine_criteria_aspect_ids", "true")
 	}
 
 	endpoint := c.baseURL + "/import-types"

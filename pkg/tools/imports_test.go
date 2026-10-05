@@ -1036,10 +1036,11 @@ func callCatalogue(t *testing.T, imp *fakeImports, input any) map[string]any {
 	return answer
 }
 
-// The aspect subtree is the caller's to send here, unlike everywhere the device
-// repository is involved. Without it a type described against a child aspect is
-// missing and nothing says so.
-func TestListImportTypesSendsTheAspectSubtree(t *testing.T) {
+// The network criterion carries the bare aspect id, unexpanded: the
+// import-repository client asks for and_combine_criteria_aspect_ids, which
+// expands it server-side (see pkg/imports/client.go and its own test for that
+// parameter), so ODE no longer resolves the subtree before sending the request.
+func TestListImportTypesSendsTheBareAspectID(t *testing.T) {
 	imp := &fakeImports{types: []dsmodel.ImportType{catalogueType(testImportType, "Open-Meteo")}, typeTotal: 1}
 
 	callCatalogue(t, imp, map[string]any{"function_id": "fn-temperature", "aspect_id": "pv"})
@@ -1051,12 +1052,8 @@ func TestListImportTypesSendsTheAspectSubtree(t *testing.T) {
 	if len(criteria) != 1 {
 		t.Fatalf("sent %+v, want one criterion: upstream ANDs them", criteria)
 	}
-	found := map[string]bool{}
-	for _, id := range criteria[0].AspectIDs {
-		found[id] = true
-	}
-	if !found["pv"] || !found["inverter"] {
-		t.Errorf("aspect_ids = %v, want the node and its descendant", criteria[0].AspectIDs)
+	if len(criteria[0].AspectIDs) != 1 || criteria[0].AspectIDs[0] != "pv" {
+		t.Errorf("aspect_ids = %v, want exactly [pv], unexpanded", criteria[0].AspectIDs)
 	}
 	if criteria[0].FunctionID != "fn-temperature" {
 		t.Errorf("function_id = %q", criteria[0].FunctionID)

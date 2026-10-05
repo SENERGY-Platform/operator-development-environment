@@ -107,8 +107,8 @@ func TestMatchingVariablesUnionsTheCriteriaRatherThanIntersectingThem(t *testing
 
 func TestMatchingVariablesNeedsTheAspectSubtree(t *testing.T) {
 	// The variable is described against `inverter`, a child of `pv`. A criterion
-	// carrying only the parent matches nothing here, which is the reason
-	// ontology.AspectSubtreeIDs exists — upstream expands nothing either.
+	// carrying only the parent matches nothing here: without AspectSubtrees an id
+	// covers only itself, and the subtree is the caller's to supply.
 	bare := MatchingVariables(semanticType(), []TypeCriterion{
 		{FunctionID: "fn-temperature", AspectIDs: []string{"pv"}},
 	})
@@ -117,10 +117,31 @@ func TestMatchingVariablesNeedsTheAspectSubtree(t *testing.T) {
 	}
 
 	expanded := MatchingVariables(semanticType(), []TypeCriterion{
-		{FunctionID: "fn-temperature", AspectIDs: []string{"pv", "inverter"}},
+		{FunctionID: "fn-temperature", AspectIDs: []string{"pv"},
+			AspectSubtrees: map[string][]string{"pv": {"pv", "inverter"}}},
 	})
 	if len(expanded) != 1 || expanded[0].Path != "value.temperature" {
 		t.Fatalf("got %+v, want value.temperature", expanded)
+	}
+}
+
+func TestMatchingVariablesANDsTheAspectsOfOneCriterion(t *testing.T) {
+	// Two aspects in one criterion come from two aspect classes and ask for one
+	// variable carrying both (SNRGY-4648). A variable carrying only one of them
+	// is not a reason the type matched, even though upstream accepted the type
+	// because another variable carries both.
+	importType := semanticType()
+	importType.Output.SubContentVariables[2].SubContentVariables = []dsmodel.ImportContentVariable{
+		{Name: "pv_only", Type: models.Float, FunctionId: "fn-power", AspectIds: []string{"pv"}},
+		{Name: "pv_generation", Type: models.Float, FunctionId: "fn-power",
+			AspectIds: []string{"generation", "pv"}},
+	}
+
+	found := MatchingVariables(importType, []TypeCriterion{
+		{FunctionID: "fn-power", AspectIDs: []string{"generation", "pv"}},
+	})
+	if len(found) != 1 || found[0].Path != "value.pv_generation" {
+		t.Fatalf("got %+v, want only value.pv_generation", found)
 	}
 }
 

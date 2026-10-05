@@ -23,6 +23,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -89,6 +90,10 @@ func (fakeOntologyClient) GetDeviceClasses() ([]models.DeviceClass, error, int) 
 	return []models.DeviceClass{{Id: "dc-meter", Name: "Meter"}}, nil, 200
 }
 
+func (fakeOntologyClient) ListAspectClasses(drmodel.AspectClassListOptions) ([]models.AspectClass, int64, error, int) {
+	return []models.AspectClass{{Id: "class-location", Name: "Location"}}, 1, nil, 200
+}
+
 // ListDeviceGroups answers the "prefer an existing grouping" step of §5.5 with one
 // group naming both kitchen devices, which is what lets a test tell an
 // aspect-derived set from a group-derived one.
@@ -151,7 +156,7 @@ func (fakeOntologyClient) GetDeviceTypeSelectablesV2(
 		if criterion.FunctionId != "" && criterion.FunctionId != "fn-power" {
 			return []drmodel.DeviceTypeSelectable{}, nil, 200
 		}
-		if criterion.AspectId != "" && criterion.AspectId != "kitchen" {
+		if ids := ontology.AspectIDs(criterion.AspectIds, criterion.AspectId); len(ids) > 0 && !slices.Contains(ids, "kitchen") {
 			return []drmodel.DeviceTypeSelectable{}, nil, 200
 		}
 		if criterion.Interaction != "" && criterion.Interaction != models.EVENT {
@@ -406,6 +411,14 @@ func TestAspectTreeLoadsAsAHierarchy(t *testing.T) {
 	}
 	if children[0].(map[string]any)["name"] != "Kitchen" {
 		t.Errorf("child = %v, want Kitchen", children[0])
+	}
+
+	classes, ok := decode(t, w)["classes"].([]any)
+	if !ok || len(classes) != 1 {
+		t.Fatalf("classes = %v, want the one aspect class the snapshot carries", decode(t, w)["classes"])
+	}
+	if class := classes[0].(map[string]any); class["id"] != "class-location" || class["name"] != "Location" {
+		t.Errorf("class = %v, want class-location/Location", class)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	ginmw "github.com/SENERGY-Platform/gin-middleware"
@@ -531,6 +532,10 @@ func handleSession(deps Deps) gin.HandlerFunc {
 }
 
 // @Summary		The aspect hierarchy as a tree
+// @Description	Each tree node carries aspect_class_id (empty when unclassified), and
+// @Description	classes names every aspect class the device repository declares — not
+// @Description	only the ones a node in this tree references — so the SPA can render an
+// @Description	empty class row rather than silently omitting the class (SNRGY-4648).
 // @Tags			ontology
 // @Produce		json
 // @Security		Bearer
@@ -545,8 +550,24 @@ func handleAspectTree(repo *ontology.Repository) gin.HandlerFunc {
 			respondUpstream(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"tree": ontology.AspectTree(snap.AspectNodes)})
+		c.JSON(http.StatusOK, gin.H{
+			"tree":    ontology.AspectTree(snap.AspectNodes),
+			"classes": sortedAspectClasses(snap.AspectClasses),
+		})
 	}
+}
+
+// sortedAspectClasses orders a snapshot's aspect classes by name so the answer
+// is reproducible rather than following the upstream listing's own order.
+func sortedAspectClasses(classes []models.AspectClass) []models.AspectClass {
+	out := append([]models.AspectClass{}, classes...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Id < out[j].Id
+	})
+	return out
 }
 
 // @Summary		Aspect nodes, flat

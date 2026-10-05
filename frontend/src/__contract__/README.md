@@ -5,7 +5,7 @@ file to the type `src/api.ts` declares for that endpoint, so `npm run build` fai
 if the two ever disagree — a renamed or dropped field breaks the build instead of
 becoming `undefined` at runtime in front of a developer.
 
-**Three exceptions, worth knowing before you trust them.**
+**Four exceptions, worth knowing before you trust them.**
 
 `selection.json` was emitted by the M2 API test harness rather than captured from a
 platform, because M2 was built without platform access. It is still the backend's
@@ -16,6 +16,12 @@ own marshalling of its own types, which is what this check is about — but its
 `device` block was added by hand when it was introduced, again for want of a
 platform. The ids and the names in that block are invented, so do not read them as
 evidence of anything; the field set around them is still the backend's.
+
+`quick.json` and `selection.json` are also **hand-patched** for SNRGY-4648
+(metadata model v2026-08), which turned every `aspect_id` into `aspect_ids` and
+every `aspect_id`/`aspect_name` pair into `aspects: [{id, name}]`. Both need a
+platform to recapture, so the aspect field was rewritten in place; the values are
+the original capture's, only the field's shape moved.
 
 `chat_sessions.json` and `chat_session.json` each carry one **hand-added** field:
 `auto_run`, added when the column was, rather than recaptured. The value is the

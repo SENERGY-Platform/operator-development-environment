@@ -111,7 +111,7 @@ type Declared struct {
 	MaxValue         Value[float64] `json:"max_value"`
 	Type             models.Type    `json:"type"`
 	FunctionID       string         `json:"function_id,omitempty"`
-	AspectID         string         `json:"aspect_id,omitempty"`
+	AspectIDs        []string       `json:"aspect_ids,omitempty"`
 }
 
 type Liveness struct {
@@ -375,7 +375,7 @@ func (p *Profiler) quickProfile(
 			MaxValue:         semantics.DeclaredRange.Max,
 			Type:             variable.Type,
 			FunctionID:       variable.FunctionID,
-			AspectID:         variable.AspectID,
+			AspectIDs:        variable.AspectIDs,
 		},
 		Provenance: prov,
 	}
@@ -573,8 +573,8 @@ func completeness(variable Variable, semantics ValueSemantics) Completeness {
 	if variable.FunctionID == "" {
 		missing = append(missing, "function_id")
 	}
-	if variable.AspectID == "" {
-		missing = append(missing, "aspect_id")
+	if len(variable.AspectIDs) == 0 {
+		missing = append(missing, "aspect_ids")
 	}
 
 	out := Completeness{Status: CompletenessComplete, Missing: missing}
@@ -588,7 +588,7 @@ func completeness(variable Variable, semantics ValueSemantics) Completeness {
 		out.Consequence = "the unit arrives in the message, so no conversion target can be selected without reading one"
 	case semantics.CharacteristicID == nil:
 		out.Consequence = "no characteristic, so no server-side unit conversion and no declared range check"
-	case variable.FunctionID == "" || variable.AspectID == "":
+	case variable.FunctionID == "" || len(variable.AspectIDs) == 0:
 		out.Consequence = "the variable cannot be found by semantic selection on function or aspect"
 	}
 	return out

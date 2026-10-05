@@ -25,12 +25,17 @@ import (
 // TreeNode is an AspectNode with its children resolved. The device repository
 // returns aspect nodes as a flat list carrying parent and child ids; the SPA
 // needs the hierarchy (§5.1, "Hierarchical location/subsystem").
+//
+// AspectClassId is set at the root and carried unchanged down the whole
+// hierarchy: a classification applies to the aspect, not to the node, and a
+// variable carries at most one aspect per classified hierarchy (SNRGY-4648).
 type TreeNode struct {
-	Id       string     `json:"id"`
-	Name     string     `json:"name"`
-	RootId   string     `json:"root_id"`
-	ParentId string     `json:"parent_id"`
-	Children []TreeNode `json:"children"`
+	Id            string     `json:"id"`
+	Name          string     `json:"name"`
+	RootId        string     `json:"root_id"`
+	ParentId      string     `json:"parent_id"`
+	AspectClassId string     `json:"aspect_class_id,omitempty"`
+	Children      []TreeNode `json:"children"`
 }
 
 func (n TreeNode) sortKey() string {
@@ -51,10 +56,11 @@ func AspectTree(nodes []models.AspectNode) []TreeNode {
 	byId := make(map[string]*TreeNode, len(nodes))
 	for _, n := range nodes {
 		byId[n.Id] = &TreeNode{
-			Id:       n.Id,
-			Name:     n.Name,
-			RootId:   n.RootId,
-			ParentId: n.ParentId,
+			Id:            n.Id,
+			Name:          n.Name,
+			RootId:        n.RootId,
+			ParentId:      n.ParentId,
+			AspectClassId: n.AspectClassId,
 		}
 	}
 
@@ -117,12 +123,16 @@ func sortNodes(nodes []TreeNode) {
 // AspectSubtreeIDs returns an aspect id together with every id below it, sorted,
 // or nil when the node is not in the list.
 //
-// It exists for the one upstream that does not expand an aspect criterion
-// itself. The device repository takes an aspect id and covers its whole subtree
-// (see DeviceTypeSelectables); import-repository matches `aspect_id $in
-// aspect_ids` literally, so a caller that sends only the node asks about that
-// node alone and gets a silently short answer — every import type described
-// against a child aspect is missing, with no error anywhere.
+// import-repository v0.2.0's and_combine_criteria_aspect_ids parameter now does
+// this same expansion server-side for the criteria ODE actually sends (see
+// pkg/imports/client.go), so the network request itself carries the bare id.
+// This function survives for the one thing the parameter cannot reach: once a
+// type has matched, pkg/selection and pkg/tools each re-derive *which variable*
+// of it satisfied the query — a pure, local, already-fetched-data computation
+// (imports.MatchingVariables) that the server was never part of. Reusing the
+// bare criterion there would silently fail to find a variable described against
+// a child aspect, even though the type matched on it upstream — so that local
+// re-check still needs the subtree spelled out.
 //
 // Derived from ParentId rather than from AspectNode.DescendentIds, for the
 // reason AspectTree gives: the derivation holds when the field is unpopulated,

@@ -126,7 +126,7 @@ type QuickDeclaredView struct {
 	UnitSource       UnitSource  `json:"unit_source"`
 	Type             models.Type `json:"type,omitempty"`
 	FunctionID       string      `json:"function_id,omitempty"`
-	AspectID         string      `json:"aspect_id,omitempty"`
+	AspectIDs        []string    `json:"aspect_ids,omitempty"`
 	Min              *float64    `json:"min,omitempty"`
 	Max              *float64    `json:"max,omitempty"`
 }
@@ -365,7 +365,7 @@ func ProjectQuickCandidate(profile QuickProfile) QuickCandidateView {
 		UnitSource:       profile.Declared.UnitSource,
 		Type:             profile.Declared.Type,
 		FunctionID:       profile.Declared.FunctionID,
-		AspectID:         profile.Declared.AspectID,
+		AspectIDs:        profile.Declared.AspectIDs,
 	}
 	if minimum, ok := profile.Declared.MinValue.Get(); ok {
 		view.Declared.Min = &minimum
