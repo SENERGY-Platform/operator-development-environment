@@ -1040,7 +1040,31 @@ func (s *Service) List(ctx context.Context, req Request, limit int) ([]Experimen
 	if err != nil {
 		return nil, err
 	}
+	return s.refreshAll(ctx, records), nil
+}
 
+// SessionList is List narrowed to the runs the request's own chat session launched:
+// what a model may read (D40). A run launched from the Experiments pane belongs to
+// no session and is not listed, and a request without a session is refused rather
+// than read as "every session".
+func (s *Service) SessionList(ctx context.Context, req Request, limit int) ([]Experiment, error) {
+	if strings.TrimSpace(req.SessionID) == "" {
+		return nil, fmt.Errorf("%w: this request carries no chat session, so there are no "+
+			"runs of its own to list", ErrInvalidRequest)
+	}
+	if limit <= 0 || limit > defaultListLimit {
+		limit = defaultListLimit
+	}
+	records, err := s.store.ListInSession(ctx, req.UserSub, req.SessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return s.refreshAll(ctx, records), nil
+}
+
+// refreshAll refreshes the unfinished records of a listing from Ray and returns the
+// listing.
+func (s *Service) refreshAll(ctx context.Context, records []Experiment) []Experiment {
 	// The refresh is bounded in two directions, because it is the one place where a
 	// developer's own listing depends on a third party answering.
 	//
@@ -1062,7 +1086,7 @@ func (s *Service) List(ctx context.Context, req Request, limit int) ([]Experimen
 		}
 	}
 	if len(pending) == 0 {
-		return records, nil
+		return records
 	}
 
 	refreshCtx, cancel := context.WithTimeout(ctx, s.opts.RequestTimeout)
@@ -1104,7 +1128,7 @@ func (s *Service) List(ctx context.Context, req Request, limit int) ([]Experimen
 	close(work)
 	wait.Wait()
 
-	return records, nil
+	return records
 }
 
 // listRefreshParallelism bounds how many cluster calls one listing may have in
@@ -1144,9 +1168,46 @@ func (s *Service) Results(ctx context.Context, req Request, id string) (Summary,
 	if err != nil {
 		return Summary{}, err
 	}
+	return s.results(ctx, req, record)
+}
+
+// SessionResults is Results for a model, which reads only what its own chat session
+// launched (D40).
+//
+// A run that does not exist and a run that belongs to another session, or to none,
+// are refused with the same words: the answer must not tell a model which ids exist
+// outside its conversation. The comparison is redone within the session as well —
+// the kept summary compares against the developer's previous run, wherever that
+// was launched, and its metrics are exactly what this boundary withholds.
+func (s *Service) SessionResults(ctx context.Context, req Request, id string) (Summary, error) {
+	if strings.TrimSpace(req.SessionID) == "" {
+		return Summary{}, fmt.Errorf("%w: this request carries no chat session, so there "+
+			"are no runs of its own to read", ErrInvalidRequest)
+	}
+	record, found, err := s.store.Get(ctx, req.UserSub, id)
+	if err != nil {
+		return Summary{}, err
+	}
+	if !found || record.SessionID != req.SessionID {
+		return Summary{}, fmt.Errorf("%w: %s was not launched in this conversation",
+			ErrNotFound, id)
+	}
+	if record, err = s.refresh(ctx, record); err != nil {
+		return Summary{}, err
+	}
+	summary, err := s.results(ctx, req, record)
+	if err != nil {
+		return Summary{}, err
+	}
+	return s.inSession(ctx, record, summary), nil
+}
+
+// results builds or reads back the summary of a record the caller already owns.
+func (s *Service) results(ctx context.Context, req Request, record Experiment) (Summary, error) {
 	if record.RunID == "" {
 		return Summary{}, fmt.Errorf(
-			"%w: %s has no MLflow run, so there is nothing to summarise", ErrInvalidRequest, id)
+			"%w: %s has no MLflow run, so there is nothing to summarise", ErrInvalidRequest,
+			record.ID)
 	}
 
 	// The kept copy, before anything is read. A settled summary cannot change again
@@ -1255,17 +1316,17 @@ func (s *Service) Summarise(ctx context.Context, record Experiment) (Summary, er
 	if err != nil {
 		return Summary{}, err
 	}
-	previousRun := s.previousRun(ctx, record)
-
 	problem := notComputed(ReasonNoDeveloperCredential,
 		"this summary was built when the run finished, with ODE's own Ray and MLflow "+
 			"credential and nobody connected. %s is on the developer's workspace and is "+
 			"read on their behalf, so the criteria are applied when they are next "+
 			"connected",
 		EvaluationCriteriaPath)
-	summary := buildSummary(record, run, previousRun, CriteriaDocument{}, &problem)
+	// Built without a previous run and compared within the record's own session,
+	// because the only caller injects this into that session (D40).
+	summary := buildSummary(record, run, nil, CriteriaDocument{}, &problem)
 	summary.Failure = s.failureFor(ctx, summary, record)
-	return summary, nil
+	return s.inSession(ctx, record, summary), nil
 }
 
 // failureFor is D34's extract, or nil for a run that did not fail.
@@ -1318,6 +1379,45 @@ func (s *Service) previousRun(ctx context.Context, record Experiment) *mlflowRun
 		return nil
 	}
 	return &fetched
+}
+
+// inSession redoes a summary's comparison against the previous run of the record's
+// own chat session (D40), for a summary on its way to a model.
+//
+// The summary it is given compares against the developer's previous run wherever
+// that was launched, which is right for the developer's pane and is exactly what a
+// model must not read. Every failure here leaves the comparison empty rather than
+// keeping the one it replaces: like previousRun, a comparison is an enrichment, and
+// the one that was there is the one this exists to withhold.
+func (s *Service) inSession(ctx context.Context, record Experiment, summary Summary) Summary {
+	const unreadable = "the previous run of this experiment in this conversation could " +
+		"not be read, so there is nothing to compare it against"
+
+	previous, found, err := s.store.PreviousInSession(ctx, record)
+	if err == nil && found && previous.RunID == summary.PreviousRunID {
+		return summary
+	}
+
+	// The note buildSummary wrote for "no previous run at all" is replaced along with
+	// the comparison: whether there is one in this session is decided here.
+	if summary.Note == firstRunNote {
+		summary.Note = ""
+	}
+	if err != nil {
+		slog.WarnContext(ctx, "the previous experiment in this session could not be read",
+			"experiment", record.ID, "error", err)
+		return withComparison(summary, nil, unreadable)
+	}
+	if !found {
+		return withComparison(summary, nil, firstRunInSessionNote)
+	}
+	fetched, err := s.mlflow.run(ctx, previous.RunID)
+	if err != nil {
+		slog.WarnContext(ctx, "the previous run in this session could not be read from mlflow",
+			"experiment", previous.ID, "error", err)
+		return withComparison(summary, nil, unreadable)
+	}
+	return withComparison(summary, &fetched, firstRunInSessionNote)
 }
 
 // Logs reads a job's driver output for the developer's own pane.

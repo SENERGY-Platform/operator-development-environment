@@ -36,12 +36,16 @@ import (
 // reads, and there is deliberately no method here that could launch anything.
 type Experiments interface {
 	// Summarise builds §5.13's summary with ODE's own Ray and MLflow credential and
-	// nobody connected (§3.1 item 5).
+	// nobody connected (§3.1 item 5), compared within the run's own session (D40).
 	Summarise(ctx context.Context, record experiments.Experiment) (experiments.Summary, error)
 	// Results builds the same summary on behalf of a developer, which is what adds
 	// the evaluation criteria — those live in their working copy and are read with
-	// their token (§3.1 item 3).
+	// their token (§3.1 item 3). Compared across all of the developer's runs: it is
+	// what the developer's own interpretation route serves.
 	Results(ctx context.Context, req experiments.Request, id string) (experiments.Summary, error)
+	// SessionResults is Results compared only within the request's chat session
+	// (D40), which is what is injected into that session for a model to read.
+	SessionResults(ctx context.Context, req experiments.Request, id string) (experiments.Summary, error)
 	// Record is the experiment itself, under the caller's own ownership check. Named
 	// Record rather than Get because this package reads one thing from it — which
 	// session and which run — and the name should say so.
@@ -493,7 +497,9 @@ func (s *Service) runTurn(ctx context.Context, item *held, token chat.TokenSourc
 		return err
 	}
 
-	if graded, err := s.experiments.Results(ctx, experiments.Request{
+	// SessionResults rather than Results: this summary is for the model, and its
+	// comparison must not be against another conversation's run (D40).
+	if graded, err := s.experiments.SessionResults(ctx, experiments.Request{
 		Bearer:    token(),
 		UserSub:   record.UserSub,
 		SessionID: record.SessionID,

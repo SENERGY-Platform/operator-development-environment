@@ -209,18 +209,36 @@ func buildSummary(
 			"data_split block before treating it as an evaluation.")
 	}
 
+	return withComparison(summary, previous, firstRunNote)
+}
+
+// The two ways a summary can have nothing to compare against. A model's summary is
+// compared only within its own conversation (D40), so "first" means something
+// narrower there, and a note that said "first run" to a model whose conversation
+// was not the first would be a claim about runs it is not allowed to read.
+const (
+	firstRunNote = "this is the first run of this experiment, so there is nothing " +
+		"to compare it against"
+	firstRunInSessionNote = "this is the first run of this experiment in this " +
+		"conversation, so there is nothing to compare it against"
+)
+
+// withComparison sets §5.13's comparison_to_previous against previous, or marks
+// the summary as having none, with firstNote as the reason when nothing else was
+// said. summary.Metrics is the run's side of the comparison.
+func withComparison(summary Summary, previous *mlflowRun, firstNote string) Summary {
 	if previous == nil {
+		summary.PreviousRunID = ""
 		summary.ComparisonToPrevious = []MetricDelta{}
 		if summary.Note == "" {
-			summary.Note = "this is the first run of this experiment, so there is nothing " +
-				"to compare it against"
+			summary.Note = firstNote
 		}
 		return summary
 	}
 
 	summary.PreviousRunID = previous.runID()
 	previousMetrics, _ := latestMetrics(*previous)
-	summary.ComparisonToPrevious = compare(metrics, previousMetrics)
+	summary.ComparisonToPrevious = compare(summary.Metrics, previousMetrics)
 	return summary
 }
 

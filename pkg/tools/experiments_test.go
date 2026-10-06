@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -36,8 +37,10 @@ type fakeExperiments struct {
 	summary  experiments.Summary
 	listed   []experiments.Experiment
 	err      error
-	// askedFor records the id every Results call named.
+	// askedFor records the id every SessionResults call named.
 	askedFor []string
+	// sessions records the session every read was made from.
+	sessions []string
 }
 
 func (f *fakeExperiments) Launch(
@@ -50,19 +53,21 @@ func (f *fakeExperiments) Launch(
 	return f.result, nil
 }
 
-func (f *fakeExperiments) Results(
-	_ context.Context, _ experiments.Request, id string,
+func (f *fakeExperiments) SessionResults(
+	_ context.Context, req experiments.Request, id string,
 ) (experiments.Summary, error) {
 	f.askedFor = append(f.askedFor, id)
+	f.sessions = append(f.sessions, req.SessionID)
 	if f.err != nil {
 		return experiments.Summary{}, f.err
 	}
 	return f.summary, nil
 }
 
-func (f *fakeExperiments) List(
-	_ context.Context, _ experiments.Request, _ int,
+func (f *fakeExperiments) SessionList(
+	_ context.Context, req experiments.Request, _ int,
 ) ([]experiments.Experiment, error) {
+	f.sessions = append(f.sessions, req.SessionID)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -391,8 +396,24 @@ func TestReadingResultsWithoutAnIdListsWhatThereIsToChooseFrom(t *testing.T) {
 	}
 }
 
+// Both reads are made from the calling chat session, which is what the service
+// narrows to (D40): the tool cannot read another conversation's runs because it
+// never asks without its own session.
+func TestReadingResultsAsksFromTheCallingSession(t *testing.T) {
+	fake := &fakeExperiments{listed: []experiments.Experiment{{ID: "exp-1"}}}
+	registry := experimentSurface(t, fake)
+
+	dispatchExperiment(t, registry, "get_experiment_results", `{}`)
+	dispatchExperiment(t, registry, "get_experiment_results", `{"experiment_id": "exp-1"}`)
+
+	if want := []string{"sess-1", "sess-1"}; !reflect.DeepEqual(fake.sessions, want) {
+		t.Errorf("sessions = %v, want %v: the listing and the summary both read from "+
+			"the calling session", fake.sessions, want)
+	}
+}
+
 // The listing carries no total, so a full page has to say older runs exist, or ten
-// rows read as the developer's whole history.
+// rows read as the conversation's whole history.
 func TestReadingResultsWithoutAnIdSaysOlderExperimentsExist(t *testing.T) {
 	listed := make([]experiments.Experiment, experimentListLimit+1)
 	for i := range listed {

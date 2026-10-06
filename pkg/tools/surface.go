@@ -238,10 +238,14 @@ type (
 	// is for the tool surface to have no way of asking. Stopping a job is absent for
 	// the reason a commit is absent from Repo — it is a developer's decision about
 	// their own cluster time.
+	//
+	// The reads are the session-scoped ones (D40): a model reads only the runs its
+	// own conversation launched, and the developer-wide List and Results are not
+	// here, so the tool has no way of asking for another session's run.
 	Experiments interface {
 		Launch(ctx context.Context, req experiments.LaunchRequest) (experiments.LaunchResult, error)
-		Results(ctx context.Context, req experiments.Request, id string) (experiments.Summary, error)
-		List(ctx context.Context, req experiments.Request, limit int) ([]experiments.Experiment, error)
+		SessionResults(ctx context.Context, req experiments.Request, id string) (experiments.Summary, error)
+		SessionList(ctx context.Context, req experiments.Request, limit int) ([]experiments.Experiment, error)
 	}
 
 	// Simulation is MOSES, the platform's environment simulator

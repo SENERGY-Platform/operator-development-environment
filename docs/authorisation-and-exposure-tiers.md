@@ -544,9 +544,8 @@ summary carries, so it is worth saying why the tier has nothing to withhold here
 The reason is **not** that the model sent them itself. That was true before a
 developer could edit a launch and is no longer: after a topic has been moved
 (see [experiments.md](experiments.md)), the field names a device the model never
-wrote, and `get_experiment_results` reads back any of the developer's runs,
-including ones the conversation never launched. The argument from "it already
-knows" would be a comfortable one and it is wrong.
+wrote. The argument from "it already knows" would be a comfortable one and it is
+wrong.
 
 The reason is the line above. A device id is an **identity**, not a reading. §3.2
 bounds what a model learns about the *values* of a series, and

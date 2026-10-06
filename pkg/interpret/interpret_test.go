@@ -316,6 +316,58 @@ ValueError: Input X contains NaN in column 'power_kw' at 3 of 43200 rows
 	}
 }
 
+// The injected summary compares only within its own conversation (D40). A run of
+// the same repository launched from another conversation finished first, and the
+// developer's own route compares against it; the model in this conversation is told
+// this is its first run, and never reads the other run's id or its metric.
+func TestTheInjectedSummaryDoesNotCompareAgainstAnotherConversationsRun(t *testing.T) {
+	h := newHarness(t, firstRunReply)
+	h.ready()
+
+	otherRequest := h.request()
+	otherRequest.SessionID = "another-conversation"
+	other, err := h.experiments.Launch(context.Background(),
+		experiments.LaunchRequest{Request: otherRequest, InputTopics: testInputTopics()})
+	if err != nil {
+		t.Fatalf("launch from another conversation: %v", err)
+	}
+	h.finish(other, map[string]float64{"rmse": 0.123456})
+	if _, err := h.experiments.Get(context.Background(), h.request(), other.ID); err != nil {
+		t.Fatalf("settle the other conversation's run: %v", err)
+	}
+
+	mine := h.launch()
+	h.finish(mine, map[string]float64{"rmse": 0.31})
+
+	h.poll()
+	defer h.connectDeveloper()()
+	h.deliver()
+
+	given := h.injectedText(t)
+	if !strings.Contains(given, mine.RunID) {
+		t.Fatalf("this conversation's run was not injected:\n%s", given)
+	}
+	for _, forbidden := range []string{other.RunID, other.ID, "0.123456"} {
+		if strings.Contains(given, forbidden) {
+			t.Errorf("another conversation's run reached the model: %q in\n%s", forbidden, given)
+		}
+	}
+	if !strings.Contains(given, "first run of this experiment in this conversation") {
+		t.Errorf("the injected summary does not say this is the conversation's first run:\n%s",
+			given)
+	}
+
+	// The developer's own route still compares against the other conversation's run.
+	result, err := h.interpret.Interpretation(context.Background(), h.request(), mine.ID)
+	if err != nil {
+		t.Fatalf("Interpretation: %v", err)
+	}
+	if result.Summary.PreviousRunID != other.RunID {
+		t.Errorf("developer's previous run = %q, want %q", result.Summary.PreviousRunID,
+			other.RunID)
+	}
+}
+
 // A run that failed with no traceback says so, and asks for evidence rather than a
 // guess at a cause.
 func TestAFailedRunWithNoTracebackAsksForEvidenceRatherThanACause(t *testing.T) {

@@ -42,6 +42,11 @@ import (
 // nothing else. There is no tool that reads a log, deliberately: §5.13 is explicit
 // that logs never enter the model's context, and a tool that could fetch them would
 // make that a matter of discipline rather than of design.
+//
+// It reads only the runs this conversation launched, and compares a run only with
+// an earlier one of the same conversation (D40). A run from another conversation or
+// from the Experiments pane is not found from here, in the same words as a run that
+// does not exist.
 
 type launchExperimentInput struct {
 	Entrypoint  string                   `json:"entrypoint"`
@@ -149,7 +154,7 @@ type experimentResultsInput struct {
 type ExperimentListing struct {
 	Experiments []ExperimentBrief `json:"experiments"`
 	// Truncated says older experiments exist past this page. Without it ten rows
-	// read as the developer's whole history.
+	// read as the conversation's whole history.
 	Truncated bool   `json:"truncated,omitempty"`
 	Hint      string `json:"hint"`
 }
@@ -183,7 +188,7 @@ func (s *surface) getExperimentResults(ctx context.Context, req Request) (any, e
 	if strings.TrimSpace(in.ExperimentID) == "" {
 		// One more than is shown: the listing carries no total, and the extra row
 		// is what tells a full page from an exhausted one.
-		listed, err := s.deps.Experiments.List(ctx, request, experimentListLimit+1)
+		listed, err := s.deps.Experiments.SessionList(ctx, request, experimentListLimit+1)
 		if err != nil {
 			return nil, err
 		}
@@ -193,8 +198,9 @@ func (s *surface) getExperimentResults(ctx context.Context, req Request) (any, e
 		}
 		if len(listed) == 0 {
 			return nil, fmt.Errorf(
-				"%w: this developer has launched no experiments yet, so there are no "+
-					"results to read", ErrInvalidInput)
+				"%w: this conversation has launched no experiments yet, so there are no "+
+					"results to read. Runs launched from the Experiments pane or from other "+
+					"conversations are not readable here", ErrInvalidInput)
 		}
 		brief := make([]ExperimentBrief, 0, len(listed))
 		for _, record := range listed {
@@ -221,7 +227,7 @@ func (s *surface) getExperimentResults(ctx context.Context, req Request) (any, e
 	}
 
 	req.Progress("experiments", "reading the run from MLflow")
-	summary, err := s.deps.Experiments.Results(ctx, request, in.ExperimentID)
+	summary, err := s.deps.Experiments.SessionResults(ctx, request, in.ExperimentID)
 	if err != nil {
 		return nil, err
 	}

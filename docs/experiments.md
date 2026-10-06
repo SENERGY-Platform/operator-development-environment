@@ -899,7 +899,10 @@ error, mae, rmse, mape count down, everything else counts up. Carrying the rule
 beside the verdict is what stops a naming convention from reading as a judgement.
 An empty comparison means "first run", and the `note` says so in words, because an
 empty list read as "no change" would be a fabricated finding (D24's rule, applied
-one level up).
+one level up). The comparison on this route is against the developer's previous
+finished run of the repository, from whichever conversation; a model's copy is
+against the previous run of its own conversation only (D40), and its `note` says
+"first run of this experiment in this conversation" where that is the case.
 
 `evaluation_criteria` was M8's one stub: it appeared only when the run had tagged
 itself with `evaluation_metric` and `evaluation_threshold`, because §5.8 denies
@@ -1016,10 +1019,13 @@ one. The control on `launch_experiment` is the confirmation, exactly as it is fo
 `run_code`: it spends cluster time and publishes a run, and the dispatcher is what
 makes sure a developer said yes before the executor is ever reached.
 
-`get_experiment_results` called without an id answers with the developer's recent
-runs rather than refusing, so "how did the last one go" is one call. Called with
-one it returns the summary above — and there is no third tool, because the thing a
-model might want next is the log, and §5.13 says it does not get one.
+`get_experiment_results` called without an id answers with the recent runs of the
+calling conversation rather than refusing, so "how did the last one go" is one call.
+Called with one it returns the summary above — and there is no third tool, because
+the thing a model might want next is the log, and §5.13 says it does not get one.
+Both reads are narrowed to the conversation (D40): a run launched from another
+conversation or from the Experiments pane is not listed, is not found by id, and is
+not what a comparison is against.
 
 That last sentence stayed true and stopped being the whole answer with D34. A failed
 run's summary carries a bounded extract of its own last exception — class, innermost

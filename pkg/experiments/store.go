@@ -53,9 +53,16 @@ type Store interface {
 	BySubmission(ctx context.Context, userSub, submissionID string) (Experiment, bool, error)
 	// List is the caller's own experiments, newest first, capped at limit.
 	List(ctx context.Context, userSub string, limit int) ([]Experiment, error)
+	// ListInSession is List narrowed to the runs one chat session launched (D40).
+	// A separate method rather than an optional argument to List, so that an empty
+	// session id cannot quietly mean "every session".
+	ListInSession(ctx context.Context, userSub, sessionID string, limit int) ([]Experiment, error)
 	// Previous is the most recent finished experiment of the same MLflow experiment
 	// before this one, which is what §5.13's comparison_to_previous compares against.
 	Previous(ctx context.Context, record Experiment) (Experiment, bool, error)
+	// PreviousInSession is Previous narrowed to the record's own chat session, which
+	// is what a model's comparison is against (D40).
+	PreviousInSession(ctx context.Context, record Experiment) (Experiment, bool, error)
 
 	// Running is every developer's unfinished experiments, oldest update first,
 	// capped. Not scoped to a user, because the only caller is the poller of M9 and
@@ -188,10 +195,22 @@ func (s *MemoryStore) BySubmission(
 }
 
 func (s *MemoryStore) List(_ context.Context, userSub string, limit int) ([]Experiment, error) {
+	return s.list(userSub, limit, func(Experiment) bool { return true }), nil
+}
+
+func (s *MemoryStore) ListInSession(
+	_ context.Context, userSub, sessionID string, limit int,
+) ([]Experiment, error) {
+	return s.list(userSub, limit, func(record Experiment) bool {
+		return record.SessionID == sessionID
+	}), nil
+}
+
+func (s *MemoryStore) list(userSub string, limit int, keep func(Experiment) bool) []Experiment {
 	s.mux.RLock()
 	out := make([]Experiment, 0, len(s.records))
 	for _, record := range s.records {
-		if record.UserSub == userSub {
+		if record.UserSub == userSub && keep(record) {
 			out = append(out, record)
 		}
 	}
@@ -203,7 +222,7 @@ func (s *MemoryStore) List(_ context.Context, userSub string, limit int) ([]Expe
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
-	return out, nil
+	return out
 }
 
 func (s *MemoryStore) Running(_ context.Context, limit int) ([]Experiment, error) {
@@ -277,20 +296,34 @@ func terminalAt(record Experiment) time.Time {
 }
 
 func (s *MemoryStore) Previous(_ context.Context, record Experiment) (Experiment, bool, error) {
+	best, found := s.previous(record, func(Experiment) bool { return true })
+	return best, found, nil
+}
+
+func (s *MemoryStore) PreviousInSession(
+	_ context.Context, record Experiment,
+) (Experiment, bool, error) {
+	best, found := s.previous(record, func(candidate Experiment) bool {
+		return candidate.SessionID == record.SessionID
+	})
+	return best, found, nil
+}
+
+func (s *MemoryStore) previous(record Experiment, keep func(Experiment) bool) (Experiment, bool) {
 	s.mux.RLock()
 	defer s.mux.RUnlock()
 
 	var best Experiment
 	var found bool
 	for _, candidate := range s.records {
-		if !previousCandidate(candidate, record) {
+		if !previousCandidate(candidate, record) || !keep(candidate) {
 			continue
 		}
 		if !found || candidate.SubmittedAt.After(best.SubmittedAt) {
 			best, found = candidate, true
 		}
 	}
-	return best, found, nil
+	return best, found
 }
 
 // previousCandidate is the rule both stores implement: same developer, same
@@ -475,6 +508,23 @@ FROM ode_experiments WHERE user_sub = $1 ORDER BY submitted_at DESC LIMIT $2`, u
 	return collectExperiments(rows, limit)
 }
 
+func (s *PostgresStore) ListInSession(
+	ctx context.Context, userSub, sessionID string, limit int,
+) ([]Experiment, error) {
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	rows, err := s.db.Pool().Query(ctx,
+		`SELECT `+experimentColumns+`
+FROM ode_experiments WHERE user_sub = $1 AND session_id = $2
+ORDER BY submitted_at DESC LIMIT $3`, userSub, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectExperiments(rows, limit)
+}
+
 func (s *PostgresStore) Previous(
 	ctx context.Context, record Experiment,
 ) (Experiment, bool, error) {
@@ -486,6 +536,22 @@ WHERE user_sub = $1 AND mlflow_experiment_id = $2 AND id <> $3
 ORDER BY submitted_at DESC LIMIT 1`,
 		record.UserSub, record.MLflowExperimentID, record.ID,
 		[]string{StatusSucceeded, StatusFailed, StatusStopped}, record.SubmittedAt)
+	return scanExperiment(row)
+}
+
+func (s *PostgresStore) PreviousInSession(
+	ctx context.Context, record Experiment,
+) (Experiment, bool, error) {
+	row := s.db.Pool().QueryRow(ctx,
+		`SELECT `+experimentColumns+`
+FROM ode_experiments
+WHERE user_sub = $1 AND mlflow_experiment_id = $2 AND id <> $3
+  AND mlflow_run_id <> '' AND status = ANY($4) AND submitted_at < $5
+  AND session_id = $6
+ORDER BY submitted_at DESC LIMIT 1`,
+		record.UserSub, record.MLflowExperimentID, record.ID,
+		[]string{StatusSucceeded, StatusFailed, StatusStopped}, record.SubmittedAt,
+		record.SessionID)
 	return scanExperiment(row)
 }
 
