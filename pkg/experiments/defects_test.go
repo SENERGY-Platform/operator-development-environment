@@ -384,4 +384,3 @@ func TestAListingIsCappedWhateverTheCallerAsksFor(t *testing.T) {
 			"one request becoming an unbounded read", len(listed))
 	}
 }
-
