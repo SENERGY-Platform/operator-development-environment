@@ -1390,14 +1390,15 @@ func (s *Service) previousRun(ctx context.Context, record Experiment) *mlflowRun
 // model must not read. Every failure here leaves the comparison empty rather than
 // keeping the one it replaces: like previousRun, a comparison is an enrichment, and
 // the one that was there is the one this exists to withhold.
+//
+// Redone even when the session's previous run is the developer's, because the
+// predecessor's side is filtered by its own phase (previousForModel, D37) and the
+// developer's comparison is not.
 func (s *Service) inSession(ctx context.Context, record Experiment, summary Summary) Summary {
 	const unreadable = "the previous run of this experiment in this conversation could " +
 		"not be read, so there is nothing to compare it against"
 
 	previous, found, err := s.store.PreviousInSession(ctx, record)
-	if err == nil && found && previous.RunID == summary.PreviousRunID {
-		return summary
-	}
 
 	// The note buildSummary wrote for "no previous run at all" is replaced along with
 	// the comparison: whether there is one in this session is decided here.
@@ -1418,7 +1419,8 @@ func (s *Service) inSession(ctx context.Context, record Experiment, summary Summ
 			"experiment", previous.ID, "error", err)
 		return withComparison(summary, nil, unreadable)
 	}
-	return withComparison(summary, &fetched, firstRunInSessionNote)
+	visible := previousForModel(fetched, previous.Split != nil)
+	return withComparison(summary, &visible, firstRunInSessionNote)
 }
 
 // Logs reads a job's driver output for the developer's own pane.

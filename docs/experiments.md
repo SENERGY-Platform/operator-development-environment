@@ -581,10 +581,9 @@ the test window that reaches a tool response has been observed by a model the
 session says observes no values at all, so this defeats the tier itself and not
 merely the statistics.
 
-Three things stand in the way, and they are not three filters. They are a
-boundary, a check that survives the boundary being sidestepped, and hygiene on top
-of both. Each is worth exactly what it is worth, which is why they are described
-separately.
+Two things stand in the way, and they are not two filters. They are a boundary
+and a check that survives the boundary being sidestepped. Each is worth exactly
+what it is worth, which is why they are described separately.
 
 **The phase boundary.** `MLOperator` used to replay while ODE's run was still the
 active fluent run, adopted through `MLFLOW_RUN_ID`, so `mlflow.log_metric()`
@@ -635,9 +634,8 @@ and a cutoff rewritten far into the future would leave every metric before it. S
 the filter is not anchored on the tag alone. Whether a split ran at all is read
 from **ODE's own experiment record**, which the job cannot write, and under a split
 a cutoff that is missing, unreadable, or outside the run's own start and end
-withholds *every* metric rather than falling back to the name allowlist. The fall
-back to names alone happens only where no split ran, and there no replay happened
-either.
+withholds *every* metric rather than keeping every one. Keeping every metric
+happens only where no split ran, and there no replay happened either.
 
 Where the tag is missing while a split was set, the run never received the split:
 an Operator Lib older than v1.7.0, or v1.7.0 with a config subclass that drops it
@@ -645,7 +643,8 @@ an Operator Lib older than v1.7.0, or v1.7.0 with a config subclass that drops i
 `data_split` block reports as `"not confirmed by the run"`. The consequence for
 that run is that it shows a model no metrics, which is the correct reading of a
 run that cannot say when its training ended, and the summary's note names this
-rule rather than the `evaluation.yaml` one, which would change nothing here.
+rule rather than the timestamp one, which would send the developer looking for a
+late write that is not there.
 
 `metric_not_reported` lists the names a run did log, so a misspelt criterion is
 repairable at a glance. `MaskedFor` rebuilds that list from the names its copy
@@ -654,7 +653,7 @@ the run.
 
 The same reasoning cuts two more fields. **Params** are not filtered by name or by
 phase — MLflow params carry no timestamp — so under a split a model reads only the
-four `evaluation.*` params the replay reports, and everything the job configured
+eight `evaluation.*` params the replay reports, and everything the job configured
 stays on the developer's route. And the `data_split` block's own echo of what the
 run recorded is re-rendered from the parsed instant rather than passed through:
 a tag that is not a timestamp does not travel at all, because an operator that
@@ -685,34 +684,42 @@ needed no forgery at all — a single `log_metric("peak_memory_mb", value)` from
 `duration_s` stays: it comes from the run's own start and end times rather than
 from anything the job logged.
 
+`comparison_to_previous` has a second side. `filterDeltas` tests the current run's
+timestamps, but a delta's `previous` is the predecessor's value, so a key the
+predecessor logged from its replay reached a model whenever the current run had
+logged the same key during training. `inSession` now passes the predecessor
+through its own phase filter before comparing (`previousForModel`), with the split
+read from ODE's record of that launch, also where the session's previous run is
+the developer's as well.
+
 Neither is counted twice in `withheld_metrics`. The key behind each was already in
 the metrics map and already counted there; what the note adds for a cut criterion
 is a sentence saying a criterion without a value is not a criterion that failed.
 
-**The name allowlist, which is hygiene.** What a model reads of a run's metrics is
-also declared rather than arbitrary: `MaskedFor` keeps the metric named by the
-developer's `evaluation.yaml` criterion, the metrics of every secondary criterion,
-and the four `evaluation.*` params, and removes every other key from `metrics` and
-from `comparison_to_previous` — the delta block is filtered against the same list,
-or the value simply returns by another door. A repository with no `evaluation.yaml`
-therefore shows a model no metrics at all, which is the intended reading of
-"declared", and the note says what the developer would have to do about it.
+**No name allowlist sits on top.** `MaskedFor` used to keep only the metric named
+by the developer's `evaluation.yaml` criterion, the metrics of every secondary
+criterion and the four `evaluation.*` names, as hygiene rather than as a boundary.
+It withheld nothing that could come from the test window: a declared name logged
+from the replay is caught by the phase filter alone, and an undeclared one logged
+during training carries no test-window value unless its timestamp is forged — the
+limit below, which the allowlist did not close either, since a forger could use
+the declared name. What it did withhold was every
+diagnostic a model's own training code logged, so a model reasoning about why a
+fit produced nothing had to infer it from the count of withheld metrics.
 
-**This third part is not a boundary, and the code says so where it is
-implemented.** A declared name can be logged from a test-window value, and a name
-carries no evidence of what produced it — which is the same argument
-[authorisation-and-exposure-tiers.md](authorisation-and-exposure-tiers.md) makes
-about recognising an inspection from Python source. It is worth having for what it
-makes visible and not worth mistaking for the thing that holds.
+Without it, a model reads any statistic over the training data that the operator
+code logs before training ends, at every tier, where before it read at most one
+per declared name. That rests on the developer's confirmation of the launch, the
+control `run_code` already rests on at L0
+([authorisation-and-exposure-tiers.md](authorisation-and-exposure-tiers.md)), and a
+run without a split already hands a model every param it recorded.
 
-What is withheld, by either rule, is reported as `withheld_metrics`: a count, never
-a name, and with no distinction between the two reasons. A name is already
-information the run produced, and which rule caught it says something about how the
-run was written.
+What is withheld is reported as `withheld_metrics`: a count, never a name, because
+a name is already information the run produced.
 
 ### What is left, named rather than closed
 
-The two rules above cover what an operator writes into the run. They do not cover
+The rules above cover what an operator writes into the run. They do not cover
 everything, and the remainder is worth stating plainly rather than leaving to be
 found:
 
@@ -738,11 +745,8 @@ found:
   what it sends where, and nothing here pretends to; that is the same limit
   `run_code` has in the developer's pod, and it is the developer's own authority
   being used either way.
-- **`ResourceUsage.PeakMemoryMB`** is derived before `MaskedFor` and survives it.
-  One number, from a metric name the job chose, named here rather than left to be
-  discovered.
 
-Both rules stop at the developer. `MaskedFor` is called on the two paths that hand
+The filter stops at the developer. `MaskedFor` is called on the two paths that hand
 a summary to a model and on neither of the routes the developer's own browser uses,
 which is D34's split applied to a second field.
 

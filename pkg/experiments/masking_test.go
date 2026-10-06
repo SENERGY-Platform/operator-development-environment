@@ -28,25 +28,36 @@ import (
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 )
 
-// D37: what a model reads of a run's own metrics is declared, not arbitrary.
+// D37: what a model reads of a run's own metrics is what the run's own timestamps
+// clear, whatever the metrics are called.
 //
-// Two rules, both applied only inside MaskedFor, both hygiene laid over the real
-// boundary Operator Lib carries (ending the training run before the replay,
-// dropping MLFLOW_RUN_ID): a name allowlist, out of the developer's own
-// evaluation.yaml plus the four fixed evaluation.* param names, and a phase filter
-// that withholds a metric regardless of its name once the run's own
-// operator_lib.training_ended_at tag says it was logged at or after that instant.
-// Neither is presented here as more than that — see the comments beside
-// permittedMetricNames and keepMetric in failure.go.
+// One rule, applied only inside MaskedFor and laid over the real boundary Operator
+// Lib carries (ending the training run before the replay, dropping MLFLOW_RUN_ID):
+// a phase filter that withholds a metric once the run's own
+// operator_lib.training_ended_at tag says it was logged at or after that instant,
+// and withholds every metric of a split run whose cutoff is unusable. It is not
+// presented here as more than that — see the comment beside keepMetric in
+// failure.go. A name allowlist out of evaluation.yaml used to sit on top; the
+// tests below that keep an undeclared metric are what removed it.
+
+// trainingEndedAtTag mirrors the private constant in summary.go — this test
+// package cannot see it, and the tag's name is Operator Lib's own, not a value a
+// test should be free to invent.
+const trainingEndedAtTag = "operator_lib.training_ended_at"
 
 // The developer's own route (svc.Results, unfiltered) carries every metric the run
 // reported; only a MaskedFor copy is cut, and the cut is counted rather than named.
-func TestMaskedForRemovesAnUndeclaredMetricAndCountsIt(t *testing.T) {
+// Finish stamps its metrics at the run's end, past the cutoff; LogMetric at step 0
+// stamps the run's start, before it.
+func TestMaskedForWithholdsAMetricLoggedAfterTrainingEndedAndCountsIt(t *testing.T) {
 	h := newHarness(t)
-	h.ready() // the scaffold's own evaluation.yaml declares "baseline" and nothing else
+	h.ready()
 	launched := h.launch()
-	h.mlflow.Finish(t, launched.RunID, "FINISHED",
-		map[string]float64{"baseline": 0.9, "extra_metric": 42})
+
+	start := h.mlflow.Run(t, launched.RunID).StartTime
+	h.mlflow.SetTag(t, launched.RunID, trainingEndedAtTag, strconv.FormatInt(start+500, 10))
+	h.mlflow.LogMetric(t, launched.RunID, "weather_pairs", 0, 0)
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"extra_metric": 42})
 	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
 
 	summary := summaryOf(t, h, launched.ID)
@@ -57,10 +68,11 @@ func TestMaskedForRemovesAnUndeclaredMetricAndCountsIt(t *testing.T) {
 
 	masked := summary.MaskedFor(exposure.L0)
 	if _, present := masked.Metrics["extra_metric"]; present {
-		t.Errorf("metrics = %v, want the undeclared key removed", masked.Metrics)
+		t.Errorf("metrics = %v, want the post-training key removed", masked.Metrics)
 	}
-	if masked.Metrics["baseline"] != 0.9 {
-		t.Errorf("metrics = %v, want the declared key kept", masked.Metrics)
+	if _, present := masked.Metrics["weather_pairs"]; !present {
+		t.Errorf("metrics = %v, want the training-phase key kept although "+
+			"evaluation.yaml never names it", masked.Metrics)
 	}
 	if masked.WithheldMetrics != 1 {
 		t.Errorf("withheld_metrics = %d, want 1", masked.WithheldMetrics)
@@ -80,9 +92,38 @@ func TestMaskedForRemovesAnUndeclaredMetricAndCountsIt(t *testing.T) {
 	}
 }
 
-// The developer's own criterion and every secondary metric survive: a name off
-// the allowlist is withheld, not every name the job did not explain.
-func TestMaskedForKeepsTheDeclaredCriterionAndEverySecondaryMetric(t *testing.T) {
+// The case the allowlist was removed for: under a split with a usable cutoff, a
+// diagnostic the training logged reaches the model without the developer having
+// to declare it, and the replay's own write is still withheld.
+func TestASplitRunShowsATrainingPhaseMetricNoCriterionNames(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	launched := h.launch(func(req *experiments.LaunchRequest) {
+		req.Split = testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+	})
+
+	start := h.mlflow.Run(t, launched.RunID).StartTime
+	h.mlflow.SetTag(t, launched.RunID, trainingEndedAtTag, strconv.FormatInt(start+500, 10))
+	h.mlflow.LogMetric(t, launched.RunID, "weather_pairs", 0, 0)  // start, training
+	h.mlflow.LogMetric(t, launched.RunID, "replay_rmse", 0.01, 1) // start+1000, replay
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", nil)
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	masked := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0)
+	if _, present := masked.Metrics["weather_pairs"]; !present {
+		t.Errorf("metrics = %v, want the training-phase diagnostic kept", masked.Metrics)
+	}
+	if _, present := masked.Metrics["replay_rmse"]; present {
+		t.Errorf("metrics = %v, want the replay's write withheld", masked.Metrics)
+	}
+	if masked.WithheldMetrics != 1 {
+		t.Errorf("withheld_metrics = %d, want 1", masked.WithheldMetrics)
+	}
+}
+
+// Without a split and without a cutoff nothing ran against a test window, so the
+// criterion, every secondary metric and every metric no file names all pass.
+func TestMaskedForKeepsEveryMetricOfARunWithoutASplitOrACutoff(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
 	h.write("evaluation.yaml",
@@ -95,53 +136,22 @@ func TestMaskedForKeepsTheDeclaredCriterionAndEverySecondaryMetric(t *testing.T)
 	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
 
 	masked := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0)
-	for _, declared := range []string{"rmse", "mae", "mape"} {
-		if _, present := masked.Metrics[declared]; !present {
-			t.Errorf("metrics = %v, want %q kept: it is the criterion or a secondary one",
-				masked.Metrics, declared)
+	for _, name := range []string{"rmse", "mae", "mape", "extra_metric"} {
+		if _, present := masked.Metrics[name]; !present {
+			t.Errorf("metrics = %v, want %q kept", masked.Metrics, name)
 		}
 	}
-	if _, present := masked.Metrics["extra_metric"]; present {
-		t.Errorf("metrics = %v, want the undeclared key removed", masked.Metrics)
+	if masked.WithheldMetrics != 0 {
+		t.Errorf("withheld_metrics = %d, want 0", masked.WithheldMetrics)
 	}
-	if masked.WithheldMetrics != 1 {
-		t.Errorf("withheld_metrics = %d, want 1", masked.WithheldMetrics)
-	}
-}
-
-// The four evaluation.* names are matched exactly, never as a prefix — a job
-// cannot buy its way onto the allowlist with "evaluation.anything_else".
-func TestMaskedForKeepsTheFourEvaluationParamNamesButNotAPrefix(t *testing.T) {
-	h := newHarness(t)
-	h.ready()
-	h.removeFile("evaluation.yaml") // no criterion at all: only the four fixed names remain
-	h.commit("Drop the evaluation criteria")
-	launched := h.launch()
-	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{
-		"evaluation.messages":       42,
-		"evaluation.something_else": 7,
-	})
-	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
-
-	masked := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0)
-	if masked.Metrics["evaluation.messages"] != 42 {
-		t.Errorf("metrics = %v, want the exact fixed name kept", masked.Metrics)
-	}
-	if _, present := masked.Metrics["evaluation.something_else"]; present {
-		t.Errorf("metrics = %v, want the near-miss removed: the match is exact, not a prefix",
-			masked.Metrics)
-	}
-	if masked.WithheldMetrics != 1 {
-		t.Errorf("withheld_metrics = %d, want 1", masked.WithheldMetrics)
+	if strings.Contains(masked.Note, "withheld from this summary") {
+		t.Errorf("note = %q, want no withheld sentence when nothing was withheld", masked.Note)
 	}
 }
 
-// A repository with no evaluation.yaml at all declares nothing: the fixed
-// evaluation.* names stay on the allowlist, but none of them is a name a job's own
-// metrics actually use, so a model reads no metric whatsoever — the intended
-// reading of "declared", stated in the note rather than left for a reader to work
-// out from an empty map.
-func TestMaskedForWithAnEmptyAllowlistWithholdsEveryMetricAndSaysSo(t *testing.T) {
+// A repository with no evaluation.yaml at all used to show a model no metric
+// whatsoever. It declares nothing, and nothing has to be declared any more.
+func TestMaskedForWithNoEvaluationYAMLStillShowsTheRunsMetrics(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
 	h.removeFile("evaluation.yaml")
@@ -152,14 +162,11 @@ func TestMaskedForWithAnEmptyAllowlistWithholdsEveryMetricAndSaysSo(t *testing.T
 	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
 
 	masked := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0)
-	if len(masked.Metrics) != 0 {
-		t.Errorf("metrics = %v, want none: nothing was declared", masked.Metrics)
+	if masked.Metrics["rmse"] != 0.31 || masked.Metrics["mae"] != 1.2 {
+		t.Errorf("metrics = %v, want both kept", masked.Metrics)
 	}
-	if masked.WithheldMetrics != 2 {
-		t.Errorf("withheld_metrics = %d, want 2", masked.WithheldMetrics)
-	}
-	if masked.Note == "" {
-		t.Error("note is empty, want it to say metrics were withheld")
+	if masked.WithheldMetrics != 0 {
+		t.Errorf("withheld_metrics = %d, want 0", masked.WithheldMetrics)
 	}
 }
 
@@ -170,8 +177,9 @@ func TestMaskedForFiltersMetricsEvenWhenTheRunDidNotFail(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
 	launched := h.launch()
-	h.mlflow.Finish(t, launched.RunID, "FINISHED",
-		map[string]float64{"baseline": 0.9, "extra_metric": 42})
+	start := h.mlflow.Run(t, launched.RunID).StartTime
+	h.mlflow.SetTag(t, launched.RunID, trainingEndedAtTag, strconv.FormatInt(start+500, 10))
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"extra_metric": 42})
 	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
 
 	summary := summaryOf(t, h, launched.ID)
@@ -180,14 +188,14 @@ func TestMaskedForFiltersMetricsEvenWhenTheRunDidNotFail(t *testing.T) {
 	}
 	masked := summary.MaskedFor(exposure.L0)
 	if _, present := masked.Metrics["extra_metric"]; present {
-		t.Error("an undeclared metric survived masking on a run with no Failure block — " +
+		t.Error("a post-training metric survived masking on a run with no Failure block — " +
 			"the early return before the metric filter is back")
 	}
 }
 
 // comparison_to_previous carries a metric's own value in its Current field, so
 // filtering Metrics alone would let a withheld value return through the delta.
-func TestMaskedForFiltersComparisonToPreviousByTheSameAllowlist(t *testing.T) {
+func TestMaskedForFiltersComparisonToPreviousByTheSamePhaseFilter(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
 	h.write("evaluation.yaml", "metric: rmse\ngoal: minimise\nthreshold: 0.35\n")
@@ -201,7 +209,10 @@ func TestMaskedForFiltersComparisonToPreviousByTheSameAllowlist(t *testing.T) {
 	}
 
 	second := h.launch()
-	h.mlflow.Finish(t, second.RunID, "FINISHED", map[string]float64{"rmse": 0.31, "r2": 0.78})
+	start := h.mlflow.Run(t, second.RunID).StartTime
+	h.mlflow.SetTag(t, second.RunID, trainingEndedAtTag, strconv.FormatInt(start+500, 10))
+	h.mlflow.LogMetric(t, second.RunID, "rmse", 0.31, 0) // before the cutoff
+	h.mlflow.Finish(t, second.RunID, "FINISHED", map[string]float64{"r2": 0.78})
 	h.ray.SetStatus(second.SubmissionID, experiments.StatusSucceeded)
 
 	summary := summaryOf(t, h, second.ID)
@@ -216,25 +227,20 @@ func TestMaskedForFiltersComparisonToPreviousByTheSameAllowlist(t *testing.T) {
 		deltas[delta.Metric] = delta
 	}
 	if _, present := deltas["r2"]; present {
-		t.Errorf("comparison = %+v, want the undeclared metric's delta removed too",
+		t.Errorf("comparison = %+v, want the post-training metric's delta removed too",
 			masked.ComparisonToPrevious)
 	}
 	if _, present := deltas["rmse"]; !present {
-		t.Errorf("comparison = %+v, want the declared criterion's delta kept",
+		t.Errorf("comparison = %+v, want the training-phase delta kept",
 			masked.ComparisonToPrevious)
 	}
 }
 
-// --- the phase filter (D37): withheld by when, not only by name ---
-
-// trainingEndedAtTag mirrors the private constant in summary.go — this test
-// package cannot see it, and the tag's name is Operator Lib's own, not a value a
-// test should be free to invent.
-const trainingEndedAtTag = "operator_lib.training_ended_at"
+// --- the phase filter (D37): withheld by when, never by name ---
 
 // A metric under a declared name, logged at or after the run's own training-ended
 // tag, is still a test-window value — a name says nothing about when it was
-// written, which is exactly why the allowlist alone is hygiene and not a boundary.
+// written, which is why the filter is on the phase.
 func TestMaskedForWithholdsADeclaredMetricLoggedAtOrAfterTrainingEnded(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
@@ -288,11 +294,11 @@ func TestMaskedForKeepsADeclaredMetricLoggedBeforeTrainingEnded(t *testing.T) {
 	}
 }
 
-// Without the tag, the phase filter has nothing to filter by, and MaskedFor falls
-// back to the name allowlist alone — a repository whose Operator Lib pin predates
-// v1.7.0 never writes the tag, and that is already reported once, by
-// splitReport's "not confirmed by the run"; MaskedFor does not report it again.
-func TestMaskedForWithNoTrainingEndedTagBehavesLikeTheNameAllowlistAlone(t *testing.T) {
+// Without the tag and without a split, the phase filter has nothing to filter by
+// and nothing ran against a test window, so every metric passes. A missing tag
+// under a split is the other case, pinned below; it is already reported once, by
+// splitReport's "not confirmed by the run".
+func TestMaskedForWithNoTrainingEndedTagAndNoSplitWithholdsNothing(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
 	h.write("evaluation.yaml", "metric: rmse\ngoal: minimise\nthreshold: 0.35\n")
@@ -304,15 +310,11 @@ func TestMaskedForWithNoTrainingEndedTagBehavesLikeTheNameAllowlistAlone(t *test
 	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
 
 	masked := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0)
-	if masked.Metrics["rmse"] != 0.31 {
-		t.Errorf("metrics = %v, want the declared metric kept", masked.Metrics)
+	if masked.Metrics["rmse"] != 0.31 || masked.Metrics["extra_metric"] != 9 {
+		t.Errorf("metrics = %v, want both kept", masked.Metrics)
 	}
-	if _, present := masked.Metrics["extra_metric"]; present {
-		t.Errorf("metrics = %v, want the undeclared metric removed by the name allowlist "+
-			"alone", masked.Metrics)
-	}
-	if masked.WithheldMetrics != 1 {
-		t.Errorf("withheld_metrics = %d, want 1 (the name allowlist alone)", masked.WithheldMetrics)
+	if masked.WithheldMetrics != 0 {
+		t.Errorf("withheld_metrics = %d, want 0", masked.WithheldMetrics)
 	}
 }
 
@@ -366,7 +368,7 @@ func TestMaskedForStillWithholdsAPostTrainingMetricAfterTheSummarysJSONRoundTrip
 // performs. So the cutoff tag the phase filter reads is itself attacker-controlled,
 // and the three tests below pin the one thing that keeps that from being a switch:
 // whether a split ran is read from ODE's own experiment record, and under a split
-// an unusable cutoff withholds everything instead of falling back to the name.
+// an unusable cutoff withholds everything instead of keeping everything.
 
 // A cutoff tag rewritten to something that is not a number does not turn the phase
 // filter off. Before this, one `set_tag(RUN, ..., "not-a-number")` from inside
@@ -600,10 +602,11 @@ func TestMaskedForKeepsALibrarySourcedCriterionWithNoMatchingRunMetric(t *testin
 // of three memory metrics the job reported, assembled before MaskedFor runs.
 func TestMaskedForWithholdsAPeakMemoryFigureTakenFromAWithheldMetric(t *testing.T) {
 	h := newHarness(t)
-	h.ready() // the scaffold's evaluation.yaml declares "baseline"
+	h.ready()
 	launched := h.launch()
-	h.mlflow.Finish(t, launched.RunID, "FINISHED",
-		map[string]float64{"baseline": 0.9, "peak_memory_mb": 1234})
+	start := h.mlflow.Run(t, launched.RunID).StartTime
+	h.mlflow.SetTag(t, launched.RunID, trainingEndedAtTag, strconv.FormatInt(start+500, 10))
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"peak_memory_mb": 1234})
 	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
 
 	summary := summaryOf(t, h, launched.ID)
@@ -614,8 +617,8 @@ func TestMaskedForWithholdsAPeakMemoryFigureTakenFromAWithheldMetric(t *testing.
 
 	masked := summary.MaskedFor(exposure.L0)
 	if masked.ResourceUsage.PeakMemoryMB != 0 || masked.ResourceUsage.PeakMemorySource != "" {
-		t.Errorf("resource_usage = %+v, want the figure dropped: peak_memory_mb is not "+
-			"a metric the developer declared", masked.ResourceUsage)
+		t.Errorf("resource_usage = %+v, want the figure dropped: peak_memory_mb was "+
+			"logged after training ended", masked.ResourceUsage)
 	}
 	if masked.ResourceUsage.DurationSeconds != summary.ResourceUsage.DurationSeconds {
 		t.Errorf("duration_s = %v, want it kept: it comes from the run's own start and "+
@@ -624,22 +627,21 @@ func TestMaskedForWithholdsAPeakMemoryFigureTakenFromAWithheldMetric(t *testing.
 	}
 }
 
-// A declared memory metric logged before the cutoff is an ordinary reading and
-// stays, so the filter above is not a blanket removal of the figure.
-func TestMaskedForKeepsAPeakMemoryFigureTheDeveloperDeclared(t *testing.T) {
+// A memory metric logged before the cutoff is an ordinary reading and stays, so
+// the filter above is not a blanket removal of the figure.
+func TestMaskedForKeepsAPeakMemoryFigureLoggedBeforeTrainingEnded(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
-	h.write("evaluation.yaml",
-		"metric: rmse\ngoal: minimise\nthreshold: 0.35\nsecondary_metrics: [peak_memory_mb]\n")
-	h.commit("Watch the memory too")
 	launched := h.launch()
-	h.mlflow.Finish(t, launched.RunID, "FINISHED",
-		map[string]float64{"rmse": 0.31, "peak_memory_mb": 1234})
+	start := h.mlflow.Run(t, launched.RunID).StartTime
+	h.mlflow.SetTag(t, launched.RunID, trainingEndedAtTag, strconv.FormatInt(start+500, 10))
+	h.mlflow.LogMetric(t, launched.RunID, "peak_memory_mb", 1234, 0)
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", nil)
 	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
 
 	masked := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0)
 	if masked.ResourceUsage.PeakMemoryMB != 1234 {
-		t.Errorf("resource_usage = %+v, want the declared figure kept",
+		t.Errorf("resource_usage = %+v, want the training-phase figure kept",
 			masked.ResourceUsage)
 	}
 }
@@ -768,27 +770,28 @@ func TestANotReportedCriterionNamesNoWithheldMetric(t *testing.T) {
 func TestANotReportedCriterionStillListsTheMetricsTheSummaryCarries(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
-	h.write("evaluation.yaml",
-		"metric: rmse\ngoal: minimise\nthreshold: 0.35\nsecondary_metrics: [val_rmse]\n")
-	h.commit("State the real criteria")
+	h.write("evaluation.yaml", "metric: rmse\ngoal: minimise\nthreshold: 0.35\n")
+	h.commit("State the real criterion")
 	launched := h.launch()
-	h.mlflow.Finish(t, launched.RunID, "FINISHED",
-		map[string]float64{"val_rmse": 0.31, "extra_metric": 9.9})
+	start := h.mlflow.Run(t, launched.RunID).StartTime
+	h.mlflow.SetTag(t, launched.RunID, trainingEndedAtTag, strconv.FormatInt(start+500, 10))
+	h.mlflow.LogMetric(t, launched.RunID, "val_rmse", 0.31, 0) // before the cutoff
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"extra_metric": 9.9})
 	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
 
 	detail := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0).
 		EvaluationCriteria.Met.Status().Detail
 	if !strings.Contains(detail, "val_rmse") || !strings.Contains(detail, "1 more were withheld") {
-		t.Errorf("detail = %q, want the declared name listed and the other counted", detail)
+		t.Errorf("detail = %q, want the kept name listed and the other counted", detail)
 	}
 	if strings.Contains(detail, "extra_metric") {
-		t.Errorf("detail = %q, want the undeclared name withheld", detail)
+		t.Errorf("detail = %q, want the post-training name withheld", detail)
 	}
 }
 
-// Under a split with no usable cutoff, every metric is withheld whatever
-// evaluation.yaml declares, so the note has to name that rule: the declaration
-// rule sends the developer to edit a file that would change nothing.
+// Under a split with no usable cutoff, every metric is withheld, so the note has
+// to name that rule: the timestamp rule sends the developer looking for a late
+// write that is not there.
 func TestTheWithheldNoteNamesTheMissingTrainingEndUnderASplit(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
@@ -802,8 +805,8 @@ func TestTheWithheldNoteNamesTheMissingTrainingEndUnderASplit(t *testing.T) {
 	if !strings.Contains(note, trainingEndedAtTag) {
 		t.Errorf("note = %q, want it to name the missing training end", note)
 	}
-	if strings.Contains(note, "a model reads only a metric the developer declared") {
-		t.Errorf("note = %q, want the declaration rule left out: it did not withhold "+
+	if strings.Contains(note, "a model reads only a metric logged before training ended") {
+		t.Errorf("note = %q, want the timestamp rule left out: it did not withhold "+
 			"anything here", note)
 	}
 }

@@ -292,10 +292,9 @@ const maskPlaceholder = "[value]"
 // nothing at all.
 //
 // **The metric filter, the same at every tier.** Metrics and comparison_to_previous
-// are cut down to what the run declared plus what its own timestamps clear (D37) —
-// see filterMetrics and filterDeltas. This half does not depend on tier because it
-// is not about what a value reveals; it is about whether the run said this metric
-// is one a model may read at all.
+// are cut down to what the run's own timestamps clear (D37) — see filterMetrics and
+// filterDeltas. This half does not depend on tier because it is not about what a
+// value reveals; it is about whether the value may have come from the test window.
 func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 	if s.Failure != nil {
 		masked := *s.Failure
@@ -325,15 +324,14 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 	// freshly built map or slice rather than writing through the shared one, so the
 	// developer's own copy — reached through the same Results call, never through
 	// this method — cannot end up holding whatever the last model was allowed to see.
-	allowed := permittedMetricNames(s)
 	// Read from ODE's own record of the launch, never from the run: it is the one
 	// input to this filter that the job cannot write.
 	split := s.Split != nil
 	cutoff, hasCutoff := trainingEndedAt(s)
-	metrics, withheld := filterMetrics(s.Metrics, s.MetricTimes, allowed, cutoff, hasCutoff, split)
+	metrics, withheld := filterMetrics(s.Metrics, s.MetricTimes, cutoff, hasCutoff, split)
 	s.Metrics = metrics
 	s.ComparisonToPrevious = filterDeltas(
-		s.ComparisonToPrevious, s.MetricTimes, allowed, cutoff, hasCutoff, split)
+		s.ComparisonToPrevious, s.MetricTimes, cutoff, hasCutoff, split)
 	if split {
 		s.Params = evaluationParamsOnly(s.Params)
 	}
@@ -347,14 +345,14 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 	// see its own comment.
 	criteriaCut := false
 	if updated, cut := withholdCriterion(
-		s.EvaluationCriteria, allowed, s.MetricTimes, cutoff, hasCutoff, split); cut {
+		s.EvaluationCriteria, s.MetricTimes, cutoff, hasCutoff, split); cut {
 		s.EvaluationCriteria, criteriaCut = updated, true
 	}
 	if len(s.SecondaryCriteria) > 0 {
 		secondary := make([]Criterion, len(s.SecondaryCriteria))
 		for i, criterion := range s.SecondaryCriteria {
 			updated, cut := withholdCriterion(
-				criterion, allowed, s.MetricTimes, cutoff, hasCutoff, split)
+				criterion, s.MetricTimes, cutoff, hasCutoff, split)
 			secondary[i] = updated
 			criteriaCut = criteriaCut || cut
 		}
@@ -372,11 +370,11 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 	}
 	// ResourceUsage.PeakMemoryMB is one float under a name ODE chose, taken from
 	// whichever of three memory metrics the job reported — so it is as writable from
-	// a replay as any other metric, and it needed no forged timestamp and no
-	// declared name to get here. DurationSeconds stays: it comes from the run's own
-	// start and end times rather than from anything the job logged.
+	// a replay as any other metric, and it needed no forged timestamp to get here.
+	// DurationSeconds stays: it comes from the run's own start and end times rather
+	// than from anything the job logged.
 	if name := memorySourceMetric(s.ResourceUsage.PeakMemorySource); name != "" &&
-		!keepMetric(name, allowed, s.MetricTimes, cutoff, hasCutoff, split) {
+		!keepMetric(name, s.MetricTimes, cutoff, hasCutoff, split) {
 		s.ResourceUsage.PeakMemoryMB = 0
 		s.ResourceUsage.PeakMemorySource = ""
 	}
@@ -385,27 +383,24 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 	// was withheld, which is all this field exists to carry.
 	s.MetricTimes = nil
 	if withheld > 0 {
-		// The rule that withheld them, not the general one: under a split with no
-		// usable cutoff, keepMetric withholds every metric whatever evaluation.yaml
-		// declares, and naming the declaration rule there sends the developer to
-		// edit a file that would change nothing.
-		reason := "a model reads only a metric the developer declared in " +
-			"evaluation.yaml (as their evaluation criterion or a secondary one) that " +
-			"was also logged before training ended."
+		// The rule that withheld them: under a split with no usable cutoff,
+		// keepMetric withholds every metric, and the timestamp rule would send the
+		// developer looking for a late write that is not there.
+		reason := "a model reads only a metric logged before training ended, " +
+			"because a later write may carry a value out of the test window."
 		if split && !hasCutoff {
 			reason = "the run recorded no usable training end (" +
 				operatorTrainingEndedAtTag + "), and under a data split that withholds " +
-				"every metric, declared in evaluation.yaml or not, because none of them " +
-				"can be shown to predate the test window."
+				"every metric, because none of them can be shown to predate the test window."
 		}
 		s.Note = strings.TrimSpace(s.Note + fmt.Sprintf(
 			" %d metric(s) were withheld from this summary: %s", withheld, reason))
 	}
 	if criteriaCut {
 		s.Note = strings.TrimSpace(s.Note +
-			" A criterion whose metric was withheld carries no value and no verdict "+
-				"here; that is not a criterion the run missed, and the developer's own "+
-				"results route grades it.")
+			" A criterion whose metric was withheld carries no value and no verdict " +
+			"here; that is not a criterion the run missed, and the developer's own " +
+			"results route grades it.")
 	}
 	return s
 }
@@ -456,8 +451,7 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 // verdict agree with what a reader can already see in `params`, rather than
 // reopening the metrics-map phase filter this decision deliberately left alone.
 func withholdCriterion(
-	criterion Criterion, allowed map[string]struct{}, times map[string]int64,
-	cutoff int64, hasCutoff, split bool,
+	criterion Criterion, times map[string]int64, cutoff int64, hasCutoff, split bool,
 ) (Criterion, bool) {
 	if reason := criterion.Met.Status().Reason; criteriaFileProblem(reason) {
 		criterion.Met = NotEvaluated(reason,
@@ -472,7 +466,7 @@ func withholdCriterion(
 	if strings.HasPrefix(criterion.Source, librarySourcePrefix) {
 		return criterion, false
 	}
-	if keepMetric(criterion.Metric, allowed, times, cutoff, hasCutoff, split) {
+	if keepMetric(criterion.Metric, times, cutoff, hasCutoff, split) {
 		return criterion, false
 	}
 	criterion.Value = nil
@@ -522,18 +516,16 @@ func memorySourceMetric(source string) string {
 	return strings.TrimPrefix(source, peakMemorySourcePrefix)
 }
 
-// --- the metric allowlist (§5.13, D37) ---
+// --- the phase filter (§5.13, D37) ---
 //
-// **This is hygiene, not a boundary, and the comments in this section say so
-// rather than claiming more.** A name on the list is not evidence of what produced
-// the value under it: `infer()` can log a test-window number under the exact
-// metric name the developer's own evaluation.yaml declares, and nothing here would
-// tell the two apart. What actually stands in the way of that is D37's phase
-// filter below, which withholds by *when* a metric was written rather than by what
-// it is called — and even that filter is named, not closed: see trainingEndedAt.
-// The allowlist on top only makes the model's view of the *undisputed* metrics
-// declared rather than arbitrary, and gives WithheldMetrics something to count.
-// Full reasoning in docs/experiments.md and D37.
+// A metric is withheld by *when* it was written, never by what it is called: a
+// name is not evidence of what produced the value under it, so `infer()` can log
+// a test-window number under any name at all, the developer's declared criterion
+// included. The filter is named, not closed: see trainingEndedAt and keepMetric.
+// A name allowlist out of evaluation.yaml used to sit on top as hygiene; it
+// withheld nothing the phase filter lets through that could come from the test
+// window, and it cost a model every diagnostic metric its own training code
+// logged. Full reasoning in docs/experiments.md and D37.
 //
 // Summary.Params is cut too, but only for a run that had a data split.
 //
@@ -543,41 +535,14 @@ func memorySourceMetric(source string) string {
 // `MlflowClient().log_param(RUN, ...)` with a run id the operator read at import
 // time. MLflow params carry no timestamp, so there is nothing for the phase filter
 // to test them against either. So under a split the only params a model reads are
-// the four evaluation.* names the replay itself reports, and everything the job
-// configured stays on the developer's own route. Without a split there is no
-// replay, nothing ran against a test window, and params pass as they always did.
+// the eight evaluation.* names the replay itself reports (evaluationParamsOnly),
+// and everything the job configured stays on the developer's own route. Without a
+// split there is no replay, nothing ran against a test window, and params pass as
+// they always did.
 //
 // ResourceUsage.PeakMemoryMB is derived before MaskedFor runs from whichever
-// memory metric the job reported (resourceUsage in summary.go) and is not
-// filtered either — a residual channel, named in docs/experiments.md rather than
-// closed here, because it is one number under a name ODE chose, not the job.
-
-// permittedMetricNames is the developer's own declared allowlist: the criterion
-// metrics evaluation.yaml named (already graded onto this Summary by the time
-// MaskedFor runs), plus the four evaluation.* params Operator Lib's replay writes
-// — matched by exact name, never a prefix, so "evaluation.something_else" is not
-// a way in. Empty names are not entries: a run whose criteria named no metric
-// declares nothing here, and a repository with no evaluation.yaml at all ends up
-// with only the four fixed names — which withholds every metric a job actually
-// reports, because none of them is named "evaluation.messages". That is the
-// intended reading of "declared": nothing declared means nothing a model may read.
-func permittedMetricNames(s Summary) map[string]struct{} {
-	allowed := make(map[string]struct{})
-	add := func(name string) {
-		if name != "" {
-			allowed[name] = struct{}{}
-		}
-	}
-	add(s.EvaluationCriteria.Metric)
-	for _, criterion := range s.SecondaryCriteria {
-		add(criterion.Metric)
-	}
-	add(paramEvaluationMessages)
-	add(paramEvaluationResults)
-	add(paramEvaluationWindowStart)
-	add(paramEvaluationWindowEnd)
-	return allowed
-}
+// memory metric the job reported (resourceUsage in summary.go), and MaskedFor
+// drops it whenever keepMetric withholds that metric.
 
 // trainingEndedAt reads Operator Lib's own operator_lib.training_ended_at tag —
 // Unix milliseconds, the base a metric's own timestamp uses — and says whether it
@@ -588,8 +553,8 @@ func permittedMetricNames(s Summary) map[string]struct{} {
 // confirmed by the run" in the data_split block (a repository whose Operator Lib
 // pin predates v1.7.0, or whose op.py config subclass drops the split on v1.7.0),
 // and a run with no split was never going to carry it. In
-// both cases the phase filter simply has nothing to filter by, and MaskedFor falls
-// back to the name allowlist alone.
+// both cases the phase filter simply has nothing to filter by: under a split that
+// withholds every metric, and without one it withholds none (see keepMetric).
 func trainingEndedAt(s Summary) (cutoff int64, usable bool) {
 	raw := strings.TrimSpace(s.Tags[operatorTrainingEndedAtTag])
 	if raw == "" {
@@ -614,10 +579,9 @@ func trainingEndedAt(s Summary) (cutoff int64, usable bool) {
 }
 
 // keepMetric is the one predicate both filterMetrics and filterDeltas apply: a
-// name off the allowlist is withheld regardless of when it was logged, and a name
-// on the allowlist is withheld anyway if the run's own history for it reaches or
-// passes the training-ended cutoff — a declared name logged from the test window
-// is still a test-window value (D37).
+// metric is withheld if the run's own history for it reaches or passes the
+// training-ended cutoff, whatever it is called — a declared name logged from the
+// test window is still a test-window value (D37).
 //
 // **What this does not catch, stated rather than hidden**: `times` is the
 // *maximum* timestamp MLflow recorded for this key (latestMetrics), which defeats
@@ -630,12 +594,8 @@ func trainingEndedAt(s Summary) (cutoff int64, usable bool) {
 // tier-governed under D34, and egress from the Ray cluster on the developer's own
 // credential.
 func keepMetric(
-	name string, allowed map[string]struct{}, times map[string]int64,
-	cutoff int64, hasCutoff, split bool,
+	name string, times map[string]int64, cutoff int64, hasCutoff, split bool,
 ) bool {
-	if _, ok := allowed[name]; !ok {
-		return false
-	}
 	if hasCutoff {
 		// Fail closed on a metric whose timestamp is missing: a usable cutoff means
 		// this run reported a phase transition, so every metric it carries was
@@ -650,8 +610,8 @@ func keepMetric(
 	// No usable cutoff. Where a split ran, that is decisive: the operator's code
 	// was handed test-window values, the phase is the only thing separating what
 	// it computed from what the training did, and there is nothing to separate
-	// them by -- so nothing is shown. Falling back to the name alone here would
-	// make "switch the filter off" something a write to the run could arrange,
+	// them by -- so nothing is shown. Keeping everything here would make "switch
+	// the filter off" something a write to the run could arrange,
 	// since the cutoff lives on the run and the run is writable by whoever holds
 	// its id. Whether a split ran is read from ODE's own experiment record, which
 	// is the one input the job cannot touch.
@@ -661,13 +621,12 @@ func keepMetric(
 // filterMetrics keeps only what keepMetric allows, in a freshly built map so the
 // caller's own Metrics is never written through (see the comment in MaskedFor).
 func filterMetrics(
-	metrics map[string]float64, times map[string]int64, allowed map[string]struct{},
-	cutoff int64, hasCutoff, split bool,
+	metrics map[string]float64, times map[string]int64, cutoff int64, hasCutoff, split bool,
 ) (map[string]float64, int) {
 	kept := make(map[string]float64, len(metrics))
 	withheld := 0
 	for name, value := range metrics {
-		if keepMetric(name, allowed, times, cutoff, hasCutoff, split) {
+		if keepMetric(name, times, cutoff, hasCutoff, split) {
 			kept[name] = value
 			continue
 		}
@@ -685,16 +644,40 @@ func filterMetrics(
 // in both runs' metrics), so this never withholds a name filterMetrics did not
 // already count — there is nothing here to add to WithheldMetrics a second time.
 func filterDeltas(
-	deltas []MetricDelta, times map[string]int64, allowed map[string]struct{},
-	cutoff int64, hasCutoff, split bool,
+	deltas []MetricDelta, times map[string]int64, cutoff int64, hasCutoff, split bool,
 ) []MetricDelta {
 	kept := make([]MetricDelta, 0, len(deltas))
 	for _, delta := range deltas {
-		if keepMetric(delta.Metric, allowed, times, cutoff, hasCutoff, split) {
+		if keepMetric(delta.Metric, times, cutoff, hasCutoff, split) {
 			kept = append(kept, delta)
 		}
 	}
 	return kept
+}
+
+// previousForModel is a predecessor run as a model may read it through
+// comparison_to_previous: every key the predecessor's own phase filter would
+// withhold from its own summary is dropped, every point of it, so compare finds
+// no pair for that key. filterDeltas tests only the current run's timestamps,
+// while a delta's Previous is the predecessor's value — a key one run logged
+// during training and the other from its replay would otherwise carry the
+// replay's number. split is ODE's own record of the predecessor's launch, for the
+// reason MaskedFor reads its own from the record.
+func previousForModel(run mlflowRun, split bool) mlflowRun {
+	_, times := latestMetrics(run)
+	cutoff, hasCutoff := trainingEndedAt(Summary{
+		Tags:      pairs(run.Data.Tags),
+		StartedAt: mlflowTime(run.Info.StartTime),
+		EndedAt:   mlflowTime(run.Info.EndTime),
+	})
+	kept := run.Data.Metrics[:0:0]
+	for _, metric := range run.Data.Metrics {
+		if keepMetric(metric.Key, times, cutoff, hasCutoff, split) {
+			kept = append(kept, metric)
+		}
+	}
+	run.Data.Metrics = kept
+	return run
 }
 
 // evaluationParamsOnly keeps the eight params Operator Lib's replay reports and

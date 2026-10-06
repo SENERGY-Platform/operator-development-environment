@@ -7397,7 +7397,7 @@ const docTemplate = `{
                     }
                 },
                 "withheld_metrics": {
-                    "description": "WithheldMetrics counts what MaskedFor removed from Metrics and from\nComparisonToPrevious before handing the summary to a model: a name off the\ndeveloper's own declared allowlist, or a value written after the run's\ntraining phase ended (D37) — one number, never which, and no distinction\nbetween the two reasons, because a name is already information out of the\nrun and which rule caught it says something about how the run was written.\nZero on the developer's own route, which MaskedFor never touches.",
+                    "description": "WithheldMetrics counts what MaskedFor removed from Metrics and from\nComparisonToPrevious before handing the summary to a model: a value written\nat or after the run's training phase ended, or every metric of a split run\nthat recorded no usable training end (D37) — one number, never which,\nbecause a name is already information out of the run.\nZero on the developer's own route, which MaskedFor never touches.",
                     "type": "integer"
                 }
             }

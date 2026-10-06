@@ -1592,11 +1592,10 @@ definitions:
       withheld_metrics:
         description: |-
           WithheldMetrics counts what MaskedFor removed from Metrics and from
-          ComparisonToPrevious before handing the summary to a model: a name off the
-          developer's own declared allowlist, or a value written after the run's
-          training phase ended (D37) — one number, never which, and no distinction
-          between the two reasons, because a name is already information out of the
-          run and which rule caught it says something about how the run was written.
+          ComparisonToPrevious before handing the summary to a model: a value written
+          at or after the run's training phase ended, or every metric of a split run
+          that recorded no usable training end (D37) — one number, never which,
+          because a name is already information out of the run.
           Zero on the developer's own route, which MaskedFor never touches.
         type: integer
     type: object

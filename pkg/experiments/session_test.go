@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
@@ -232,6 +233,44 @@ func TestTheInjectedSummaryComparesWithinTheRunsOwnSession(t *testing.T) {
 	if summary.PreviousRunID != a1.RunID {
 		t.Errorf("injected summary's previous run = %q, want %q, not %q from session B",
 			summary.PreviousRunID, a1.RunID, b1.RunID)
+	}
+}
+
+// D37 on the other side of a delta: Previous is the predecessor's value, so a key
+// the predecessor logged after its own training ended must not reach a model
+// through it, even where the current run logged the same key during training and
+// the developer's previous run is the session's own.
+func TestAModelsComparisonDropsAKeyThePreviousRunLoggedAfterItsTrainingEnded(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	a1 := h.launch(inSession("sess-a"))
+	start := h.mlflow.Run(t, a1.RunID).StartTime
+	h.mlflow.SetTag(t, a1.RunID, trainingEndedAtTag, strconv.FormatInt(start+500, 10))
+	h.mlflow.LogMetric(t, a1.RunID, "rmse", 0.50, 0)  // training
+	finish(t, h, a1, map[string]float64{"foo": 0.01}) // run end, past the cutoff
+	a2 := h.launch(inSession("sess-a"))
+	finish(t, h, a2, map[string]float64{"rmse": 0.40, "foo": 0.02})
+
+	developer, err := h.service.Results(context.Background(), h.request(), a2.ID)
+	if err != nil {
+		t.Fatalf("results: %v", err)
+	}
+	if len(developer.ComparisonToPrevious) != 2 {
+		t.Fatalf("developer's comparison = %+v, want rmse and foo",
+			developer.ComparisonToPrevious)
+	}
+
+	model, err := h.service.SessionResults(context.Background(), asSession(h, "sess-a"), a2.ID)
+	if err != nil {
+		t.Fatalf("session results: %v", err)
+	}
+	if len(model.ComparisonToPrevious) != 1 || model.ComparisonToPrevious[0].Metric != "rmse" {
+		t.Fatalf("model's comparison = %+v, want rmse only: A1 logged foo after its "+
+			"training ended", model.ComparisonToPrevious)
+	}
+	if rmse := model.ComparisonToPrevious[0]; rmse.Previous != 0.50 {
+		t.Errorf("model's rmse = %+v, want A1's training-phase 0.50", rmse)
 	}
 }
 
