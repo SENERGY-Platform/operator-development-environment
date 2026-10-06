@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,28 +32,54 @@ import (
 
 // D36: a data split on the session that launches a run.
 
-// fakeUsage is the double for experiments.UsageReader — the same figure
-// estimate_read_cost reads in pkg/tools/executors.go, stood in here so Launch's
-// window-size check can be tested without a timescale-wrapper.
-type fakeUsage struct {
-	bytesPerDay map[string]float64
-	err         error
-	// asked records every call's device ids, so a test can check what was asked.
-	asked [][]string
+// fakeSeries is the double for experiments.SeriesReader, so Launch's window
+// count can be tested without a timescale-wrapper. It records what it was asked
+// and answers with canned results.
+type fakeSeries struct {
+	results []timeseries.QueryResult
+	err     error
+	// calls records every Query's elements and options.
+	calls []seriesCall
 }
 
-func (f *fakeUsage) DeviceUsage(
-	_ context.Context, _ string, deviceIDs []string,
-) ([]timeseries.Usage, error) {
-	f.asked = append(f.asked, deviceIDs)
+type seriesCall struct {
+	elements []timeseries.QueryElement
+	opts     timeseries.QueryOptions
+}
+
+func (f *fakeSeries) Query(
+	_ context.Context, _ string, elements []timeseries.QueryElement,
+	opts timeseries.QueryOptions,
+) ([]timeseries.QueryResult, error) {
+	f.calls = append(f.calls, seriesCall{elements: elements, opts: opts})
 	if f.err != nil {
 		return nil, f.err
 	}
-	out := make([]timeseries.Usage, 0, len(deviceIDs))
-	for _, id := range deviceIDs {
-		out = append(out, timeseries.Usage{DeviceId: id, BytesPerDay: f.bytesPerDay[id]})
+	return f.results, nil
+}
+
+// countResult builds one response element for request element index, with one
+// series per column, each a list of [bucket, count] rows. A nil count is a null.
+func countResult(index int, columns ...[]any) timeseries.QueryResult {
+	data := make([][][]any, 0, len(columns))
+	for _, column := range columns {
+		series := make([][]any, 0, len(column))
+		for day, count := range column {
+			bucket := time.Date(2026, 9, 1+day, 0, 0, 0, 0, time.UTC).
+				Format("2006-01-02T15:04:05.000Z07:00")
+			series = append(series, []any{bucket, count})
+		}
+		data = append(data, series)
 	}
-	return out, nil
+	return timeseries.QueryResult{RequestIndex: index, Data: data}
+}
+
+// singleColumn is a canned response for the one-topic, one-column harness topic
+// holding total rows over the window.
+func singleColumn(total int) *fakeSeries {
+	return &fakeSeries{results: []timeseries.QueryResult{
+		countResult(0, []any{json.Number(strconv.Itoa(total))}),
+	}}
 }
 
 // testDeviceID is the one testInputTopics() names.
@@ -92,18 +119,14 @@ func TestALaunchWithATrainingEndStillInTheFutureIsRefused(t *testing.T) {
 // the cap is refused on before anything is built — not after a job discovers it
 // cannot finish.
 func TestALaunchOverTheConfiguredEvaluationRowCapIsRefused(t *testing.T) {
-	usage := &fakeUsage{bytesPerDay: map[string]float64{
-		// 32 bytes/point (approxBytesPerPoint) * 1000 points/day.
-		testDeviceID: 32 * 1000,
-	}}
+	series := singleColumn(7000)
 	h := newHarness(t, func(deps *experiments.Deps) {
-		deps.Usage = usage
+		deps.Series = series
 		deps.MaxEvaluationRows = 100
 	})
 	h.ready()
 
 	trainingEnd := time.Now().UTC().Add(-24 * time.Hour)
-	// A week at 1000 points/day estimates 7000 rows, well over the cap of 100.
 	split := testSplit(trainingEnd, 7*24*time.Hour)
 
 	_, err := h.service.Launch(context.Background(), experiments.LaunchRequest{
@@ -112,9 +135,9 @@ func TestALaunchOverTheConfiguredEvaluationRowCapIsRefused(t *testing.T) {
 	if !errors.Is(err, experiments.ErrInvalidRequest) {
 		t.Fatalf("error = %v, want ErrInvalidRequest", err)
 	}
-	for _, want := range []string{"7000", "100"} {
+	for _, want := range []string{"holds 7000 input rows", "100"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q, want it to name both the estimate and the cap (%s)",
+			t.Errorf("error = %q, want it to name both the count and the cap (%s)",
 				err, want)
 		}
 	}
@@ -123,12 +146,127 @@ func TestALaunchOverTheConfiguredEvaluationRowCapIsRefused(t *testing.T) {
 	}
 }
 
-// A negative cap disables the check: the same week that is refused above is
-// launched, and the usage reader is not asked at all.
-func TestALaunchWithTheEvaluationRowCapDisabledIsNotSized(t *testing.T) {
-	usage := &fakeUsage{bytesPerDay: map[string]float64{testDeviceID: 32 * 1000}}
+// A window holding no more rows than the cap launches, and the count is the
+// number the reader returned.
+func TestALaunchWithinTheEvaluationRowCapIsAccepted(t *testing.T) {
+	series := singleColumn(100)
 	h := newHarness(t, func(deps *experiments.Deps) {
-		deps.Usage = usage
+		deps.Series = series
+		deps.MaxEvaluationRows = 100
+	})
+	h.ready()
+
+	split := testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+	h.launch(func(req *experiments.LaunchRequest) { req.Split = split })
+
+	if len(h.ray.Jobs()) != 1 {
+		t.Errorf("jobs = %d, want the launch submitted at exactly the cap", len(h.ray.Jobs()))
+	}
+}
+
+// The count must ask for what the replay reads, and must not carry the split: the
+// clamp would lower the end to the training end and leave the test window empty.
+func TestTheWindowCountAsksForWhatTheReplayReads(t *testing.T) {
+	series := singleColumn(10)
+	h := newHarness(t, func(deps *experiments.Deps) { deps.Series = series })
+	h.ready()
+
+	trainingEnd := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second)
+	split := testSplit(trainingEnd, 24*time.Hour)
+	h.launch(func(req *experiments.LaunchRequest) { req.Split = split })
+
+	if len(series.calls) != 1 {
+		t.Fatalf("queries = %d, want one batched call", len(series.calls))
+	}
+	call := series.calls[0]
+	if call.opts.Split != nil {
+		t.Errorf("opts.Split = %+v, want nil: the clamp would empty the test window", call.opts.Split)
+	}
+	if len(call.elements) != 1 {
+		t.Fatalf("elements = %d, want one for the one device topic", len(call.elements))
+	}
+	el := call.elements[0]
+	if el.DeviceId == nil || *el.DeviceId != testDeviceID {
+		t.Errorf("deviceId = %v, want %q", el.DeviceId, testDeviceID)
+	}
+	if want := "urn:infai:ses:service:9ba92218-37d8-4c80-ad3d-bb3eb5c8457d"; el.ServiceId == nil ||
+		*el.ServiceId != want {
+		t.Errorf("serviceId = %v, want %q", el.ServiceId, want)
+	}
+	if len(el.Columns) != 1 || el.Columns[0].Name != "power.value" {
+		t.Errorf("columns = %+v, want the one mapping's source without its first element", el.Columns)
+	}
+	for _, column := range el.Columns {
+		if column.GroupType == nil || *column.GroupType != "count" {
+			t.Errorf("column %q groupType = %v, want count", column.Name, column.GroupType)
+		}
+	}
+	if el.GroupTime == nil || *el.GroupTime != "1d" {
+		t.Errorf("groupTime = %v, want 1d", el.GroupTime)
+	}
+	if el.Time == nil || el.Time.Start == nil || el.Time.End == nil ||
+		*el.Time.Start != split.TrainingEnd.Format(time.RFC3339) ||
+		*el.Time.End != split.TestEnd.Format(time.RFC3339) {
+		t.Errorf("time = %+v, want [%s, %s)", el.Time,
+			split.TrainingEnd.Format(time.RFC3339), split.TestEnd.Format(time.RFC3339))
+	}
+	if !el.Valid() {
+		t.Error("the element is not valid under timescale-wrapper's own schema")
+	}
+}
+
+// A row exists when any mapped column has a value, so a bucket counts the
+// largest of its columns; a null bucket counts nothing; topics add up.
+func TestTheWindowCountTakesTheLargestColumnPerBucketAndSumsTopics(t *testing.T) {
+	second := experiments.InputTopic{
+		Name:        "urn_infai_ses_service_aaaaaaaa-37d8-4c80-ad3d-bb3eb5c8457d",
+		FilterType:  "DeviceId",
+		FilterValue: "urn:infai:ses:device:other",
+		Mappings:    []experiments.TopicMapping{{Dest: "v", Source: "value.x"}},
+	}
+	first := testInputTopics()[0]
+	first.Mappings = []experiments.TopicMapping{
+		{Dest: "a", Source: "value.power.value"}, {Dest: "b", Source: "value.power.unit"},
+	}
+	series := &fakeSeries{results: []timeseries.QueryResult{
+		// Day 1: max(5, 3) = 5. Day 2: max(nil, 4) = 4. Day 3: max(nil, nil) = 0.
+		countResult(0,
+			[]any{json.Number("5"), nil, nil},
+			[]any{json.Number("3"), json.Number("4"), nil}),
+		countResult(1, []any{json.Number("10"), json.Number("2")}),
+	}}
+	h := newHarness(t, func(deps *experiments.Deps) {
+		deps.Series = series
+		deps.MaxEvaluationRows = 20
+	})
+	h.ready()
+
+	split := testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+	_, err := h.service.Launch(context.Background(), experiments.LaunchRequest{
+		Request: h.request(), InputTopics: []experiments.InputTopic{first, second}, Split: split,
+	})
+	// 5 + 4 + 0 + 10 + 2 = 21, one over the cap of 20.
+	if !errors.Is(err, experiments.ErrInvalidRequest) {
+		t.Fatalf("error = %v, want ErrInvalidRequest", err)
+	}
+	if !strings.Contains(err.Error(), "holds 21 input rows") {
+		t.Errorf("error = %q, want the counted 21", err)
+	}
+	if len(series.calls) != 1 || len(series.calls[0].elements) != 2 {
+		t.Fatalf("calls = %+v, want one call carrying both topics", series.calls)
+	}
+	if cols := series.calls[0].elements[0].Columns; len(cols) != 2 ||
+		cols[0].Name != "power.value" || cols[1].Name != "power.unit" {
+		t.Errorf("columns = %+v, want power.value and power.unit", cols)
+	}
+}
+
+// A negative cap disables the check: a window that would be refused is launched,
+// and the reader is not asked at all.
+func TestALaunchWithTheEvaluationRowCapDisabledIsNotSized(t *testing.T) {
+	series := singleColumn(7000)
+	h := newHarness(t, func(deps *experiments.Deps) {
+		deps.Series = series
 		deps.MaxEvaluationRows = -1
 	})
 	h.ready()
@@ -142,17 +280,17 @@ func TestALaunchWithTheEvaluationRowCapDisabledIsNotSized(t *testing.T) {
 		t.Errorf("jobs = %d, want the launch submitted with the cap disabled",
 			len(h.ray.Jobs()))
 	}
-	if len(usage.asked) != 0 {
-		t.Errorf("asked = %v, want no usage read with the cap disabled", usage.asked)
+	if len(series.calls) != 0 {
+		t.Errorf("calls = %v, want no query with the cap disabled", series.calls)
 	}
 }
 
 // --- the accepted case: the deployment config and the stored record ---
 
 func TestALaunchWithASplitWritesTheBoundsIntoTheDeploymentConfigAndTheRecord(t *testing.T) {
-	usage := &fakeUsage{bytesPerDay: map[string]float64{testDeviceID: 320}} // 10 pts/day
+	series := singleColumn(10)
 	h := newHarness(t, func(deps *experiments.Deps) {
-		deps.Usage = usage
+		deps.Series = series
 	})
 	h.ready()
 
@@ -164,9 +302,11 @@ func TestALaunchWithASplitWritesTheBoundsIntoTheDeploymentConfigAndTheRecord(t *
 	if result.Split == nil || !result.Split.Equal(*split) {
 		t.Fatalf("result.Split = %+v, want the normalised split back", result.Split)
 	}
-	// The usage reader was asked about the device the one input topic names.
-	if len(usage.asked) != 1 || len(usage.asked[0]) != 1 || usage.asked[0][0] != testDeviceID {
-		t.Errorf("asked = %v, want one call naming %q", usage.asked, testDeviceID)
+	// The reader was asked about the device the one input topic names.
+	if len(series.calls) != 1 || len(series.calls[0].elements) != 1 ||
+		series.calls[0].elements[0].DeviceId == nil ||
+		*series.calls[0].elements[0].DeviceId != testDeviceID {
+		t.Errorf("calls = %+v, want one call naming %q", series.calls, testDeviceID)
 	}
 
 	job := h.ray.LastJob(t)
@@ -225,10 +365,10 @@ func TestALaunchWithoutASplitWritesNeitherBoundIntoTheDeploymentConfig(t *testin
 	}
 }
 
-// No usage reader configured (the harness default, matching a deployment with no
+// No reader configured (the harness default, matching a deployment with no
 // timescale-wrapper) skips the size check rather than refusing every split
 // launch, and says so.
-func TestALaunchWithASplitButNoUsageReaderIsAcceptedWithAWarning(t *testing.T) {
+func TestALaunchWithASplitButNoSeriesReaderIsAcceptedWithAWarning(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
 
@@ -239,7 +379,7 @@ func TestALaunchWithASplitButNoUsageReaderIsAcceptedWithAWarning(t *testing.T) {
 
 	found := false
 	for _, warning := range result.Warnings {
-		if strings.Contains(warning, "no usage reader is configured") {
+		if strings.Contains(warning, "no timeseries reader is configured") {
 			found = true
 		}
 	}
@@ -248,23 +388,20 @@ func TestALaunchWithASplitButNoUsageReaderIsAcceptedWithAWarning(t *testing.T) {
 	}
 }
 
-// An OperatorId topic cannot be sized by DeviceUsage — it is not a device — so it
-// is named in a warning rather than silently left out of the estimate or refused.
-func TestATopicThatIsNotADeviceIsNamedInAWarningRatherThanRefused(t *testing.T) {
-	usage := &fakeUsage{bytesPerDay: map[string]float64{testDeviceID: 320}}
+// A topic the replay reads from Kafka cannot be counted by timescale-wrapper, so
+// it is named in a warning and not queried, rather than refused.
+func TestATopicThatIsNotADeviceIsNamedInAWarningAndNotQueried(t *testing.T) {
+	series := singleColumn(10)
 	h := newHarness(t, func(deps *experiments.Deps) {
-		deps.Usage = usage
+		deps.Series = series
 	})
 	h.ready()
 
-	trainingEnd := time.Now().UTC().Add(-24 * time.Hour)
-	split := testSplit(trainingEnd, 6*time.Hour)
+	split := testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
 	topics := append(testInputTopics(), experiments.InputTopic{
-		Name:       "urn_infai_ses_operator_import",
-		FilterType: "OperatorId",
-		// operatorId:pipelineId, the form access.CheckTopics resolves for an
-		// operator input that is not part of this deployment.
-		FilterValue: "other-operator:other-pipeline",
+		Name:        "urn_infai_ses_operator_import",
+		FilterType:  "ImportId",
+		FilterValue: "import-1",
 		Mappings:    []experiments.TopicMapping{{Dest: "value", Source: "value"}},
 	})
 
@@ -275,12 +412,91 @@ func TestATopicThatIsNotADeviceIsNamedInAWarningRatherThanRefused(t *testing.T) 
 
 	found := false
 	for _, warning := range result.Warnings {
-		if strings.Contains(warning, "urn_infai_ses_operator_import") {
+		if strings.Contains(warning, "urn_infai_ses_operator_import") &&
+			strings.Contains(warning, "Kafka") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("warnings = %v, want the OperatorId topic named", result.Warnings)
+		t.Errorf("warnings = %v, want the topic named with its real reason", result.Warnings)
+	}
+	if len(series.calls) != 1 || len(series.calls[0].elements) != 1 {
+		t.Errorf("calls = %+v, want one call with the device topic only", series.calls)
+	}
+}
+
+// The replay decides by the topic name, not by the filter, which topic it reads
+// through timescale-wrapper. A device-filtered topic without the service prefix
+// is read from Kafka, and counting it would send a service id timescale-wrapper
+// rejects, refusing the whole batched launch.
+func TestADeviceTopicWithoutTheServicePrefixIsNotQueried(t *testing.T) {
+	series := singleColumn(10)
+	h := newHarness(t, func(deps *experiments.Deps) {
+		deps.Series = series
+	})
+	h.ready()
+
+	topics := append(testInputTopics(), experiments.InputTopic{
+		Name:        "some_device_topic",
+		FilterType:  "DeviceId",
+		FilterValue: "urn:infai:ses:device:other",
+		Mappings:    []experiments.TopicMapping{{Dest: "value", Source: "value.power"}},
+	})
+	result := h.launch(func(req *experiments.LaunchRequest) {
+		req.Split = testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+		req.InputTopics = topics
+	})
+
+	found := false
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "some_device_topic") && strings.Contains(warning, "Kafka") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want the topic named as read from Kafka", result.Warnings)
+	}
+	if len(series.calls) != 1 || len(series.calls[0].elements) != 1 {
+		t.Errorf("calls = %+v, want one call with the service topic only", series.calls)
+	}
+}
+
+// A launch whose only topic is not a device has nothing to count: no query, a
+// warning, accepted.
+func TestALaunchWithOnlyKafkaTopicsIssuesNoQuery(t *testing.T) {
+	series := singleColumn(10)
+	h := newHarness(t, func(deps *experiments.Deps) { deps.Series = series })
+	h.ready()
+
+	split := testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+	h.launch(func(req *experiments.LaunchRequest) {
+		req.Split = split
+		req.InputTopics = []experiments.InputTopic{{
+			Name: "import_topic", FilterType: "ImportId", FilterValue: "import-1",
+			Mappings: []experiments.TopicMapping{{Dest: "value", Source: "value"}},
+		}}
+	})
+	if len(series.calls) != 0 {
+		t.Errorf("calls = %+v, want no query", series.calls)
+	}
+}
+
+// A failing count fails the launch rather than letting an unsized window through.
+func TestALaunchWhoseWindowCountFailsIsRefused(t *testing.T) {
+	series := &fakeSeries{err: errors.New("upstream down")}
+	h := newHarness(t, func(deps *experiments.Deps) { deps.Series = series })
+	h.ready()
+
+	split := testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+	_, err := h.service.Launch(context.Background(), experiments.LaunchRequest{
+		Request: h.request(), InputTopics: testInputTopics(), Split: split,
+	})
+	if err == nil || !strings.Contains(err.Error(), "sizing the evaluation window") ||
+		!strings.Contains(err.Error(), "upstream down") {
+		t.Fatalf("error = %v, want the sizing failure wrapping the cause", err)
+	}
+	if len(h.ray.Jobs()) != 0 {
+		t.Error("a job was submitted although the window could not be counted")
 	}
 }
 

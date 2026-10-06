@@ -499,9 +499,9 @@ type ConfigStruct struct {
 	ExperimentMaxLogBytes int64 `json:"experiment_max_log_bytes"`
 	// ExperimentMaxEvaluationRows bounds a data split's test window (D36). The
 	// replay is sequential infer() calls in the driver, so an unbounded window is
-	// an unbounded driver loop (risk register); a launch whose window is estimated
-	// to exceed this is refused before anything is submitted, naming the estimate
-	// and the cap. A negative value disables the cap.
+	// an unbounded driver loop (risk register); a launch whose window holds more
+	// input rows than this is refused before anything is submitted, naming the
+	// count and the cap. A negative value disables the cap.
 	ExperimentMaxEvaluationRows int64 `json:"experiment_max_evaluation_rows"`
 
 	// ExperimentRequestTimeout bounds one Ray or MLflow API call;

@@ -129,18 +129,18 @@ type Options struct {
 	// to a model (§5.13).
 	MaxLogBytes int
 
-	// Usage estimates a device's stored bytes per day, the same figure
-	// estimate_read_cost already reads (pkg/tools/executors.go). Launch uses it to
-	// size a data split's test window before submitting anything: the replay is
-	// sequential infer() calls in the driver, so an unbounded window is an
-	// unbounded driver loop (D36, risk register). Nil is a supported deployment —
-	// a configuration without a timescale-wrapper URL has no usage reader to begin
-	// with — and skips the check; the launch result carries a warning saying the
-	// window was not sized rather than refusing every split launch outright.
-	Usage UsageReader
-	// MaxEvaluationRows bounds the estimate above. A launch whose test window is
-	// estimated to exceed it is refused before the package is built, naming the
-	// estimate and the cap. Zero takes the default; a negative value disables the
+	// Series counts the rows a data split's test window holds, per input topic,
+	// through timescale-wrapper. Launch uses it to size the window before
+	// submitting anything: the replay is sequential infer() calls in the driver, so
+	// an unbounded window is an unbounded driver loop (D36, risk register). Nil is
+	// a supported deployment — a configuration without a timescale-wrapper URL has
+	// no reader to begin with — and skips the check; the launch result carries a
+	// warning saying the window was not sized rather than refusing every split
+	// launch outright.
+	Series SeriesReader
+	// MaxEvaluationRows bounds the count above. A launch whose test window holds
+	// more input rows is refused before the package is built, naming the count and
+	// the cap. Zero takes the default; a negative value disables the
 	// cap.
 	MaxEvaluationRows int64
 

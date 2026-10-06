@@ -857,15 +857,15 @@ func startM8(
 		return nil, err
 	}
 
-	// A *timeseries.Client, even a nil one, is not a nil experiments.UsageReader:
+	// A *timeseries.Client, even a nil one, is not a nil experiments.SeriesReader:
 	// assigning the pointer straight into an interface field wraps it in a
-	// non-nil interface, and Options.Usage == nil (Launch's "no reader
+	// non-nil interface, and Options.Series == nil (Launch's "no reader
 	// configured" check) would never be true. Guarded here rather than trusted
 	// to the field assignment below, the same way deps.Timeseries is only ever
 	// set inside the "if config.TimescaleWrapperUrl != \"\"" block above.
-	var usageReader experiments.UsageReader
+	var seriesReader experiments.SeriesReader
 	if timeseriesClient != nil {
-		usageReader = timeseriesClient
+		seriesReader = timeseriesClient
 	}
 
 	service, err := experiments.New(experiments.Deps{
@@ -903,11 +903,11 @@ func startM8(
 			MaxEnvValueBytes:    int(config.ExperimentMaxEnvValueBytes),
 			MaxLogBytes:         int(config.ExperimentMaxLogBytes),
 			// The window-size check a data split's launch runs before submitting
-			// anything (D36). Usage is nil wherever deps.Timeseries is, which is the
+			// anything (D36). Series is nil wherever deps.Timeseries is, which is the
 			// same "no timescale-wrapper configured" degradation the rest of ODE
 			// applies — a launch is not refused for it, it just is not sized, and the
 			// launch result says so.
-			Usage:             usageReader,
+			Series:            seriesReader,
 			MaxEvaluationRows: config.ExperimentMaxEvaluationRows,
 			RequestTimeout:    requestTimeout,
 			UploadTimeout:     uploadTimeout,
