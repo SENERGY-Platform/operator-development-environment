@@ -148,7 +148,10 @@ type experimentResultsInput struct {
 // out of the UI.
 type ExperimentListing struct {
 	Experiments []ExperimentBrief `json:"experiments"`
-	Hint        string            `json:"hint"`
+	// Truncated says older experiments exist past this page. Without it ten rows
+	// read as the developer's whole history.
+	Truncated bool   `json:"truncated,omitempty"`
+	Hint      string `json:"hint"`
 }
 
 // ExperimentBrief is one row of that listing.
@@ -178,9 +181,15 @@ func (s *surface) getExperimentResults(ctx context.Context, req Request) (any, e
 	}
 
 	if strings.TrimSpace(in.ExperimentID) == "" {
-		listed, err := s.deps.Experiments.List(ctx, request, experimentListLimit)
+		// One more than is shown: the listing carries no total, and the extra row
+		// is what tells a full page from an exhausted one.
+		listed, err := s.deps.Experiments.List(ctx, request, experimentListLimit+1)
 		if err != nil {
 			return nil, err
+		}
+		truncated := len(listed) > experimentListLimit
+		if truncated {
+			listed = listed[:experimentListLimit]
 		}
 		if len(listed) == 0 {
 			return nil, fmt.Errorf(
@@ -198,10 +207,16 @@ func (s *surface) getExperimentResults(ctx context.Context, req Request) (any, e
 				SubmittedAt:  record.SubmittedAt.Format(time.RFC3339),
 			})
 		}
+		hint := "call get_experiment_results again with one of these experiment_id " +
+			"values to read its params, metrics and comparison to the previous run"
+		if truncated {
+			hint += fmt.Sprintf(". Only the newest %d are listed; if the one meant is older, "+
+				"ask the developer for its id", experimentListLimit)
+		}
 		return ExperimentListing{
 			Experiments: brief,
-			Hint: "call get_experiment_results again with one of these experiment_id " +
-				"values to read its params, metrics and comparison to the previous run",
+			Truncated:   truncated,
+			Hint:        hint,
 		}, nil
 	}
 

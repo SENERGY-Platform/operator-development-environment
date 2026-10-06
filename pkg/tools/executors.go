@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -128,10 +129,7 @@ func (s *surface) resolveSemanticSelection(ctx context.Context, req Request) (an
 			"%w: give an intent, or explicit function_ids or aspect_ids", ErrInvalidInput)
 	}
 
-	limit := in.DeviceLimit
-	if limit <= 0 || limit > s.deps.DeviceLimit {
-		limit = s.deps.DeviceLimit
-	}
+	limit, cutNote := s.boundedLimit("device_limit", in.DeviceLimit, s.deps.DeviceLimit)
 
 	req.Progress("resolving", "matching the intent against the ontology, then expanding devices")
 	result, err := s.deps.Selection.Resolve(ctx, req.Token, selection.Request{
@@ -150,7 +148,12 @@ func (s *surface) resolveSemanticSelection(ctx context.Context, req Request) (an
 	// The ranked candidates here are the same QuickProfiles quick_profile
 	// returns, so they get the same projection. The HTTP and websocket surfaces
 	// keep the full result: the selection view renders every field of it.
-	return result.ProjectForLLM(s.deps.QuickTokenBudget), nil
+	view := result.ProjectForLLM(s.deps.QuickTokenBudget)
+	if cutNote != "" {
+		// Clipped so the append copies: the projection may share Notes with result.
+		view.Notes = append(slices.Clip(view.Notes), cutNote)
+	}
+	return view, nil
 }
 
 // ---- list_devices (L0) ----
@@ -166,10 +169,7 @@ func (s *surface) listDevices(ctx context.Context, req Request) (any, error) {
 	if err := decode(req.Input, &in); err != nil {
 		return nil, err
 	}
-	limit := in.Limit
-	if limit <= 0 || limit > s.deps.DeviceLimit {
-		limit = s.deps.DeviceLimit
-	}
+	limit, cutNote := s.boundedLimit("limit", in.Limit, listingCeiling)
 
 	// models.Read, not Execute: this lists device *metadata*, which is what Read
 	// governs (§5.1). The tools that offer to read data use Execute.
@@ -198,13 +198,17 @@ func (s *surface) listDevices(ctx context.Context, req Request) (any, error) {
 			"permissions":      device.Permissions,
 		})
 	}
-	return map[string]any{
+	answer := map[string]any{
 		"devices":   listed,
 		"total":     result.Total,
 		"limit":     limit,
 		"note":      "metadata only, no values. Permissions are the platform's, not ODE's.",
 		"truncated": result.Total > int64(len(listed)),
-	}, nil
+	}
+	if cutNote != "" {
+		answer["notes"] = []string{cutNote}
+	}
+	return answer, nil
 }
 
 // ---- get_device_metadata (L0) ----
@@ -430,12 +434,20 @@ func (s *surface) estimateReadCost(ctx context.Context, req Request) (any, error
 	if len(in.DeviceIDs) == 0 && len(in.ExportIDs) == 0 {
 		return nil, fmt.Errorf("%w: device_ids or export_ids is required", ErrInvalidInput)
 	}
-	if int64(len(in.DeviceIDs)) > s.deps.DeviceLimit {
-		in.DeviceIDs = in.DeviceIDs[:s.deps.DeviceLimit]
+	// A listing's ceiling, not the device limit: usage is one POST for all ids of
+	// a kind, whatever their number. The ids past it are dropped, and said so —
+	// they used to vanish, and an id with no estimate reads as costing nothing.
+	notes := []string{}
+	cut := func(field string, ids []string) []string {
+		if len(ids) <= listingCeiling {
+			return ids
+		}
+		notes = append(notes, fmt.Sprintf("%s: %d given, only the first %d were estimated",
+			field, len(ids), listingCeiling))
+		return ids[:listingCeiling]
 	}
-	if int64(len(in.ExportIDs)) > s.deps.DeviceLimit {
-		in.ExportIDs = in.ExportIDs[:s.deps.DeviceLimit]
-	}
+	in.DeviceIDs = cut("device_ids", in.DeviceIDs)
+	in.ExportIDs = cut("export_ids", in.ExportIDs)
 
 	window, err := parseWindow(in.From, in.To)
 	if err != nil {
@@ -526,6 +538,9 @@ func (s *surface) estimateReadCost(ctx context.Context, req Request) (any, error
 			"this is not evidence that nothing is stored. probe_export_data counts the rows and answers " +
 			"that question."
 	}
+	if len(notes) > 0 {
+		out["notes"] = notes
+	}
 	return out, nil
 }
 
@@ -552,10 +567,7 @@ func (s *surface) quickProfile(ctx context.Context, req Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	limit := in.DeviceLimit
-	if limit <= 0 || limit > s.deps.DeviceLimit {
-		limit = s.deps.DeviceLimit
-	}
+	limit, cutNote := s.boundedLimit("device_limit", in.DeviceLimit, s.deps.DeviceLimit)
 
 	// Execute, not Read: this offers series to read, and timescale-wrapper checks
 	// Execute itself. Listing under Read would offer series the caller cannot read
@@ -592,6 +604,9 @@ func (s *surface) quickProfile(ctx context.Context, req Request) (any, error) {
 	view := profiler.ProjectQuick(result, s.deps.QuickTokenBudget)
 	view.DevicesListed = len(listed.Devices)
 	view.TotalDevices = listed.Total
+	if cutNote != "" {
+		view.Notes = append(view.Notes, cutNote)
+	}
 	return view, nil
 }
 
@@ -834,10 +849,11 @@ func (s *surface) proposeRelatedSets(ctx context.Context, req Request) (any, err
 			ErrInvalidInput)
 	}
 
-	limit := in.Limit
-	if limit <= 0 {
-		limit = s.deps.DeviceLimit
-	}
+	// A listing's ceiling, not the device limit: the proposal resolves without
+	// ranking, so a device costs no availability call, and graph reads have their
+	// own budget. It had no ceiling at all, and a large limit reached
+	// device-repository and the model's context unchanged.
+	limit, cutNote := s.boundedLimit("limit", in.Limit, listingCeiling)
 	req.Progress("propose", "resolving the aspect subtree to devices")
 	proposal, err := s.deps.Relations.ProposeRelatedSets(ctx, req.Token, relations.ProposalRequest{
 		AspectID:           in.AspectID,
@@ -852,6 +868,10 @@ func (s *surface) proposeRelatedSets(ctx context.Context, req Request) (any, err
 	note := "these sets come from the ontology and no value was read, which the reads block " +
 		"shows. Pass one set's members to relate_series to find the conditional patterns in it. " +
 		"An empty sets list is not evidence that the devices are unrelated — read notes for why."
+	notes := proposal.Notes
+	if cutNote != "" {
+		notes = append(slices.Clip(notes), cutNote)
+	}
 	if len(proposal.Sets) == 0 {
 		note = "no set could be proposed, and notes says why. Do not conclude that these devices " +
 			"have no relationship: the cause is more often an ontology gap or a permission than an " +
@@ -865,7 +885,7 @@ func (s *surface) proposeRelatedSets(ctx context.Context, req Request) (any, err
 		"candidate_devices":   proposal.CandidateDevices,
 		"ontology_gaps":       proposal.OntologyGaps,
 		"reads":               proposal.Reads,
-		"notes":               proposal.Notes,
+		"notes":               notes,
 		"note":                note,
 	}, nil
 }
@@ -1353,6 +1373,31 @@ func decode(input json.RawMessage, into any) error {
 	}
 	return nil
 }
+
+// boundedLimit is a tool's page size: the device limit when none was asked for,
+// ceiling at most, and a note for the answer when a request was cut. Silence
+// about the cut reads as the whole answer — a requested 50 used to arrive as 10
+// with nothing saying so.
+//
+// The ceiling depends on what a row costs. A device a resolution expands costs
+// reads of its own, so the tools that expand pass the device limit itself; a
+// listing that one upstream call returns whole passes listingCeiling.
+func (s *surface) boundedLimit(field string, requested, ceiling int64) (int64, string) {
+	if requested <= 0 {
+		return min(s.deps.DeviceLimit, ceiling), ""
+	}
+	if requested > ceiling {
+		return ceiling, fmt.Sprintf("%s %d exceeds the ceiling of %d and was reduced to it",
+			field, requested, ceiling)
+	}
+	return requested, ""
+}
+
+// listingCeiling bounds one page of a listing whose rows cost nothing past the
+// call that returns them. It is the platform listings' own default rather than
+// their maximum: a thousand rows would flood the model's context without
+// answering anything a narrower search could not.
+const listingCeiling = devices.DefaultLimit
 
 // parseWindow reads an optional RFC3339 range. Both empty is legal and means "the
 // service's own default lookback", which every caller of this treats as such.

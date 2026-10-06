@@ -386,6 +386,38 @@ func TestListImportInstancesFiltersByTypeAndSaysItWasLocal(t *testing.T) {
 	}
 }
 
+// The device limit is the default page, not the ceiling: the listing and its
+// history are one upstream call each, whatever the page size.
+func TestListImportInstancesHonoursALimitAboveTheDeviceLimit(t *testing.T) {
+	imp := &fakeImports{instances: []idmodel.Instance{runningImport()}}
+
+	answer := callImportTool(t, imp, "list_import_instances", map[string]any{"limit": 50})
+
+	if len(imp.listOpts) != 1 || imp.listOpts[0].Limit != 50 {
+		t.Fatalf("sent %+v, want limit 50", imp.listOpts)
+	}
+	if answer["limit"] != float64(50) {
+		t.Errorf("limit = %v, want 50", answer["limit"])
+	}
+	if _, noted := answer["notes"]; noted {
+		t.Errorf("a limit within the ceiling needs no note: %v", answer["notes"])
+	}
+}
+
+func TestListImportInstancesSaysWhenTheLimitWasCut(t *testing.T) {
+	imp := &fakeImports{instances: []idmodel.Instance{runningImport()}}
+
+	answer := callImportTool(t, imp, "list_import_instances", map[string]any{"limit": 500})
+
+	if len(imp.listOpts) != 1 || imp.listOpts[0].Limit != listingCeiling {
+		t.Fatalf("sent %+v, want the ceiling %d", imp.listOpts, listingCeiling)
+	}
+	notes, _ := answer["notes"].([]any)
+	if len(notes) != 1 || !strings.Contains(notes[0].(string), "500") {
+		t.Errorf("notes = %v, want one naming the requested 500", notes)
+	}
+}
+
 // --- get_import_type_metadata ---
 
 func TestImportTypeMetadataSeparatesSeriesFromEnvelope(t *testing.T) {
@@ -1107,6 +1139,48 @@ func TestListImportTypesSaysToCheckForAnExistingInstance(t *testing.T) {
 	}
 	if !strings.Contains(note, "not running") && !strings.Contains(note, "nothing here is running") {
 		t.Errorf("note has to say these are blueprints rather than data: %q", note)
+	}
+}
+
+// The device limit is the default page, not the ceiling: a limit of 50 used to
+// arrive upstream as 10, with nothing in the answer saying it had been cut.
+func TestListImportTypesHonoursALimitAboveTheDeviceLimit(t *testing.T) {
+	imp := &fakeImports{types: []dsmodel.ImportType{}, typeTotal: 0}
+
+	answer := callCatalogue(t, imp, map[string]any{"limit": 50})
+
+	if len(imp.typeListOpts) != 1 || imp.typeListOpts[0].Limit != 50 {
+		t.Fatalf("sent %+v, want limit 50", imp.typeListOpts)
+	}
+	if answer["limit"] != float64(50) {
+		t.Errorf("limit = %v, want 50", answer["limit"])
+	}
+	if _, noted := answer["notes"]; noted {
+		t.Errorf("a limit within the ceiling needs no note: %v", answer["notes"])
+	}
+}
+
+func TestListImportTypesDefaultsToTheDeviceLimit(t *testing.T) {
+	imp := &fakeImports{types: []dsmodel.ImportType{}, typeTotal: 0}
+
+	callCatalogue(t, imp, map[string]any{})
+
+	if len(imp.typeListOpts) != 1 || imp.typeListOpts[0].Limit != 10 {
+		t.Fatalf("sent %+v, want the device limit of 10", imp.typeListOpts)
+	}
+}
+
+func TestListImportTypesSaysWhenTheLimitWasCut(t *testing.T) {
+	imp := &fakeImports{types: []dsmodel.ImportType{}, typeTotal: 0}
+
+	answer := callCatalogue(t, imp, map[string]any{"limit": 500})
+
+	if len(imp.typeListOpts) != 1 || imp.typeListOpts[0].Limit != listingCeiling {
+		t.Fatalf("sent %+v, want the ceiling %d", imp.typeListOpts, listingCeiling)
+	}
+	notes, _ := answer["notes"].([]any)
+	if len(notes) != 1 || !strings.Contains(notes[0].(string), "500") {
+		t.Errorf("notes = %v, want one naming the requested 500", notes)
 	}
 }
 

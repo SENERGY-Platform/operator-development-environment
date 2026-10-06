@@ -63,10 +63,7 @@ func (s *surface) listImportInstances(ctx context.Context, req Request) (any, er
 	if err := decode(req.Input, &in); err != nil {
 		return nil, err
 	}
-	limit := in.Limit
-	if limit <= 0 || limit > s.deps.DeviceLimit {
-		limit = s.deps.DeviceLimit
-	}
+	limit, cutNote := s.boundedLimit("limit", in.Limit, listingCeiling)
 
 	// A type filter has to be applied here: import-deploy offers no filter by
 	// import type and its search matches the instance name only. So the listing has
@@ -129,6 +126,9 @@ func (s *surface) listImportInstances(ctx context.Context, req Request) (any, er
 	if !in.IncludeHistory {
 		answer["note"] = answer["note"].(string) +
 			" Whether an instance has stored history was not checked; pass include_history to ask."
+	}
+	if cutNote != "" {
+		answer["notes"] = []string{cutNote}
 	}
 	return answer, nil
 }
@@ -324,12 +324,12 @@ func (s *surface) listImportTypes(ctx context.Context, req Request) (any, error)
 	if err := decode(req.Input, &in); err != nil {
 		return nil, err
 	}
-	limit := in.Limit
-	if limit <= 0 || limit > s.deps.DeviceLimit {
-		limit = s.deps.DeviceLimit
+	notes := []string{}
+	limit, cutNote := s.boundedLimit("limit", in.Limit, listingCeiling)
+	if cutNote != "" {
+		notes = append(notes, cutNote)
 	}
 
-	notes := []string{}
 	criteria := []imports.TypeCriterion{}
 	if in.FunctionID != "" || in.AspectID != "" {
 		criterion := imports.TypeCriterion{FunctionID: in.FunctionID}

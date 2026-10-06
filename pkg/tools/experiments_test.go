@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -387,6 +388,41 @@ func TestReadingResultsWithoutAnIdListsWhatThereIsToChooseFrom(t *testing.T) {
 	}
 	if len(fake.askedFor) != 0 {
 		t.Error("a summary was fetched for an unnamed experiment")
+	}
+}
+
+// The listing carries no total, so a full page has to say older runs exist, or ten
+// rows read as the developer's whole history.
+func TestReadingResultsWithoutAnIdSaysOlderExperimentsExist(t *testing.T) {
+	listed := make([]experiments.Experiment, experimentListLimit+1)
+	for i := range listed {
+		listed[i] = experiments.Experiment{ID: fmt.Sprintf("exp-%d", i), Status: experiments.StatusSucceeded}
+	}
+	for _, tc := range []struct {
+		name      string
+		listed    []experiments.Experiment
+		truncated bool
+	}{
+		{"one past the page", listed, true},
+		{"exactly a page", listed[:experimentListLimit], false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeExperiments{listed: tc.listed}
+			result := dispatchExperiment(t, experimentSurface(t, fake), "get_experiment_results", `{}`)
+			listing, ok := result.Content.(ExperimentListing)
+			if !ok {
+				t.Fatalf("content = %T, want an ExperimentListing", result.Content)
+			}
+			if len(listing.Experiments) != experimentListLimit {
+				t.Errorf("listed %d, want %d", len(listing.Experiments), experimentListLimit)
+			}
+			if listing.Truncated != tc.truncated {
+				t.Errorf("truncated = %v, want %v", listing.Truncated, tc.truncated)
+			}
+			if strings.Contains(listing.Hint, "older") != tc.truncated {
+				t.Errorf("hint = %q, want it to mention older runs only when truncated", listing.Hint)
+			}
+		})
 	}
 }
 

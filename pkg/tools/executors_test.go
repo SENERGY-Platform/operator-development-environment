@@ -943,11 +943,13 @@ func TestResolveSemanticSelectionAnswersWithProjectedCandidates(t *testing.T) {
 type fakeSelection struct {
 	candidates  []profiler.QuickProfile
 	matchElided []ontology.Elision
+	requests    []selection.Request
 }
 
 func (f *fakeSelection) Resolve(
-	context.Context, string, selection.Request,
+	_ context.Context, _ string, req selection.Request,
 ) (selection.Result, error) {
+	f.requests = append(f.requests, req)
 	return selection.Result{
 		Intent:      "pv power",
 		Candidates:  f.candidates,
@@ -1117,5 +1119,131 @@ func TestEstimateReadCostTakesExportsAndSaysWhenTheAccountingHasNoRow(t *testing
 	}
 	if !strings.Contains(note, "probe_export_data") {
 		t.Errorf("note = %q, want it to name the tool that answers the question", note)
+	}
+}
+
+// --- page sizes ---
+
+// notesOf reads the notes list a tool answer carries, empty when it has none.
+func notesOf(decoded map[string]any) []string {
+	raw, _ := decoded["notes"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		out = append(out, entry.(string))
+	}
+	return out
+}
+
+func hasNoteNaming(notes []string, fragment string) bool {
+	for _, note := range notes {
+		if strings.Contains(note, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+// list_devices lists metadata in one call, so the device limit is its default
+// and not its ceiling: a requested 50 used to arrive upstream as 10.
+func TestListDevicesTakesTheDeviceLimitAsDefaultOnly(t *testing.T) {
+	for _, tc := range []struct {
+		input   string
+		sent    int64
+		noteFor string
+	}{
+		{`{}`, 10, ""},
+		{`{"limit":50}`, 50, ""},
+		{`{"limit":500}`, listingCeiling, "limit 500"},
+	} {
+		fake := &fakeDevices{device: testDevice()}
+		_, dispatcher := executorFor(t, Deps{Devices: fake, DeviceLimit: 10}, "list_devices")
+		decoded := dispatchJSON(t, dispatcher, L0, "list_devices", tc.input)
+
+		if len(fake.listOptions) != 1 || fake.listOptions[0].Limit != tc.sent {
+			t.Errorf("%s: sent %+v, want limit %d", tc.input, fake.listOptions, tc.sent)
+		}
+		notes := notesOf(decoded)
+		if tc.noteFor == "" && len(notes) != 0 {
+			t.Errorf("%s: notes = %v, want none", tc.input, notes)
+		}
+		if tc.noteFor != "" && !hasNoteNaming(notes, tc.noteFor) {
+			t.Errorf("%s: notes = %v, want one naming %q", tc.input, notes, tc.noteFor)
+		}
+	}
+}
+
+// Expanding a device costs an availability call, so the device limit stays the
+// ceiling for resolve_semantic_selection and quick_profile; what changes is that
+// the cut is said.
+func TestDeviceExpansionSaysWhenTheDeviceLimitWasCut(t *testing.T) {
+	t.Run("resolve_semantic_selection", func(t *testing.T) {
+		fake := &fakeSelection{}
+		_, dispatcher := executorFor(t, Deps{Selection: fake, DeviceLimit: 10}, "resolve_semantic_selection")
+		decoded := dispatchJSON(t, dispatcher, L0, "resolve_semantic_selection",
+			`{"intent":"pv power","device_limit":50}`)
+
+		if len(fake.requests) != 1 || fake.requests[0].DeviceLimit != 10 {
+			t.Fatalf("sent %+v, want device limit 10", fake.requests)
+		}
+		if notes := notesOf(decoded); !hasNoteNaming(notes, "device_limit 50") {
+			t.Errorf("notes = %v, want one naming the requested 50", notes)
+		}
+	})
+
+	t.Run("quick_profile", func(t *testing.T) {
+		fake := &fakeDevices{device: testDevice()}
+		_, dispatcher := executorFor(t,
+			Deps{Devices: fake, Profiler: newTestProfiler(t), DeviceLimit: 10}, "quick_profile")
+		decoded := dispatchJSON(t, dispatcher, L0, "quick_profile", `{"device_limit":50}`)
+
+		if len(fake.listOptions) != 1 || fake.listOptions[0].Limit != 10 {
+			t.Fatalf("sent %+v, want limit 10", fake.listOptions)
+		}
+		if notes := notesOf(decoded); !hasNoteNaming(notes, "device_limit 50") {
+			t.Errorf("notes = %v, want one naming the requested 50", notes)
+		}
+	})
+
+	t.Run("within the limit", func(t *testing.T) {
+		fake := &fakeSelection{}
+		_, dispatcher := executorFor(t, Deps{Selection: fake, DeviceLimit: 10}, "resolve_semantic_selection")
+		decoded := dispatchJSON(t, dispatcher, L0, "resolve_semantic_selection",
+			`{"intent":"pv power","device_limit":5}`)
+
+		if fake.requests[0].DeviceLimit != 5 {
+			t.Errorf("device limit = %d, want 5", fake.requests[0].DeviceLimit)
+		}
+		if notes := notesOf(decoded); hasNoteNaming(notes, "ceiling") {
+			t.Errorf("notes = %v, want no cut reported", notes)
+		}
+	})
+}
+
+// Usage is one POST per kind for all ids, so the device limit is no bound here.
+// Past the listing ceiling ids are dropped, and the answer names how many.
+func TestEstimateReadCostSaysWhichIDsWereDropped(t *testing.T) {
+	ids := func(n int) string {
+		quoted := make([]string, n)
+		for i := range quoted {
+			quoted[i] = fmt.Sprintf("%q", fmt.Sprintf("device-%d", i))
+		}
+		return "[" + strings.Join(quoted, ",") + "]"
+	}
+	_, dispatcher := executorFor(t, Deps{Timeseries: &fakeTimeseries{}, DeviceLimit: 10}, "estimate_read_cost")
+
+	decoded := dispatchJSON(t, dispatcher, L0, "estimate_read_cost", `{"device_ids":`+ids(15)+`}`)
+	if got := len(decoded["estimates"].([]any)); got != 15 {
+		t.Errorf("estimates = %d, want all 15: the device limit used to drop five", got)
+	}
+	if notes := notesOf(decoded); len(notes) != 0 {
+		t.Errorf("notes = %v, want none", notes)
+	}
+
+	decoded = dispatchJSON(t, dispatcher, L0, "estimate_read_cost", `{"device_ids":`+ids(listingCeiling+5)+`}`)
+	if got := len(decoded["estimates"].([]any)); got != listingCeiling {
+		t.Errorf("estimates = %d, want the ceiling %d", got, listingCeiling)
+	}
+	if notes := notesOf(decoded); !hasNoteNaming(notes, fmt.Sprintf("device_ids: %d given", listingCeiling+5)) {
+		t.Errorf("notes = %v, want one naming how many were given", notes)
 	}
 }

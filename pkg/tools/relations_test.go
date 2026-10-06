@@ -529,3 +529,33 @@ func TestProposeRelatedSetsIsReachableAtTheDefaultTier(t *testing.T) {
 		t.Errorf("propose_related_sets is not reachable at L0; got %v", names)
 	}
 }
+
+// propose_related_sets resolves without ranking, so a device costs no availability
+// call and the device limit is only its default. It used to have no ceiling at
+// all: a limit of 5000 reached device-repository unchanged.
+func TestProposeRelatedSetsBoundsTheLimitAndSaysWhenItCut(t *testing.T) {
+	for _, tc := range []struct {
+		input   string
+		sent    int64
+		noteFor string
+	}{
+		{`{"aspect_id":"kitchen"}`, 10, ""},
+		{`{"aspect_id":"kitchen","limit":50}`, 50, ""},
+		{`{"aspect_id":"kitchen","limit":5000}`, listingCeiling, "limit 5000"},
+	} {
+		fake := &fakeRelations{proposal: kitchenProposal()}
+		_, dispatcher := executorFor(t, Deps{Relations: fake, DeviceLimit: 10}, "propose_related_sets")
+		decoded := dispatchJSON(t, dispatcher, L0, "propose_related_sets", tc.input)
+
+		if len(fake.proposals) != 1 || fake.proposals[0].DeviceLimit != tc.sent {
+			t.Errorf("%s: sent %+v, want device limit %d", tc.input, fake.proposals, tc.sent)
+		}
+		notes := notesOf(decoded)
+		if tc.noteFor != "" && !hasNoteNaming(notes, tc.noteFor) {
+			t.Errorf("%s: notes = %v, want one naming %q", tc.input, notes, tc.noteFor)
+		}
+		if tc.noteFor == "" && hasNoteNaming(notes, "ceiling") {
+			t.Errorf("%s: notes = %v, want no cut reported", tc.input, notes)
+		}
+	}
+}

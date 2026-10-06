@@ -471,7 +471,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			    "aspect_ids": {"type": "array", "items": {"type": "string"}, "description": "Pin specific aspects. An aspect already covers its whole subtree. Aspects of the same classification class are alternatives (ORed); aspects of different classes must all be matched by one variable (ANDed), one per class — see search_ontology's aspect_class_id."},
 			    "device_class_ids": {"type": "array", "items": {"type": "string"}, "description": "Narrow by device class. Deliberate only: this ANDs with the rest."},
 			    "include_controlling": {"type": "boolean"},
-			    "device_limit": {"type": "integer", "description": "How many devices to expand. Each costs one availability call."},
+			    "device_limit": {"type": "integer", "description": "How many devices to expand. Each costs one availability call, so the configured device limit is both default and ceiling."},
 			    "skip_ranking": {"type": "boolean", "description": "Ontology resolution only, with no per-device availability calls. Much cheaper."}
 			  },
 			  "required": ["intent"]
@@ -490,7 +490,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  "properties": {
 			    "search": {"type": "string"},
 			    "device_type_ids": {"type": "array", "items": {"type": "string"}},
-			    "limit": {"type": "integer"}
+			    "limit": {"type": "integer", "description": "How many devices to return. Defaults to the configured device limit, at most 100."}
 			  }
 			}`),
 			Unavailable: "requires device_repo_url",
@@ -526,8 +526,8 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  "properties": {
 			    "search": {"type": "string", "description": "Matches the instance name only, upstream."},
 			    "import_type_ids": {"type": "array", "items": {"type": "string"}, "description": "Keep only instances of these import types. Filtered here, not upstream, so it costs a full listing."},
-			    "limit": {"type": "integer"},
-			    "include_history": {"type": "boolean", "description": "Also report per instance whether its data is stored in timescale. One extra call each; off by default."}
+			    "limit": {"type": "integer", "description": "How many instances to return. Defaults to the configured device limit, at most 100."},
+			    "include_history": {"type": "boolean", "description": "Also report per instance whether its data is stored in timescale. One extra call for the whole page; off by default."}
 			  }
 			}`),
 			Unavailable: "requires device_selection_url and import_deploy_url",
@@ -577,7 +577,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			    "function_id": {"type": "string", "description": "Keep only types carrying this measuring function. From search_ontology."},
 			    "aspect_id": {"type": "string", "description": "Keep only types carrying this aspect. Its descendants are included."},
 			    "import_type_ids": {"type": "array", "items": {"type": "string"}, "description": "Read these types by id. Ignores search and the criteria upstream."},
-			    "limit": {"type": "integer"}
+			    "limit": {"type": "integer", "description": "How many types to return. Defaults to the configured device limit, at most 100."}
 			  }
 			}`),
 			Unavailable: "requires device_selection_url, import_deploy_url and import_repo_url",
@@ -639,8 +639,8 @@ func NewSurface(deps Deps) (*Registry, error) {
 			Schema: json.RawMessage(`{
 			  "type": "object",
 			  "properties": {
-			    "device_ids": {"type": "array", "items": {"type": "string"}},
-			    "export_ids": {"type": "array", "items": {"type": "string"}, "description": "Export ids, for the import half of the platform. Give these, device_ids, or both."},
+			    "device_ids": {"type": "array", "items": {"type": "string"}, "description": "At most 100; the rest are dropped with a note."},
+			    "export_ids": {"type": "array", "items": {"type": "string"}, "description": "Export ids, for the import half of the platform. Give these, device_ids, or both. At most 100."},
 			    "from": {"type": "string", "description": "RFC3339. The window to estimate for, together with \"to\"."},
 			    "to": {"type": "string", "description": "RFC3339."}
 			  }
@@ -661,7 +661,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			  "type": "object",
 			  "properties": {
 			    "search": {"type": "string", "description": "Device search term."},
-			    "device_limit": {"type": "integer"},
+			    "device_limit": {"type": "integer", "description": "How many devices to profile. Each costs one availability call, so the configured device limit is both default and ceiling."},
 			    "from": {"type": "string", "description": "RFC3339 start of the window coverage is judged against."},
 			    "to": {"type": "string", "description": "RFC3339 end."},
 			    "include_unqueryable": {"type": "boolean", "description": "Keep variables that exist but cannot be read as a series, ranked last."}
@@ -702,7 +702,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			      "type": "boolean",
 			      "description": "Keep series declared against nodes below the requested one. Use it when the devices you want sit on sibling nodes — an oven on \"Kitchen\" and lights on \"Kitchen Ceiling\"."
 			    },
-			    "limit": {"type": "integer", "description": "How many devices to expand."}
+			    "limit": {"type": "integer", "description": "How many devices to expand. Defaults to the configured device limit, at most 100."}
 			  },
 			  "required": ["aspect_id"]
 			}`),

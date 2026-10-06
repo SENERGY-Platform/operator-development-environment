@@ -51,6 +51,10 @@ type QuickView struct {
 	Elided        []Elision       `json:"elided"`
 	ElidedDevices []DeviceElision `json:"elided_devices,omitempty"`
 	Caveat        string          `json:"caveat"`
+
+	// Notes is filled by the caller, like DevicesListed, when the listing itself
+	// was cut before the profiler saw it.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // QuickCandidateView is one candidate as the model reads it.
