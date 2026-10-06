@@ -41,7 +41,7 @@ The distribution matters. The pin the developer can see in the Code pane
 `pyproject.toml`. The kernel is the one that does not consult it: a cell runs
 against the singleuser image's library, which is deployment-wide.
 
-As of 2026-09-10 the library is at `v1.7.0` and pins:
+As of 2026-10-06 the library is at `v1.7.1` and pins the same as `v1.7.0`:
 
 ```text
 ray[data]==2.55.0
@@ -75,6 +75,24 @@ launch and skips the evaluation — and visible in one place: the run's summary 
 would have written are missing. A summary saying that after a launch under a split
 is the runbook telling you it was not run.
 
+`v1.7.1` closes a second way to the same summary, one a correct pin does not
+prevent. `simple_struct` reads only the attributes in a class's own `__dict__`,
+so on `v1.7.0` an `op.py` whose `class CustomConfig(Config)` declares a field of
+its own — the scaffold's declares `retrain_after_s` — left every inherited field
+at its default: the split, the four `evaluation_*` fields and `ts_wrapper_url`.
+`v1.7.1` copies `Config`'s fields into each subclass (`Config.__init_subclass__`).
+Deployed operators with such a subclass receive every base field their config
+sets — `mlflow_url`, `ray_url`, `ts_conn`, `logger_level` among them — for the
+first time once their pin moves, so check which deployed configs carry those keys
+before moving a pin. A repository on
+`v1.7.0` that cannot move yet copies the fields itself, directly after the class:
+
+```python
+for _name, _value in vars(Config).items():
+    if not _name.startswith("_") and _name not in vars(CustomConfig):
+        setattr(CustomConfig, _name, _value)
+```
+
 **A version this file names is not necessarily a version that exists.** The
 library bumps `operator_lib/__init__.py`'s `__version__` inside the commit that
 earns it rather than in a release step of its own, so a working copy can read
@@ -88,6 +106,7 @@ git ls-remote --tags git@github.com:SENERGY-Platform/analytics-operator-lib-pyth
 ```
 
 As of 2026-09-21, `v1.7.0` is tagged on `master`; the steps below it are not run.
+As of 2026-10-06, `v1.7.1` is tagged on `master`.
 
 ## Why only the latest is supported
 

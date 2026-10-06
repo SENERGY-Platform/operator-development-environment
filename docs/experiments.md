@@ -559,14 +559,18 @@ Two refusals belong to the launch rather than to the run. A training end still i
 the future is refused, because the test window holds no data yet and a window with
 nothing in it is not an evaluation. And the replay is sequential `infer()` calls in
 the job's driver, so a test window of weeks at one-second resolution is millions of
-them: the launch sizes the window from the platform's usage accounting — stored
-bytes per day over the rough per-point size `estimate_read_cost` uses, for every
-device-backed topic — and refuses an estimate above
-`experiment_max_evaluation_rows`, one million by default, naming the estimate and
-the cap. A negative value disables the cap, and the window is then not sized at
-all. A topic replayed from Kafka cannot be sized that way and is named in a
-warning instead, because refusing on a figure that does not exist would be worse
-than proceeding with the developer told.
+them: the launch counts the rows the replay will read — per device-backed topic,
+a `count` per day over the mapped columns of that one service, the largest column
+per day, summed over days and topics; exact when every message carries every
+mapped field, a lower bound when the fields arrive in different messages — and refuses a count above
+`experiment_max_evaluation_rows`, one million by default, naming the count and the
+cap. The device's usage accounting was the first basis and was dropped: it covers
+every column of every service the device has, and refused a 30-day window over one
+power reading at 5.6 million rows. The count reads no value, and row counts are L0.
+A negative value disables the cap, and the window is then not counted at all. A
+topic replayed from Kafka cannot be counted that way and is named in a warning
+instead, because refusing on a figure that does not exist would be worse than
+proceeding with the developer told.
 
 ## The way back out, which is the harder half
 
@@ -635,11 +639,18 @@ withholds *every* metric rather than falling back to the name allowlist. The fal
 back to names alone happens only where no split ran, and there no replay happened
 either.
 
-Where the tag is missing while a split was set, the cluster image is running an
-Operator Lib older than v1.7.0; that is already what the `data_split` block reports
-as `"not confirmed by the run"`, and it is not reported twice. The consequence for
+Where the tag is missing while a split was set, the run never received the split:
+an Operator Lib older than v1.7.0, or v1.7.0 with a config subclass that drops it
+([operator-lib-versions.md](operator-lib-versions.md)). That is already what the
+`data_split` block reports as `"not confirmed by the run"`. The consequence for
 that run is that it shows a model no metrics, which is the correct reading of a
-run that cannot say when its training ended.
+run that cannot say when its training ended, and the summary's note names this
+rule rather than the `evaluation.yaml` one, which would change nothing here.
+
+`metric_not_reported` lists the names a run did log, so a misspelt criterion is
+repairable at a glance. `MaskedFor` rebuilds that list from the names its copy
+keeps and counts the rest, because a withheld name is still information out of
+the run.
 
 The same reasoning cuts two more fields. **Params** are not filtered by name or by
 phase — MLflow params carry no timestamp — so under a split a model reads only the
