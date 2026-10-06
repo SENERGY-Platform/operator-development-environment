@@ -231,6 +231,11 @@ func NewRegistry(definitions ...Definition) (*Registry, error) {
 		if !json.Valid(definition.Schema) {
 			return nil, fmt.Errorf("tools: %q has an unparseable input schema", definition.Name)
 		}
+		schema, err := withRationale(definition.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("tools: %q: %w", definition.Name, err)
+		}
+		definition.Schema = schema
 		if definition.executor == nil && definition.Unavailable == "" {
 			return nil, fmt.Errorf(
 				"tools: %q has no executor and no Unavailable reason, so nothing explains why it cannot be called",
@@ -244,6 +249,56 @@ func NewRegistry(definitions ...Definition) (*Registry, error) {
 	}
 	sort.Strings(r.order)
 	return r, nil
+}
+
+// rationaleProperty is the reason the model gives for a call. The developer reads
+// it beside the call in the transcript and on the confirmation card (D39).
+const rationaleProperty = `{"type": "string", "description": "Why you are making this call, in one sentence, for the developer reading along: what you expect to learn or change. Shown to them beside the call and on its confirmation card. Write it in the language of the conversation."}`
+
+// withRationale adds a required `rationale` property to a tool's input schema.
+//
+// Here rather than in each declaration, because every route to a model reads the
+// registry — the API providers through the engine, the CLI provider and external
+// clients through tools/list — and a tool added later gets it without anyone
+// remembering to. A schema that declares its own rationale keeps it untouched:
+// the confirmed tools that already ask for one describe it in their own terms,
+// and their executors refuse an empty one.
+//
+// Required in the schema and nowhere else. A call that arrives without one still
+// runs, because refusing a read for a missing sentence would cost a round trip and
+// tell the developer nothing they could act on.
+func withRationale(schema json.RawMessage) (json.RawMessage, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(schema, &top); err != nil || top == nil {
+		return nil, fmt.Errorf("the input schema is not an object")
+	}
+	properties := map[string]json.RawMessage{}
+	if raw, found := top["properties"]; found {
+		if err := json.Unmarshal(raw, &properties); err != nil {
+			return nil, fmt.Errorf("the input schema's properties are not an object: %w", err)
+		}
+	}
+	if _, declared := properties["rationale"]; declared {
+		return schema, nil
+	}
+	properties["rationale"] = json.RawMessage(rationaleProperty)
+
+	var required []string
+	if raw, found := top["required"]; found {
+		if err := json.Unmarshal(raw, &required); err != nil {
+			return nil, fmt.Errorf("the input schema's required list is not a list of names: %w", err)
+		}
+	}
+	required = append(required, "rationale")
+
+	var err error
+	if top["properties"], err = json.Marshal(properties); err != nil {
+		return nil, err
+	}
+	if top["required"], err = json.Marshal(required); err != nil {
+		return nil, err
+	}
+	return json.Marshal(top)
 }
 
 // Lookup returns a definition by name.

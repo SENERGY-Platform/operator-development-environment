@@ -3041,6 +3041,26 @@ function codeOf(confirmation: PendingConfirmation): string | null {
 }
 
 /**
+ * The reason the model gave for a call (D39), or null where it gave none — every
+ * call from before D39, and any provider that ignores a required field.
+ *
+ * Read defensively for the reason `codeOf` is.
+ */
+function rationaleOf(input: unknown): string | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  const rationale = (input as { rationale?: unknown }).rationale;
+  return typeof rationale === "string" && rationale.trim() !== "" ? rationale.trim() : null;
+}
+
+/** The arguments minus the rationale, which is already shown above them as prose. */
+function withoutRationale(input: unknown): unknown {
+  if (rationaleOf(input) === null) return input;
+  const rest = { ...(input as Record<string, unknown>) };
+  delete rest.rationale;
+  return rest;
+}
+
+/**
  * The input_topics of a launch_experiment confirmation, or null for any other
  * call, or for one whose input does not carry them.
  *
@@ -3067,6 +3087,7 @@ function ConfirmationPrompt({
   onDecide: (confirmation: PendingConfirmation, approve: boolean, input?: unknown) => void;
 }) {
   const code = codeOf(confirmation);
+  const rationale = rationaleOf(confirmation.input);
   const originalTopics = launchTopicsOf(confirmation);
   // null until a topic has actually been moved or had a mapping repointed —
   // distinct from "edited to the same topics", which changedPaths below would
@@ -3089,6 +3110,9 @@ function ConfirmationPrompt({
       <div className="confirmation-head text-sm">
         <strong className="font-semibold">{confirmation.tool}</strong> needs your confirmation
       </div>
+      {/* Why before what (D39): the reason is the model's own account of the call,
+          and the arguments below are what the developer checks it against. */}
+      {rationale !== null && <p className="confirmation-rationale mt-1 text-sm">{rationale}</p>}
       {/* The arguments travel with the prompt: approving a tool name alone would be
           agreeing to something you cannot see. And for the one call whose argument
           is a program, that means reading it as a program — a cell of Python inside
@@ -3117,7 +3141,7 @@ function ConfirmationPrompt({
         </div>
       ) : code === null ? (
         <pre className="json mt-2 max-h-56 overflow-auto rounded-md bg-muted p-2 font-mono text-xs">
-          {JSON.stringify(confirmation.input, null, 2)}
+          {JSON.stringify(withoutRationale(confirmation.input), null, 2)}
         </pre>
       ) : (
         <CodeView code={code} />
@@ -3655,6 +3679,7 @@ function ToolTurn({
   const [open, setOpen] = useState(false);
   const refusal = tierRefusal(result);
   const chartID = chartFromResult(call.name, result);
+  const rationale = rationaleOf(call.input);
 
   return (
     <Collapsible
@@ -3691,6 +3716,13 @@ function ToolTurn({
           </span>
         )}
       </CollapsibleTrigger>
+      {/* Outside the collapsible, like the chart below: why the model made the call
+          (D39) is what a developer scanning the transcript reads. Inside an open
+          ToolGroup that means finding the call that went wrong among fourteen
+          without opening each of them. */}
+      {rationale !== null && (
+        <p className="tool-rationale mt-1 text-xs text-muted-foreground">{rationale}</p>
+      )}
       {/*
         A chart specification is the one tool result that is worth nothing as JSON:
         §5.9 has the assistant emit a document and the pane draw it, and the values
@@ -3714,7 +3746,7 @@ function ToolTurn({
         <div className="tool-part">
           <span className="tool-label text-xs font-medium text-muted-foreground">Arguments</span>
           <pre className="json mt-1 max-h-56 overflow-auto rounded-md bg-muted p-2 font-mono text-xs">
-            {JSON.stringify(call.input ?? {}, null, 2)}
+            {JSON.stringify(withoutRationale(call.input) ?? {}, null, 2)}
           </pre>
         </div>
         {result && (

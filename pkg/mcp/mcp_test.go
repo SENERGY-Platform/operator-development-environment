@@ -22,6 +22,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -345,6 +346,35 @@ func TestMCPAdvertisesOnlyThePermittedTier(t *testing.T) {
 	l2 := toolNames(t, h.connect(t, "alice", "sess-l2"))
 	if len(l2) != 4 {
 		t.Errorf("L2 advertises %v, want all four", l2)
+	}
+}
+
+// TestMCPAdvertisesTheRationale holds D39 on the CLI provider's route: its model
+// learns what a tool takes from tools/list and from nowhere else, so a rationale
+// the registry asks for has to arrive here too.
+func TestMCPAdvertisesTheRationale(t *testing.T) {
+	h := newHarness(t)
+	h.sessions.add("sess-l2", "alice", tools.L2)
+
+	result, err := h.connect(t, "alice", "sess-l2").ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range result.Tools {
+		encoded, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("%s: %v", tool.Name, err)
+		}
+		var schema struct {
+			Properties map[string]any `json:"properties"`
+			Required   []string       `json:"required"`
+		}
+		if err := json.Unmarshal(encoded, &schema); err != nil {
+			t.Fatalf("%s: %v", tool.Name, err)
+		}
+		if _, found := schema.Properties["rationale"]; !found || !slices.Contains(schema.Required, "rationale") {
+			t.Errorf("%s advertises %s, want a required rationale", tool.Name, encoded)
+		}
 	}
 }
 

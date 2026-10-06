@@ -1164,6 +1164,9 @@ it("shows a confirmation that was already waiting when the pane mounted", async 
   // the developer cannot see, and a program behind `\n` escapes is the same thing
   // one step further on.
   expect(shown).toEqual(["print(1)"]);
+  // A call from before D39 carries no reason, and the card says nothing rather
+  // than an empty line.
+  expect(host.querySelector(".confirmation-rationale")).toBeNull();
 
   // And it is answerable from here, on the held path rather than by opening a
   // second stream into a turn that never stopped.
@@ -1215,6 +1218,88 @@ it("folds a run of tool calls into one shut row", async () => {
   });
   await settle(3);
   expect(host.querySelectorAll(".tool-turn").length).toBe(3);
+});
+
+/*
+ * D39: the reason the model gave for a call is on the row, shut or open, and
+ * only there — the arguments underneath leave it out rather than say it twice.
+ */
+it("shows why a call was made on its shut row", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  await act(async () =>
+    emit?.({
+      type: "tool_call",
+      tool_call: {
+        id: "c1",
+        name: "run_code",
+        input: { code: "df.head()", rationale: "Check which columns the export has." },
+      },
+    }),
+  );
+  await settle(3);
+
+  const row = host.querySelector(".tool-turn");
+  expect(row, "a single call has no row of its own").not.toBeNull();
+  expect(row?.querySelector(".tool-rationale")?.textContent).toBe(
+    "Check which columns the export has.",
+  );
+  expect(row?.querySelector(".tool-body"), "the row opened by itself").toBeNull();
+
+  const trigger = row?.querySelector("button.tool-head") as HTMLElement | null;
+  await act(async () => {
+    trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  await settle(3);
+  const args = row?.querySelector(".tool-body pre.json")?.textContent ?? "";
+  expect(args).toContain("df.head()");
+  expect(args).not.toContain("rationale");
+});
+
+it("puts the reason above the code on a run_code card", async () => {
+  pending = [
+    {
+      id: "conf-r",
+      tool: "run_code",
+      input: { code: "print(1)", rationale: "Confirm the kernel answers." },
+      tier: "L0",
+      created_at: "2026-10-06T00:00:00Z",
+      out_of_band: true,
+    },
+  ];
+
+  const host = await open();
+  await settle(3);
+
+  expect(host.querySelector(".confirmation-rationale")?.textContent).toBe(
+    "Confirm the kernel answers.",
+  );
+  expect(shown).toEqual(["print(1)"]);
+});
+
+it("leaves the reason out of the arguments on any other card", async () => {
+  pending = [
+    {
+      id: "conf-e",
+      tool: "delete_export",
+      input: { export_id: "exp-1", rationale: "Nothing reads it any more." },
+      tier: "L0",
+      created_at: "2026-10-06T00:00:00Z",
+      out_of_band: true,
+    },
+  ];
+
+  const host = await open();
+  await settle(3);
+
+  expect(host.querySelector(".confirmation-rationale")?.textContent).toBe(
+    "Nothing reads it any more.",
+  );
+  const args = host.querySelector(".confirmation pre.json")?.textContent ?? "";
+  expect(args).toContain("exp-1");
+  expect(args).not.toContain("rationale");
 });
 
 /* And a single call stays the row it was, name and all. */
