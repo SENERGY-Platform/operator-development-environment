@@ -177,7 +177,12 @@ func (s *surface) readLibFile(ctx context.Context, req Request) (any, error) {
 	}
 
 	req.Progress("library", "reading "+requested)
-	file, err := s.deps.Library.ReadFile(ctx, libraryRef(req), requested, s.deps.RepoMaxReadBytes)
+	// Zero takes pkg/library's own ceiling, the same megabyte pkg/repo reads for
+	// read_file. RepoMaxReadBytes bounds the window below, not this read: cut here,
+	// total_lines would count only the lines of the first window's worth of bytes,
+	// and the hint would send the model back for the last of those lines — cut
+	// mid-line, and the same fragment again on every continuation.
+	file, err := s.deps.Library.ReadFile(ctx, libraryRef(req), requested, 0)
 	if err != nil {
 		return nil, libraryRefusal(err, requested)
 	}
@@ -218,7 +223,7 @@ func (s *surface) readLibFile(ctx context.Context, req Request) (any, error) {
 		result.Text += "\n"
 	}
 	if file.Truncated {
-		// pkg/library had already cut the raw read at RepoMaxReadBytes, so even the
+		// pkg/library had already cut the raw read at its own ceiling, so even the
 		// last line of the last window is not the end of the file.
 		result.Truncated = true
 	}

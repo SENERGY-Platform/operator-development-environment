@@ -67,6 +67,12 @@ func (f *fakeLibrary) ReadFile(
 	if !found {
 		return library.File{}, fmt.Errorf("%w: %s", library.ErrNotFound, path)
 	}
+	// Cut the way the pod's helper does (_read in pkg/library), so a tool that
+	// passes too small a bound sees the same prefix it would in production.
+	if maxBytes > 0 && len(file.Text) > maxBytes {
+		file.Text = file.Text[:maxBytes]
+		file.Truncated = true
+	}
 	return file, nil
 }
 
@@ -256,8 +262,9 @@ func TestReadLibFileReturnsTheFileAsItIs(t *testing.T) {
 		t.Error("a file that fits was reported as truncated")
 	}
 
-	if len(fake.readCalls) != 1 || fake.readCalls[0].MaxBytes != 4096 {
-		t.Errorf("read calls = %+v, want RepoMaxReadBytes as the raw-read budget", fake.readCalls)
+	if len(fake.readCalls) != 1 || fake.readCalls[0].MaxBytes != 0 {
+		t.Errorf("read calls = %+v, want pkg/library's own ceiling for the raw read, "+
+			"not the window budget", fake.readCalls)
 	}
 	if fake.readCalls[0].Ref.WithPlatformToken {
 		t.Error("the library read asked for the developer's platform token")
@@ -306,6 +313,36 @@ func TestReadLibFileWindowsALongFileAndSaysWhereToContinue(t *testing.T) {
 	}
 	if !strings.HasPrefix(rest.Text, fmt.Sprintf("line %02d", next)) {
 		t.Errorf("the second window does not start at line %d: %q", next, rest.Text)
+	}
+}
+
+// A file just over the window budget: the first answer stops one line short and
+// the continuation must hand back that whole last line as the end of the file.
+// With the raw read cut at the window budget, total_lines counted only the
+// lines of that prefix and the continuation returned the same cut fragment.
+func TestReadLibFileContinuationReachesTheRealLastLine(t *testing.T) {
+	var lines []string
+	for i := 1; i <= 4; i++ {
+		lines = append(lines, fmt.Sprintf("line %02d ....", i))
+	}
+	source := strings.Join(lines, "\n") + "\n"
+	fake := &fakeLibrary{files: map[string]library.File{
+		"core.py": {Package: "operator_lib", Version: "1.7.0", Path: "core.py",
+			Text: source, Size: int64(len(source))},
+	}}
+	registry := librarySurface(t, fake, 45)
+
+	first := dispatchTool(t, registry, "read_lib_file", map[string]any{"path": "core.py"})
+	read := first.Content.(ReadLibFileResult)
+	if read.TotalLines != 4 || read.Lines != 3 || !read.Truncated {
+		t.Fatalf("first window = %+v, want lines 1-3 of 4", read)
+	}
+
+	second := dispatchTool(t, registry, "read_lib_file",
+		map[string]any{"path": "core.py", "from_line": read.FromLine + read.Lines})
+	rest := second.Content.(ReadLibFileResult)
+	if rest.Text != "line 04 ....\n" || rest.Truncated || rest.Hint != "" {
+		t.Errorf("last window = %+v, want the whole fourth line and nothing left", rest)
 	}
 }
 

@@ -379,8 +379,6 @@ type Deps struct {
 	// pane read a megabyte because an editor shows a megabyte, and a model that
 	// read one would spend a session's context on a single file. What the bound
 	// produces is a window and the line to continue from, never a silent cut.
-	// read_lib_file also hands it to Library.ReadFile as the byte budget for the
-	// raw read out of the pod, ahead of the same windowing applied on top.
 	RepoMaxReadBytes int
 }
 
