@@ -140,7 +140,7 @@ The bounds and the two-pass read they describe are in
 | Key | Default | What it decides |
 | --- | --- | --- |
 | `selection_max_criteria` | `12` | How many criteria combinations one resolution may send. One request each, because the platform ANDs a criteria list |
-| `selection_device_limit` | `10` | How many devices a resolution expands |
+| `selection_device_limit` | `10` | How many devices a resolution or `quick_profile` expands, at most; also the default page of the listing tools, whose ceiling is 100 |
 | `selection_concurrency` | `4` | How many selectables requests run at once |
 
 ## Persistence
@@ -274,7 +274,7 @@ A run is submitted from a commit or it is not submitted — see
 | `experiment_py_executable` | `uv run` | What Ray starts worker processes with. Has to match how the entrypoint starts the driver, or a Ray task starts on the cluster image's interpreter and fails on the first import `uv.lock` provides. This is why the Ray image needs none of an operator's dependencies: uv builds the environment from the repository's own `pyproject.toml` and `uv.lock`, which travel in the package, and caches it per node. `rayproject/ray` has shipped uv since 2.45 |
 | `experiment_ray_client_url` | `auto` | What Operator Lib passes to `ray.init()`. **Not** `ray_url`, which is the dashboard ODE submits jobs to over HTTP. `auto` attaches to the cluster the driver already runs in; a deployed operator names the cluster's client endpoint (`ray://host:10001`) because it connects from outside |
 | `experiment_ts_conn` | empty | The timescale DSN `provide_historic_data` reads history through. A shared database credential rather than the caller's token: it reaches every series, and which series a run reads is decided by its input topics rather than by who launched it. Named here rather than left to Operator Lib's compiled-in default so it is visible where it is handed out. Acceptable while every developer is team-internal with platform administration rights; see [SNRGY-4637](https://bitnify.atlassian.net/browse/SNRGY-4637) |
-| `experiment_kafka_bootstrap` | empty | The brokers a run's deployment config carries, for an input topic replayed from Kafka rather than read from timescale. Empty leaves a run able to train from timescale-backed topics only |
+| `experiment_kafka_bootstrap` | `kafka.kafka:9092` | The brokers a run's deployment config carries, for an input topic replayed from Kafka rather than read from timescale, which is every import's topic |
 | `experiment_max_package_bytes` | `16777216` | Bounds the job archive, and exceeding it is **reported rather than truncated**: a job that ran against a partial repository fails in a way nobody could diagnose. It also bounds ODE's own memory, since the archive is held whole and travels back base64-encoded. What it catches in practice is a checked-in model file or a data directory |
 | `experiment_max_env_vars` / `experiment_max_env_value_bytes` | `32`, `4096` | A launch arrives from an HTTP body or from an LLM tool call, and neither is trusted input |
 | `experiment_max_log_bytes` | `1048576` | Bounds the developer's own log route, and the window D34's failure extract is read out of — the same tail, so the exception in a summary is one the pane beside it shows. No log line reaches a model (§5.13) |

@@ -467,7 +467,6 @@ type ConfigStruct struct {
 	// ExperimentKafkaBootstrap is the broker list a training run's deployment config
 	// carries. A run reads history from timescale for a device topic and replays kafka
 	// for everything else (an import's topic, §5.3.4), which is the case that needs it.
-	// Empty leaves the run able to train from timescale-backed topics only.
 	ExperimentKafkaBootstrap string `json:"experiment_kafka_bootstrap"`
 	// ExperimentRayClientUrl is what a run's deployment config names as ray_url.
 	//

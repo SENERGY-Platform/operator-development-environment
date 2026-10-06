@@ -108,8 +108,8 @@ type Options struct {
 	// (SNRGY-4637). The token it uses is the one SENERGY_TOKEN already carries.
 	TimescaleWrapperURL string
 	// KafkaBootstrap is the broker list a run's deployment config carries, for an
-	// input topic replayed from Kafka rather than read from timescale. Empty leaves
-	// a run able to train from timescale-backed topics only.
+	// input topic replayed from Kafka rather than read from timescale, which is every
+	// import's topic.
 	KafkaBootstrap string
 
 	// DefaultEntrypoint is what a launch that names no command runs. The scaffold
