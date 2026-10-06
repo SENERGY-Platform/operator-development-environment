@@ -87,10 +87,14 @@ func (s *Service) resolveSplit(
 // not something DeviceUsage answers — so an OperatorId topic is named in a
 // warning rather than silently left out of the estimate, and a nil Usage (no
 // timescale-wrapper configured) skips the estimate entirely, with a warning
-// saying so rather than refusing every split launch outright.
+// saying so rather than refusing every split launch outright. A negative
+// MaxEvaluationRows disables the cap, and with it the estimate.
 func (s *Service) sizeEvaluationWindow(
 	ctx context.Context, bearer string, topics []InputTopic, split exposure.Split,
 ) ([]string, error) {
+	if s.opts.MaxEvaluationRows < 0 {
+		return nil, nil
+	}
 	if s.opts.Usage == nil {
 		return []string{"the test window was not sized: no usage reader is configured"}, nil
 	}

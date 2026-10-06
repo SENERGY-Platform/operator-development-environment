@@ -140,7 +140,8 @@ type Options struct {
 	Usage UsageReader
 	// MaxEvaluationRows bounds the estimate above. A launch whose test window is
 	// estimated to exceed it is refused before the package is built, naming the
-	// estimate and the cap.
+	// estimate and the cap. Zero takes the default; a negative value disables the
+	// cap.
 	MaxEvaluationRows int64
 
 	// RequestTimeout bounds one Ray or MLflow API call, and UploadTimeout the one
@@ -311,7 +312,7 @@ func New(deps Deps) (*Service, error) {
 	if opts.JobTokenLifetime <= 0 {
 		opts.JobTokenLifetime = defaultJobTokenLifetime
 	}
-	if opts.MaxEvaluationRows <= 0 {
+	if opts.MaxEvaluationRows == 0 {
 		opts.MaxEvaluationRows = defaultMaxEvaluationRows
 	}
 

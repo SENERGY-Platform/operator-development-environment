@@ -123,6 +123,30 @@ func TestALaunchOverTheConfiguredEvaluationRowCapIsRefused(t *testing.T) {
 	}
 }
 
+// A negative cap disables the check: the same week that is refused above is
+// launched, and the usage reader is not asked at all.
+func TestALaunchWithTheEvaluationRowCapDisabledIsNotSized(t *testing.T) {
+	usage := &fakeUsage{bytesPerDay: map[string]float64{testDeviceID: 32 * 1000}}
+	h := newHarness(t, func(deps *experiments.Deps) {
+		deps.Usage = usage
+		deps.MaxEvaluationRows = -1
+	})
+	h.ready()
+
+	trainingEnd := time.Now().UTC().Add(-24 * time.Hour)
+	split := testSplit(trainingEnd, 7*24*time.Hour)
+
+	h.launch(func(req *experiments.LaunchRequest) { req.Split = split })
+
+	if len(h.ray.Jobs()) != 1 {
+		t.Errorf("jobs = %d, want the launch submitted with the cap disabled",
+			len(h.ray.Jobs()))
+	}
+	if len(usage.asked) != 0 {
+		t.Errorf("asked = %v, want no usage read with the cap disabled", usage.asked)
+	}
+}
+
 // --- the accepted case: the deployment config and the stored record ---
 
 func TestALaunchWithASplitWritesTheBoundsIntoTheDeploymentConfigAndTheRecord(t *testing.T) {

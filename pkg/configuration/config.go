@@ -501,7 +501,7 @@ type ConfigStruct struct {
 	// replay is sequential infer() calls in the driver, so an unbounded window is
 	// an unbounded driver loop (risk register); a launch whose window is estimated
 	// to exceed this is refused before anything is submitted, naming the estimate
-	// and the cap.
+	// and the cap. A negative value disables the cap.
 	ExperimentMaxEvaluationRows int64 `json:"experiment_max_evaluation_rows"`
 
 	// ExperimentRequestTimeout bounds one Ray or MLflow API call;
@@ -843,7 +843,7 @@ func applyDefaults(config Config) {
 	if config.ExperimentMaxLogBytes <= 0 {
 		config.ExperimentMaxLogBytes = 1048576
 	}
-	if config.ExperimentMaxEvaluationRows <= 0 {
+	if config.ExperimentMaxEvaluationRows == 0 {
 		config.ExperimentMaxEvaluationRows = 1_000_000
 	}
 	if config.ExperimentRequestTimeout == "" {

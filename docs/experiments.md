@@ -563,7 +563,8 @@ them: the launch sizes the window from the platform's usage accounting — store
 bytes per day over the rough per-point size `estimate_read_cost` uses, for every
 device-backed topic — and refuses an estimate above
 `experiment_max_evaluation_rows`, one million by default, naming the estimate and
-the cap. A topic replayed from Kafka cannot be sized that way and is named in a
+the cap. A negative value disables the cap, and the window is then not sized at
+all. A topic replayed from Kafka cannot be sized that way and is named in a
 warning instead, because refusing on a figure that does not exist would be worse
 than proceeding with the developer told.
 
