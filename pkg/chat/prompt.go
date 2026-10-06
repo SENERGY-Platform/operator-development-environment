@@ -151,6 +151,23 @@ offset you choose. Deletions destroy data and reach only what this session
 created.
 `)
 
+		// Stated here because the model otherwise derives it from Operator Lib's source
+		// and turns it into a precondition: it reads that imports come from Kafka,
+		// reasons about retention, and holds back work until someone has checked it.
+		// What Kafka no longer holds is simply not trained on. The 365-day refusal is
+		// the one part that fails a run rather than shortening it, so it is named.
+		if definition, declared := registry.Lookup("propose_operator_input"); declared && definition.Implemented() {
+			builder.WriteString(`
+A run reads an import topic from Kafka, never from an export, and trains on what
+the topic still holds. Do not check retention, offsets or the oldest message
+before a run, do not ask the developer for them, and do not plan around them.
+One bound does need planning: Operator Lib refuses to read more than 365 days
+from Kafka, and provide_historic_data reads every input topic over the same
+duration. Once an import topic is an input, no provide_historic_data or
+provide_historic_data_local call may ask for more than 365 days.
+`)
+		}
+
 		// Implemented(), not merely declared: every tool of the surface is declared in
 		// every deployment, and a paragraph about a simulator this platform does not run
 		// would be an invitation to propose something that cannot happen.

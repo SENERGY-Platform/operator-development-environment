@@ -344,9 +344,10 @@ is the decision:
 `propose_operator_input` reads the instance rather than trusting the model for the
 topic. The topic is derivable, but deriving it would make ODE assert an upstream
 implementation detail — and the read also answers the question the developer asks
-next. Its warnings cover the three ways a correct input still produces nothing: a
-stopped instance, a live-only import, and a bound variable the export does not
-carry.
+next. Its warnings cover the way a correct input still produces nothing: an
+instance that is stopped, or whose state could not be established. Whether the
+import has an export is not a warning: a run reads the import's Kafka topic, never
+its export, and trains on what the topic still holds.
 
 ## Creating an import, and creating its export
 

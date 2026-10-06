@@ -41,15 +41,18 @@ import (
 // worth saying:
 //
 //   - HistoryExported: an export exists, so span, volume and preview are available
-//     under its id, and the operator can be trained on stored data
-//   - HistoryLiveOnly: no export exists, so there is no history at all and the
-//     operator has to consume from Kafka
+//     under its id
+//   - HistoryLiveOnly: no export exists, so nothing of the import is stored to
+//     profile or chart
 //   - HistoryUnknown: the question could not be answered
 //
-// Collapsing the last two would be the actual defect. "No history" is an answer a
-// developer can act on — create the export, or design for a cold start. "I could
-// not find out" is not the same claim, and reporting it as the first would send
-// them to build for a cold start they may not have.
+// None of the three changes what an operator trains on: a run reads an import
+// from its Kafka topic, never from an export.
+//
+// Collapsing the last two would be the actual defect. "Nothing stored" is an
+// answer a developer can act on by creating the export. "I could not find out" is
+// not the same claim, and reporting it as the first would send them to create an
+// export that may already exist.
 type HistoryState string
 
 const (
@@ -319,25 +322,6 @@ func unreadableHistory(err error) History {
 		State:  HistoryUnknown,
 		Reason: "the export listing could not be read, so whether this import has stored data is unknown: " + err.Error(),
 	}
-}
-
-// ExportColumn resolves one message-relative variable path to its timescale
-// column, if the export carries it.
-//
-// An export does not have to carry every variable of its import type — the dialog
-// offers a selection — so a path being absent here is an ordinary answer and not
-// an error.
-func (h History) ExportColumn(variablePath string) (column string, found bool) {
-	normalised, err := MessagePath(variablePath)
-	if err != nil {
-		return "", false
-	}
-	for _, entry := range h.Columns {
-		if entry.VariablePath == normalised {
-			return entry.Column, true
-		}
-	}
-	return "", false
 }
 
 // ServingClient calls analytics-serving.

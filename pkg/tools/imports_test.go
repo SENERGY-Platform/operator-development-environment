@@ -464,15 +464,7 @@ func TestImportTypeMetadataNeedsAnId(t *testing.T) {
 // --- propose_operator_input ---
 
 func TestProposeOperatorInputEmitsTheFlowEngineShape(t *testing.T) {
-	imp := &fakeImports{
-		instances: []idmodel.Instance{runningImport()},
-		history: imports.History{
-			State: imports.HistoryExported, ExportID: "export-1",
-			Columns: []imports.HistoryColumn{
-				{VariablePath: "value.temperature_2m", Column: "temp_c"},
-			},
-		},
-	}
+	imp := &fakeImports{instances: []idmodel.Instance{runningImport()}}
 
 	answer := callImportTool(t, imp, "propose_operator_input", map[string]any{
 		"instance_id": testImportInstance,
@@ -498,7 +490,7 @@ func TestProposeOperatorInputEmitsTheFlowEngineShape(t *testing.T) {
 		t.Errorf("values = %v", values)
 	}
 	if warnings := answer["warnings"].([]any); len(warnings) != 0 {
-		t.Errorf("warnings = %v, want none for a running, exported import", warnings)
+		t.Errorf("warnings = %v, want none for a running import", warnings)
 	}
 }
 
@@ -533,48 +525,9 @@ func TestProposeOperatorInputWarnsAboutAStoppedImport(t *testing.T) {
 	})
 
 	warnings := answer["warnings"].([]any)
-	if len(warnings) < 2 {
-		t.Fatalf("warnings = %v, want the stopped container and the missing history", warnings)
-	}
-	joined := ""
-	for _, warning := range warnings {
-		joined += warning.(string) + "\n"
-	}
-	if !strings.Contains(joined, "not running") {
-		t.Errorf("a stopped import has to be warned about: %s", joined)
-	}
-	if !strings.Contains(joined, "provide_historic_data") {
-		t.Errorf("a live-only import has to say what the operator can still do: %s", joined)
-	}
-}
-
-// An export carries only the variables it was created with, so a bound variable
-// may have no stored history although the import does.
-func TestProposeOperatorInputWarnsAboutAnUnexportedVariable(t *testing.T) {
-	imp := &fakeImports{
-		instances: []idmodel.Instance{runningImport()},
-		history: imports.History{
-			State: imports.HistoryExported, ExportID: "export-1",
-			Columns: []imports.HistoryColumn{
-				{VariablePath: "value.pressure_msl", Column: "pressure"},
-			},
-		},
-	}
-
-	answer := callImportTool(t, imp, "propose_operator_input", map[string]any{
-		"instance_id": testImportInstance,
-		"rationale":   "because",
-		"bindings": []map[string]any{
-			{"input_name": "temperature", "variable_path": "value.temperature_2m"},
-		},
-	})
-
-	warnings := answer["warnings"].([]any)
-	if len(warnings) == 0 {
-		t.Fatal("no warning for a variable the export does not carry")
-	}
-	if !strings.Contains(warnings[0].(string), "value.temperature_2m") {
-		t.Errorf("the warning should name the variable: %v", warnings[0])
+	if len(warnings) != 1 || !strings.Contains(warnings[0].(string), "not running") {
+		t.Errorf("warnings = %v, want only the stopped container: a run reads the import's "+
+			"Kafka topic, so a missing export is not a reason to warn", warnings)
 	}
 }
 

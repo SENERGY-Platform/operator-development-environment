@@ -51,7 +51,12 @@ func TestAnExportedImportReportsItsColumns(t *testing.T) {
 	if history.ExportID != "export-1" {
 		t.Errorf("export_id = %q, want the id timescale-wrapper takes as exportId", history.ExportID)
 	}
-	column, found := history.ExportColumn("value.temperature_2m")
+	column, found := "", false
+	for _, entry := range history.Columns {
+		if entry.VariablePath == "value.temperature_2m" {
+			column, found = entry.Column, true
+		}
+	}
 	if !found {
 		t.Fatal("the temperature column was not resolved; the mapping from variable path to " +
 			"timescale column is the whole point of this lookup")
@@ -125,30 +130,5 @@ func TestNoServingConfiguredAnswersUnknownNotLiveOnly(t *testing.T) {
 	}
 	if !strings.Contains(history.Reason, "configured") {
 		t.Errorf("the reason should name the missing configuration: %q", history.Reason)
-	}
-}
-
-// A column the export did not include is an ordinary answer, not an error: the
-// export dialog offers a selection of the import type's variables.
-func TestAnUnexportedVariableIsNotFound(t *testing.T) {
-	service := newService(t, &fakeSelectables{}, &fakeInstances{},
-		&fakeExports{serve: []Export{importExport()}, total: 1})
-
-	history := service.History(context.Background(), testToken, testInstanceID)
-	if _, found := history.ExportColumn("value.pressure_msl"); found {
-		t.Error("a variable the export does not carry must not resolve to a column")
-	}
-}
-
-// The same variable addressed with the output root still on the front has to
-// resolve, because that is the form a model repeats back from an import type.
-func TestExportColumnNormalisesThePath(t *testing.T) {
-	service := newService(t, &fakeSelectables{}, &fakeInstances{},
-		&fakeExports{serve: []Export{importExport()}, total: 1})
-
-	history := service.History(context.Background(), testToken, testInstanceID)
-	column, found := history.ExportColumn("root.value.temperature_2m")
-	if !found || column != "temp_c" {
-		t.Errorf("column = %q found = %v, want temp_c", column, found)
 	}
 }

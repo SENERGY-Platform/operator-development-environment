@@ -25,7 +25,6 @@ import (
 	"strings"
 	"time"
 
-	flowengine "github.com/SENERGY-Platform/analytics-flow-engine/lib"
 	dsmodel "github.com/SENERGY-Platform/device-selection/v2/pkg/model"
 	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
 
@@ -567,11 +566,10 @@ func (s *surface) proposeOperatorInput(ctx context.Context, req Request) (any, e
 		return nil, fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
 	}
 
-	history := s.deps.Imports.History(ctx, req.Token, instance.Id)
-	warnings := importWarnings(instance, history, input.Values)
+	warnings := importWarnings(instance)
 
 	return map[string]any{
-		"instance":   importInstanceView(instance, &history),
+		"instance":   importInstanceView(instance, nil),
 		"rationale":  in.Rationale,
 		"bindings":   reasons,
 		"node_input": input,
@@ -585,7 +583,11 @@ func (s *surface) proposeOperatorInput(ctx context.Context, req Request) (any, e
 
 // importWarnings says what would make this input deploy cleanly and still produce
 // nothing useful. Each of these is silent at deployment time.
-func importWarnings(instance idmodel.Instance, history imports.History, values []flowengine.NodeValue) []string {
+//
+// Whether the import has an export is not among them, and its history is not read
+// here at all: a run reads an import from its Kafka topic, never from an export, so
+// what an export holds changes nothing about what the operator trains on.
+func importWarnings(instance idmodel.Instance) []string {
 	warnings := []string{}
 
 	if running, known := imports.Running(instance); !known {
@@ -596,30 +598,6 @@ func importWarnings(instance idmodel.Instance, history imports.History, values [
 		warnings = append(warnings,
 			"this import is not running: the input is correct but no message will arrive until "+
 				"the instance is started")
-	}
-
-	switch history.State {
-	case imports.HistoryLiveOnly:
-		warnings = append(warnings,
-			"no export exists for this import, so none of its past is in timescale: the operator "+
-				"can consume live values, and the Python operator library's provide_historic_data "+
-				"replays the Kafka topic, but there is nothing to profile or backtest against first")
-	case imports.HistoryUnknown:
-		warnings = append(warnings,
-			"whether this import has stored history is unknown: "+history.Reason)
-	case imports.HistoryExported:
-		missing := []string{}
-		for _, value := range values {
-			if _, found := history.ExportColumn(value.Path); !found {
-				missing = append(missing, value.Path)
-			}
-		}
-		if len(missing) > 0 {
-			warnings = append(warnings, fmt.Sprintf(
-				"the export for this import does not carry %v, so those variables have no stored "+
-					"history even though others of this import do — an export includes only the "+
-					"variables it was created with", missing))
-		}
 	}
 	return warnings
 }
