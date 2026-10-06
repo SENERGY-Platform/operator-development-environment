@@ -726,10 +726,7 @@ func grade(spec CriterionSpec, metrics map[string]float64, source string) Criter
 
 	switch {
 	case !reported:
-		criterion.Met = NotEvaluated(ReasonMetricNotReported,
-			"the run logged no %s; it logged %s. A criterion whose metric was never "+
-				"recorded is not a criterion the run missed",
-			spec.Metric, reportedMetrics(metrics))
+		criterion.Met = notReported(spec.Metric, metrics, 0)
 	case !spec.HasThreshold:
 		criterion.Met = NotEvaluated(ReasonNoThreshold,
 			"%s names no threshold for %s, so there is a value (%g) and nothing to "+
@@ -741,6 +738,29 @@ func grade(spec CriterionSpec, metrics map[string]float64, source string) Criter
 		criterion.Met = Unmet()
 	}
 	return criterion
+}
+
+// notReported is metric_not_reported's verdict. grade builds it from every metric
+// the run logged, which is right for the developer's own route; MaskedFor builds
+// it again from the metrics its copy keeps, with withheld counting the rest,
+// because D37 lets a model learn how many metrics were withheld and never their
+// names — and this Detail was the one place the names still travelled.
+func notReported(metric string, visible map[string]float64, withheld int) Verdict {
+	const missed = "A criterion whose metric was never recorded is not a criterion " +
+		"the run missed"
+	switch {
+	case withheld == 0:
+		return NotEvaluated(ReasonMetricNotReported, "the run logged no %s; it logged %s. "+missed,
+			metric, reportedMetrics(visible))
+	case len(visible) == 0:
+		return NotEvaluated(ReasonMetricNotReported,
+			"the run logged no %s; it logged %d other metric(s), all withheld from this "+
+				"summary. "+missed, metric, withheld)
+	default:
+		return NotEvaluated(ReasonMetricNotReported,
+			"the run logged no %s; of what it did log, this summary carries %s, and %d "+
+				"more were withheld from it. "+missed, metric, reportedMetrics(visible), withheld)
+	}
 }
 
 // reportedMetrics names what the run did log, in a bounded, ordered list. The

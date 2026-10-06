@@ -725,3 +725,85 @@ func TestTheUnmaskedCriteriaSummaryStillCarriesAnUnparseableFilesRawLine(t *test
 			"MaskedFor fix", summary.EvaluationCriteria.Met.Status().Detail)
 	}
 }
+
+// D37 lets a model learn how many metrics were withheld, never which. A criterion
+// on a metric the run never logged used to list every name the run did log in
+// its Detail, withheld ones included, and stop after twelve — so a model read the
+// names and guessed the rest.
+func TestANotReportedCriterionNamesNoWithheldMetric(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml", "metric: mae\ngoal: minimise\nthreshold: 30\n")
+	h.commit("State the real criterion")
+	launched := h.launch(func(req *experiments.LaunchRequest) {
+		req.Split = testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+	})
+	h.mlflow.Finish(t, launched.RunID, "FINISHED",
+		map[string]float64{"validation_mae": 25, "timing.fit.seconds": 18})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	summary := summaryOf(t, h, launched.ID)
+	if own := summary.EvaluationCriteria.Met.Status().Detail; !strings.Contains(own, "validation_mae") {
+		t.Errorf("the developer's own detail = %q, want the names the run logged, "+
+			"which is what makes a misspelt criterion repairable", own)
+	}
+
+	masked := summary.MaskedFor(exposure.L0)
+	status := masked.EvaluationCriteria.Met.Status()
+	if status.Reason != experiments.ReasonMetricNotReported {
+		t.Fatalf("reason = %q, want metric_not_reported", status.Reason)
+	}
+	for _, name := range []string{"validation_mae", "timing.fit.seconds"} {
+		if strings.Contains(status.Detail, name) {
+			t.Errorf("detail = %q, want %q withheld", status.Detail, name)
+		}
+	}
+	if !strings.Contains(status.Detail, "2 other metric(s), all withheld") {
+		t.Errorf("detail = %q, want the count of what was withheld", status.Detail)
+	}
+}
+
+// The visible names stay, so a misspelt criterion is still repairable from the
+// model's copy; only the withheld ones become a count.
+func TestANotReportedCriterionStillListsTheMetricsTheSummaryCarries(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	h.write("evaluation.yaml",
+		"metric: rmse\ngoal: minimise\nthreshold: 0.35\nsecondary_metrics: [val_rmse]\n")
+	h.commit("State the real criteria")
+	launched := h.launch()
+	h.mlflow.Finish(t, launched.RunID, "FINISHED",
+		map[string]float64{"val_rmse": 0.31, "extra_metric": 9.9})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	detail := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0).
+		EvaluationCriteria.Met.Status().Detail
+	if !strings.Contains(detail, "val_rmse") || !strings.Contains(detail, "1 more were withheld") {
+		t.Errorf("detail = %q, want the declared name listed and the other counted", detail)
+	}
+	if strings.Contains(detail, "extra_metric") {
+		t.Errorf("detail = %q, want the undeclared name withheld", detail)
+	}
+}
+
+// Under a split with no usable cutoff, every metric is withheld whatever
+// evaluation.yaml declares, so the note has to name that rule: the declaration
+// rule sends the developer to edit a file that would change nothing.
+func TestTheWithheldNoteNamesTheMissingTrainingEndUnderASplit(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	launched := h.launch(func(req *experiments.LaunchRequest) {
+		req.Split = testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+	})
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", map[string]float64{"baseline": 0.9})
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	note := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0).Note
+	if !strings.Contains(note, trainingEndedAtTag) {
+		t.Errorf("note = %q, want it to name the missing training end", note)
+	}
+	if strings.Contains(note, "a model reads only a metric the developer declared") {
+		t.Errorf("note = %q, want the declaration rule left out: it did not withhold "+
+			"anything here", note)
+	}
+}

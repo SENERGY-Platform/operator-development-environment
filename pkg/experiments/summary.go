@@ -566,7 +566,10 @@ const (
 // *terminal* run without matching tags means the split was silently dropped —
 // simple_struct reads declared keys only, so an Operator Lib older than v1.7.0
 // has no training_end or test_end attribute on Config at all and trains
-// unbounded, exactly as if no split had been set.
+// unbounded, exactly as if no split had been set. v1.7.0 has both and drops them
+// all the same for an op.py whose config class declares a field of its own,
+// which the scaffold's does: simple_struct reads only that class's own
+// attributes, never the ones it inherits from Config.
 func splitReport(split *exposure.Split, tags, params map[string]string, finished bool) *SplitReport {
 	if split == nil {
 		return nil
@@ -596,10 +599,12 @@ func splitReport(split *exposure.Split, tags, params map[string]string, finished
 		report.Confirmed = splitPending
 	default:
 		report.Confirmed = splitNotConfirmed
-		report.Note = "the run recorded no split bounds, or different ones; a " +
-			"repository pinned to an Operator Lib older than v1.7.0 drops both fields " +
-			"silently and the run then trained unbounded and skipped the evaluation; " +
-			"see docs/operator-lib-versions.md"
+		report.Note = "the run recorded no split bounds, or different ones. Two causes " +
+			"drop both fields silently, after which the run trains unbounded and skips " +
+			"the evaluation: an Operator Lib pin older than v1.7.0, or a pin at v1.7.0 " +
+			"with an op.py whose config class (class CustomConfig(Config)) declares a " +
+			"field of its own, because simple_struct then reads only that class's own " +
+			"fields; see docs/operator-lib-versions.md"
 	}
 
 	if value, err := strconv.ParseInt(params[paramEvaluationMessages], 10, 64); err == nil {

@@ -16,7 +16,13 @@
 
 package experiments
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
+)
 
 // D37's refinement over the value reduction below: the timestamp latestMetrics
 // hands MaskedFor is the maximum over a key's whole history, not the timestamp of
@@ -74,5 +80,24 @@ func TestLatestMetricsTimestampOfAnUnrepeatedMetricIsItsOwn(t *testing.T) {
 	if values["rmse"] != 0.31 || times["rmse"] != 1_700_000_000_000 {
 		t.Errorf("value, timestamp = %v, %d, want the single point's own",
 			values["rmse"], times["rmse"])
+	}
+}
+
+// On v1.7.0 the split is dropped by the scaffold's own `class
+// CustomConfig(Config)`, not only by an older pin; a note naming the pin alone
+// sent the reader looking at a pin that was already right.
+func TestAnUnconfirmedSplitNamesBothCauses(t *testing.T) {
+	split := &exposure.Split{
+		TrainingEnd: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		TestEnd:     time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+	}
+	report := splitReport(split, nil, nil, true)
+	if report.Confirmed != splitNotConfirmed {
+		t.Fatalf("confirmed = %q, want %q", report.Confirmed, splitNotConfirmed)
+	}
+	for _, cause := range []string{"older than v1.7.0", "class CustomConfig(Config)"} {
+		if !strings.Contains(report.Note, cause) {
+			t.Errorf("note = %q, want it to name %q", report.Note, cause)
+		}
 	}
 }

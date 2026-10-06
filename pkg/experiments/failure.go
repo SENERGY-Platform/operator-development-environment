@@ -360,6 +360,16 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 		}
 		s.SecondaryCriteria = secondary
 	}
+	if withheld > 0 {
+		s.EvaluationCriteria = withoutWithheldNames(s.EvaluationCriteria, metrics, withheld)
+		if len(s.SecondaryCriteria) > 0 {
+			secondary := make([]Criterion, len(s.SecondaryCriteria))
+			for i, criterion := range s.SecondaryCriteria {
+				secondary[i] = withoutWithheldNames(criterion, metrics, withheld)
+			}
+			s.SecondaryCriteria = secondary
+		}
+	}
 	// ResourceUsage.PeakMemoryMB is one float under a name ODE chose, taken from
 	// whichever of three memory metrics the job reported — so it is as writable from
 	// a replay as any other metric, and it needed no forged timestamp and no
@@ -375,11 +385,21 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 	// was withheld, which is all this field exists to carry.
 	s.MetricTimes = nil
 	if withheld > 0 {
+		// The rule that withheld them, not the general one: under a split with no
+		// usable cutoff, keepMetric withholds every metric whatever evaluation.yaml
+		// declares, and naming the declaration rule there sends the developer to
+		// edit a file that would change nothing.
+		reason := "a model reads only a metric the developer declared in " +
+			"evaluation.yaml (as their evaluation criterion or a secondary one) that " +
+			"was also logged before training ended."
+		if split && !hasCutoff {
+			reason = "the run recorded no usable training end (" +
+				operatorTrainingEndedAtTag + "), and under a data split that withholds " +
+				"every metric, declared in evaluation.yaml or not, because none of them " +
+				"can be shown to predate the test window."
+		}
 		s.Note = strings.TrimSpace(s.Note + fmt.Sprintf(
-			" %d metric(s) were withheld from this summary: a model reads only a "+
-				"metric the developer declared in evaluation.yaml (as their evaluation "+
-				"criterion or a secondary one) that was also logged before training "+
-				"ended.", withheld))
+			" %d metric(s) were withheld from this summary: %s", withheld, reason))
 	}
 	if criteriaCut {
 		s.Note = strings.TrimSpace(s.Note +
@@ -461,6 +481,17 @@ func withholdCriterion(
 			"here to grade; the developer's own results route has it",
 		criterion.Metric)
 	return criterion, true
+}
+
+// withoutWithheldNames re-renders a metric_not_reported criterion from the
+// metrics this copy keeps. grade listed every name the run logged, withheld ones
+// included; see notReported.
+func withoutWithheldNames(criterion Criterion, kept map[string]float64, withheld int) Criterion {
+	if criterion.Met.Status().Reason != ReasonMetricNotReported {
+		return criterion
+	}
+	criterion.Met = notReported(criterion.Metric, kept, withheld)
+	return criterion
 }
 
 // criteriaFileProblem reports whether reason is a criterion's Met.Status().Reason
@@ -555,7 +586,8 @@ func permittedMetricNames(s Summary) map[string]struct{} {
 // Absent is not reported here a second time: a terminal run under a data split
 // that carries no such tag is exactly what splitReport already calls "not
 // confirmed by the run" in the data_split block (a repository whose Operator Lib
-// pin predates v1.7.0), and a run with no split was never going to carry it. In
+// pin predates v1.7.0, or whose op.py config subclass drops the split on v1.7.0),
+// and a run with no split was never going to carry it. In
 // both cases the phase filter simply has nothing to filter by, and MaskedFor falls
 // back to the name allowlist alone.
 func trainingEndedAt(s Summary) (cutoff int64, usable bool) {
