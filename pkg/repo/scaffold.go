@@ -64,7 +64,7 @@ type ScaffoldValues struct {
 	// operator.yaml.
 	Description string
 	// ClassName is a Python-safe identifier derived from the repository name, used
-	// for the model and the tests.
+	// for the model class.
 	ClassName string
 	// OperatorLib and OperatorLibRef are the D15 pin: which library, at which ref,
 	// resolved at scaffold time.
@@ -132,7 +132,6 @@ var scaffoldPaths = []string{
 	".github/workflows/build.yml",
 	"operator.yaml",
 	"evaluation.yaml",
-	"tests/test_op.py",
 	".gitignore",
 	"README.md",
 }
@@ -453,7 +452,6 @@ class Operator(MLOperator):
 
 Separate from op.py because the two run in different places: op.py runs in the
 operator's own process for every message, while this runs distributed and rarely.
-Keeping them apart is also what makes the training testable without Kafka.
 
 provide_historic_data() is Operator Lib's reader over the platform's timeseries
 store. It returns Ray Datasets, so the training below never holds the whole
@@ -484,8 +482,9 @@ class <<.ClassName>>Model(PythonModel):
         self.baseline = baseline
 
     def predict(self, context, model_input=None, params=None):
-        # The pyfunc signature carries a context in production and not in a test,
-        # so the payload is taken from whichever argument holds it.
+        # The pyfunc signature carries a context when MLflow calls it and not when the
+        # model is called directly, so the payload is taken from whichever argument
+        # holds it.
         payload = model_input if model_input is not None else context
         value = float(payload.get("value", 0.0))
         return value - self.baseline
@@ -546,18 +545,8 @@ dependencies = [
   "operator-lib @ git+https://github.com/<<.OperatorLib>>.git@<<.OperatorLibRef>>",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest"]
-
 [tool.uv]
 package = false
-
-[tool.pytest.ini_options]
-# "package = false" above keeps the modules out of the environment, and pytest
-# puts the test file's own directory on sys.path rather than the repository root.
-# Without this line "pytest" cannot import op, and only "python -m pytest" works,
-# because that form adds the working directory itself.
-pythonpath = ["."]
 `,
 
 	"Dockerfile": `# The operator image. Built and pushed by .github/workflows/build.yml.
@@ -724,70 +713,10 @@ rationale: >
   The scaffold's values exist so the file parses, not because they mean anything.
 `,
 
-	"tests/test_op.py": `"""Tests for the operator's own logic.
-
-They run without Kafka, without Ray and without MLflow, which is the point: the
-three methods that are yours are pure enough to test directly, and a test that
-needs the platform would not be run.
-
-    uv run --extra dev pytest
-"""
-
-import datetime
-
-from op import CustomConfig, Operator
-from training import <<.ClassName>>Model
-
-
-def _operator() -> Operator:
-    """An operator with its config in place but none of the platform behind it.
-
-    Operator Lib's init() wires Kafka and the model registry, so it is deliberately
-    not called here; the attributes the tested methods read are set directly.
-    """
-    operator = Operator()
-    operator.config = CustomConfig({})
-    operator.trained_at = None
-    return operator
-
-
-def test_infer_without_a_model_produces_nothing():
-    timestamp, result, model = _operator().infer(
-        None, {"value": 1.0}, "value", "device-1", datetime.datetime.now()
-    )
-    assert (timestamp, result, model) == (None, None, None)
-
-
-def test_infer_returns_the_models_prediction():
-    operator = _operator()
-    _, result, _ = operator.infer(
-        <<.ClassName>>Model(baseline=2.0),
-        {"value": 5.0},
-        "value",
-        "device-1",
-        datetime.datetime.now(),
-    )
-    assert result == {"prediction": 3.0}
-
-
-def test_a_missing_value_is_not_an_error():
-    _, result, _ = _operator().infer(
-        <<.ClassName>>Model(baseline=0.0), {}, "value", "device-1", datetime.datetime.now()
-    )
-    assert result is None
-
-
-def test_retraining_is_needed_until_there_is_a_model():
-    operator = _operator()
-    assert operator.need_retraining(None) is True
-    assert operator.need_retraining(<<.ClassName>>Model(baseline=0.0)) is False
-`,
-
 	".gitignore": `__pycache__/
 *.py[cod]
 .venv/
 venv/
-.pytest_cache/
 .ruff_cache/
 
 # Written into the image at build time from the commit being built.
@@ -822,7 +751,6 @@ Development Environment. Every file here is yours to change, including this one.
 | ".github/workflows/build.yml" | Builds and pushes "<<.Image>>". Change the registry here. |
 | "operator.yaml" | What the analytics stack registers: inputs, outputs, config. |
 | "evaluation.yaml" | Your criteria for whether a run is good, plus what Operator Lib needs to score a test window itself. ODE never writes this. |
-| "tests/test_op.py" | Tests for the three methods that are yours. |
 
 ## The lock file
 
@@ -845,10 +773,6 @@ file is what makes the recorded SHA describe the whole run rather than only its
 source. That is why it is not left to be remembered — and if the scaffold reported
 that it could not write one, the command above is the repair.
 
-## Running the tests
-
-    uv run --extra dev pytest
-
 ## Building by hand
 
     docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD) -t <<.Image>>:dev .
@@ -857,7 +781,7 @@ that it could not write one, the command above is the repair.
 
 "pyproject.toml" pins Operator Lib at "<<.OperatorLibRef>>", the newest at the time
 this repository was scaffolded. The library tracks latest and promises no
-stability, so moving the pin is a deliberate edit — do it, run the tests, and
+stability, so moving the pin is a deliberate edit — change it, run "uv lock", and
 commit the two together.
 `,
 }

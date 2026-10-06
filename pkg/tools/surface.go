@@ -1172,7 +1172,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			Name: "read_file",
 			Description: "Read one file of the developer's working copy, by a path relative to " +
 				"the repository root. This is how you read the operator's own code — op.py, " +
-				"training.py, the tests, operator.yaml — and it is the tool to reach for " +
+				"training.py, operator.yaml — and it is the tool to reach for " +
 				"before proposing any change to a file, because a write replaces the whole " +
 				"file and you cannot write one you have not read.\n\n" +
 				"Use this rather than run_code. Reading a file in a cell does the same thing, " +
@@ -1195,7 +1195,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			Schema: json.RawMessage(`{
 			  "type": "object",
 			  "properties": {
-			    "path": {"type": "string", "description": "Path relative to the repository root, e.g. op.py or tests/test_op.py."},
+			    "path": {"type": "string", "description": "Path relative to the repository root, e.g. op.py or .github/workflows/build.yml."},
 			    "from_line": {"type": "integer", "description": "First line to return, 1-based. Omit it for the start of the file; pass the from_line a truncated answer reports to continue."},
 			    "max_lines": {"type": "integer", "description": "At most this many lines. Omit it to fill the byte budget, which is usually what you want."}
 			  },
@@ -1218,7 +1218,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			Schema: json.RawMessage(`{
 			  "type": "object",
 			  "properties": {
-			    "path": {"type": "string", "description": "Path relative to the repository root, e.g. op.py or tests/test_op.py."},
+			    "path": {"type": "string", "description": "Path relative to the repository root, e.g. op.py or .github/workflows/build.yml."},
 			    "content": {"type": "string", "description": "The file's complete new content."}
 			  },
 			  "required": ["path", "content"]

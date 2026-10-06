@@ -129,8 +129,8 @@ Repository files come from list_files and read_file; the listing is complete for
 the repository, including dotfiles, and needs no filesystem search to verify it.
 Branch, changes and recent commits come from git_status; the source of Operator
 Lib comes from list_lib_files and read_lib_file. None of these need a cell, and
-that holds inside a cell you are running for another reason: a cell that runs the
-tests and opens uv.lock on the way past is still a file read that had a tool.
+that holds inside a cell you are running for another reason: a cell that fits the
+model and opens uv.lock on the way past is still a file read that had a tool.
 
 run_code is not a substitute for these tools. Where a tool does the job, call it.
 But a cell does not carry the tier or training window — it runs with the

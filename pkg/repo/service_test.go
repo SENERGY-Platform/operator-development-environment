@@ -149,7 +149,7 @@ func TestTheScaffoldedPythonCompiles(t *testing.T) {
 	if err != nil {
 		t.Skip("python3 is not installed")
 	}
-	for _, name := range []string{"main.py", "op.py", "training.py", "tests/test_op.py"} {
+	for _, name := range []string{"main.py", "op.py", "training.py"} {
 		command := exec.Command(python, "-m", "py_compile", h.path("jonah", "pv-forecast", name))
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Errorf("%s does not compile: %v\n%s", name, err, output)
@@ -355,7 +355,7 @@ func TestTheFileTreeShowsEveryFileAndNoObjectDatabase(t *testing.T) {
 	// D14: the workflow file and the gitignore are files of the repository like any
 	// other, which is exactly what jupyter_server's contents API would have hidden.
 	for _, wanted := range []string{
-		".github/workflows/build.yml", ".gitignore", "op.py", "tests/test_op.py",
+		".github/workflows/build.yml", ".gitignore", "op.py",
 	} {
 		if !paths[wanted] {
 			t.Errorf("%s is not in the tree", wanted)

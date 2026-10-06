@@ -234,7 +234,6 @@ ML operator uses:
 | `.github/workflows/build.yml` | Builds and pushes `ghcr.io/{owner}/{name}` on `GITHUB_TOKEN`, no secret to set up |
 | `operator.yaml` | The payload the analytics operator repository accepts on registration (§5.14) |
 | `evaluation.yaml` | The developer's criteria. No tool writes it (§5.8) and the file says so |
-| `tests/test_op.py` | Tests for the three methods that are the developer's, without Kafka, Ray or MLflow |
 
 `uv.lock` is the exception to *rendered*: there is no template for it, because a
 templated lock would be a fabricated resolution with every hash in it invented.
@@ -247,8 +246,7 @@ rather than only its source, and a step that has to be remembered to keep that t
 gets forgotten. It is never overwritten, so a developer's own lock survives a second
 scaffold, and a lock that cannot be written is reported in `lock_error` rather than
 failing a scaffold that has already written eleven correct files. The singleuser
-image carries uv for this, and for the `uv run --extra dev pytest` the scaffold's
-own tests ask for.
+image carries uv for this.
 
 The Operator Lib pin is D15 made concrete: the newest tag is resolved **once**, at
 scaffold time, recorded against the repository, and a second scaffold of the same

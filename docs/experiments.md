@@ -86,20 +86,16 @@ why the two gaps are worth naming rather than assuming.
   `source=ode`. The Experiments pane lists by those tags and the interpretation
   turn reads them, so the run is invisible to both.
 
-So there are three loops rather than two, and the middle one is not a lesser
-version of the third:
+So there are two loops, and the first is not a lesser version of the second:
 
-1. **The scaffold's `tests/test_op.py`**, which runs without Kafka, without Ray
-   and without MLflow — that is what it is for. It is the loop a change to
-   `infer()` or `need_retraining()` wants.
-2. **`run_code` on the operator's own code.** The fit is ordinary Python, the
+1. **`run_code` on the operator's own code.** The fit is ordinary Python, the
    platform is reachable with the developer's token through the `ode_platform`
    helper the singleuser image ships, and nothing is recorded. This is the loop
    for "does this do what I think it does", and it needs no commit.
-3. **`launch_experiment`**, when the result is one to hold against another result
+2. **`launch_experiment`**, when the result is one to hold against another result
    weeks later. That is the loop the commit rule belongs to, because the
    comparison rests on knowing which code produced which number. It is also the
-   only one of the three that runs what the deployed operator runs.
+   only one of the two that runs what the deployed operator runs.
 
 The assistant is told the same thing, in the two tool descriptions rather than in
 the system prompt: `run_code`'s says the kernel is wired to neither MLflow nor the
@@ -108,7 +104,7 @@ developer wants before proposing one. The descriptions are where the choice is
 actually made, and a deployment without a Ray cluster does not pay for the
 paragraph — only implemented tools are offered to a model.
 
-Reaching for 3 where 2 would do is what makes the commit rule read as a toll
+Reaching for 2 where 1 would do is what makes the commit rule read as a toll
 gate. It is not one — it is what a result costs if it has to still mean something
 in a fortnight.
 

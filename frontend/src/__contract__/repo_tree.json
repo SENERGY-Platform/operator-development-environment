@@ -87,22 +87,6 @@
         "type": "file"
       },
       {
-        "children": [
-          {
-            "modified": "2026-09-01T06:21:00Z",
-            "name": "test_op.py",
-            "path": "jonah/pv-forecast/tests/test_op.py",
-            "size": 1713,
-            "type": "file"
-          }
-        ],
-        "modified": "2026-09-01T06:21:00Z",
-        "name": "tests",
-        "path": "jonah/pv-forecast/tests",
-        "size": 4096,
-        "type": "directory"
-      },
-      {
         "modified": "2026-09-01T06:21:00Z",
         "name": "train.py",
         "path": "jonah/pv-forecast/train.py",

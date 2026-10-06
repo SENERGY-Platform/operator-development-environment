@@ -159,7 +159,6 @@ func TestRelativePathRefusesWhatWouldLeaveTheRepository(t *testing.T) {
 	for path, want := range map[string]string{
 		"op.py":                       "op.py",
 		"./op.py":                     "op.py",
-		"tests/test_op.py":            "tests/test_op.py",
 		".github/workflows/build.yml": ".github/workflows/build.yml",
 		"a/b/../c.py":                 "a/c.py",
 	} {
