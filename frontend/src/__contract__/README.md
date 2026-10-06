@@ -48,6 +48,14 @@ rather than by curl:
 ODE_WRITE_CONTRACT=$PWD/frontend/src/__contract__ go test ./pkg/api/ -run ContractFixtures
 ```
 
+That pattern rewrites every file those tests own, and the git-backed and timed ones
+come back with new SHAs and timestamps on every run. After a change to one
+endpoint's shape, run only the test that writes its file — `grep -rn
+'"<file>.json"' pkg/api` names it — and leave the rest at their committed state.
+The two input-topic writers, `TestWriteInputTopicContractFixture` and
+`TestWriteInputTopicCandidatesContractFixture`, end in the singular and are not
+reached by the pattern at all.
+
 That is deliberately not a capture. Those endpoints need a configured LLM provider
 and a chat session with history, a JupyterHub with a running pod, or a computed
 profile for a chart to annotate — more setup than a capture script should own — and
