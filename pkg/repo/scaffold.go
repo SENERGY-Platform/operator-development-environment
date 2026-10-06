@@ -394,8 +394,11 @@ class Operator(MLOperator):
     ]
 
     def init(self, *args, **kwargs):
-        super().init(*args, **kwargs)
+        # State first: under a data split, super().init() trains and replays the
+        # test window before it returns, so anything set after it is missing
+        # during the replay and overwrites what train() just recorded.
         self.trained_at: typing.Optional[datetime.datetime] = None
+        super().init(*args, **kwargs)
 
     def infer(
         self,
@@ -523,8 +526,8 @@ def train_model(logger: TrainMlflowLogger) -> typing.Optional[PythonModel]:
     with logger.trace("fit"):
         baseline = ray.get(_fit.remote(datasets))
 
-    logger.log_param("training_window_days", TRAINING_WINDOW.days)
-    logger.log_metric("baseline", baseline)
+    logger.log_params({"training_window_days": TRAINING_WINDOW.days})
+    logger.log_metrics({"baseline": baseline})
     return <<.ClassName>>Model(baseline=baseline)
 `,
 

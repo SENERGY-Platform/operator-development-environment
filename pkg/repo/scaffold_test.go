@@ -17,6 +17,7 @@
 package repo_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -157,6 +158,38 @@ func TestTheOperatorSkeletonImplementsWhatOperatorLibCalls(t *testing.T) {
 	if !strings.Contains(main, "OperatorLib(") ||
 		!strings.Contains(main, `name="SENERGY-Platform/PV-Forecast"`) {
 		t.Errorf("main.py does not launch the operator:\n%s", main)
+	}
+}
+
+// Operator Lib's TrainMlflowLogger (v1.7.0) logs through dict-taking methods
+// only. log_param and log_metric do not exist on it, and a call to either failed
+// the first training of an unchanged scaffold with an AttributeError.
+func TestTrainingCallsOnlyMethodsTheLoggerHas(t *testing.T) {
+	training := renderTestScaffold(t)["training.py"]
+	has := map[string]bool{
+		"set_tags": true, "log_params": true, "log_metrics": true, "log_dict": true,
+		"log_table": true, "log_text": true, "log_stage_timing": true, "trace": true,
+	}
+	calls := regexp.MustCompile(`logger\.(\w+)\(`).FindAllStringSubmatch(training, -1)
+	if len(calls) == 0 {
+		t.Fatal("training.py logs nothing through the logger")
+	}
+	for _, call := range calls {
+		if !has[call[1]] {
+			t.Errorf("training.py calls logger.%s, which TrainMlflowLogger does not have", call[1])
+		}
+	}
+}
+
+// Under a data split MLOperator.init() trains and replays the test window before
+// it returns, so the operator's own state has to exist before that call.
+func TestTheOperatorSetsItsStateBeforeInitTrains(t *testing.T) {
+	operator := renderTestScaffold(t)["op.py"]
+	state := strings.Index(operator, "self.trained_at: typing.Optional")
+	init := strings.Index(operator, "super().init(*args, **kwargs)")
+	if state < 0 || init < 0 || state > init {
+		t.Errorf("op.py sets trained_at at %d and calls super().init() at %d, want the "+
+			"state first", state, init)
 	}
 }
 
