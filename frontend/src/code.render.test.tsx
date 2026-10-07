@@ -83,7 +83,13 @@ vi.mock("./monaco", () => ({
         return {
           setModel: (models: Diff) => Object.assign(pair, models),
           getModifiedEditor: () => ({
-            onDidChangeModelContent: () => ({ dispose: () => {} }),
+            onDidChangeModelContent: (listener: () => void) => {
+              pair.type = (text: string) => {
+                if (pair.modified) pair.modified.text = text;
+                listener();
+              };
+              return { dispose: () => {} };
+            },
             addCommand: () => {},
           }),
           dispose: () => {},
@@ -113,11 +119,19 @@ let benches: Workbench[] = [];
 /** Which mutating repo routes were called, in order. */
 let calls: string[] = [];
 /** One diff editor the pane created: the two texts it compares, and whether it edits. */
-type Diff = { original?: { text: string }; modified?: { text: string }; readOnly?: boolean };
+type Diff = {
+  original?: { text: string };
+  modified?: { text: string };
+  readOnly?: boolean;
+  /** Replaces the working-copy side as typing would, and tells the pane. */
+  type?: (text: string) => void;
+};
 /** Every diff editor the pane created, newest last. */
 let diffs: Diff[] = [];
 /** What the last commit holds, by path, for the committed-side route. Absent means a new file. */
 let committedFiles: Record<string, string> = {};
+/** The working copy's text by path, where a test moves it; otherwise `# <path>`. */
+let workingFiles: Record<string, string> = {};
 /**
  * Every call to the status route, as whether it asked for a fetch.
  *
@@ -260,7 +274,11 @@ vi.mock("./api", async (importOriginal) => {
             `no such path in the workspace: operator-test/${path} does not exist`,
           );
         }
-        return { path, size: 1, text: `# ${path}`, binary: false, truncated: false };
+        return { path, size: 1, text: workingFiles[path] ?? `# ${path}`, binary: false, truncated: false };
+      },
+      repoStash: async () => {
+        calls.push("repoStash");
+        return current;
       },
       repoCommittedFile: async (path: string) => {
         calls.push(`repoCommittedFile:${path}`);
@@ -348,6 +366,7 @@ beforeEach(() => {
   calls = [];
   diffs = [];
   committedFiles = {};
+  workingFiles = {};
   statusCalls = [];
   pushRefusals = 1;
   pushRejects = null;
@@ -1265,4 +1284,66 @@ it("shows a deleted file as what the last commit held against nothing, and does 
   expect(diffs.at(-1)?.readOnly).toBe(true);
   expect(host.querySelector(".file-hint")?.textContent).toContain("Deleted from the working copy");
   expect(button(host, "Save").disabled).toBe(true);
+});
+
+/*
+ * A stash, a discard and a scaffold rewrite files in place. The editor used to keep
+ * the text from before, and a save then wrote it back over what the action restored.
+ */
+it("reads the open file again after a stash moved it", async () => {
+  current = status({
+    dirty: true,
+    changes: [{ path: "main.py", kind: "modified", staged: false, unstaged: true }],
+  });
+  committedFiles = { "main.py": "# committed" };
+  const host = await open(SESSION, "/?file=main.py");
+  await settle();
+  const editors = diffs.length;
+
+  current = status();
+  workingFiles = { "main.py": "# committed" };
+  await act(async () => button(host, "Stash").click());
+  await settle();
+
+  expect(calls).toContain("repoStash");
+  expect(diffs).toHaveLength(editors + 1);
+  expect(diffs.at(-1)?.modified?.text).toBe("# committed");
+});
+
+/* Commit and push go through the same path and move nothing, so the editor stays. */
+it("keeps the editor when the action left the open file as it was", async () => {
+  current = status({
+    dirty: true,
+    changes: [{ path: "other.py", kind: "modified", staged: false, unstaged: true }],
+  });
+  const host = await open(SESSION, "/?file=main.py");
+  await settle();
+  const editors = diffs.length;
+
+  current = status();
+  await act(async () => button(host, "Stash").click());
+  await settle();
+
+  expect(calls).toContain("repoStash");
+  expect(diffs).toHaveLength(editors);
+});
+
+it("keeps unsaved edits the working copy moved under, and says so", async () => {
+  current = status({
+    dirty: true,
+    changes: [{ path: "main.py", kind: "modified", staged: false, unstaged: true }],
+  });
+  const host = await open(SESSION, "/?file=main.py");
+  await settle();
+  const editors = diffs.length;
+  await act(async () => diffs.at(-1)?.type?.("# typed, not saved"));
+
+  current = status();
+  workingFiles = { "main.py": "# committed" };
+  await act(async () => button(host, "Stash").click());
+  await settle();
+
+  expect(diffs).toHaveLength(editors);
+  expect(diffs.at(-1)?.modified?.text).toBe("# typed, not saved");
+  expect(host.textContent).toContain("The working copy changed under these unsaved edits");
 });

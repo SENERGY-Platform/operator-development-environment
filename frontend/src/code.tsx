@@ -1793,6 +1793,66 @@ function FilesPane({
   // as read: no marks, and then only the unsaved edits.
   const base = committed !== null && committed.read === read ? committed : null;
 
+  /*
+   * The open file, read again after a git action may have moved it.
+   *
+   * A discard, a stash and a scaffold rewrite files in place, and the editor went on
+   * showing the text from before — which a save then wrote back over the file the
+   * action had just restored. Commit and push bump the same `version` and move
+   * nothing, so the editor is replaced only when the text in the working copy
+   * differs from the text it was read with: a replacement for nothing costs the
+   * cursor and the undo history.
+   *
+   * Unsaved edits are never replaced. They were typed after the read and exist
+   * nowhere else, so the pane says the working copy moved under them instead, and a
+   * save is then the developer's decision to write them over it. The note belongs to
+   * the read it was raised on, and a save clears it.
+   */
+  const [overtaken, setOvertaken] = useState<number | null>(null);
+  const latest = useRef({ file, draft, read });
+  latest.current = { file, draft, read };
+  const reread = useRef(version);
+
+  useEffect(() => {
+    if (reread.current === version) return;
+    reread.current = version;
+    const before = latest.current;
+    // A deleted file has nothing to read; a discard bringing it back is the status
+    // change the read above follows.
+    if (!before.file || before.file.deleted) return;
+    let cancelled = false;
+    const settle = (replace: () => void) => {
+      const now = latest.current;
+      if (cancelled || now.read !== before.read || !now.file) return;
+      if (now.draft !== now.file.text) {
+        setOvertaken(now.read);
+        return;
+      }
+      replace();
+    };
+    api
+      .repoFile(before.file.path)
+      .then((loaded) => {
+        if (loaded.text === latest.current.file?.text) return;
+        settle(() => {
+          setFile(loaded);
+          setDraft(loaded.text);
+          setRead((count) => count + 1);
+        });
+      })
+      .catch((e: unknown) => {
+        // Gone is what a stash does to an untracked file, and it reads the way a
+        // stale address does on open. Any other refusal leaves the file on screen.
+        settle(() => {
+          if (e instanceof ApiError && e.status === 404) setFile(null);
+          setFileError(describe(e));
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+
   const save = useCallback(async () => {
     // Ctrl+S reaches here from a read-only editor too, and a write would bring a
     // deleted file back as an empty one.
@@ -1802,6 +1862,7 @@ function FilesPane({
     try {
       await api.repoWriteFile(file.path, draft);
       setFile({ ...file, text: draft });
+      setOvertaken(null);
       onChanged();
     } catch (e: unknown) {
       setFileError(describe(e));
@@ -1902,6 +1963,11 @@ function FilesPane({
                   ? "Deleted from the working copy. Shown as the last commit holds it."
                   : "Saving writes the working copy. It does not commit. Marked lines differ from the last commit."}
               </p>
+              {overtaken === read && (
+                <p className="warn text-foreground">
+                  The working copy changed under these unsaved edits. Saving writes them over it.
+                </p>
+              )}
               {base?.note && (
                 <p className="warn text-foreground">
                   Not compared with the last commit: {base.note}. Only unsaved edits are marked.
