@@ -517,10 +517,15 @@ Only when all four resolve does the replay's own `finally` compute anything: for
 each `prediction_rows` entry with a non-empty `result` and `result_time`, it reads
 `result[prediction_field]`, averages the target series — already in `merged`,
 nothing new read — over the `resolution` bucket `result_time` truncates into
-(never rounds into), and pairs the two where both exist. `mae` is the mean
-absolute difference and `rmse` the root mean square; any other metric name is not
-computed, and neither is a prediction whose bucket has no paired actual, which is
-mostly the tail of the window past `test_end`.
+(never rounds into), and pairs the two where both exist. Each bucket then counts
+once: its errors are averaged first — absolute for `mae`, squared for `rmse` — and
+the metric is the mean over buckets, square-rooted for `rmse`. The replay calls
+`infer()` for every message, so an operator forecasting the next hour from a
+one-second series answers the same bucket some 3600 times; pooled, those errors
+would weight each hour by its message rate and report the message count as the
+sample size. Any other metric name is not computed, and neither is a prediction
+whose bucket has no paired actual, which is mostly the tail of the window past
+`test_end`.
 
 The result travels as four params, never a metric — reopening the metrics map
 would reopen exactly the phase boundary D37 built, which is unchanged by any of
@@ -528,9 +533,12 @@ this. `evaluation.metric_status` is always set (`computed`, or the reason it is
 not: a key missing, a series that resolves to more than one topic, an unknown
 metric name), `evaluation.metric_name` names what ODE asked for,
 `evaluation.metric_value` is the number and `evaluation.metric_n` the count of
-predictions it is actually over — load-bearing on its own, since a MAE over three
-joined predictions is not a figure that belongs unremarked beside one over thirty
-thousand. `evaluationParamsOnly` (pkg/experiments/failure.go) is the exact-name
+buckets it is actually over — load-bearing on its own, since a MAE over three
+buckets is not a figure that belongs unremarked beside one over thirty thousand.
+Operator Lib v1.7.0 and v1.7.1 counted predictions there instead, pooled rather
+than averaged per bucket, and a run does not record which library scored it — so
+the source line ODE shows beside the value names `evaluation.metric_n` without a
+unit. `evaluationParamsOnly` (pkg/experiments/failure.go) is the exact-name
 whitelist that lets these four, and only these four, cross `MaskedFor`'s boundary
 under a split; grading itself prefers `evaluation.metric_value` over the run's
 ordinary metrics map only when the split is confirmed, the status is `computed`,

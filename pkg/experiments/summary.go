@@ -506,15 +506,19 @@ const librarySourcePrefix = "Operator Lib's own post-replay "
 // than added as a field beside Value, because the sample size is exactly what
 // tells a reader whether the number means anything — an evaluation.metric_n of 3
 // is not a figure that belongs unremarked next to one of thirty thousand.
+//
+// The line names n without a unit. Operator Lib v1.7.0 and v1.7.1 count
+// predictions, later versions count resolution buckets, and a run records
+// neither its library version nor which of the two it counted.
 func librarySource(metric, n string) string {
-	count := "an unstated number of"
+	count := "unstated"
 	if parsed, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64); err == nil {
 		count = fmt.Sprintf("%d", parsed)
 	}
 	return fmt.Sprintf(
-		"%s%s for %s, computed over %s joined predictions "+
-			"from the test window (see %s) — not the run's metrics map",
-		librarySourcePrefix, paramEvaluationMetricValue, metric, count, paramEvaluationMetricN)
+		"%s%s for %s, computed from the test window with %s = %s "+
+			"— not the run's metrics map",
+		librarySourcePrefix, paramEvaluationMetricValue, metric, paramEvaluationMetricN, count)
 }
 
 // taggedCriterion is M8's fallback: a criterion the run itself reported.
