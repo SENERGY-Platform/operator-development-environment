@@ -41,7 +41,7 @@ The distribution matters. The pin the developer can see in the Code pane
 `pyproject.toml`. The kernel is the one that does not consult it: a cell runs
 against the singleuser image's library, which is deployment-wide.
 
-As of 2026-10-06 the library is at `v1.7.1` and pins the same as `v1.7.0`:
+As of 2026-10-07 the library is at `v1.8.0` and pins the same as `v1.7.0`:
 
 ```text
 ray[data]==2.55.0
@@ -93,6 +93,15 @@ for _name, _value in vars(Config).items():
         setattr(CustomConfig, _name, _value)
 ```
 
+`v1.8.0` moves none of the pins either. `Config` gains `import_exports`, which
+the launch sets for an import input whose one executable export it resolved, and
+that input's history is then read from the export instead of the Kafka topic
+([imports-as-operator-inputs.md](imports-as-operator-inputs.md)). The replay's
+metric scores each resolution bucket once, so `evaluation.metric_n` counts buckets
+rather than predictions. A row on a timescale-wrapper chunk boundary is no longer
+dropped. A repository left on `v1.7.x` ignores `import_exports` and keeps reading
+imports from Kafka, which is the only symptom.
+
 **A version this file names is not necessarily a version that exists.** The
 library bumps `operator_lib/__init__.py`'s `__version__` inside the commit that
 earns it rather than in a release step of its own, so a working copy can read
@@ -107,6 +116,7 @@ git ls-remote --tags git@github.com:SENERGY-Platform/analytics-operator-lib-pyth
 
 As of 2026-09-21, `v1.7.0` is tagged on `master`; the steps below it are not run.
 As of 2026-10-06, `v1.7.1` is tagged on `master`.
+As of 2026-10-07, `v1.8.0` is tagged on `master`.
 
 ## Why only the latest is supported
 
