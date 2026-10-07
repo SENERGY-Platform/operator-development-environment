@@ -925,6 +925,56 @@ func TestConfirmAnnouncesTheDecisionOnTheResumedExchange(t *testing.T) {
 	}
 }
 
+// TestEveryExchangeOpensWithWhereTheStoreStood is the boundary a view attaching
+// mid-turn composes from: the messages stored before an exchange began are the
+// conversation so far, and everything after them is the replay's to show. Both
+// ways an exchange starts are covered, because they store at different moments —
+// Send stores the question before it begins, Confirm stores the decision inside.
+func TestEveryExchangeOpensWithWhereTheStoreStood(t *testing.T) {
+	h := newHarness(t,
+		toolTurn("call-1", "confirmed_tool"),
+		textTurn("Thank you for confirming."),
+	)
+	session := h.session(t, tools.L0)
+
+	opens := func(events []Event, want int) {
+		t.Helper()
+		if len(events) == 0 || events[0].Type != EventStarted {
+			t.Fatalf("the exchange does not open with %q: %+v", EventStarted, events)
+		}
+		if events[0].Since == nil || *events[0].Since != want {
+			t.Fatalf("since = %v, want %d", events[0].Since, want)
+		}
+		if found := find(events, EventStarted); len(found) != 1 {
+			t.Errorf("started events = %d, want 1", len(found))
+		}
+	}
+
+	sent, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser,
+		session.ID, "do the thing")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	// The question is stored, and nothing else was.
+	opens(drain(t, sent), 1)
+
+	stored, err := h.store.Messages(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	pending, err := h.engine.PendingConfirmations(context.Background(), testUser, session.ID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending confirmations = %d (%v), want 1", len(pending), err)
+	}
+	resumed, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
+		session.ID, pending[0].ID, true, nil)
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	// Everything the paused turn stored precedes the resumed one.
+	opens(drain(t, resumed), len(stored))
+}
+
 func TestRejectingAConfirmationDoesNotRunTheTool(t *testing.T) {
 	h := newHarness(t,
 		toolTurn("call-1", "confirmed_tool"),

@@ -1337,7 +1337,8 @@ export interface ChatEvent {
     | "limit_exceeded"
     | "warning"
     | "usage"
-    | "progress";
+    | "progress"
+    | "started";
   text?: string;
   tool_call?: { id: string; name: string; input: unknown };
   tool_result?: ToolResult;
@@ -1348,6 +1349,8 @@ export interface ChatEvent {
   limit?: Record<string, unknown>;
   stop_reason?: string;
   error?: string;
+  /** `started`: how many messages were stored before the exchange began. */
+  since?: number;
 }
 
 /**

@@ -1258,26 +1258,59 @@ function Conversation({
   // whether anything arrived *since this particular read started*.
   const arrived = useRef(0);
 
+  // The stored conversation, as the last read of it answered. Kept beside the
+  // turns, because a reattach needs the part of it from before its exchange.
+  const stored = useRef<ChatMessage[] | null>(null);
+
+  // The exchange an attach is replaying: where the store stood when it began, and
+  // every event replayed so far. Null outside an attach.
+  //
+  // Neither source is the conversation on its own. The replay covers this exchange
+  // and nothing earlier — not even the developer's question, which was stored
+  // before it began — and the store covers everything earlier plus whatever the
+  // exchange has persisted since, which the replay then shows a second time. Taking
+  // either whole is what switching back to a conversation mid-turn looked like:
+  // with the replay first, the question and everything before it gone until the
+  // turn ended; with the read first, the finished part of the answer twice. The
+  // `started` event says where one ends and the other begins, and they are joined
+  // there as soon as both are in, whichever lands first.
+  const reattached = useRef<{ since: number | null; events: ChatEvent[]; joined: boolean } | null>(
+    null,
+  );
+
+  const join = useCallback(() => {
+    const view = reattached.current;
+    const messages = stored.current;
+    if (!view || view.joined || view.since === null || !messages) return;
+    // A read from before the exchange began lacks its opening. The replay stays as
+    // it arrived until a later read — the end of the turn makes one — has it.
+    if (messages.length < view.since) return;
+    view.joined = true;
+    const since = view.since;
+    const before = replay(messages.filter((message) => message.seq < since));
+    setTurns(view.events.reduce(apply, before));
+  }, []);
+
   // Load the stored conversation. A resumed session shows its tool calls, because
   // the backend stores them structurally rather than flattening them to text.
   useEffect(() => {
     let cancelled = false;
     // Mounting starts two round trips at once, and they race: this read, and — as
-    // soon as the socket is up — the reattach, which replays everything the
-    // exchange has produced so far. The store deliberately holds none of that
-    // answer yet, because messages are persisted when the turn ends. So a read
-    // that lands second replaced a reattached turn with the developer's own
-    // question, which is what reloading during a turn looked like: the answer they
-    // came back for, gone, and no sign that anything was still running.
-    //
-    // The stream wins, and it is not a close call. It carries everything the store
-    // has plus what the store cannot have yet, and the end of the turn reloads the
-    // history anyway — see `completed` in run().
+    // soon as the socket is up — the reattach, which replays the exchange still
+    // running, if there is one. Switching back to a conversation has the socket
+    // already open, so there the replay usually lands first. A read that lands
+    // after it is joined to it rather than put in its place — see `reattached` —
+    // and the cards and the spend are left to the stream, which is newer.
     const before = arrived.current;
     api
       .chatSession(session.id)
       .then((detail) => {
-        if (cancelled || arrived.current !== before) return;
+        if (cancelled) return;
+        stored.current = detail.messages;
+        if (arrived.current !== before) {
+          join();
+          return;
+        }
         setTurns(replay(detail.messages));
         syncPending(detail.pending_confirmations);
         setSpend(detail.spend ?? null);
@@ -1312,9 +1345,14 @@ function Conversation({
     api
       .chatSession(session.id)
       .then((detail) => {
+        if (cancelled) return;
+        // The one read that can bring an attach the opening it was waiting for: a
+        // turn another window started after this one last read the store.
+        stored.current = detail.messages;
+        join();
         // An event since this read started means this window is watching the
         // exchange itself, and what the stream says is newer than this answer.
-        if (cancelled || arrived.current !== before) return;
+        if (arrived.current !== before) return;
         syncPending(detail.pending_confirmations);
       })
       .catch(() => {
@@ -1324,7 +1362,7 @@ function Conversation({
     return () => {
       cancelled = true;
     };
-  }, [live, session.id, syncPending]);
+  }, [live, session.id, syncPending, join]);
 
   // Detaching this view on unmount. It does not stop the exchange — that is the
   // point of detaching it server-side — so navigating away mid-profile leaves the
@@ -1354,7 +1392,13 @@ function Conversation({
   const consume = useCallback(
     (event: ChatEvent) => {
       arrived.current += 1;
+      const view = reattached.current;
+      if (view && !view.joined) {
+        view.events.push(event);
+        if (event.type === "started") view.since = event.since ?? null;
+      }
       setTurns((existing) => apply(existing, event));
+      join();
       if (event.type === "confirmation_required" && event.confirmation) {
         const confirmation = event.confirmation;
         if (!seen.current.has(confirmation.id)) {
@@ -1402,7 +1446,7 @@ function Conversation({
         });
       }
     },
-    [session.title],
+    [join, session.title],
   );
 
   const run = useCallback(
@@ -1413,6 +1457,11 @@ function Conversation({
       controller.current?.abort();
       const current = new AbortController();
       controller.current = current;
+      // Only an attach replays an exchange into a view built without it. A send or
+      // a decision from this window is the view of its own exchange from the start.
+      const replaying =
+        kind === "chat_attach" ? { since: null, events: [] as ChatEvent[], joined: false } : null;
+      reattached.current = replaying;
       setBusy(true);
       setError(null);
       // Cleared per run, not per confirmation: what must not repeat is the alert
@@ -1470,6 +1519,7 @@ function Conversation({
         // reload.
         const superseded = controller.current !== null && controller.current !== current;
         if (controller.current === current) controller.current = null;
+        if (reattached.current === replaying) reattached.current = null;
         if (!superseded) {
           setBusy(false);
           // The stored history is the source of truth once a turn ends; the streamed
@@ -1478,6 +1528,7 @@ function Conversation({
           let waiting = false;
           try {
             const detail = await api.chatSession(session.id);
+            stored.current = detail.messages;
             // The stored history replaces the streamed view only when the stream
             // reached its end. Cut off, it must not: the exchange is detached and
             // still running, so the store holds the developer's messages and none of

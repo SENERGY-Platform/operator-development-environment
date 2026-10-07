@@ -812,21 +812,27 @@ function holdReads(): () => void {
   return release;
 }
 
+/** What the conversation shows, without the session list beside it. */
+function transcript(host: HTMLElement): string {
+  return host.querySelector(".conversation")?.textContent ?? "";
+}
+
 /*
- * Reloading the page during a turn, and the race that ate the answer.
+ * Coming back to a conversation during a turn: a reload, or a switch back to it.
  *
  * Mounting starts two round trips at once: the read of the stored conversation,
- * and — as soon as the socket is up — the reattach, which replays everything the
- * exchange has produced. The store deliberately holds none of that answer yet;
- * messages are persisted when the turn ends. So whichever lands second wins the
- * transcript, and when it was the read, the developer watched the answer they had
- * come back for get replaced by their own question.
+ * and — as soon as the socket is up — the reattach, which replays the exchange
+ * still running. Neither is the whole conversation. The replay holds this exchange
+ * and nothing before it, not even the question that started it; the store holds
+ * everything before it plus what the exchange has persisted so far. The `started`
+ * event the exchange opens with says where the two meet.
  *
- * The order is forced here rather than hoped for. Both orders are real — it
- * depends on which round trip is slower on the day — and the fast one was the one
- * the tests happened to exercise.
+ * Both orders are real and both are forced here. A reload usually has the read
+ * first, because the socket still has to connect; a switch usually has the replay
+ * first, because it is already open — and that was the order that lost the
+ * developer's question until the turn ended.
  */
-it("keeps a reattached turn on screen when the stored read lands after it", async () => {
+it("keeps the stored conversation and the reattached turn when the read lands after it", async () => {
   live = true;
   const release = holdReads();
 
@@ -834,20 +840,44 @@ it("keeps a reattached turn on screen when the stored read lands after it", asyn
   await act(async () => openSocket());
   await settle(3);
 
-  // The reattach, replaying a turn that started before the reload.
+  // The reattach, replaying a turn that began after both stored messages.
+  await act(async () => emit?.({ type: "started", since: 2 }));
   await act(async () => emit?.({ type: "text_delta", text: "the oven draws" }));
   await settle(2);
-  expect(host.textContent, "the reattach never showed the turn").toContain("the oven draws");
+  expect(transcript(host), "the reattach never showed the turn").toContain("the oven draws");
 
-  // And now the store answers, with the question and nothing else.
   await act(async () => {
     release();
   });
   await settle(6);
 
-  expect(host.textContent, "the late store read wiped the reattached answer").toContain(
+  expect(transcript(host), "the late store read wiped the reattached answer").toContain(
     "the oven draws",
   );
+  expect(transcript(host), "the reattach hid what was stored before it").toContain(
+    "which devices are there?",
+  );
+  expect(transcript(host)).toContain("hello from the stub");
+});
+
+it("shows the finished part of a reattached turn once when the read lands first", async () => {
+  live = true;
+
+  const host = await open();
+  await act(async () => openSocket());
+  await settle(3);
+  expect(transcript(host)).toContain("hello from the stub");
+
+  // The exchange began after the question, and has already stored its first
+  // message — which the replay now delivers again, followed by what is new.
+  await act(async () => emit?.({ type: "started", since: 1 }));
+  await act(async () => emit?.({ type: "text_delta", text: "hello from the stub" }));
+  await act(async () => emit?.({ type: "text_delta", text: ", and the oven draws" }));
+  await settle(2);
+
+  expect(transcript(host)).toContain("which devices are there?");
+  expect(transcript(host)).toContain("the oven draws");
+  expect(transcript(host).split("hello from the stub")).toHaveLength(2);
 });
 
 it("stopping a turn leaves the backend alone", async () => {

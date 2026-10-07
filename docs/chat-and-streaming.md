@@ -42,6 +42,12 @@ Three consequences:
   whole thing, not just the remainder. The SPA attaches on every socket open, and on
   every mount of a conversation: opening a session again after switching away is a
   reconnect as far as this is concerned, since the switch detached the view.
+  The replay is the exchange and nothing earlier: the question that started it was
+  stored before it began, and the messages it has finished are stored as well. So
+  every exchange opens with a `started` event whose `since` is the number of
+  messages stored before it, and a reattaching view shows the stored messages with
+  `seq < since` followed by the replay. Those messages are not written again while
+  the exchange runs, so a read taken at any point during it agrees on them.
 - **A slow subscriber is dropped, not waited for.** If a client stops draining, the
   exchange closes that subscriber rather than stalling the work; the client re-reads
   the persisted messages, which are the source of truth in any case.

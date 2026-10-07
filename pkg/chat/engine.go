@@ -66,6 +66,16 @@ const (
 	// and the model never sees it. It exists so a developer watching a multi-minute
 	// profile can tell it apart from a wedged one.
 	EventProgress EventType = "progress"
+	// EventStarted opens every exchange, and carries where the stored history stood
+	// when it began: Since is the number of messages stored before it.
+	//
+	// A view attaching mid-turn needs that boundary. The replay holds this exchange
+	// and nothing earlier, while the store holds everything earlier plus whatever
+	// this exchange has already persisted — so neither alone is the conversation,
+	// and taking either whole loses the developer's question or shows the finished
+	// part of the answer twice. Messages before Since are never written again while
+	// the exchange runs, so a read taken at any point during it agrees on them.
+	EventStarted EventType = "started"
 )
 
 // Event is one item of the chat stream.
@@ -85,6 +95,10 @@ type Event struct {
 
 	StopReason string `json:"stop_reason,omitempty"`
 	Error      string `json:"error,omitempty"`
+
+	// Since is EventStarted's boundary. A pointer because zero is a real answer:
+	// a turn that continues an empty conversation.
+	Since *int `json:"since,omitempty"`
 }
 
 // The stop reasons ODE produces itself, as opposed to the ones a provider
@@ -984,6 +998,11 @@ func (e *Engine) start(
 		}
 	}
 
+	// Where the stored history stands when the exchange begins, for EventStarted.
+	// The count read with the session above is still current: nothing appends to a
+	// conversation between that read and here but a running exchange, and the check
+	// above refused to start beside one.
+	since := session.MessageCount
 	// A message with no content is Continue's: the turn runs over the history as it
 	// already stands, and appending an empty message would put a blank turn in the
 	// conversation that both native protocols would then have to be given a role for.
@@ -995,9 +1014,10 @@ func (e *Engine) start(
 		if err := e.store.AppendMessages(ctx, sessionID, message); err != nil {
 			return nil, err
 		}
+		since++
 	}
 
-	exchange := e.begin(sub, sessionID)
+	exchange := e.begin(sub, sessionID, since)
 	go func() {
 		defer e.finish(exchange)
 		if len(verdict.Warnings) > 0 {
@@ -1013,7 +1033,7 @@ func (e *Engine) start(
 // The owner is carried on the exchange rather than looked up later, because the
 // two readers of it — the activity watchers, and anything asking what this
 // developer has running — run after the request that knew who asked has gone.
-func (e *Engine) begin(sub, sessionID string) *Exchange {
+func (e *Engine) begin(sub, sessionID string, since int) *Exchange {
 	// WithoutCancel so the request's cancellation does not reach the work, plus a
 	// ceiling so nothing runs forever. Rooted at the process, so shutdown stops it.
 	ctx, cancel := context.WithTimeout(
@@ -1022,6 +1042,8 @@ func (e *Engine) begin(sub, sessionID string) *Exchange {
 	exchange := newExchange(sessionID, cancel)
 	exchange.ctx = ctx
 	exchange.UserSub = sub
+	// First in the history, before anyone can attach, so every replay opens with it.
+	exchange.publish(Event{Type: EventStarted, Since: &since})
 
 	e.exchangeMux.Lock()
 	e.live[sessionID] = exchange
@@ -1112,7 +1134,9 @@ func (e *Engine) Confirm(
 			ErrInvalidRequest)
 	}
 
-	exchange := e.begin(sub, sessionID)
+	// Nothing has been stored for this decision yet: the outcome is appended below,
+	// inside the exchange.
+	exchange := e.begin(sub, sessionID, session.MessageCount)
 	go func() {
 		defer e.finish(exchange)
 		ctx := exchange.ctx

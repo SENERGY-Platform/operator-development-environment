@@ -225,7 +225,7 @@ func TestSetModelIsRefusedWhileAnExchangeRuns(t *testing.T) {
 	session := h.session(t, "native", "small-model")
 
 	// begin registers the exchange the way start does, which is what Attach reports.
-	exchange := h.engine.begin(testUser, session.ID)
+	exchange := h.engine.begin(testUser, session.ID, 0)
 	defer h.engine.finish(exchange)
 
 	_, err := h.engine.SetModel(context.Background(), testUser, session.ID, "", "big-model")
