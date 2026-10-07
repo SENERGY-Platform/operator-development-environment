@@ -505,8 +505,10 @@ MAE beside the artifact would have been worse than none. That condition is now
 met: `evaluation.yaml` can name `target_series` (the platform path of the ground
 truth), `prediction_field` (the key `infer()`'s return dict carries the forecast
 under) and `resolution` (the bucket both sides are averaged to before joining). A
-horizon needed no fourth key — it is `result_time`, which `infer()` already sets
-on every row it produces.
+horizon needed no fourth key — it is `result_time`, the timestamp `infer()`
+returns beside each result. `None` there means "now", as it does in production,
+and the replay reads it as the replayed message's own time, so the scaffold's
+`op.py`, which returns `None`, is scored rather than skipped.
 
 The library still does not read `evaluation.yaml` itself. ODE resolves the three
 keys and the criterion's own metric name at the commit the run was submitted
