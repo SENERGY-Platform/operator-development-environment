@@ -26,6 +26,7 @@ import {
   type RepoStatus,
   type RepoVerification,
   type Session,
+  onWorkingCopyMoved,
 } from "./api";
 import { Abandoned, reconnect } from "./github";
 import { monaco, monacoLanguage } from "./monaco";
@@ -735,6 +736,18 @@ function WorkingCopy({
   // than in the bar because the two are siblings: the part that changes the files
   // is not the part that lists them.
   const [treeVersion, setTreeVersion] = useState(0);
+
+  // The model moves the same working copy from the conversation, and the pane reads
+  // it again the way it does after a stash: the status for the changes, the version
+  // for the tree and the open file, whose unsaved edits that read already protects.
+  useEffect(
+    () =>
+      onWorkingCopyMoved(() => {
+        void onReload();
+        setTreeVersion((version) => version + 1);
+      }),
+    [onReload],
+  );
 
   return (
     <>

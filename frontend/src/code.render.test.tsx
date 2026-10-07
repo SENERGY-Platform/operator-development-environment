@@ -1425,3 +1425,25 @@ it("keeps unsaved edits the working copy moved under, and says so", async () => 
   expect(diffs.at(-1)?.modified?.text).toBe("# typed, not saved");
   expect(host.textContent).toContain("The working copy changed under these unsaved edits");
 });
+
+/* The model writes from the conversation beside the pane, and a commit has to offer that. */
+it("reads the changes and the open file again once the model moved the working copy", async () => {
+  const host = await open(SESSION, "/?file=main.py");
+  await settle();
+  const editors = diffs.length;
+  const reads = statusCalls.length;
+
+  current = status({
+    dirty: true,
+    changes: [{ path: "main.py", kind: "modified", staged: false, unstaged: true }],
+  });
+  workingFiles = { "main.py": "# written by the model" };
+  const { workingCopyMoved } = await import("./api");
+  await act(async () => workingCopyMoved());
+  await settle();
+
+  expect(statusCalls).toHaveLength(reads + 1);
+  expect(host.textContent).toContain("1 uncommitted");
+  expect(diffs).toHaveLength(editors + 1);
+  expect(diffs.at(-1)?.modified?.text).toBe("# written by the model");
+});

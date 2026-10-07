@@ -1251,6 +1251,53 @@ it("folds a run of tool calls into one shut row", async () => {
 });
 
 /*
+ * The code pane beside the conversation reads the checkout again on this signal,
+ * through the kernel. The engine runs one answer's calls back to back, so the
+ * signal waits for the last of them: a read sent after the write would queue
+ * behind the cell that follows it.
+ */
+it("says the working copy moved once every call of an answer that wrote into it is in", async () => {
+  const host = await open();
+  const { onWorkingCopyMoved } = await import("./api");
+  let moved = 0;
+  const stop = onWorkingCopyMoved(() => {
+    moved += 1;
+  });
+  await ask(host);
+  await settle(3);
+
+  const call = (id: string, name: string) =>
+    act(async () => emit?.({ type: "tool_call", tool_call: { id, name, input: {} } }));
+  const result = (id: string, tool: string) =>
+    act(async () =>
+      emit?.({ type: "tool_result", tool_result: { call_id: id, tool, outcome: "ok", content: {} } }),
+    );
+
+  await call("c1", "list_devices");
+  await result("c1", "list_devices");
+  expect(moved).toBe(0);
+
+  await call("c2", "write_file");
+  await call("c3", "run_code");
+  await result("c2", "write_file");
+  expect(moved).toBe(0);
+  await result("c3", "run_code");
+  expect(moved).toBe(1);
+
+  // Held for a decision, the call answers in a later run; the pane is told when
+  // this one ends.
+  await call("c4", "write_file");
+  await call("c5", "run_code");
+  await result("c4", "write_file");
+  expect(moved).toBe(1);
+  await act(async () => finishSend?.());
+  await settle(3);
+  stop();
+
+  expect(moved).toBe(2);
+});
+
+/*
  * D39: the reason the model gave for a call is on the row, shut or open, and
  * only there — the arguments underneath leave it out rather than say it twice.
  */

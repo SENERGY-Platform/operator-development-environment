@@ -40,6 +40,7 @@ import {
   type Usage,
   type Workbench,
   workbenchLabel,
+  workingCopyMoved,
 } from "./api";
 import { AlertTriangleIcon, ChevronRightIcon, CircleAlertIcon, InfoIcon, PencilIcon, XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -108,6 +109,14 @@ const CLOSED_WORKBENCH = "\u0000closed";
  * input simply refusing the next character.
  */
 const MAX_TITLE = 200;
+
+/**
+ * The tools whose result can mean the checkout changed: `write_file` writes into it,
+ * and `run_code` runs with the checkout as its working directory. Kept in step with
+ * the tool surface by hand; a tool missing here leaves the code pane stale until its
+ * next read, which is what this set exists to prevent.
+ */
+const MOVES_WORKING_COPY = new Set(["write_file", "run_code"]);
 
 /**
  * Format an RFC 3339 ISO timestamp as YYYY-MM-DD HH:MM UTC.
@@ -1389,6 +1398,14 @@ function Conversation({
   // alert that said the reply was ready.
   const failure = useRef<string | null>(null);
 
+  // Whether a call has moved the checkout since the code pane was last told, and
+  // which calls the model asked for have not answered yet. The pane is told once
+  // all of them have: the engine runs one answer's calls back to back, so a
+  // `run_code` after a `write_file` holds the kernel the pane reads through, and a
+  // read sent between the two waits out the cell and is refused.
+  const moved = useRef(false);
+  const unanswered = useRef(new Set<string>());
+
   const consume = useCallback(
     (event: ChatEvent) => {
       arrived.current += 1;
@@ -1421,6 +1438,15 @@ function Conversation({
         setPending((existing) => existing.filter((entry) => entry.id !== settled));
       }
       if (event.type === "error") failure.current = event.error ?? "Something failed.";
+      if (event.type === "tool_call" && event.tool_call) unanswered.current.add(event.tool_call.id);
+      if (event.type === "tool_result" && event.tool_result) {
+        unanswered.current.delete(event.tool_result.call_id);
+        if (MOVES_WORKING_COPY.has(event.tool_result.tool)) moved.current = true;
+        if (moved.current && unanswered.current.size === 0) {
+          moved.current = false;
+          workingCopyMoved();
+        }
+      }
       if (event.type === "usage" && event.usage) {
         const spent = event.usage;
         setUsage(spent);
@@ -1468,6 +1494,9 @@ function Conversation({
       // for one waiting decision, and answering it is what starts the next run.
       alerted.current = false;
       failure.current = null;
+      // An attach replays the calls of its exchange, and a call held for a decision
+      // never answers in the run that asked it.
+      unanswered.current.clear();
       // How the turn ended, for the alert in the finally. Null means there was
       // nothing to wait for — see the two cases below.
       let ending: "answered" | "failed" | null = null;
@@ -1522,6 +1551,13 @@ function Conversation({
         if (reattached.current === replaying) reattached.current = null;
         if (!superseded) {
           setBusy(false);
+          // A run that stopped on a decision leaves its held call unanswered, so the
+          // pane is told here. Not after a cut-off stream: the exchange is still
+          // running and may hold the kernel, and the reattach replays the call.
+          if (completed && moved.current) {
+            moved.current = false;
+            workingCopyMoved();
+          }
           // The stored history is the source of truth once a turn ends; the streamed
           // fragments existed only to show it arriving. This also picks up anything
           // that completed while this client was disconnected.

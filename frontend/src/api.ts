@@ -111,6 +111,28 @@ export const setActiveWorkbench = (id: string | null) => {
 export const getActiveWorkbench = () => activeWorkbench;
 
 /**
+ * That the working copy moved without the code pane moving it.
+ *
+ * The model writes into the checkout from the conversation beside the code pane,
+ * through `write_file` and through code it runs there, and the pane went on showing
+ * the files, the changes and the open text from before until the page was reloaded.
+ * Module-level for the reason the workbench above is: the two panes are siblings,
+ * and the conversation must not import the code pane, which is loaded lazily.
+ */
+const workingCopyListeners = new Set<() => void>();
+
+export const workingCopyMoved = () => {
+  for (const listener of workingCopyListeners) listener();
+};
+
+export const onWorkingCopyMoved = (listener: () => void): (() => void) => {
+  workingCopyListeners.add(listener);
+  return () => {
+    workingCopyListeners.delete(listener);
+  };
+};
+
+/**
  * Appends a workbench to a path that acts in one.
  *
  * The workbench is a parameter rather than read from `activeWorkbench` here,
