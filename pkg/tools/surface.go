@@ -469,7 +469,9 @@ func NewSurface(deps Deps) (*Registry, error) {
 			Description: "Resolve a natural-language data intent to concrete addressable series " +
 				"through the ontology, and rank the candidates by QuickProfile. Reads no values. " +
 				"This is the primary way to find data: it reports what matched, what the platform " +
-				"had, and where the ontology is incomplete.",
+				"had, and where the ontology is incomplete. Import candidates are ordered by what " +
+				"their export stores of the selected variables: `stored.rows` and `stored.first_row`, " +
+				"counted without reading a value.",
 			Effect:  "read, semantic query",
 			MinTier: L0,
 			Schema: json.RawMessage(`{

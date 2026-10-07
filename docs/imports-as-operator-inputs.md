@@ -159,7 +159,7 @@ platform can only satisfy from an import is still answered. The device-side note
 was reworded for the same reason: "no device on this platform is described as
 carrying this", not "nothing of this kind on this platform".
 
-## Imports are reported, never ranked beside devices
+## Imports are ordered among themselves, never ranked beside devices
 
 `ImportSelectables` and `ImportCandidates` sit beside `Selectables` and
 `CandidateDevices`, and no import enters the ranked `Candidates`. A device
@@ -167,7 +167,7 @@ candidate is ranked on availability and volume; an import has neither unless
 somebody exported it, so a merged ranking would compare a measured span against
 nothing at all.
 
-Each import candidate carries three things a selectable cannot answer:
+Each import candidate carries what a selectable cannot answer:
 
 - `running` / `running_known` — three-valued, because discovery sees no status
   and "stopped" is a claim ODE would not have established. Reporting it as such
@@ -177,12 +177,39 @@ Each import candidate carries three things a selectable cannot answer:
   not the same claim.
 - `history.columns` — the map from variable path to timescale column, which is
   not derivable. An export's column is named by whoever created the export.
+- `stored.rows` and `stored.first_row` — how much the export holds of the
+  *selected* variables, over the window `probe_export_data` counts by default
+  (five years, clamped to the session's training end). `rows` is taken from the
+  selected column with the most values, and `first_row` is that column's earliest
+  row with a value, to the second. Not the table's first row: an export can write
+  rows for years before a column is filled.
+- `uncovered_paths` — selected paths the export has no column for. A launch reads
+  an import's history only from an export covering every mapped path, so mapping
+  one of these trains on the Kafka topic instead.
 
 Both the status listing and the export listing are **one wide read for the whole
 shortlist**, not one per candidate: neither upstream can filter by what is being
 asked, so a per-candidate lookup re-reads the same listing every time. That is
 what `imports.Histories` exists for beside `imports.History`, and
 `Reads.ImportInstances` / `Reads.ImportExports` are both 1 in an answer.
+
+`stored` is the exception, one count and one first-row lookup per exported
+candidate (`Reads.ImportCounts`), because a count is addressed by export id. Both
+ask timescale-wrapper for `count`, so they return counts and timestamps and no
+value; the first row is a `count` per second ordered by time ascending with limit
+1 over the rows where the column is not null, which the server applies inside
+each per-column sub-query too. A failed read
+degrades its field to `not_computed` and leaves the resolution standing.
+
+The candidates are then ordered, because two imports can carry the same signal
+and a launch trains on the export it reads: first those with stored rows, exports
+covering every selected path ahead of partial ones, then most rows, then the
+earliest first row; then those that may have rows (an
+export that could not be counted, or a history that could not be established);
+last those known to hold nothing (no row of the selected variables, no column for
+them, or no export). Discovery order stands within the last two. `skip_ranking`
+leaves the discovery order, and without a timescale-wrapper only the history
+state orders them.
 
 ## Reading an export back, which is a different question from having one
 

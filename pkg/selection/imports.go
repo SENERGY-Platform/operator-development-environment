@@ -127,6 +127,15 @@ type ImportCandidate struct {
 	// the field that stops an import being read as a device: a live_only import can
 	// feed a running operator and cannot be profiled or backtested at all.
 	History imports.History `json:"history"`
+	// Stored is how much the export holds of the variables selected from this
+	// import: rows and the first row. Absent unless History is exported, the
+	// resolution ranked, and the export has a column for a selected variable. It is
+	// what the candidates are ordered by.
+	Stored *profiler.ExportExtent `json:"stored,omitempty"`
+	// UncoveredPaths are the selected paths the export has no column for. A launch
+	// reads an import's history only from an export that covers every mapped path,
+	// so mapping one of these reads the import's Kafka topic instead.
+	UncoveredPaths []string `json:"uncovered_paths,omitempty"`
 
 	// Series is how many resolved variables this instance contributes.
 	Series int `json:"series"`
@@ -401,6 +410,165 @@ func (r *Resolver) importCandidates(ctx context.Context, token string, selectabl
 		out = append(out, candidate)
 	}
 	return out
+}
+
+// orderImportCandidates measures what each exported candidate's export holds of
+// the selected variables and orders the candidates by it.
+//
+// The order is the point. Two imports can carry the same signal, and a launch
+// trains on the one whose export it reads, so an import with years of stored rows
+// and one with an empty export — or none — are not interchangeable, while the
+// discovery order they arrive in says nothing about either. Three tiers, stable
+// within each: rows stored, exports covering every selected path first, then most
+// rows, then the earliest first row; possibly
+// stored, which is an export that could not be counted or a history that could not
+// be established; and nothing stored, which is an export with no row of the
+// selected variables, one that covers none of them, or no export at all.
+//
+// The counts are per exported candidate and run concurrently. A failed one leaves
+// its candidate in the middle tier rather than failing the resolution.
+func (r *Resolver) orderImportCandidates(ctx context.Context, token string, result *Result, req Request) {
+	if len(result.ImportCandidates) == 0 {
+		return
+	}
+	if req.SkipRanking {
+		if len(result.ImportCandidates) > 1 {
+			result.Notes = append(result.Notes,
+				"ranking was skipped on request: the import candidates are in discovery order, "+
+					"unordered by what their exports hold")
+		}
+		return
+	}
+	// Without a profiler nothing is counted, and the order falls back to the
+	// history state alone: an import with no export still goes last.
+	measure := r.ranker != nil
+	if !measure {
+		for _, candidate := range result.ImportCandidates {
+			if candidate.History.State == imports.HistoryExported {
+				result.Notes = append(result.Notes,
+					"no timescale-wrapper is configured, so the import candidates are ordered by "+
+						"whether they are exported, not by what their exports hold")
+				break
+			}
+		}
+	}
+
+	paths := map[string][]string{}
+	for _, selectable := range result.ImportSelectables {
+		paths[selectable.InstanceID] = append(paths[selectable.InstanceID], selectable.Path)
+	}
+
+	gate := make(chan struct{}, r.opts.Concurrency)
+	wg := sync.WaitGroup{}
+	for i := range result.ImportCandidates {
+		candidate := &result.ImportCandidates[i]
+		if candidate.History.State != imports.HistoryExported {
+			continue
+		}
+		columns, uncovered := exportColumnsOf(candidate.History, paths[candidate.InstanceID])
+		candidate.UncoveredPaths = uncovered
+		if len(columns) == 0 || !measure {
+			// Nothing to count, or nothing to count with. An export storing none of
+			// what was selected is what UncoveredPaths says and storedTier reads.
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			gate <- struct{}{}
+			defer func() { <-gate }()
+			extent := r.ranker.ExportExtent(ctx, token, profiler.ExportExtentRequest{
+				ExportID: candidate.History.ExportID,
+				Columns:  columns,
+				Window:   req.Window,
+				Split:    req.Split,
+			})
+			candidate.Stored = &extent
+		}()
+	}
+	wg.Wait()
+
+	for _, candidate := range result.ImportCandidates {
+		if candidate.Stored != nil {
+			result.Reads.ImportCounts += candidate.Stored.Reads.Values
+		}
+	}
+	sort.SliceStable(result.ImportCandidates, func(i, j int) bool {
+		a, b := result.ImportCandidates[i], result.ImportCandidates[j]
+		if tierA, tierB := storedTier(a), storedTier(b); tierA != tierB {
+			return tierA < tierB
+		}
+		if storedTier(a) != 0 {
+			return false
+		}
+		// An export lacking a selected path is read from Kafka once that path is
+		// mapped, so full coverage outranks more rows.
+		if len(a.UncoveredPaths) != len(b.UncoveredPaths) {
+			return len(a.UncoveredPaths) < len(b.UncoveredPaths)
+		}
+		rowsA, _ := a.Stored.Rows.Get()
+		rowsB, _ := b.Stored.Rows.Get()
+		if rowsA != rowsB {
+			return rowsA > rowsB
+		}
+		firstA, okA := a.Stored.FirstRow.Get()
+		firstB, okB := b.Stored.FirstRow.Get()
+		return okA && (!okB || firstA.Before(firstB))
+	})
+}
+
+// storedTier is 0 for a candidate with stored rows of the selected variables, 1
+// for one that may have them, and 2 for one known to have none.
+func storedTier(candidate ImportCandidate) int {
+	switch candidate.History.State {
+	case imports.HistoryLiveOnly:
+		return 2
+	case imports.HistoryUnknown:
+		return 1
+	}
+	if candidate.Stored == nil {
+		// Not measured. Either the resolution did not rank, or the export covers
+		// none of the selected paths and there was nothing to count.
+		if len(candidate.UncoveredPaths) > 0 {
+			return 2
+		}
+		return 1
+	}
+	rows, counted := candidate.Stored.Rows.Get()
+	switch {
+	case !counted:
+		return 1
+	case rows > 0:
+		return 0
+	}
+	return 2
+}
+
+// exportColumnsOf maps the selected paths of one import onto its export's
+// columns, and names the paths the export does not store.
+func exportColumnsOf(history imports.History, selected []string) ([]profiler.ExportColumn, []string) {
+	byPath := make(map[string]imports.HistoryColumn, len(history.Columns))
+	for _, column := range history.Columns {
+		byPath[column.VariablePath] = column
+	}
+	columns := []profiler.ExportColumn{}
+	uncovered := []string{}
+	seen := map[string]bool{}
+	for _, path := range selected {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		column, found := byPath[path]
+		if !found {
+			uncovered = append(uncovered, path)
+			continue
+		}
+		columns = append(columns, profiler.ExportColumn{
+			Column: column.Column, Type: column.Type, VariablePath: column.VariablePath, Tag: column.Tag,
+		})
+	}
+	return columns, uncovered
 }
 
 // typeListLimit is what one catalogue query reads. device-selection sends 1000
@@ -763,6 +931,7 @@ func (r *Resolver) addImports(
 		result.Reads.ImportInstances = 1
 		result.Reads.ImportExports = 1
 	}
+	r.orderImportCandidates(ctx, token, result, req)
 
 	// The catalogue half. Deliberately after the instance half, and given what it
 	// found: a type that is already deployed belongs in import_candidates, where it

@@ -18,9 +18,11 @@ package selection
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -277,11 +279,28 @@ func (f *fakeDevices) List(_ string, options drmodel.ExtendedDeviceListOptions) 
 
 // fakeTimeseries answers the two read-free endpoints and fails the test on a
 // value read. The zero-read property of tier L0 is enforced here rather than
-// asserted afterwards: a Query that happens is a failed test wherever it came
-// from.
+// asserted afterwards: a Query that could return a value is a failed test
+// wherever it came from. The one query it answers is an export count — every
+// column a `count` — which is what orders the import candidates.
 type fakeTimeseries struct {
 	t        *testing.T
 	availErr error
+
+	mutex sync.Mutex
+	// exports is what each export holds, by export id. A missing id answers with
+	// no rows.
+	exports map[string]storedRows
+	// counted records every count element asked, for the assertions on window and
+	// shape.
+	counted []timeseries.QueryElement
+}
+
+// storedRows is one export's table as the fake reports it: rows, all in one
+// bucket at first, or err for an export whose count fails.
+type storedRows struct {
+	rows  int
+	first time.Time
+	err   error
 }
 
 func (f *fakeTimeseries) DataAvailability(_ context.Context, _ string, _ string) ([]timeseries.Availability, error) {
@@ -311,9 +330,49 @@ func (f *fakeTimeseries) ExportUsage(_ context.Context, _ string, exportIDs []st
 	return out, nil
 }
 
-func (f *fakeTimeseries) Query(context.Context, string, []timeseries.QueryElement, timeseries.QueryOptions) ([]timeseries.QueryResult, error) {
-	f.t.Error("a value was read during semantic selection, which breaks exposure tier L0")
-	return nil, errors.New("no value read is permitted here")
+func (f *fakeTimeseries) Query(_ context.Context, _ string, elements []timeseries.QueryElement, _ timeseries.QueryOptions) ([]timeseries.QueryResult, error) {
+	results := make([]timeseries.QueryResult, 0, len(elements))
+	for i, element := range elements {
+		if element.ExportId == nil || element.GroupTime == nil || !countsOnly(element) {
+			f.t.Error("a value was read during semantic selection, which breaks exposure tier L0")
+			return nil, errors.New("no value read is permitted here")
+		}
+		f.mutex.Lock()
+		f.counted = append(f.counted, element)
+		stored := f.exports[*element.ExportId]
+		f.mutex.Unlock()
+		if stored.err != nil {
+			return nil, stored.err
+		}
+		rows := [][]any{}
+		if stored.rows > 0 {
+			row := []any{stored.first.UTC().Format("2006-01-02T15:04:05.000Z07:00")}
+			for range element.Columns {
+				row = append(row, json.Number(strconv.Itoa(stored.rows)))
+			}
+			rows = append(rows, row)
+		}
+		names := make([]string, 0, len(element.Columns))
+		for _, column := range element.Columns {
+			names = append(names, column.Name)
+		}
+		results = append(results, timeseries.QueryResult{
+			RequestIndex: i,
+			ExportId:     element.ExportId,
+			ColumnNames:  names,
+			Data:         [][][]any{rows},
+		})
+	}
+	return results, nil
+}
+
+func countsOnly(element timeseries.QueryElement) bool {
+	for _, column := range element.Columns {
+		if column.GroupType == nil || *column.GroupType != timeseries.GroupCount {
+			return false
+		}
+	}
+	return len(element.Columns) > 0
 }
 
 type staticIndex struct{ index *profiler.OntologyIndex }
@@ -325,10 +384,11 @@ func (s staticIndex) Ontology(context.Context, string) (*profiler.OntologyIndex,
 // --- harness ---
 
 type harness struct {
-	resolver *Resolver
-	ontology *fakeOntology
-	devices  *fakeDevices
-	imports  *fakeImports
+	resolver   *Resolver
+	ontology   *fakeOntology
+	devices    *fakeDevices
+	imports    *fakeImports
+	timeseries *fakeTimeseries
 }
 
 func newHarness(t *testing.T, opts Options) *harness {
@@ -349,9 +409,10 @@ func newHarnessImports(t *testing.T, opts Options, ranked bool, imp *fakeImports
 	ont := &fakeOntology{snap: testSnapshot(), answer: meterSelectables}
 	dev := &fakeDevices{serve: []models.ExtendedDevice{meterDevice("device-1")}}
 
+	ts := &fakeTimeseries{t: t}
 	var ranker Ranker
 	if ranked {
-		prof, err := profiler.New(&fakeTimeseries{t: t}, staticIndex{index: testIndex()},
+		prof, err := profiler.New(ts, staticIndex{index: testIndex()},
 			profiler.NewMemoryStore(), profiler.Options{Now: func() time.Time { return testNow }})
 		if err != nil {
 			t.Fatalf("profiler.New: %v", err)
@@ -363,7 +424,7 @@ func newHarnessImports(t *testing.T, opts Options, ranked bool, imp *fakeImports
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return &harness{resolver: resolver, ontology: ont, devices: dev, imports: imp}
+	return &harness{resolver: resolver, ontology: ont, devices: dev, imports: imp, timeseries: ts}
 }
 
 // importsOrNil keeps a typed nil out of the interface. A *fakeImports(nil) stored

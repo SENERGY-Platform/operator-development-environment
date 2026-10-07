@@ -157,15 +157,22 @@ created.
 		// Which source a run reads is decided at launch and reported in its warnings,
 		// and what the source no longer holds is simply not trained on. The 365-day
 		// refusal is the one part that fails a run rather than shortening it, so it is
-		// named.
+		// named. What it does need before a run is the choice between imports that
+		// carry the same signal: without being told, it wired an import with little
+		// stored history while another import of the same signal held years of it.
 		if definition, declared := registry.Lookup("propose_operator_input"); declared && definition.Implemented() {
 			builder.WriteString(`
 A run reads an import's history from its export when the developer may execute
 exactly one export of that import, and otherwise from the import's Kafka topic,
 which keeps only days. The launch decides which and says so in its warnings; a
-run trains on what that source holds. Do not check retention, offsets or the
-oldest message before a run, do not ask the developer for them, and do not plan
-around them. One bound does need planning: Operator Lib refuses to read more
+run trains on what that source holds. So when several imports carry what the
+operator needs, prefer the one whose export holds the history the training
+window needs: resolve_semantic_selection orders import_candidates by
+stored.rows and gives stored.first_row. An import without an export, or whose
+export lacks a path you map (uncovered_paths), trains on days at most. Do not
+check Kafka retention, offsets or the oldest message on a topic before a run, do
+not ask the developer for them, and do not plan around them. One bound does need
+planning: Operator Lib refuses to read more
 than 365 days from Kafka, and provide_historic_data reads every input topic over
 the same duration. Once an import topic without an export is an input, no
 provide_historic_data or provide_historic_data_local call may ask for more than

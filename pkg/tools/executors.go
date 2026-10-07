@@ -140,6 +140,7 @@ func (s *surface) resolveSemanticSelection(ctx context.Context, req Request) (an
 		IncludeControlling: in.IncludeControlling,
 		DeviceLimit:        limit,
 		SkipRanking:        in.SkipRanking,
+		Split:              req.Split,
 	})
 	if err != nil {
 		return nil, err

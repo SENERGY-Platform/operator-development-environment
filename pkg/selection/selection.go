@@ -48,6 +48,7 @@ import (
 	"github.com/SENERGY-Platform/models/go/models"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/devices"
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/ontology"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/profiler"
 )
@@ -72,13 +73,15 @@ type Devices interface {
 }
 
 // Ranker orders the resolved series by QuickProfile (§5.2: "candidates are
-// ranked by QuickProfile, not returned unordered").
+// ranked by QuickProfile, not returned unordered"), and the import candidates by
+// what their export holds (see orderImportCandidates).
 //
 // It is optional. A deployment without a timescale-wrapper URL runs no profiler,
 // and the ontology half of this answer is still worth serving — with a note
 // saying the ranking is missing, rather than a 404 on the whole operation.
 type Ranker interface {
 	QuickProfiles(ctx context.Context, token string, req profiler.QuickRequest) (profiler.QuickResult, error)
+	ExportExtent(ctx context.Context, token string, req profiler.ExportExtentRequest) profiler.ExportExtent
 }
 
 type Options struct {
@@ -167,8 +170,13 @@ type Request struct {
 	// of the ranking. Zero means the profiler's default lookback.
 	Window profiler.Window
 	// SkipRanking returns the ontology resolution alone. It is the cheap form of
-	// this operation: no availability calls, so no per-device round trips.
+	// this operation: no availability calls, so no per-device round trips, and no
+	// row counts for the import candidates.
 	SkipRanking bool
+	// Split is the session's data split (D36), or nil. Both rankings name ranges —
+	// a device's availability window, an export's row count and first row — and a
+	// range past the training end is what the split keeps from the assistant.
+	Split *exposure.Split
 
 	// SkipImports leaves the import half unresolved.
 	//
@@ -375,6 +383,11 @@ type Reads struct {
 	// in it.
 	ImportInstances int `json:"import_instances"`
 	ImportExports   int `json:"import_exports"`
+	// ImportCounts is the POST /queries/v2 behind the import candidates' order: a
+	// row count and a first-row lookup per exported candidate. Not Values, because
+	// both ask for `count` and return counts and timestamps — the reads
+	// probe_export_data makes at L0.
+	ImportCounts int `json:"import_counts"`
 	// ImportTypes is one import-repository request per criteria combination that
 	// could be applied to imports. It is not folded into ImportSelectables: that
 	// count is device-selection's, this one is a second service's, and a

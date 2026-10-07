@@ -214,7 +214,10 @@ type HistoryColumn struct {
 	VariablePath string `json:"variable_path"`
 	// Column is what to put in a timescale-wrapper query column name.
 	Column string `json:"column"`
-	Tag    bool   `json:"tag"`
+	// Type is the export worker's type for the column — float, int, bool, string —
+	// which decides whether the column can be counted as a series.
+	Type string `json:"type,omitempty"`
+	Tag  bool   `json:"tag"`
 }
 
 // History resolves what stored data exists for one import instance.
@@ -285,6 +288,7 @@ func historyOf(instanceID string, found []Export, total int64) History {
 				// not.
 				VariablePath: value.Path,
 				Column:       value.Name,
+				Type:         value.Type,
 				Tag:          value.Tag,
 			})
 		}

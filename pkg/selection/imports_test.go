@@ -23,12 +23,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	drmodel "github.com/SENERGY-Platform/device-repository/v3/lib/model"
 	dsmodel "github.com/SENERGY-Platform/device-selection/v2/pkg/model"
 	idmodel "github.com/SENERGY-Platform/import-deploy/lib/model"
 	"github.com/SENERGY-Platform/models/go/models"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/imports"
 )
 
@@ -55,6 +57,9 @@ type fakeImports struct {
 
 	history      imports.History
 	historyCalls int
+	// histories overrides history for the instances it names, so two candidates
+	// can differ in what is stored of them.
+	histories map[string]imports.History
 
 	// The catalogue half. types is what import-repository answers for a matching
 	// criterion; typeCriteria records what it was asked, which is where the aspect
@@ -117,6 +122,9 @@ func (f *fakeImports) Histories(_ context.Context, _ string, ids []string) map[s
 	out := make(map[string]imports.History, len(ids))
 	for _, id := range ids {
 		out[id] = f.history
+		if history, found := f.histories[id]; found {
+			out[id] = history
+		}
 	}
 	return out
 }
@@ -722,5 +730,223 @@ func TestADeploymentWithoutAnImportRepositorySaysTheTwoCausesAreIndistinguishabl
 	}
 	if !hasNoteContaining(result.Notes, "import_repo_url") {
 		t.Errorf("the note should name the configuration that is missing: %v", result.Notes)
+	}
+}
+
+// --- import candidates are ordered by what their export stores ---
+
+const (
+	stationInstanceID = "urn:infai:ses:import:weather-2"
+	weatherPath       = "value.temperature_2m"
+)
+
+// twoWeatherImports is the case this order exists for: two imports of the same
+// type carrying the same signal, discovered in the order given, differing only in
+// their histories.
+func twoWeatherImports(first, second imports.History) *fakeImports {
+	other := weatherSelectable(weatherPath)
+	other.InstanceID = stationInstanceID
+	other.InstanceName = "Leipzig weather, second"
+	other.KafkaTopic = "urn_infai_ses_import_weather-2"
+	return &fakeImports{
+		serve:     []imports.Selectable{weatherSelectable(weatherPath), other},
+		instances: []idmodel.Instance{runningInstance()},
+		histories: map[string]imports.History{weatherInstanceID: first, stationInstanceID: second},
+	}
+}
+
+func exportedHistory(exportID string, paths ...string) imports.History {
+	columns := []imports.HistoryColumn{}
+	for _, path := range paths {
+		columns = append(columns, imports.HistoryColumn{
+			VariablePath: path, Column: strings.TrimPrefix(path, "value."), Type: "float",
+		})
+	}
+	return imports.History{State: imports.HistoryExported, ExportID: exportID, Columns: columns}
+}
+
+func candidateOrder(candidates []ImportCandidate) []string {
+	out := []string{}
+	for _, candidate := range candidates {
+		out = append(out, candidate.InstanceID)
+	}
+	return out
+}
+
+func TestImportCandidatesAreOrderedByTheRowsTheirExportStores(t *testing.T) {
+	imp := twoWeatherImports(
+		exportedHistory("export-thin", weatherPath),
+		exportedHistory("export-deep", weatherPath),
+	)
+	h := newHarnessImports(t, Options{}, true, imp)
+	deepFirst := testNow.AddDate(-3, 0, 0)
+	h.timeseries.exports = map[string]storedRows{
+		"export-thin": {rows: 48, first: testNow.AddDate(0, 0, -2)},
+		"export-deep": {rows: 26280, first: deepFirst},
+	}
+
+	result := h.resolve(t, Request{Intent: "temperature kitchen"})
+
+	order := candidateOrder(result.ImportCandidates)
+	if fmt.Sprint(order) != fmt.Sprint([]string{stationInstanceID, weatherInstanceID}) {
+		t.Fatalf("order = %v, want the import whose export holds years first", order)
+	}
+	deep := result.ImportCandidates[0].Stored
+	if deep == nil {
+		t.Fatal("the exported candidate carries no stored extent")
+	}
+	if rows, _ := deep.Rows.Get(); rows != 26280 {
+		t.Errorf("rows = %v, want the counted 26280", deep.Rows)
+	}
+	if first, _ := deep.FirstRow.Get(); !first.Equal(deepFirst) {
+		t.Errorf("first_row = %v, want %s", deep.FirstRow, deepFirst)
+	}
+	// A count and a first-row lookup per exported candidate, none of them a value.
+	if result.Reads.ImportCounts != 4 {
+		t.Errorf("import_counts = %d, want 4", result.Reads.ImportCounts)
+	}
+	if result.Reads.Values != 0 {
+		t.Errorf("values = %d, want 0: counting an export reads no value", result.Reads.Values)
+	}
+}
+
+func TestAnImportWithoutStoredRowsIsOrderedBehindOneThatMayHaveThem(t *testing.T) {
+	cases := []struct {
+		name     string
+		weak     imports.History
+		stored   map[string]storedRows
+		uncovers bool
+	}{
+		{name: "no export", weak: imports.History{State: imports.HistoryLiveOnly}},
+		{
+			name:   "an export with no row",
+			weak:   exportedHistory("export-empty", weatherPath),
+			stored: map[string]storedRows{"export-empty": {}},
+		},
+		{
+			name:     "an export without the selected path",
+			weak:     exportedHistory("export-other", "value.pressure_msl"),
+			uncovers: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The weak import is discovered first, and the other one's history could
+			// not be established — which still ranks above knowing nothing is stored.
+			imp := twoWeatherImports(tc.weak, imports.History{State: imports.HistoryUnknown})
+			h := newHarnessImports(t, Options{}, true, imp)
+			h.timeseries.exports = tc.stored
+
+			result := h.resolve(t, Request{Intent: "temperature kitchen"})
+
+			order := candidateOrder(result.ImportCandidates)
+			if fmt.Sprint(order) != fmt.Sprint([]string{stationInstanceID, weatherInstanceID}) {
+				t.Fatalf("order = %v, want the import with nothing stored last", order)
+			}
+			weak := result.ImportCandidates[1]
+			if tc.uncovers {
+				if fmt.Sprint(weak.UncoveredPaths) != fmt.Sprint([]string{weatherPath}) {
+					t.Errorf("uncovered_paths = %v, want the selected path the export lacks", weak.UncoveredPaths)
+				}
+				if weak.Stored != nil {
+					t.Errorf("stored = %+v, want none: there was no column to count", weak.Stored)
+				}
+			}
+		})
+	}
+}
+
+func TestAFailedCountLeavesTheCandidateInPlaceAndSaysWhy(t *testing.T) {
+	imp := twoWeatherImports(
+		imports.History{State: imports.HistoryLiveOnly},
+		exportedHistory("export-broken", weatherPath),
+	)
+	h := newHarnessImports(t, Options{}, true, imp)
+	h.timeseries.exports = map[string]storedRows{"export-broken": {err: errors.New("timescale is down")}}
+
+	result := h.resolve(t, Request{Intent: "temperature kitchen"})
+
+	if order := candidateOrder(result.ImportCandidates); order[0] != stationInstanceID {
+		t.Fatalf("order = %v, want an export that could not be counted ahead of no export", order)
+	}
+	stored := result.ImportCandidates[0].Stored
+	if stored == nil || stored.Rows.IsComputed() {
+		t.Fatalf("stored = %+v, want rows not_computed", stored)
+	}
+	if status := stored.Rows.Status(); !strings.Contains(status.Detail, "timescale is down") {
+		t.Errorf("rows status = %+v, want the platform's error in it", status)
+	}
+}
+
+func TestTheImportCountStopsAtTheTrainingEnd(t *testing.T) {
+	imp := twoWeatherImports(
+		exportedHistory("export-a", weatherPath),
+		imports.History{State: imports.HistoryLiveOnly},
+	)
+	h := newHarnessImports(t, Options{}, true, imp)
+	h.timeseries.exports = map[string]storedRows{"export-a": {rows: 10, first: testNow.AddDate(-1, 0, 0)}}
+	trainingEnd := testNow.AddDate(0, -1, 0)
+	split := &exposure.Split{TrainingEnd: trainingEnd, TestEnd: testNow}
+
+	h.resolve(t, Request{Intent: "temperature kitchen", Split: split})
+
+	if len(h.timeseries.counted) == 0 {
+		t.Fatal("no count was asked")
+	}
+	for _, element := range h.timeseries.counted {
+		end, err := time.Parse(time.RFC3339, *element.Time.End)
+		if err != nil || end.After(trainingEnd) {
+			t.Errorf("a count runs to %v, want no later than the training end %s", *element.Time.End, trainingEnd)
+		}
+	}
+}
+
+func TestUnrankedImportCandidatesKeepTheirOrderAndSaySo(t *testing.T) {
+	imp := twoWeatherImports(
+		imports.History{State: imports.HistoryLiveOnly},
+		exportedHistory("export-a", weatherPath),
+	)
+	h := newHarnessImports(t, Options{}, true, imp)
+
+	result := h.resolve(t, Request{Intent: "temperature kitchen", SkipRanking: true})
+
+	if order := candidateOrder(result.ImportCandidates); order[0] != weatherInstanceID {
+		t.Errorf("order = %v, want discovery order when ranking is skipped", order)
+	}
+	if len(h.timeseries.counted) != 0 {
+		t.Errorf("%d count(s) were asked although ranking was skipped", len(h.timeseries.counted))
+	}
+	if !hasNoteContaining(result.Notes, "unordered by what their exports hold") {
+		t.Errorf("notes = %v, want one saying the import order is not by stored history", result.Notes)
+	}
+}
+
+// An export lacking a selected path is read from Kafka once that path is mapped,
+// so the import whose export covers both paths goes first despite fewer rows.
+func TestAnExportCoveringEverySelectedPathOutranksOneWithMoreRows(t *testing.T) {
+	const pressurePath = "value.pressure_msl"
+	imp := twoWeatherImports(
+		exportedHistory("export-partial", weatherPath),
+		exportedHistory("export-full", weatherPath, pressurePath),
+	)
+	for _, instanceID := range []string{weatherInstanceID, stationInstanceID} {
+		extra := weatherSelectable(pressurePath)
+		extra.InstanceID = instanceID
+		imp.serve = append(imp.serve, extra)
+	}
+	h := newHarnessImports(t, Options{}, true, imp)
+	h.timeseries.exports = map[string]storedRows{
+		"export-partial": {rows: 50000, first: testNow.AddDate(-4, 0, 0)},
+		"export-full":    {rows: 100, first: testNow.AddDate(0, -1, 0)},
+	}
+
+	result := h.resolve(t, Request{Intent: "temperature kitchen"})
+
+	order := candidateOrder(result.ImportCandidates)
+	if fmt.Sprint(order) != fmt.Sprint([]string{stationInstanceID, weatherInstanceID}) {
+		t.Fatalf("order = %v, want the fully covering export first", order)
+	}
+	if fmt.Sprint(result.ImportCandidates[1].UncoveredPaths) != fmt.Sprint([]string{pressurePath}) {
+		t.Errorf("uncovered_paths = %v, want %s", result.ImportCandidates[1].UncoveredPaths, pressurePath)
 	}
 }
