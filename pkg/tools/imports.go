@@ -585,8 +585,8 @@ func (s *surface) proposeOperatorInput(ctx context.Context, req Request) (any, e
 // nothing useful. Each of these is silent at deployment time.
 //
 // Whether the import has an export is not among them, and its history is not read
-// here at all: a run reads an import from its Kafka topic, never from an export, so
-// what an export holds changes nothing about what the operator trains on.
+// here at all: the launch resolves the export the developer may execute and says so
+// in its own warnings, so a missing export is reported where it takes effect.
 func importWarnings(instance idmodel.Instance) []string {
 	warnings := []string{}
 
@@ -754,6 +754,12 @@ func (s *surface) createExport(ctx context.Context, req Request) (any, error) {
 		})
 	}
 
+	// Read before the export exists, so that the answer can name an export the import
+	// already had. A second one is allowed and sometimes wanted, but a launch reads an
+	// import's history from the one export the developer may execute that covers the
+	// mapped paths, and two of them refuse the launch as ambiguous.
+	prior := s.deps.Imports.History(ctx, req.Token, in.InstanceID)
+
 	req.Progress("creating", "asking analytics-serving for the export")
 	created, err := s.deps.Imports.CreateExport(ctx, req.Token, imports.CreateExportRequest{
 		InstanceID:      in.InstanceID,
@@ -799,6 +805,12 @@ func (s *surface) createExport(ctx context.Context, req Request) (any, error) {
 			"does not carry, and the failure is silent everywhere else — the export listing, this " +
 			"answer and the stored byte count all look healthy. That check reports a column that is " +
 			"null in every row by name.",
+	}
+	if prior.State == imports.HistoryExported && prior.ExportID != "" && prior.ExportID != created.Export.ID {
+		answer["warnings"] = append(answer["warnings"].([]string), fmt.Sprintf(
+			"this import already had export %s; if the developer may execute both and both "+
+				"cover an operator's mapped paths, a launch with this import is refused as "+
+				"ambiguous until one of them is deleted", prior.ExportID))
 	}
 	if note := s.recordCreation(ctx, req, Creation{
 		Kind: CreatedExport,

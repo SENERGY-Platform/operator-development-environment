@@ -126,8 +126,9 @@ func (s *Service) sizeEvaluationWindow(
 	for _, topic := range topics {
 		if !strings.HasPrefix(topic.Name, serviceTopicPrefix) {
 			warnings = append(warnings, fmt.Sprintf(
-				"the input topic %s (%s) is read from Kafka by the replay, which "+
-					"timescale-wrapper cannot count, so it is not part of the counted window size",
+				"the input topic %s (%s) is read from Kafka by the replay, or from its export "+
+					"where the launch resolved one, and neither is counted here, so it is not part "+
+					"of the counted window size",
 				topic.Name, topic.FilterType))
 			continue
 		}

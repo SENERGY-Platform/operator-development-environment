@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/SENERGY-Platform/analytics-flow-engine/lib/access"
+	"github.com/SENERGY-Platform/analytics-flow-engine/lib/exports"
 	servicejwt "github.com/SENERGY-Platform/service-commons/pkg/jwt"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
@@ -175,6 +176,10 @@ type Options struct {
 	Environment map[string]string
 }
 
+// ExportLister is lib/exports.Lister, named here so pkg.go can declare the variable
+// it guards against a typed nil without importing the lib for one word.
+type ExportLister = exports.Lister
+
 // Deps is what the service is built from.
 type Deps struct {
 	// Workspace and Repo are both required. The job package is the committed state
@@ -191,6 +196,16 @@ type Deps struct {
 	// would read whatever series its topics name, which is the one thing in a
 	// deployment config that decides what data a run sees.
 	Access access.Checker
+	// Exports lists the analytics-serving exports the developer may read, so a
+	// launch can find the one that holds an import input's history. Optional: nil
+	// means no analytics-serving is configured, no export is looked up, and every
+	// import input is read from its Kafka topic, which the launch result says.
+	//
+	// An interface that is nil must be an untyped nil. Assigning a nil client
+	// pointer wraps it in a non-nil interface and the "not configured" branch would
+	// never run; see the guard in pkg.go, which exists for the same reason as the
+	// one around Options.Series.
+	Exports ExportLister
 	Options
 }
 
@@ -213,6 +228,7 @@ type Service struct {
 	// commit's tree is immutable — see criteriaCache.
 	criteria criteriaCache
 	access   access.Checker
+	exports  ExportLister
 	opts     Options
 }
 
@@ -330,6 +346,7 @@ func New(deps Deps) (*Service, error) {
 		store:     deps.Store,
 		ids:       deps.IDs,
 		access:    deps.Access,
+		exports:   deps.Exports,
 		http:      client,
 		ray: &rayClient{
 			baseURL: opts.RayURL, token: opts.RayToken, http: client,
@@ -488,6 +505,15 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 		access.Options{}); err != nil {
 		return LaunchResult{}, fmt.Errorf("%w: %s", ErrInvalidRequest, err)
 	}
+	// After the check, with the same checker and token: an import's history is read
+	// from the export this resolves, and the export is a resource of its own that
+	// the developer may or may not be allowed to execute. Before the package is
+	// built for the reason above, since an ambiguous or unreadable export refuses.
+	importExports, exportWarnings, err := s.resolveImportExports(ctx, req.Bearer, req.InputTopics)
+	if err != nil {
+		return LaunchResult{}, err
+	}
+	warnings = append(warnings, exportWarnings...)
 
 	experimentID := s.ids.NewID()
 	submissionID := s.ids.NewID()
@@ -605,7 +631,7 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 	}
 
 	deployment, err := s.deploymentEnvironment(
-		record, pipelineID, operatorIdentifier, req.InputTopics, runID, criteria)
+		record, pipelineID, operatorIdentifier, req.InputTopics, runID, criteria, importExports)
 	if err != nil {
 		return LaunchResult{}, err
 	}

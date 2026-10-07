@@ -25,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/SENERGY-Platform/analytics-flow-engine/lib/exports"
 )
 
 // The read side of an import is where it stops resembling a device, and the
@@ -46,8 +48,13 @@ import (
 //     profile or chart
 //   - HistoryUnknown: the question could not be answered
 //
-// None of the three changes what an operator trains on: a run reads an import
-// from its Kafka topic, never from an export.
+// What an operator trains on does follow from this, but not here. A launch
+// resolves the export the developer may execute (package lib/exports, the rule
+// the flow engine applies too) and the run then reads the import's history from
+// it; an import with no such export is read from its Kafka topic, which keeps
+// only days. This lookup answers a different question -- does any export exist,
+// for the developer to look at -- and applies no permission check of its own, so
+// HistoryExported does not promise that a run will use that export.
 //
 // Collapsing the last two would be the actual defect. "Nothing stored" is an
 // answer a developer can act on by creating the export. "I could not find out" is
@@ -305,7 +312,9 @@ func historyOf(instanceID string, found []Export, total int64) History {
 		State: HistoryLiveOnly,
 		Reason: "no export exists for this import, so nothing of it is stored in timescale: an " +
 			"operator can consume its Kafka topic live, and the Python operator library's " +
-			"provide_historic_data replays that topic, but there is no series to profile beforehand",
+			"provide_historic_data replays that topic, which keeps only days, but there is no " +
+			"series to profile beforehand; a run reads the import's full history only once an " +
+			"export the developer may execute exists",
 	}
 }
 
@@ -361,6 +370,41 @@ func (c *ServingClient) ListExports(ctx context.Context, token string, limit, of
 	}
 	if response.Instances == nil {
 		response.Instances = []Export{}
+	}
+	return response.Instances, response.Total, nil
+}
+
+// ExportLister adapts a ServingClient to exports.Lister, the interface the shared
+// resolution rule reads the listing through.
+//
+// An adapter rather than one wire type, because the two types differ on purpose.
+// This package's Export carries the four creation defaults (EntityName,
+// ServiceName, TimestampFormat, Offset) and a flatter database id, and
+// exports.Export carries the database record and owner that resolution needs
+// (ExportDatabase, Database, UserId) and this package does not read. Merging them
+// would put each side's fields into the other's callers; both decode the same
+// GET /instance, so the adapter is one more read of it.
+type ExportLister struct{ client *ServingClient }
+
+// Lister returns the client as an exports.Lister.
+func (c *ServingClient) Lister() *ExportLister { return &ExportLister{client: c} }
+
+type resolvableListResponse struct {
+	Total     int64            `json:"total"`
+	Instances []exports.Export `json:"instances"`
+}
+
+// ListExports is ServingClient.ListExports with the fields resolution needs.
+func (l *ExportLister) ListExports(ctx context.Context, token string, limit, offset int64) ([]exports.Export, int64, error) {
+	c := l.client
+	query := url.Values{
+		"limit":  []string{strconv.FormatInt(limit, 10)},
+		"offset": []string{strconv.FormatInt(offset, 10)},
+	}
+	response, err := do[resolvableListResponse](ctx, c.http, c.timeout, token,
+		http.MethodGet, c.baseURL+"/instance", query, nil)
+	if err != nil {
+		return nil, 0, err
 	}
 	return response.Instances, response.Total, nil
 }

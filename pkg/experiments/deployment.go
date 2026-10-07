@@ -111,6 +111,14 @@ type operatorSettings struct {
 	EvaluationTargetSeries    string `json:"evaluation_target_series,omitempty"`
 	EvaluationPredictionField string `json:"evaluation_prediction_field,omitempty"`
 	EvaluationResolution      string `json:"evaluation_resolution,omitempty"`
+	// ImportExports is a JSON-encoded string, not an array: the flow engine's config
+	// is a map of strings and Operator Lib reads this key the same way for either
+	// deployer. Decoded it lists, per import input that has one, the export to read
+	// that import's history from (lib/exports.ImportExport). Left out when no import
+	// has an export, which is Operator Lib's own "read Kafka" and keeps the config
+	// of every launch without an import input byte for byte what it was. An older
+	// library ignores the key, so release order does not matter.
+	ImportExports string `json:"import_exports,omitempty"`
 }
 
 // modelID is the key Operator Lib registers a model under, built in
@@ -171,9 +179,13 @@ func operatorID(repository string) string { return sanitiseSegment(repository) }
 // Launch, which reads it with the developer's own credential and never fails the
 // launch over it (§5.13, D37 addendum). A zero document leaves the four
 // evaluation_* config keys unset below exactly as if the file had none of them.
+//
+// importExports is resolveImportExports' result, passed rather than stored: it
+// depends on what the developer may execute at launch and is not a property of the
+// run that a reloaded record should carry.
 func (s *Service) deploymentEnvironment(
 	record Experiment, pipelineID, operatorID string, topics []InputTopic, runID string,
-	criteria CriteriaDocument,
+	criteria CriteriaDocument, importExports string,
 ) (map[string]string, error) {
 	// Formatted off record.Split rather than a parameter of its own: the record is
 	// what Launch already stored, so the deployment config and the stored row can
@@ -212,6 +224,7 @@ func (s *Service) deploymentEnvironment(
 			EvaluationTargetSeries:    evaluationTargetSeries,
 			EvaluationPredictionField: evaluationPredictionField,
 			EvaluationResolution:      evaluationResolution,
+			ImportExports:             importExports,
 		},
 		// Never nil: Operator Lib iterates it without checking, and a null here is a
 		// TypeError inside the job rather than a refusal the developer can read.
@@ -346,7 +359,19 @@ func asPipeTopics(topics []InputTopic) []pipe.InputTopic {
 			Name:        topic.Name,
 			FilterType:  topic.FilterType,
 			FilterValue: topic.FilterValue,
+			// Read by lib/exports: an export is a candidate only if its columns cover
+			// every mapped source, and the config entry maps each one. Without them
+			// the coverage test passes vacuously and the entry carries no columns.
+			Mappings: mappingsOf(topic.Mappings),
 		})
+	}
+	return out
+}
+
+func mappingsOf(mappings []TopicMapping) []pipe.Mapping {
+	out := make([]pipe.Mapping, 0, len(mappings))
+	for _, m := range mappings {
+		out = append(out, pipe.Mapping{Dest: m.Dest, Source: m.Source})
 	}
 	return out
 }

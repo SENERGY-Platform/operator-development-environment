@@ -965,8 +965,9 @@ func NewSurface(deps Deps) (*Registry, error) {
 		Definition{
 			Name: "create_export",
 			Description: "Create an export of an import instance, so its values are stored in " +
-				"timescale and can be profiled and charted. Training does not read it: a run reads " +
-				"an import from its Kafka topic. Use it when an import's history reads live_only " +
+				"timescale and can be profiled and charted. A run trains on it too, once it is the " +
+				"only export of the import the developer may execute; until then a run reads the " +
+				"import's Kafka topic. Use it when an import's history reads live_only " +
 				"and the developer needs to look at its past rather than only what " +
 				"arrives from now on.\n\n" +
 				"The developer must confirm. Name only variables you found through " +

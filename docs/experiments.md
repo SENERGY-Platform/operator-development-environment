@@ -578,9 +578,10 @@ cap. The device's usage accounting was the first basis and was dropped: it cover
 every column of every service the device has, and refused a 30-day window over one
 power reading at 5.6 million rows. The count reads no value, and row counts are L0.
 A negative value disables the cap, and the window is then not counted at all. A
-topic replayed from Kafka cannot be counted that way and is named in a warning
-instead, because refusing on a figure that does not exist would be worse than
-proceeding with the developer told.
+topic not read through a device's timescale series -- one replayed from Kafka, or an
+import read from its export, whose columns are not a device's -- cannot be counted
+that way and is named in a warning instead, because refusing on a figure that does
+not exist would be worse than proceeding with the developer told.
 
 ## The way back out, which is the harder half
 

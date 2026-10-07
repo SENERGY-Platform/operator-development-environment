@@ -868,7 +868,19 @@ func startM8(
 		seriesReader = timeseriesClient
 	}
 
+	// The export listing a launch resolves its import inputs' history from. Set only
+	// when analytics-serving is configured, and as a plain nil otherwise: a nil
+	// *imports.ExportLister stored in the interface field would read as configured,
+	// and Launch would call a client with no URL instead of saying the history is
+	// Kafka only. The same trap as seriesReader above.
+	var exportLister experiments.ExportLister
+	if config.AnalyticsServingUrl != "" {
+		exportLister = imports.NewServingClient(config.AnalyticsServingUrl,
+			imports.ClientOptions{Timeout: requestTimeout}).Lister()
+	}
+
 	service, err := experiments.New(experiments.Deps{
+		Exports:   exportLister,
 		Workspace: kernelService,
 		Repo:      repoService,
 		// A launch authorizes its input topics as the developer, using the rule the

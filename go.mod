@@ -3,7 +3,7 @@ module github.com/SENERGY-Platform/operator-development-environment
 go 1.26.5
 
 require (
-	github.com/SENERGY-Platform/analytics-flow-engine/lib v0.0.0-20260831085754-370b49658c38
+	github.com/SENERGY-Platform/analytics-flow-engine/lib v0.0.0-20261007072002-890876b86c63
 	github.com/SENERGY-Platform/analytics-pipeline/lib v0.0.0-20251021095503-e4fc32dc684d
 	github.com/SENERGY-Platform/device-repository/v3 v3.0.2
 	github.com/SENERGY-Platform/device-selection/v2 v2.0.2

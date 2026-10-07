@@ -346,8 +346,18 @@ topic. The topic is derivable, but deriving it would make ODE assert an upstream
 implementation detail — and the read also answers the question the developer asks
 next. Its warnings cover the way a correct input still produces nothing: an
 instance that is stopped, or whose state could not be established. Whether the
-import has an export is not a warning: a run reads the import's Kafka topic, never
-its export, and trains on what the topic still holds.
+import has an export is not a warning there, because that is decided at launch and
+reported there. A launch resolves, for each import input, the one export the
+developer may execute (`exports.Resolve` in `analytics-flow-engine/lib/exports`,
+the rule the flow engine applies too: an `import_id` export of this import and
+topic on a timescale database, covering every mapped path, not the sardine worker's)
+and writes it into the operator config as `import_exports`; the run then reads that
+import's history from the export through timescale-wrapper. An import with no such
+export is read from its Kafka topic as before, and the launch says so in a warning
+per import, because the topic retains only days. Several exports the developer may
+execute for one import refuse the launch and name them, and a listing or permission
+error refuses it too rather than reading as "no export". Without analytics-serving
+or timescale-wrapper configured nothing is looked up and every import is Kafka only.
 
 ## Creating an import, and creating its export
 

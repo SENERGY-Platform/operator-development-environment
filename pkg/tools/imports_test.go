@@ -745,6 +745,27 @@ func TestCreateExportReportsColumnsAndDerivedFields(t *testing.T) {
 	}
 }
 
+// A second export of the same import makes every launch with it ambiguous once the
+// developer may execute both, so the answer names the one that was already there.
+func TestCreateExportNamesAnExportTheImportAlreadyHad(t *testing.T) {
+	imp := &fakeImports{
+		history: imports.History{State: imports.HistoryExported, ExportID: "export-0"},
+		createdExport: imports.CreatedExport{
+			Export: imports.Export{ID: "export-1", Name: "Leipzig weather history"},
+		},
+	}
+	answer := callWriteTool(t, imp, newFakeCreations(), "create_export", map[string]any{
+		"instance_id": testImportInstance,
+		"name":        "Leipzig weather history",
+		"rationale":   "the operator needs a year of history",
+		"values":      []any{map[string]any{"variable_path": "value.temperature_2m", "column": "temperature"}},
+	})
+	warnings := fmt.Sprint(answer["warnings"])
+	if !strings.Contains(warnings, "export-0") || !strings.Contains(warnings, "ambiguous") {
+		t.Errorf("warnings = %v, want the existing export named and the ambiguity explained", warnings)
+	}
+}
+
 // An import that backfills the past needs its own time path, and the format that
 // parses it belongs with it. Both reach the request rather than being dropped
 // between the tool schema and the service.
