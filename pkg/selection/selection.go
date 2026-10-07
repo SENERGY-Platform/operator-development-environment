@@ -593,6 +593,7 @@ func (r *Resolver) Resolve(ctx context.Context, token string, req Request) (Resu
 		quick, err := r.ranker.QuickProfiles(ctx, token, profiler.QuickRequest{
 			Devices: listed.Devices,
 			Window:  req.Window,
+			Split:   req.Split,
 			// Selected variables that cannot be read as a series are kept and ranked
 			// last rather than hidden: the developer asked for that variable, and
 			// "it exists but is a JSONB list column" is the answer.
