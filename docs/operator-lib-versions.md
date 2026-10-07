@@ -41,7 +41,7 @@ The distribution matters. The pin the developer can see in the Code pane
 `pyproject.toml`. The kernel is the one that does not consult it: a cell runs
 against the singleuser image's library, which is deployment-wide.
 
-As of 2026-10-07 the library is at `v1.8.0` and pins the same as `v1.7.0`:
+As of 2026-10-07 the library is at `v1.8.1` and pins the same as `v1.7.0`:
 
 ```text
 ray[data]==2.55.0
@@ -102,6 +102,14 @@ rather than predictions. A row on a timescale-wrapper chunk boundary is no longe
 dropped. A repository left on `v1.7.x` ignores `import_exports` and keeps reading
 imports from Kafka, which is the only symptom.
 
+`v1.8.1` moves no pins. On `v1.8.0`, an export read through timescale-wrapper
+fails with `rows of width 2, expected <n>`: `/queries/v2` runs one query per
+requested column, and the series of a forecast export, several rows under one
+time, cannot be lined up again. `v1.8.1` reads exports through `/queries`, which
+runs one SELECT over all columns. Device reads stay on `/queries/v2`. A repository
+on `v1.8.0` with an import input whose export is resolved fails at the history
+read until its pin moves.
+
 **A version this file names is not necessarily a version that exists.** The
 library bumps `operator_lib/__init__.py`'s `__version__` inside the commit that
 earns it rather than in a release step of its own, so a working copy can read
@@ -117,6 +125,7 @@ git ls-remote --tags git@github.com:SENERGY-Platform/analytics-operator-lib-pyth
 As of 2026-09-21, `v1.7.0` is tagged on `master`; the steps below it are not run.
 As of 2026-10-06, `v1.7.1` is tagged on `master`.
 As of 2026-10-07, `v1.8.0` is tagged on `master`.
+As of 2026-10-07, `v1.8.1` is tagged on `master`.
 
 ## Why only the latest is supported
 
