@@ -406,6 +406,84 @@ func TestWritingAFileChangesTheWorkingCopyAndNothingElse(t *testing.T) {
 	}
 }
 
+// The other side of the Code pane's diff is what HEAD holds, whatever the working
+// copy has become since — and a path HEAD does not hold is an answer, not a failure.
+func TestTheCommittedSideOfAFileIsWhatTheLastCommitHolds(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	h.createAndCommit(t, "pv-forecast", "Scaffold the operator")
+	if err := os.WriteFile(h.path("jonah", "pv-forecast", "logo.png"),
+		[]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"), 0o644); err != nil {
+		t.Fatalf("write logo: %v", err)
+	}
+	if _, err := h.service.Commit(context.Background(), repo.CommitRequest{
+		Request: h.request(), Message: "Add a logo",
+	}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	committed := h.read(t, "jonah/pv-forecast/op.py")
+
+	for path, content := range map[string]string{"op.py": "# rewritten\n", "new.py": "# new\n"} {
+		if _, err := h.service.WriteFile(context.Background(), h.request(),
+			path, []byte(content)); err != nil {
+			t.Fatalf("WriteFile %s: %v", path, err)
+		}
+	}
+
+	file, err := h.service.ReadCommittedFile(context.Background(), h.request(), "op.py")
+	if err != nil {
+		t.Fatalf("ReadCommittedFile: %v", err)
+	}
+	if !file.Exists || file.Text != committed {
+		t.Errorf("op.py = %+v, want the committed text", file)
+	}
+
+	// A directory is not a file the editor could have open, so it reads as absent
+	// like a new file does.
+	for _, path := range []string{"new.py", ".github"} {
+		file, err := h.service.ReadCommittedFile(context.Background(), h.request(), path)
+		if err != nil {
+			t.Errorf("%s: %v", path, err)
+			continue
+		}
+		if file.Exists || file.Text != "" {
+			t.Errorf("%s = %+v, want absent", path, file)
+		}
+	}
+
+	logo, err := h.service.ReadCommittedFile(context.Background(), h.request(), "logo.png")
+	if err != nil {
+		t.Fatalf("ReadCommittedFile logo.png: %v", err)
+	}
+	if !logo.Exists || !logo.Binary || logo.Text != "" {
+		t.Errorf("logo.png = %+v, want binary with no text", logo)
+	}
+
+	if _, err := h.service.ReadCommittedFile(context.Background(), h.request(),
+		"../../etc/passwd"); !errors.Is(err, repo.ErrInvalidRequest) {
+		t.Errorf("error = %v, want a refusal", err)
+	}
+}
+
+// An unborn branch has no HEAD, so every file is one the last commit does not hold.
+func TestOnAnUnbornBranchNoFileIsCommitted(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	if _, err := h.service.Create(context.Background(), repo.CreateRequest{
+		Request: h.request(), Name: "pv-forecast", Scaffold: true,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	file, err := h.service.ReadCommittedFile(context.Background(), h.request(), "op.py")
+	if err != nil {
+		t.Fatalf("ReadCommittedFile: %v", err)
+	}
+	if file.Exists {
+		t.Errorf("op.py = %+v, want absent", file)
+	}
+}
+
 func TestPathsThatLeaveTheRepositoryAreRefused(t *testing.T) {
 	h := newHarness(t)
 	h.connect()

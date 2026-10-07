@@ -4692,6 +4692,67 @@
                 ]
             }
         },
+        "/repo/files/head": {
+            "get": {
+                "description": "The side the Code pane's diff compares the working copy against. A\npath the last commit does not hold — a new file, any file on an\nunborn branch — comes back with `exists: false` rather than a 404.\nBinary and over-long files carry no text, as on the working-copy read.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repo"
+                ],
+                "summary": "Read one file as the last commit holds it",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "path relative to the repository root",
+                        "name": "path",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/repo.CommittedFile"
+                        }
+                    },
+                    "400": {
+                        "description": "the path leaves the repository",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "no repository is selected",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ]
+            }
+        },
         "/repo/link": {
             "post": {
                 "description": "Links the repository and makes sure its working copy is on the PVC:\nclone if it is not there, reuse it if it is — including its uncommitted\nchanges, which the answer reports (§5.11 items 5 and 6).",
@@ -9403,6 +9464,28 @@
                 },
                 "subject": {
                     "type": "string"
+                }
+            }
+        },
+        "repo.CommittedFile": {
+            "type": "object",
+            "properties": {
+                "binary": {
+                    "description": "Binary and Truncated carry no text, for the same reasons File's do — and a\ntruncated side is dropped whole rather than shown in part, because a diff\nagainst half a file marks every line after the cut as a change.",
+                    "type": "boolean"
+                },
+                "exists": {
+                    "description": "Exists is false for a path the last commit does not hold — a new file, or any\nfile on an unborn branch. That is an answer rather than a 404, because a file\nwith nothing to compare against is compared against nothing.",
+                    "type": "boolean"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "truncated": {
+                    "type": "boolean"
                 }
             }
         },

@@ -406,6 +406,19 @@ func TestTheCodePaneCanReadAndWriteEveryFile(t *testing.T) {
 		t.Errorf("the file was not written: %+v", file)
 	}
 
+	// Nothing is committed yet, so the diff's other side is an answer saying so
+	// rather than a 404 the pane would have to tell from a deleted path.
+	response = h.call(t, http.MethodGet, "/repo/files/head?path=.github/workflows/build.yml",
+		nil, "developer")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("committed read = %d", response.StatusCode)
+	}
+	var committed repo.CommittedFile
+	h.decode(t, response, &committed)
+	if committed.Exists || committed.Text != "" {
+		t.Errorf("committed = %+v, want absent on an unborn branch", committed)
+	}
+
 	// A path that leaves the repository is 400, and the answer says why.
 	response = h.call(t, http.MethodGet, "/repo/files/content?path=../../etc/passwd",
 		nil, "developer")
@@ -664,6 +677,7 @@ func TestWriteRepoContractFixtures(t *testing.T) {
 		{"repo_status.json", http.MethodGet, "/repo?fetch=true", nil},
 		{"repo_tree.json", http.MethodGet, "/repo/files", nil},
 		{"repo_file.json", http.MethodGet, "/repo/files/content?path=op.py", nil},
+		{"repo_file_head.json", http.MethodGet, "/repo/files/head?path=op.py", nil},
 		{"repo_scaffold.json", http.MethodPost, "/repo/scaffold", nil},
 		{"repo_push.json", http.MethodPost, "/repo/push", nil},
 	}

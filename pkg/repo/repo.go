@@ -278,3 +278,19 @@ type File struct {
 	// does it so the pane and `write_file` agree on what a `.py` is.
 	Language string `json:"language,omitempty"`
 }
+
+// CommittedFile is one file as the last commit holds it: the side the Code pane's
+// diff compares the working copy against.
+type CommittedFile struct {
+	Path string `json:"path"`
+	// Exists is false for a path the last commit does not hold — a new file, or any
+	// file on an unborn branch. That is an answer rather than a 404, because a file
+	// with nothing to compare against is compared against nothing.
+	Exists bool   `json:"exists"`
+	Text   string `json:"text"`
+	// Binary and Truncated carry no text, for the same reasons File's do — and a
+	// truncated side is dropped whole rather than shown in part, because a diff
+	// against half a file marks every line after the cut as a change.
+	Binary    bool `json:"binary"`
+	Truncated bool `json:"truncated"`
+}

@@ -2127,6 +2127,17 @@ export interface RepoFile {
   language?: string;
 }
 
+/** A file as the last commit holds it: the side the editor's diff compares against. */
+export interface RepoCommittedFile {
+  path: string;
+  /** False for a path the last commit does not hold — a new file, or any on an unborn branch. */
+  exists: boolean;
+  text: string;
+  binary: boolean;
+  /** Carries no text at all: a diff against part of a file is wrong after the cut. */
+  truncated: boolean;
+}
+
 export interface RepoWriteResult {
   path: string;
   size: number;
@@ -2905,6 +2916,10 @@ export const api = {
   repoFiles: () => workspace((wb) => get<RepoTree>(inWorkbench("/repo/files", wb))),
   repoFile: (path: string) =>
     workspace((wb) => get<RepoFile>(inWorkbench(`/repo/files/content${query({ path })}`, wb))),
+  repoCommittedFile: (path: string) =>
+    workspace((wb) =>
+      get<RepoCommittedFile>(inWorkbench(`/repo/files/head${query({ path })}`, wb)),
+    ),
   repoWriteFile: (path: string, content: string) =>
     workspace((wb) =>
       put<RepoWriteResult>(inWorkbench("/repo/files/content", wb), { path, content }),

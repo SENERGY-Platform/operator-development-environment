@@ -42,6 +42,7 @@ import type {
   RepoConnection,
   Workbench,
   RepoFile,
+  RepoCommittedFile,
   RepoPush,
   RepoScaffoldResult,
   RepoStatus,
@@ -98,6 +99,7 @@ import repoCommitMessage from "./repo_commit_message.json";
 import repoConnection from "./repo_connection.json";
 import workbenches from "./workbenches.json";
 import repoFile from "./repo_file.json";
+import repoFileHead from "./repo_file_head.json";
 import repoPush from "./repo_push.json";
 import repoRepositories from "./repo_repositories.json";
 import repoScaffold from "./repo_scaffold.json";
@@ -173,6 +175,7 @@ export const checked = {
   repoStatus: repoStatus satisfies Loose<RepoStatus>,
   repoTree: repoTree satisfies Loose<RepoTree>,
   repoFile: repoFile satisfies Loose<RepoFile>,
+  repoFileHead: repoFileHead satisfies Loose<RepoCommittedFile>,
   repoScaffold: repoScaffold satisfies Loose<RepoScaffoldResult>,
   repoCommit: repoCommit satisfies Loose<RepoCommit>,
   repoCommitDraft: repoCommitMessage satisfies Loose<RepoCommitDraft>,

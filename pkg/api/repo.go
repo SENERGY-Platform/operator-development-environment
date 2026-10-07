@@ -632,6 +632,31 @@ func handleRepoReadFile(svc *repo.Service) gin.HandlerFunc {
 	}
 }
 
+// @Summary		Read one file as the last commit holds it
+// @Description	The side the Code pane's diff compares the working copy against. A
+// @Description	path the last commit does not hold — a new file, any file on an
+// @Description	unborn branch — comes back with `exists: false` rather than a 404.
+// @Description	Binary and over-long files carry no text, as on the working-copy read.
+// @Tags			repo
+// @Produce		json
+// @Security		Bearer
+// @Param			path	query		string	true	"path relative to the repository root"
+// @Success		200		{object}	repo.CommittedFile
+// @Failure		400		{object}	map[string]string	"the path leaves the repository"
+// @Failure		409		{object}	map[string]string	"no repository is selected"
+// @Failure		502		{object}	map[string]string
+// @Router			/repo/files/head [get]
+func handleRepoReadCommittedFile(svc *repo.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		file, err := svc.ReadCommittedFile(c.Request.Context(), repoRequest(c), c.Query("path"))
+		if err != nil {
+			respondRepo(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, file)
+	}
+}
+
 type writeFileBody struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`

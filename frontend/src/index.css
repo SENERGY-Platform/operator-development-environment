@@ -1136,14 +1136,34 @@
    * `--change-colour`, so the name and the letter cannot come to disagree about
    * what kind of change this is — which is what a rule per combination of the two
    * would eventually allow.
+   *
+   * A button, because pressing it opens the file with the change marked in the
+   * editor; a plain one rather than the shared component, whose utilities would
+   * override every measurement above.
    */
   .change-row {
     --change-colour: var(--foreground);
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    width: 100%;
     min-width: 0;
+    padding: 0.15rem 0.35rem;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
     font-size: 0.8rem;
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .change-row:hover {
+    background: var(--muted);
+  }
+
+  .change-row:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: -2px;
   }
 
   .change-row.modified,

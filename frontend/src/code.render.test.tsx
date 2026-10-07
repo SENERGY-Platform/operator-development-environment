@@ -67,16 +67,28 @@ vi.mock("./github", async (importOriginal) => {
 
 vi.mock("./monaco", () => ({
   monaco: {
-    // Enough of an editor for the component's own lifecycle: it subscribes, binds
-    // Ctrl-S and disposes. The tests below open a file but do not type in it.
+    // Enough of a diff editor for the component's own lifecycle: it subscribes,
+    // binds Ctrl-S and disposes. The tests below open a file but do not type in it,
+    // so the models only keep what they were given, where `diffs` can read it.
     editor: {
-      create: () => ({
-        onDidChangeModelContent: () => ({ dispose: () => {} }),
-        addCommand: () => {},
-        getValue: () => "",
-        getModel: () => null,
-        dispose: () => {},
-      }),
+      createModel: (text: string) => {
+        const model = { text, getValue: () => model.text, setValue: (next: string) => {
+          model.text = next;
+        }, updateOptions: () => {}, dispose: () => {} };
+        return model;
+      },
+      createDiffEditor: (_host: unknown, options: { readOnly?: boolean }) => {
+        const pair: Diff = { readOnly: options.readOnly };
+        diffs.push(pair);
+        return {
+          setModel: (models: Diff) => Object.assign(pair, models),
+          getModifiedEditor: () => ({
+            onDidChangeModelContent: () => ({ dispose: () => {} }),
+            addCommand: () => {},
+          }),
+          dispose: () => {},
+        };
+      },
     },
     KeyMod: { CtrlCmd: 0 },
     KeyCode: { KeyS: 0 },
@@ -100,6 +112,12 @@ let missingScopes: string[] = [];
 let benches: Workbench[] = [];
 /** Which mutating repo routes were called, in order. */
 let calls: string[] = [];
+/** One diff editor the pane created: the two texts it compares, and whether it edits. */
+type Diff = { original?: { text: string }; modified?: { text: string }; readOnly?: boolean };
+/** Every diff editor the pane created, newest last. */
+let diffs: Diff[] = [];
+/** What the last commit holds, by path, for the committed-side route. Absent means a new file. */
+let committedFiles: Record<string, string> = {};
 /**
  * Every call to the status route, as whether it asked for a fetch.
  *
@@ -244,6 +262,11 @@ vi.mock("./api", async (importOriginal) => {
         }
         return { path, size: 1, text: `# ${path}`, binary: false, truncated: false };
       },
+      repoCommittedFile: async (path: string) => {
+        calls.push(`repoCommittedFile:${path}`);
+        const text = committedFiles[path];
+        return { path, exists: text !== undefined, text: text ?? "", binary: false, truncated: false };
+      },
       // Answered through the module's active workbench, the same way the real route
       // is: a tree that ignored it could not show a switch going wrong.
       repoFiles: async () => ({
@@ -323,6 +346,8 @@ beforeEach(() => {
   missingScopes = [];
   benches = [];
   calls = [];
+  diffs = [];
+  committedFiles = {};
   statusCalls = [];
   pushRefusals = 1;
   pushRejects = null;
@@ -414,8 +439,8 @@ function listing(host: HTMLElement): string[] {
  * deployment rather than on the working copy: whether the commit box offers to draft
  * a message, which needs an LLM provider the repo routes are served without.
  */
-async function open(session: Session = SESSION): Promise<HTMLElement> {
-  window.history.replaceState({}, "", "/");
+async function open(session: Session = SESSION, address = "/"): Promise<HTMLElement> {
+  window.history.replaceState({}, "", address);
   vi.resetModules();
   const { CodeView } = await import("./code");
 
@@ -429,6 +454,15 @@ async function open(session: Session = SESSION): Promise<HTMLElement> {
     await Promise.resolve();
   });
   return host;
+}
+
+/** settle lets the reads that follow one another — the file, then its last commit — answer. */
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 3; turn++) {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
 }
 
 /** The bar's button carrying `label`, whatever else is in it. */
@@ -1145,4 +1179,90 @@ it("closes the file and re-reads the tree when the workbench switches", async ()
   expect(new URLSearchParams(window.location.search).get("file")).toBeNull();
   expect(host.textContent).not.toContain("does not exist");
   expect(host.querySelector(".file-editor")?.textContent).toContain("Pick a file");
+});
+
+// --- the diff in the editor ---
+
+/*
+ * The changes panel named the files and nothing else, so reading what had changed
+ * meant opening a terminal. The editor now compares the working copy with what the
+ * last commit holds, in place.
+ */
+it("compares a changed file in the editor with what the last commit held", async () => {
+  current = status({
+    dirty: true,
+    changes: [{ path: "main.py", kind: "modified", staged: false, unstaged: true }],
+  });
+  committedFiles = { "main.py": "# committed" };
+
+  const host = await open(SESSION, "/?file=main.py");
+  await settle();
+
+  expect(calls).toContain("repoCommittedFile:main.py");
+  expect(diffs.at(-1)?.modified?.text).toBe("# main.py");
+  expect(diffs.at(-1)?.original?.text).toBe("# committed");
+  expect(diffs.at(-1)?.readOnly).toBe(false);
+  expect(host.querySelector(".file-hint")?.textContent).toContain("differ from the last commit");
+});
+
+/* Unchanged, the working copy is the commit, so there is nothing more to read. */
+it("compares an unchanged file with its own text, and a new one with nothing", async () => {
+  current = status();
+  await open(SESSION, "/?file=main.py");
+  await settle();
+  expect(calls.filter((call) => call.startsWith("repoCommittedFile"))).toEqual([]);
+  expect(diffs.at(-1)?.original?.text).toBe("# main.py");
+
+  current = status({
+    dirty: true,
+    changes: [{ path: "main.py", kind: "untracked", staged: false, unstaged: true }],
+  });
+  await open(SESSION, "/?file=main.py");
+  await settle();
+  expect(calls.filter((call) => call.startsWith("repoCommittedFile"))).toEqual([]);
+  expect(diffs.at(-1)?.original?.text).toBe("");
+});
+
+it("opens a file from the changes panel, and reads a rename under its old name", async () => {
+  current = status({
+    dirty: true,
+    changes: [
+      { path: "main.py", kind: "renamed", renamed_from: "app.py", staged: true, unstaged: false },
+    ],
+  });
+  committedFiles = { "app.py": "# before the rename" };
+
+  const host = await open();
+  const row = host.querySelector<HTMLButtonElement>("#repo-panel-changes button.change-row");
+  if (!row) throw new Error("no change row to press");
+  await act(async () => row.click());
+  await settle();
+
+  expect(new URLSearchParams(window.location.search).get("file")).toBe("main.py");
+  // The panel sits over the editor, so it gets out of the way of the diff.
+  expect(host.querySelector("#repo-panel-changes")).toBeNull();
+  expect(calls).toContain("repoCommittedFile:app.py");
+  expect(diffs.at(-1)?.original?.text).toBe("# before the rename");
+});
+
+/*
+ * A deleted file is not in the working copy, so reading it there would refuse —
+ * and the removed text is the whole of that change.
+ */
+it("shows a deleted file as what the last commit held against nothing, and does not edit it", async () => {
+  current = status({
+    dirty: true,
+    changes: [{ path: "old.py", kind: "deleted", staged: false, unstaged: true }],
+  });
+  committedFiles = { "old.py": "# removed" };
+
+  const host = await open(SESSION, "/?file=old.py");
+  await settle();
+
+  expect(host.textContent).not.toContain("does not exist");
+  expect(diffs.at(-1)?.modified?.text).toBe("");
+  expect(diffs.at(-1)?.original?.text).toBe("# removed");
+  expect(diffs.at(-1)?.readOnly).toBe(true);
+  expect(host.querySelector(".file-hint")?.textContent).toContain("Deleted from the working copy");
+  expect(button(host, "Save").disabled).toBe(true);
 });

@@ -359,6 +359,7 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 		// segment, which also spares every caller two rounds of escaping.
 		repoRoutes.GET("/files", handleRepoFiles(deps.Repo))
 		repoRoutes.GET("/files/content", handleRepoReadFile(deps.Repo))
+		repoRoutes.GET("/files/head", handleRepoReadCommittedFile(deps.Repo))
 		repoRoutes.PUT("/files/content", handleRepoWriteFile(deps.Repo))
 		repoRoutes.DELETE("/files/content", handleRepoDeleteFile(deps.Repo))
 		repoRoutes.POST("/files/directory", handleRepoMakeDir(deps.Repo))

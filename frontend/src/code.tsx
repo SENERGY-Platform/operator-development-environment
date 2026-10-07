@@ -918,33 +918,38 @@ function explain(e: unknown): string {
   return hint ? `${describe(e)} — ${hint}` : describe(e);
 }
 
-/** One row of the changes panel: what changed, where it is, and how. */
-function ChangeRow({ change }: { change: RepoChange }) {
+/**
+ * One row of the changes panel: what changed, where it is, and how. Pressed, it
+ * opens the file in the editor, where the change itself is marked.
+ */
+function ChangeRow({ change, onOpen }: { change: RepoChange; onOpen: (path: string) => void }) {
   const { Icon, family } = fileIcon(change.path);
   const cut = change.path.lastIndexOf("/");
   const directory = cut > 0 ? change.path.slice(0, cut) : "";
   return (
-    <li className={`change-row ${change.kind}`}>
-      <Icon className={`change-icon icon-${family}`} aria-hidden="true" />
-      <span className="change-name">{change.path.slice(cut + 1)}</span>
-      {/*
-        The directory dimmed and beside the name rather than in front of it, so a
-        column of paths reads as a column of *files*. Deep in a package the useful
-        half of `pkg/simulation/solar.py` is the last segment, and it was the half
-        that used to fall off the end of the row.
-      */}
-      <span className="change-dir">
-        {directory}
-        {change.renamed_from && <> ← {change.renamed_from}</>}
-      </span>
-      {change.staged && (
-        <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">
-          staged
+    <li>
+      <button type="button" className={`change-row ${change.kind}`} onClick={() => onOpen(change.path)}>
+        <Icon className={`change-icon icon-${family}`} aria-hidden="true" />
+        <span className="change-name">{change.path.slice(cut + 1)}</span>
+        {/*
+          The directory dimmed and beside the name rather than in front of it, so a
+          column of paths reads as a column of *files*. Deep in a package the useful
+          half of `pkg/simulation/solar.py` is the last segment, and it was the half
+          that used to fall off the end of the row.
+        */}
+        <span className="change-dir">
+          {directory}
+          {change.renamed_from && <> ← {change.renamed_from}</>}
         </span>
-      )}
-      <span className="change-status" title={change.kind} aria-label={change.kind}>
-        {CHANGE_CODES[change.kind] ?? "?"}
-      </span>
+        {change.staged && (
+          <span className="badge inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs">
+            staged
+          </span>
+        )}
+        <span className="change-status" title={change.kind} aria-label={change.kind}>
+          {CHANGE_CODES[change.kind] ?? "?"}
+        </span>
+      </button>
     </li>
   );
 }
@@ -1525,7 +1530,16 @@ function RepoBar({
             <>
               <ul className="changes">
                 {status.changes.map((change) => (
-                  <ChangeRow key={change.path} change={change} />
+                  <ChangeRow
+                    key={change.path}
+                    change={change}
+                    // The panel sits over the editor, so it closes to show the diff
+                    // the row was pressed for.
+                    onOpen={(path) => {
+                      setParam("file", path);
+                      setPanel(null);
+                    }}
+                  />
                 ))}
               </ul>
               <div className="commit-box">
@@ -1628,11 +1642,26 @@ function FilesPane({
   // so a tree left standing across a switch lists files that are not in the working
   // copy on screen, and clicking one asks for a path that does not exist.
   const workbench = useParam("workbench");
-  const [file, setFile] = useState<RepoFile | null>(null);
+  // `deleted` marks a file opened from the changes panel that the working copy no
+  // longer holds. It lives on the file rather than being read off the status at
+  // each render, so the guard on saving cannot let go before the file it guards has
+  // been replaced by the one a discard restored.
+  const [file, setFile] = useState<(RepoFile & { deleted?: boolean }) | null>(null);
   const [draft, setDraft] = useState("");
   const [fileError, setFileError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /*
+   * Which read of the working copy is on screen, counted.
+   *
+   * The editor is keyed by it, because a different read is a different text: a
+   * path is not enough, since the same path comes back with other content after a
+   * discard restores a deleted file, or from the other checkout through the back
+   * button. A save is not a read — the editor already holds what it wrote.
+   */
+  const [read, setRead] = useState(0);
   const root = status.link.path;
+  const change = selected ? status.changes.find((entry) => entry.path === selected) : undefined;
+  const deleted = change?.kind === "deleted";
 
   const loadTree = useCallback(async () => {
     try {
@@ -1672,6 +1701,15 @@ function FilesPane({
       setFileError(null);
       return;
     }
+    // A deleted file has nothing in the working copy to read. It opens as an empty
+    // text against what the last commit held, which is the whole of that change.
+    if (deleted) {
+      setFile({ path: selected, size: 0, text: "", binary: false, truncated: false, deleted: true });
+      setDraft("");
+      setFileError(null);
+      setRead((count) => count + 1);
+      return;
+    }
     let cancelled = false;
     setFileError(null);
     api
@@ -1680,6 +1718,7 @@ function FilesPane({
         if (cancelled) return;
         setFile(loaded);
         setDraft(loaded.text);
+        setRead((count) => count + 1);
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -1693,11 +1732,71 @@ function FilesPane({
     };
     // The workbench is a dependency and not only a hint: a switch normally drops the
     // open file, but the back button can land on an address that names the same path
-    // in the other checkout, and that is a different file.
-  }, [selected, workbench]);
+    // in the other checkout, and that is a different file. `deleted` is one for the
+    // same reason: a discard puts the file back, and then there is one to read.
+  }, [selected, workbench, deleted]);
+
+  /*
+   * The last commit's side of the diff, tagged with the read it belongs to.
+   *
+   * Where it comes from depends on what git says about the file. Unchanged, the
+   * working copy *is* the commit, so the text just read stands in and costs no
+   * call. New, there is nothing on that side. Otherwise it is read, under the old
+   * name for a rename. Re-derived when HEAD moves — after a commit the file is
+   * unchanged again — but not on a save: what the last commit holds does not move
+   * when the working copy does, and the status that follows a save says so.
+   */
+  const [committed, setCommitted] = useState<{
+    read: number;
+    text: string | null;
+    note?: string;
+  } | null>(null);
+  const saved = useRef("");
+  saved.current = file?.text ?? "";
+  const committedPath =
+    change && change.kind !== "added" && change.kind !== "untracked"
+      ? (change.renamed_from ?? change.path)
+      : null;
+  const isNew = change !== undefined && committedPath === null;
+
+  useEffect(() => {
+    if (read === 0) return;
+    if (committedPath === null) {
+      setCommitted({ read, text: isNew ? "" : saved.current });
+      return;
+    }
+    let cancelled = false;
+    api
+      .repoCommittedFile(committedPath)
+      .then((answer) => {
+        if (cancelled) return;
+        if (answer.binary || answer.truncated) {
+          setCommitted({
+            read,
+            text: null,
+            note: answer.binary
+              ? "the last commit holds it as binary"
+              : "the last commit holds more of it than the editor limit",
+          });
+          return;
+        }
+        setCommitted({ read, text: answer.exists ? answer.text : "" });
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setCommitted({ read, text: null, note: describe(e) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [read, committedPath, isNew, status.head]);
+  // Until it arrives, and where there is none, the editor compares against the text
+  // as read: no marks, and then only the unsaved edits.
+  const base = committed !== null && committed.read === read ? committed : null;
 
   const save = useCallback(async () => {
-    if (!file || file.binary) return;
+    // Ctrl+S reaches here from a read-only editor too, and a write would bring a
+    // deleted file back as an empty one.
+    if (!file || file.binary || file.deleted) return;
     setSaving(true);
     setFileError(null);
     try {
@@ -1786,7 +1885,7 @@ function FilesPane({
               <div className="file-head">
                 <code className="file-path">{file.path}</code>
                 <span className="muted file-meta text-muted-foreground">
-                  {bytes(file.size)}
+                  {file.deleted ? "deleted" : bytes(file.size)}
                   {file.modified ? ` · ${dateTime(file.modified)}` : ""}
                 </span>
                 {dirty && <span className="badge warn inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs text-foreground">unsaved</span>}
@@ -1799,8 +1898,15 @@ function FilesPane({
                 </Button>
               </div>
               <p className="muted file-hint text-muted-foreground">
-                Saving writes the working copy. It does not commit.
+                {file.deleted
+                  ? "Deleted from the working copy. Shown as the last commit holds it."
+                  : "Saving writes the working copy. It does not commit. Marked lines differ from the last commit."}
               </p>
+              {base?.note && (
+                <p className="warn text-foreground">
+                  Not compared with the last commit: {base.note}. Only unsaved edits are marked.
+                </p>
+              )}
               {file.binary && (
                 <Muted>
                   This file is not text, so it is not shown. Editing it here would corrupt it.
@@ -1814,9 +1920,12 @@ function FilesPane({
               )}
               {!file.binary && !file.truncated && (
                 <Editor
+                  key={read}
                   path={file.path}
                   language={monacoLanguage(file.language, file.path)}
                   value={draft}
+                  original={base?.text ?? file.text}
+                  readOnly={file.deleted === true}
                   onChange={setDraft}
                   onSave={() => void save()}
                 />
@@ -1933,28 +2042,42 @@ function TreeNode({
 }
 
 /**
- * Monaco, mounted by hand.
+ * Monaco's diff editor, inline, mounted by hand.
  *
- * A model per path rather than one model whose language and value are swapped:
- * that is what keeps the undo history of a file its own, so switching away and
- * back does not lose it. The save keybinding is registered on the editor rather
+ * Inline rather than side by side because the editor is where the work happens:
+ * the working copy stays the one editable text, and what the last commit held
+ * appears between its lines where it was removed. Side by side would halve a pane
+ * that is already one column of the right-hand half. Monaco computes the diff in
+ * the editor worker the bundle already carries, live, so an unsaved edit is marked
+ * as it is typed.
+ *
+ * Whitespace counts. Monaco leaves leading and trailing whitespace out of a diff by
+ * default, and in Python an indentation change is a change of meaning.
+ *
+ * The original side is set rather than re-created when it arrives, because it
+ * arrives after the file: creating the editor again would take the cursor and the
+ * undo history with it. The save keybinding is registered on the editor rather
  * than on the window, so Ctrl+S outside the editor still belongs to the browser.
  */
 function Editor({
   path,
   language,
   value,
+  original,
+  readOnly,
   onChange,
   onSave,
 }: {
   path: string;
   language: string;
   value: string;
+  original: string;
+  readOnly: boolean;
   onChange: (value: string) => void;
   onSave: () => void;
 }) {
   const host = useRef<HTMLDivElement | null>(null);
-  const editor = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const committed = useRef<monaco.editor.ITextModel | null>(null);
   // Held in a ref so the keybinding, which is registered once, always calls the
   // current save rather than the one that existed when the editor was created.
   const save = useRef(onSave);
@@ -1967,35 +2090,49 @@ function Editor({
 
   useEffect(() => {
     if (!host.current) return;
-    const instance = monaco.editor.create(host.current, {
-      value,
-      language,
+    const instance = monaco.editor.createDiffEditor(host.current, {
       theme: dark ? "vs-dark" : "vs",
       automaticLayout: true,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       fontSize: 13,
-      tabSize: 4,
       renderWhitespace: "selection",
+      renderSideBySide: false,
+      ignoreTrimWhitespace: false,
+      originalEditable: false,
+      readOnly,
     });
-    editor.current = instance;
+    const before = monaco.editor.createModel(original, language);
+    const after = monaco.editor.createModel(value, language);
+    after.updateOptions({ tabSize: 4 });
+    instance.setModel({ original: before, modified: after });
+    committed.current = before;
 
-    const changed = instance.onDidChangeModelContent(() => {
-      onChange(instance.getValue());
+    const editor = instance.getModifiedEditor();
+    const changed = editor.onDidChangeModelContent(() => {
+      onChange(after.getValue());
     });
-    instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => save.current());
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => save.current());
 
     return () => {
       changed.dispose();
-      instance.getModel()?.dispose();
+      committed.current = null;
       instance.dispose();
-      editor.current = null;
+      before.dispose();
+      after.dispose();
     };
-    // Deliberately not depending on `value`: the editor owns the text once it is
-    // created, and re-creating it on every keystroke would fight the developer for
-    // the cursor. `path` is in the list so a different file is a different editor.
+    // Deliberately not depending on `value` or `original`: the editor owns the text
+    // once it is created, and re-creating it on every keystroke would fight the
+    // developer for the cursor. A different read of the file is a different editor,
+    // through the key the pane gives it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, language, dark]);
+
+  useEffect(() => {
+    if (committed.current && committed.current.getValue() !== original) {
+      committed.current.setValue(original);
+    }
+  }, [original]);
 
   return <div className="monaco" ref={host} />;
 }

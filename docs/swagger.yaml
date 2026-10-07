@@ -3263,6 +3263,27 @@ definitions:
       subject:
         type: string
     type: object
+  repo.CommittedFile:
+    properties:
+      binary:
+        description: |-
+          Binary and Truncated carry no text, for the same reasons File's do — and a
+          truncated side is dropped whole rather than shown in part, because a diff
+          against half a file marks every line after the cut as a change.
+        type: boolean
+      exists:
+        description: |-
+          Exists is false for a path the last commit does not hold — a new file, or any
+          file on an unborn branch. That is an answer rather than a 404, because a file
+          with nothing to compare against is compared against nothing.
+        type: boolean
+      path:
+        type: string
+      text:
+        type: string
+      truncated:
+        type: boolean
+    type: object
   repo.Draft:
     properties:
       committed:
@@ -7028,6 +7049,49 @@ paths:
       security:
       - Bearer: []
       summary: Create a directory in the working copy
+      tags:
+      - repo
+  /repo/files/head:
+    get:
+      description: |-
+        The side the Code pane's diff compares the working copy against. A
+        path the last commit does not hold — a new file, any file on an
+        unborn branch — comes back with `exists: false` rather than a 404.
+        Binary and over-long files carry no text, as on the working-copy read.
+      parameters:
+      - description: path relative to the repository root
+        in: query
+        name: path
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/repo.CommittedFile'
+        "400":
+          description: the path leaves the repository
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: no repository is selected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "502":
+          description: Bad Gateway
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Read one file as the last commit holds it
       tags:
       - repo
   /repo/link:

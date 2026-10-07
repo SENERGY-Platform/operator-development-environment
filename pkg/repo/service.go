@@ -1168,6 +1168,74 @@ func (s *Service) ReadFile(ctx context.Context, req Request, requested string) (
 	return file, nil
 }
 
+// ReadCommittedFile reads one file as HEAD holds it, for the Code pane's diff.
+//
+// Against HEAD for the reason the drafted commit message is: what the developer is
+// about to commit is the whole difference from the last commit, staged or not.
+//
+// Two commands under one claim, so the answer is about one HEAD. The first tells
+// an unborn branch from a failure — `--verify --quiet` exits 1 for a ref that does
+// not resolve and 128 for everything git dies on, a directory that is not a
+// repository among them. The second fails for any path that is not a blob in
+// HEAD: absent, a directory, a submodule. None of those is a file the editor could
+// have been showing, so each reads as a file the last commit does not hold.
+//
+// No credential: reading an object never reaches the remote.
+func (s *Service) ReadCommittedFile(
+	ctx context.Context, req Request, requested string,
+) (CommittedFile, error) {
+	link, err := s.linkFor(ctx, req)
+	if err != nil {
+		return CommittedFile{}, err
+	}
+	clean, err := relativePath(requested)
+	if err != nil {
+		return CommittedFile{}, err
+	}
+	checkout := s.git(req, link.WorkbenchID, link.Path, "")
+	// The editor's limit rather than the command one, so a file the pane shows
+	// whole is compared against a side read whole.
+	checkout.template.MaxOutputBytes = s.opts.MaxFileBytes
+	argvs := [][]string{
+		{"rev-parse", "--verify", "--quiet", "HEAD"},
+		{"cat-file", "blob", "HEAD:" + clean},
+	}
+	results, err := checkout.runAll(ctx, argvs...)
+	if err != nil {
+		if errors.Is(err, kernel.ErrNotFound) {
+			return CommittedFile{}, ErrNotCloned
+		}
+		return CommittedFile{}, err
+	}
+	committed := CommittedFile{Path: clean}
+	if len(results) == 0 {
+		return CommittedFile{}, checkout.batchFailure(argvs, results)
+	}
+	if head := results[0]; head.ExitCode == 1 && !head.TimedOut {
+		return committed, nil
+	}
+	if len(results) < len(argvs) || results[1].TimedOut {
+		return CommittedFile{}, checkout.batchFailure(argvs, results)
+	}
+	blob := results[1]
+	if blob.ExitCode != 0 {
+		return committed, nil
+	}
+	committed.Exists = true
+	switch {
+	case blob.Truncated:
+		committed.Truncated = true
+	// The helper decodes command output with "replace", so bytes that are not
+	// UTF-8 arrive as U+FFFD: together with NUL, the same two signs the workspace
+	// reads a file as binary by.
+	case strings.ContainsAny(blob.Stdout, "\x00\uFFFD"):
+		committed.Binary = true
+	default:
+		committed.Text = blob.Stdout
+	}
+	return committed, nil
+}
+
 // WriteResult is one file, written.
 type WriteResult struct {
 	Path string `json:"path"`
