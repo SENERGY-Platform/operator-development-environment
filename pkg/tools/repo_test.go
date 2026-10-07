@@ -59,6 +59,20 @@ type fakeRepo struct {
 	logErr   error
 	logReqs  []repo.Request
 	logLimit []int
+
+	// lockReason is what Lock answers, empty for a lock that worked, and lockErr
+	// its error. locks records each request that reached it.
+	lockReason string
+	lockErr    error
+	locks      []repo.Request
+}
+
+func (f *fakeRepo) Lock(_ context.Context, req repo.Request) (string, error) {
+	f.locks = append(f.locks, req)
+	if f.lockErr != nil {
+		return "", f.lockErr
+	}
+	return f.lockReason, nil
 }
 
 func (f *fakeRepo) Status(_ context.Context, req repo.StatusRequest) (repo.Status, error) {
@@ -195,6 +209,76 @@ func TestWriteFileWritesTheWorkingCopyAndSaysItIsNotCommitted(t *testing.T) {
 	}
 	if written.Hint == "" {
 		t.Error("the result carries no hint about what happens next")
+	}
+	// Only pyproject.toml decides the lock, and uv is minutes on a cold cache.
+	if len(fake.locks) != 0 || written.Locked || written.LockError != "" {
+		t.Errorf("op.py was locked: locks %d, result %+v", len(fake.locks), written)
+	}
+}
+
+// A dependency the model adds is only half a change until uv.lock follows it, and
+// nothing fails when it does not: the cluster re-resolves and the run's SHA stops
+// pinning its versions. So the write locks, and the answer says the lock moved.
+func TestWritingPyprojectRefreshesTheLockAndSaysSo(t *testing.T) {
+	fake := &fakeRepo{}
+	dispatcher, err := NewDispatcher(writeFileSurface(t, fake), nil, &sequentialIDs{})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	input, err := json.Marshal(map[string]string{
+		"path":    repo.ProjectFile,
+		"content": "[project]\nname = \"pv-forecast\"\ndependencies = [\"numpy\"]\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	result := dispatcher.Dispatch(context.Background(),
+		Request{Token: "Bearer developer-token", UserSub: "user-1", Tier: L0, WorkbenchID: "wb-2"},
+		Call{ID: "call-1", Name: "write_file", Input: input})
+
+	if result.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+	}
+	if len(fake.locks) != 1 {
+		t.Fatalf("locks = %d, want one after the write", len(fake.locks))
+	}
+	// The same checkout the file went into, not whichever the developer has open.
+	if fake.locks[0].WorkbenchID != "wb-2" || fake.locks[0] != fake.writes[0].Request {
+		t.Errorf("lock request = %+v, want the write's %+v", fake.locks[0], fake.writes[0].Request)
+	}
+	written := result.Content.(WriteFileResult)
+	if !written.Locked || written.LockError != "" {
+		t.Errorf("result = %+v, want locked without an error", written)
+	}
+	if !strings.Contains(written.Hint, repo.LockFile) {
+		t.Errorf("hint = %q, want it to name %s", written.Hint, repo.LockFile)
+	}
+}
+
+// The file is written whatever uv makes of it, so a lock that fails is reported on
+// a successful write rather than turned into a failed one — the model would
+// otherwise write pyproject.toml again to fix something that is already there.
+func TestAFailedLockLeavesThePyprojectWriteStanding(t *testing.T) {
+	for name, fake := range map[string]*fakeRepo{
+		"uv refused":      {lockReason: "error: Git operation failed for the operator-lib source"},
+		"no working copy": {lockErr: repo.ErrNoRepository},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := dispatchWriteFile(t, writeFileSurface(t, fake), repo.ProjectFile, "[project]\n")
+			if result.Outcome != OutcomeOK {
+				t.Fatalf("outcome = %q: %+v", result.Outcome, result.Content)
+			}
+			written := result.Content.(WriteFileResult)
+			if written.Locked || written.LockError == "" {
+				t.Errorf("result = %+v, want a lock error and not locked", written)
+			}
+			if fake.lockReason != "" && written.LockError != fake.lockReason {
+				t.Errorf("lock error = %q, want uv's own %q", written.LockError, fake.lockReason)
+			}
+			if !strings.Contains(written.Hint, "uv lock") {
+				t.Errorf("hint = %q, want it to name the repair", written.Hint)
+			}
+		})
 	}
 }
 

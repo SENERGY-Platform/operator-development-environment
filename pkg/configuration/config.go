@@ -404,7 +404,8 @@ type ConfigStruct struct {
 	// profile's limit is how a developer's training run is OOM-killed by their own
 	// second workbench.
 	//
-	// RepoLockTimeout bounds the `uv lock` a scaffold ends with, and is longer than
+	// RepoLockTimeout bounds the `uv lock` a scaffold ends with, and the one
+	// write_file runs after a pyproject.toml write. It is longer than
 	// RepoCommandTimeout because it is different work: the Operator Lib pin is a git
 	// source, so a first scaffold on a pod with a cold uv cache clones that
 	// repository and builds its metadata before it can write a line.

@@ -704,6 +704,67 @@ func TestASecondScaffoldDoesNotReplaceTheDevelopersLock(t *testing.T) {
 	}
 }
 
+// Lock is the scaffold's lock on demand, for a pyproject.toml changed after the
+// scaffold: it writes uv.lock into the working copy the request names, and reports
+// uv's refusal as the answer rather than as an error.
+func TestLockRefreshesTheLockFileAndAnswersWithUvsRefusal(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	if _, err := h.service.Create(context.Background(), repo.CreateRequest{
+		Request: h.request(), Name: "pv-forecast", Scaffold: true,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	lockPath := h.path("jonah", "pv-forecast", repo.LockFile)
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	reason, err := h.service.Lock(context.Background(), h.request())
+	if err != nil || reason != "" {
+		t.Fatalf("Lock = %q, %v; want a lock that worked", reason, err)
+	}
+	if lock := h.read(t, "jonah/pv-forecast/"+repo.LockFile); !strings.Contains(lock, "version = 1") {
+		t.Errorf("%s is not what uv wrote:\n%s", repo.LockFile, lock)
+	}
+
+	repotest.StubUV(t, repotest.FailingUV)
+	reason, err = h.service.Lock(context.Background(), h.request())
+	if err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	if !strings.Contains(reason, "Git operation failed") {
+		t.Errorf("reason = %q, want uv's own complaint", reason)
+	}
+}
+
+// uv lock runs the build backend of every git source it resolves, and since
+// write_file locks after a model-written pyproject.toml, that source can be one
+// the model chose. The kernel's own environment carries the developer's platform
+// token whenever cells are not contained, and the lock must not hand it on.
+func TestLockDoesNotHandThePlatformTokenToUv(t *testing.T) {
+	h := newHarness(t)
+	h.connect()
+	if _, err := h.service.Create(context.Background(), repo.CreateRequest{
+		Request: h.request(), Name: "pv-forecast", Scaffold: true,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The kernel here is a python3 this test process starts, so its environment
+	// is this one.
+	t.Setenv(kernel.PlatformTokenEnv, "platform-secret")
+	repotest.StubUV(t, `#!/bin/sh
+printf 'version = 1\ntoken = "%s"\n' "$`+kernel.PlatformTokenEnv+`" > uv.lock
+`)
+
+	if reason, err := h.service.Lock(context.Background(), h.request()); err != nil || reason != "" {
+		t.Fatalf("Lock = %q, %v; want a lock that worked", reason, err)
+	}
+	if lock := h.read(t, "jonah/pv-forecast/"+repo.LockFile); !strings.Contains(lock, `token = ""`) {
+		t.Errorf("uv saw the platform token:\n%s", lock)
+	}
+}
+
 // createAndCommit is the state most tests start from: a scaffolded repository with
 // one commit and nothing pushed.
 func (h *harness) createAndCommit(t *testing.T, name, message string) {

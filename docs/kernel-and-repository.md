@@ -246,7 +246,8 @@ rather than only its source, and a step that has to be remembered to keep that t
 gets forgotten. It is never overwritten, so a developer's own lock survives a second
 scaffold, and a lock that cannot be written is reported in `lock_error` rather than
 failing a scaffold that has already written eleven correct files. The singleuser
-image carries uv for this.
+image carries uv for this. `write_file` runs the same lock after every write of
+`pyproject.toml`; see below.
 
 The Operator Lib pin is D15 made concrete: the newest tag is resolved **once**, at
 scaffold time, recorded against the repository, and a second scaffold of the same
@@ -344,12 +345,39 @@ nothing else to reach for.
 confirmation — and that combination is only defensible because of what the tool
 cannot do. It writes into the working copy on the developer's own storage. It
 cannot stage, commit, push, select a repository, discard a change or leave the
-repository, because the interface it is given has exactly one method. The worst
-outcome is a file the developer reads in the pane and reverts, which is a diff
-rather than an incident.
+repository, because the interface the tools are given has no method that does:
+`Files`, `ReadFile`, `Status` and `Log` read, `WriteFile` writes one file, and
+`Lock` runs `uv lock` after a `pyproject.toml` write. The worst outcome is a file
+the developer reads in the pane and reverts, which is a diff rather than an
+incident.
 
 Its result says `committed: false` explicitly. A model that assumed otherwise
 would tell the developer their change was live.
+
+One file it does more for: `pyproject.toml`. A write of it is followed by `uv lock`
+in the same checkout — `repo.Service.Lock`, the scaffold's own lock — because a
+changed dependency leaves `uv.lock` describing the old ones, and nothing fails
+because of it: `uv run` on the cluster re-resolves, the run succeeds, and its commit
+SHA stops pinning the versions it ran. The answer carries `locked: true` and a hint
+naming `uv.lock` as uncommitted beside the file, or `lock_error` with uv's own
+reason on a write that still succeeded. The lock is the tool's and not the
+service's, because the Code pane writes through the same `WriteFile` and a save
+there would hold its request for as long as uv takes; a developer who edits
+`pyproject.toml` by hand runs `uv lock` themselves, as the scaffolded README says.
+
+That makes this the one path on which code runs in the pod without a confirmation:
+`uv lock` runs the build backend of every git source it resolves, and a
+model-written `pyproject.toml` chooses those sources. Accepted, with one
+mitigation — the lock command runs with `SENERGY_TOKEN` emptied, because a kernel
+command otherwise inherits the kernel's environment and with it the platform token
+whenever cells are not contained. That keeps the token out of the build backend's
+environment, not out of its reach: the code still runs as the developer, in their
+pod.
+
+`repo_lock_timeout` bounds the lock, and on a cold uv cache it can take minutes, past
+what the Claude CLI waits for one tool call (`chat_confirmation_timeout` plus 30 s,
+5 m 30 s by default) — the CLI then reports a failed call for a write that landed
+and a lock that is still running.
 
 One file it refuses outright: `evaluation.yaml`. §5.8 lists "modifying evaluation
 criteria" among the capabilities that are *denied* server-side rather than

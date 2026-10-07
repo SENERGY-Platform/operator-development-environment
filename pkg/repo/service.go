@@ -56,11 +56,11 @@ type Options struct {
 	// CommandTimeout bounds one git command. A clone of a repository with history
 	// is the slow one, so this is minutes rather than seconds.
 	CommandTimeout time.Duration
-	// LockTimeout bounds `uv lock` at the end of a scaffold. Its own figure rather
-	// than CommandTimeout's, because it is not doing git's kind of work: resolving
-	// the Operator Lib pin means cloning that repository and building its metadata
-	// on a cold uv cache, and a bound sized for a clone would report a timeout on
-	// the first scaffold a pod ever runs.
+	// LockTimeout bounds `uv lock` at the end of a scaffold and in Lock. Its own
+	// figure rather than CommandTimeout's, because it is not doing git's kind of
+	// work: resolving the Operator Lib pin means cloning that repository and
+	// building its metadata on a cold uv cache, and a bound sized for a clone would
+	// report a timeout on the first scaffold a pod ever runs.
 	LockTimeout time.Duration
 	// MaxFileBytes bounds a file the Code pane reads or writes.
 	MaxFileBytes int
@@ -809,6 +809,20 @@ func (s *Service) Scaffold(ctx context.Context, req ScaffoldRequest) (ScaffoldRe
 	return result, nil
 }
 
+// Lock runs `uv lock` in the working copy and answers with why it did not, or
+// empty — the scaffold's own lock, for a pyproject.toml that changed after it.
+//
+// The error is only for a working copy that cannot be found. A lock that fails is
+// the answer, not an error, for the reason it is on a scaffold: the caller has
+// usually just written a file that stays written either way.
+func (s *Service) Lock(ctx context.Context, req Request) (string, error) {
+	link, err := s.linkFor(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	return s.lock(ctx, req, link), nil
+}
+
 // lock runs `uv lock` in the checkout and answers with why it did not, or empty.
 //
 // It is a plain kernel command rather than anything git-shaped: same pod, same
@@ -817,11 +831,19 @@ func (s *Service) Scaffold(ctx context.Context, req ScaffoldRequest) (ScaffoldRe
 // git sources and runs their build backends is not somewhere to hand a developer's
 // GitHub token without deciding to — a private pin fails here and is locked by
 // hand, which is a worse outcome than a leak.
+//
+// The platform token is taken out for the same reason. A command inherits the
+// kernel's environment, which carries it whenever cells are not contained, and
+// since write_file locks after a model-written pyproject.toml, the build backend
+// uv runs can be one the model chose. Emptied rather than trusted to be absent.
+// Not a boundary: that build code still runs as the developer, in their pod,
+// beside the kernel that holds the token.
 func (s *Service) lock(ctx context.Context, req Request, link Link) string {
 	result, err := s.workspace.Command(ctx, s.ref(req, link), kernel.Command{
 		Argv: []string{"uv", "lock"},
 		Dir:  link.Path,
 		Env: map[string]string{
+			kernel.PlatformTokenEnv: "",
 			// uv shells out to git for the Operator Lib source. Without this a git
 			// that wants credentials waits for a terminal that is not there, and the
 			// scaffold reports a timeout minutes later instead of the refusal.

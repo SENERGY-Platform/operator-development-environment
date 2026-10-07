@@ -113,6 +113,10 @@ type ScaffoldResult struct {
 // spellings of it would drift.
 const LockFile = "uv.lock"
 
+// ProjectFile is what LockFile is generated from. Named for the same reason: the
+// write_file tool re-locks after writing it, and has to recognise it by this name.
+const ProjectFile = "pyproject.toml"
+
 // scaffoldPaths is the compliance set, in the order a reader should meet it. It is
 // also what ScaffoldState reports on, so a repository the developer brought
 // themselves can be compared against the template without rendering it.
@@ -121,7 +125,7 @@ var scaffoldPaths = []string{
 	"train.py",
 	"op.py",
 	"training.py",
-	"pyproject.toml",
+	ProjectFile,
 	// Generated rather than rendered: `uv lock` writes it from pyproject.toml, and
 	// Scaffold runs that in the pod. It is in the set because the set is what a
 	// working copy is measured against, and a repository missing its lock is

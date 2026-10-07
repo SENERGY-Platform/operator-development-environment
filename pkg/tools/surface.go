@@ -209,10 +209,15 @@ type (
 	// in the same cell, because there was no tool for the git status half — the
 	// file half already had list_files and read_file, and the cell still cost a
 	// confirmation for the other one.
+	//
+	// Lock is write_file's, not a tool of its own: a model that changed a
+	// dependency had no way to bring uv.lock along, and a step it has to remember
+	// is the step the scaffold's own lock exists to remove.
 	Repo interface {
 		Files(ctx context.Context, req repo.Request) (repo.FileTree, error)
 		ReadFile(ctx context.Context, req repo.Request, path string) (repo.File, error)
 		WriteFile(ctx context.Context, req repo.Request, path string, content []byte) (repo.WriteResult, error)
+		Lock(ctx context.Context, req repo.Request) (string, error)
 		Status(ctx context.Context, req repo.StatusRequest) (repo.Status, error)
 		Log(ctx context.Context, req repo.Request, limit int) ([]repo.Commit, error)
 	}
@@ -1217,7 +1222,11 @@ func NewSurface(deps Deps) (*Registry, error) {
 				"and .github/workflows/build.yml. The whole file is replaced, so send its " +
 				"complete new content rather than a fragment. Nothing is staged, committed " +
 				"or pushed: the developer reviews the change and commits it. Do not write " +
-				"evaluation.yaml — the criteria are the developer's.",
+				"evaluation.yaml — the criteria are the developer's.\n\n" +
+				"Writing pyproject.toml also runs `uv lock` in the working copy, so uv.lock " +
+				"follows it without anyone being asked. The answer says whether it did: " +
+				"`locked` when uv.lock now matches, `lock_error` with uv's own reason when it " +
+				"does not. That can take minutes when uv has to fetch a git source.",
 			Effect:  "write repo working copy",
 			MinTier: L0,
 			Schema: json.RawMessage(`{

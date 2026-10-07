@@ -442,7 +442,13 @@ type WriteFileResult struct {
 	// Repository says where the file landed, because a session may have switched
 	// repositories since the model last looked.
 	Repository string `json:"repository"`
-	Hint       string `json:"hint"`
+	// Locked is true when the write was pyproject.toml and `uv lock` has since
+	// brought uv.lock in line with it, uncommitted beside it.
+	Locked bool `json:"locked,omitempty"`
+	// LockError is why it could not, for a pyproject.toml write only. uv.lock is
+	// then stale, and a run launched from it re-resolves on the cluster.
+	LockError string `json:"lock_error,omitempty"`
+	Hint      string `json:"hint"`
 }
 
 func (s *surface) writeFile(ctx context.Context, req Request) (any, error) {
@@ -464,14 +470,15 @@ func (s *surface) writeFile(ctx context.Context, req Request) (any, error) {
 	// same JSON, so the tool takes the permissive reading and reports the size.
 
 	req.Progress("repo", "writing "+in.Path+" into the working copy")
-	written, err := s.deps.Repo.WriteFile(ctx, repo.Request{
+	repoReq := repo.Request{
 		Bearer:  req.Token,
 		UserSub: req.UserSub,
 		// The session's own workbench, so a model working on one operator cannot
 		// write into another's checkout — which is the whole reason the session
 		// carries one.
 		WorkbenchID: req.WorkbenchID,
-	}, in.Path, []byte(in.Content))
+	}
+	written, err := s.deps.Repo.WriteFile(ctx, repoReq, in.Path, []byte(in.Content))
 	if err != nil {
 		return nil, err
 	}
@@ -483,6 +490,35 @@ func (s *surface) writeFile(ctx context.Context, req Request) (any, error) {
 		Hint: "the file is in the working copy and is not committed; the developer " +
 			"reviews and commits it",
 	}
+	if written.Path != repo.ProjectFile {
+		return result, nil
+	}
+
+	// A changed pyproject.toml leaves uv.lock describing the old dependencies, and
+	// nothing fails because of it: `uv run` on the cluster re-resolves, the run
+	// succeeds, and its commit SHA no longer says which versions it ran. Here and
+	// not in the service, because the Code pane writes through the service too and
+	// a save there would hold its request for as long as uv takes.
+	req.Progress("repo", "locking the dependencies of "+repo.ProjectFile+" with uv lock")
+	reason, err := s.deps.Repo.Lock(ctx, repoReq)
+	if err != nil {
+		// The write has landed, so this is not the tool's failure: an error here
+		// would tell the model its pyproject.toml was not written.
+		reason = err.Error()
+	}
+	if reason != "" {
+		result.LockError = reason
+		result.Hint = "the file is in the working copy and is not committed, and " +
+			repo.LockFile + " could not be refreshed from it, so it still describes the " +
+			"old dependencies. If lock_error names a fault in " + repo.ProjectFile +
+			", fix it and write it again; otherwise the developer runs `uv lock` in their " +
+			"pod. The two are committed together"
+		return result, nil
+	}
+	result.Locked = true
+	result.Hint = "the file is in the working copy and is not committed. " + repo.LockFile +
+		" was refreshed from it by `uv lock` and is uncommitted beside it; the developer " +
+		"reviews and commits the two together"
 	return result, nil
 }
 

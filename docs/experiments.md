@@ -781,7 +781,9 @@ Two consequences for a scaffolded repository, both in its README:
   remembered to keep that true is a step that gets forgotten. When the lock cannot
   be written — no egress, a pin that no longer resolves, an image built before uv
   was in it — the scaffold reports it in `lock_error` and keeps the eleven files it
-  did write, and the README's `uv lock` is the repair.
+  did write, and the README's `uv lock` is the repair. When the model writes
+  `pyproject.toml` later, `write_file` runs the same lock and reports it the same
+  way.
 - **`requires-python` pins the minor series** (`==3.10.*`) rather than a floor.
   uv resolves driver and workers separately, and a floor lets them land on
   different minors — which Ray reports as a version mismatch between driver and
