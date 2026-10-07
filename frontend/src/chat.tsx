@@ -986,6 +986,10 @@ function NewSession({
           if (target === NEW_WORKBENCH) {
             const opened = await openWorkbench();
             if (!opened) return;
+            // Back to following the workbench on screen, which is now the one just
+            // opened. Left on NEW, the select went on offering "New workbench…" and
+            // the next submit would have opened yet another.
+            setWorkbench("");
             onCreate(chosen, opened.id);
             return;
           }

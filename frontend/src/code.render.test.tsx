@@ -264,6 +264,21 @@ vi.mock("./api", async (importOriginal) => {
         return { sha: "abc1234", subject: message, files: 1, branch: "main" };
       },
       workbenches: async () => ({ workbenches: benches, max: 3 }),
+      // Linking writes the repository into the workbench row, and the list route
+      // reports that row — which is what the tab bar names a workbench by.
+      repoSelect: async (fullName: string) => {
+        calls.push(`repoSelect:${fullName}`);
+        const id = actual.getActiveWorkbench();
+        benches = benches.map((bench) => (bench.id === id ? workbench(id, fullName) : bench));
+        statusRejects = null;
+        return current;
+      },
+      repoUnlink: async () => {
+        calls.push("repoUnlink");
+        const id = actual.getActiveWorkbench();
+        benches = benches.map((bench) => (bench.id === id ? workbench(id, "") : bench));
+        statusRejects = NO_REPOSITORY;
+      },
       // The refusal the backend sends for a path that is not in the checkout, in its
       // own words: it is what a stale `?file=` used to produce after a switch.
       repoFile: async (path: string) => {
@@ -405,8 +420,11 @@ afterEach(async () => {
  * choice to present and it renders nothing — so the switch tests need their own
  * mount rather than `open()`.
  */
-async function benched(address: string): Promise<HTMLElement> {
-  benches = [workbench("wb-1", "franzmueller/operator-test"), workbench("wb-2", "franzmueller/operator-test-2")];
+async function benched(
+  address: string,
+  list = [workbench("wb-1", "franzmueller/operator-test"), workbench("wb-2", "franzmueller/operator-test-2")],
+): Promise<HTMLElement> {
+  benches = list;
   window.history.replaceState({}, "", address);
   vi.resetModules();
   const { CodeView } = await import("./code");
@@ -442,6 +460,13 @@ function workbench(id: string, fullName: string): Workbench {
     created_at: "2026-08-20T09:00:00Z",
     last_used_at: "2026-08-20T09:00:00Z",
   };
+}
+
+/** What each workbench tab is called, in the order the bar shows them. */
+function tabs(host: HTMLElement): string[] {
+  return [...host.querySelectorAll("[data-slot='tabs-trigger']")].map((tab) =>
+    (tab.textContent ?? "").trim(),
+  );
 }
 
 /** The file names the tree is listing, in the order it lists them. */
@@ -1198,6 +1223,59 @@ it("closes the file and re-reads the tree when the workbench switches", async ()
   expect(new URLSearchParams(window.location.search).get("file")).toBeNull();
   expect(host.textContent).not.toContain("does not exist");
   expect(host.querySelector(".file-editor")?.textContent).toContain("Pick a file");
+});
+
+/*
+ * A workbench is named by its repository, here and in the chat pane's session list.
+ * A new one has none and is called by its id, and picking one has to rename it: the
+ * list holding the names was read once, so the id stayed until the page reloaded.
+ */
+it("names a new workbench by the repository picked for it", async () => {
+  statusRejects = NO_REPOSITORY;
+  repositoryList = [
+    {
+      full_name: "franzmueller/operator-test-2",
+      name: "operator-test-2",
+      owner: "franzmueller",
+      private: false,
+      default_branch: "main",
+      clone_url: "https://github.com/franzmueller/operator-test-2.git",
+      html_url: "https://github.com/franzmueller/operator-test-2",
+      can_push: true,
+      empty: false,
+    },
+  ];
+
+  const host = await benched("/?workbench=wb-2", [
+    workbench("wb-1", "franzmueller/operator-test"),
+    workbench("wb-2", ""),
+  ]);
+  expect(tabs(host)).toEqual(["franzmueller/operator-test", "wb-2"]);
+
+  await act(async () => button(host, "Work on this").click());
+  await settle();
+
+  expect(calls).toContain("repoSelect:franzmueller/operator-test-2");
+  expect(tabs(host)).toEqual(["franzmueller/operator-test", "franzmueller/operator-test-2"]);
+});
+
+/* And the other way round: a workbench whose repository is let go has no name left. */
+it("names a workbench by its id again once its repository is let go", async () => {
+  current = status();
+
+  const host = await benched("/?workbench=wb-1");
+  expect(tabs(host)).toEqual(["franzmueller/operator-test", "franzmueller/operator-test-2"]);
+
+  const bar = host.querySelector(".repo-bar-name")?.closest("button");
+  if (!bar) throw new Error("no repository button in the bar");
+  await act(async () => bar.click());
+  const panel = host.querySelector<HTMLElement>("#repo-panel-repository");
+  if (!panel) throw new Error("no repository panel");
+  await act(async () => button(panel, "Switch repository").click());
+  await settle();
+
+  expect(calls).toContain("repoUnlink");
+  expect(tabs(host)).toEqual(["wb-1", "franzmueller/operator-test-2"]);
 });
 
 // --- the diff in the editor ---

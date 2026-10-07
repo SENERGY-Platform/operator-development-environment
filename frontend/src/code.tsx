@@ -31,7 +31,7 @@ import { Abandoned, reconnect } from "./github";
 import { monaco, monacoLanguage } from "./monaco";
 import { setParam, useParam } from "./router";
 import { Busy, KV, Muted, Pane, Popout, Row, Section, bytes, clock, dateTime, describe, shortSHA } from "./ui";
-import { WorkbenchBar } from "./workbench";
+import { WorkbenchBar, useWorkbenches } from "./workbench";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -158,6 +158,15 @@ export function CodeView({ session }: { session: Session }) {
   // changes — the bar below switches it, and so does opening a chat session that
   // belongs to another operator.
   const workbench = useParam("workbench");
+  // The workbench list carries each one's repository, and the tab bar and the chat
+  // pane name a workbench by it. Picking a repository changes that, so the list is
+  // read again — without it a new workbench went on being called by its id until
+  // the page was reloaded.
+  const { refresh: rereadWorkbenches } = useWorkbenches();
+  const linked = useCallback(() => {
+    void reload(true);
+    void rereadWorkbenches();
+  }, [reload, rereadWorkbenches]);
 
   useEffect(() => {
     // A fetch on open, which is where §5.11 item 5's "report divergence" belongs:
@@ -214,7 +223,7 @@ export function CodeView({ session }: { session: Session }) {
       )}
       {!error && needs === "repository" && connection?.connected && (
         <>
-          <RepositoryPicker connection={connection} onSelected={() => void reload(true)} />
+          <RepositoryPicker connection={connection} onSelected={linked} />
           <ConnectedPane
             connection={connection}
             onDisconnected={() => void reload()}
@@ -973,6 +982,7 @@ function RepoBar({
   onReload: (fetchRemote?: boolean) => Promise<void>;
   onChanged: () => void;
 }) {
+  const { refresh: rereadWorkbenches } = useWorkbenches();
   const [message, setMessage] = useState("");
   // The last draft, verbatim. Kept so the Draft button can tell a message the
   // developer wrote from one it produced itself: replacing the first without asking
@@ -1502,6 +1512,8 @@ function RepoBar({
               onClick={() =>
                 void act("unlink", async () => {
                   await api.repoUnlink();
+                  // The workbench is named by its repository, and it no longer has one.
+                  await rereadWorkbenches();
                 })
               }
               className={pending === "unlink" ? "busy animate-pulse" : undefined}
