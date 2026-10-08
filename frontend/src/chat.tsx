@@ -1339,7 +1339,7 @@ function Conversation({
   // both, and it has to leave both the moment either one answers. The exchange's
   // own events carry that to every window attached to it — which is not every
   // window. A turn that stopped on a card has no exchange left to attach to, and a
-  // window that did not start the turn never had one.
+  // window that did not start the turn learns of it only through the watch.
   //
   // What every window does have is the panel's per-user watch. So a change in what
   // the engine says about this conversation is the signal to ask the store which
@@ -1666,6 +1666,27 @@ function Conversation({
       void attach.current("chat_attach", {});
     });
   }, []);
+
+  // Attach to a turn this window did not start, the moment the engine says one began.
+  //
+  // The reattach above covers a turn that was already running when the socket came
+  // up. It does not cover one that starts while the conversation sits open and idle,
+  // and §5.13 starts exactly that: a finished run injects its summary and the model
+  // answers it, with nobody in this window having sent anything. The only sign of it
+  // here is the panel's watch, and before this the conversation used it only to ask
+  // the store about cards — so the summary and its answer stayed off the screen until
+  // a reload attached. Another window's send is the same case.
+  //
+  // Waiting as well as running: a held call keeps its exchange running, and a watch
+  // that came up after the turn began may report waiting first. An attach that finds
+  // the turn already over answers attached=false and still ends in the reload that
+  // puts it on screen.
+  useEffect(() => {
+    if (live === undefined) return;
+    const viewing = controller.current;
+    if (viewing && !viewing.signal.aborted) return;
+    void attach.current("chat_attach", {});
+  }, [live]);
 
   const submit = useCallback(
     (text: string) => {

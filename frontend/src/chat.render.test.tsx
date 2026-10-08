@@ -1641,6 +1641,39 @@ it("attaches to a turn still running when the pane is mounted", async () => {
   expect(watches).toBe(1);
 });
 
+/*
+ * A turn the developer did not start, in the conversation they are reading.
+ *
+ * §5.13 delivers a finished run's summary by starting a turn: ODE stores the summary
+ * and the model answers it. Nothing in this window sent anything and the socket was
+ * already up, so neither the send nor the reattach is watching it — the panel's
+ * watch is the only thing that hears of it. The summary and its answer stayed off
+ * the screen until a reload.
+ */
+it("shows a turn ODE starts in the open conversation without a reload", async () => {
+  const host = await open();
+  expect(attaches()).toBe(1);
+
+  // The run finished: the summary is stored, then the exchange begins.
+  notes = ["A training run you launched from this conversation has finished."];
+  live = true;
+  await says("id-1", "running");
+
+  expect(attaches(), "the open conversation did not attach to the turn ODE started").toBe(2);
+  expect(working(host)).toBe(true);
+  await act(async () => emit?.({ type: "started", since: 3 }));
+  await act(async () => emit?.({ type: "text_delta", text: "the run diverged" }));
+  await settle(3);
+  expect(transcript(host)).toContain("the run diverged");
+
+  await act(async () => finishSend?.());
+  await says("id-1", "idle");
+
+  expect(working(host)).toBe(false);
+  expect(host.querySelector(".turn.ode")?.textContent).toContain("has finished");
+  expect(attaches(), "the turn ending attached again").toBe(2);
+});
+
 it("a reconnect while idle attaches once", async () => {
   await open();
   // Mounting asks for the connection, and the open that follows is itself an attach.
