@@ -75,7 +75,10 @@ type AnthropicOptions struct {
 }
 
 const (
-	defaultMaxTokens = 8192
+	// defaultMaxTokens bounds thinking and answer together. At 8192 a turn at
+	// effort xhigh could spend the whole bound thinking and end with nothing to
+	// show; the request streams, so a larger bound costs no HTTP timeout.
+	defaultMaxTokens = 64000
 	// defaultAnthropicModel is the current Opus. Named as a plain string because
 	// anthropic.Model is a string alias and the SDK carries no constant for it.
 	defaultAnthropicModel = "claude-opus-5-5"

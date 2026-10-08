@@ -335,6 +335,24 @@ func TestOpenAIParamsIncludeUsage(t *testing.T) {
 	}
 }
 
+// TestAnthropicDefaultsTheBoundAboveWhatThinkingSpends pins the request field the
+// stop was found through: with nothing configured, a turn at a high effort had
+// 8192 tokens for thinking and answer together and could spend all of them
+// thinking.
+func TestAnthropicDefaultsTheBoundAboveWhatThinkingSpends(t *testing.T) {
+	provider, err := NewAnthropicProvider("anthropic", AnthropicOptions{APIKey: "k"}, nil)
+	if err != nil {
+		t.Fatalf("NewAnthropicProvider: %v", err)
+	}
+	params, err := provider.params(Request{Messages: []Message{UserText("hi")}})
+	if err != nil {
+		t.Fatalf("params: %v", err)
+	}
+	if params.MaxTokens != 64000 {
+		t.Errorf("max_tokens = %d, want 64000", params.MaxTokens)
+	}
+}
+
 // TestAnthropicForwardsTheThinkingSummary checks the summary reaches the stream
 // as thinking_delta, apart from the answer: the text event carries the answer
 // only, so nothing downstream can mistake the one for the other.

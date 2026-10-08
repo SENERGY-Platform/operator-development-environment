@@ -127,7 +127,8 @@ type Options struct {
 	// concluding would otherwise run until the spend cap stopped it, which is a
 	// governance control doing a control-flow job.
 	MaxIterations int
-	// MaxTokens is the default response bound handed to a provider.
+	// MaxTokens is the default response bound handed to a provider. Zero takes the
+	// provider's own.
 	MaxTokens int
 	// Effort is the default reasoning effort for providers that have one.
 	Effort string

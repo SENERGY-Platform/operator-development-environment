@@ -207,8 +207,15 @@ type ConfigStruct struct {
 	// provider's MCP endpoint comes from ApiPort, not from here.
 	PublicUrl string `json:"public_url"`
 
-	// LlmMaxTokens bounds one response; LlmEffort maps to Anthropic's
-	// output_config.effort; LlmAdaptiveThinking sends thinking: {type: "adaptive"}.
+	// LlmMaxTokens bounds one response, thinking included; LlmEffort maps to
+	// Anthropic's output_config.effort; LlmAdaptiveThinking sends thinking:
+	// {type: "adaptive"}.
+	//
+	// LlmMaxTokens has no default here. Zero leaves it to each provider: the
+	// Anthropic API requires the field and takes its adapter's default, and the
+	// OpenAI protocols omit it so the server decides. One value goes to every
+	// provider, so a value set here has to fit the smallest output limit among the
+	// configured models — a single default for all of them did not.
 	LlmMaxTokens        int64  `json:"llm_max_tokens"`
 	LlmEffort           string `json:"llm_effort"`
 	LlmAdaptiveThinking bool   `json:"llm_adaptive_thinking"`
@@ -648,9 +655,6 @@ func applyDefaults(config Config) {
 	}
 	if config.PostgresMaxConns <= 0 {
 		config.PostgresMaxConns = 8
-	}
-	if config.LlmMaxTokens <= 0 {
-		config.LlmMaxTokens = 8192
 	}
 	if config.LlmMaxToolIterations <= 0 {
 		config.LlmMaxToolIterations = 12
