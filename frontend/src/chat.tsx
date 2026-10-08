@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   TIERS,
@@ -1225,6 +1225,14 @@ function Conversation({
     setPending(open);
   }, []);
   const [busy, setBusy] = useState(false);
+  // The provider's summary of what the model is thinking right now, while a turn
+  // runs. Only the latest stretch of it: the answer or the tool call it led to
+  // replaces it, and the end of the turn clears it. Not a turn, because it is not
+  // stored and the reload at the end would take it away from under the reader.
+  const [reasoning, setReasoning] = useState("");
+  // Held here rather than in the view, which unmounts between two stretches of
+  // thinking: a developer who opened it to read along wants the next one open too.
+  const [reasoningOpen, setReasoningOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
   /**
@@ -1417,6 +1425,8 @@ function Conversation({
       }
       setTurns((existing) => apply(existing, event));
       join();
+      if (event.type === "thinking_delta") setReasoning((existing) => existing + (event.text ?? ""));
+      if (event.type === "text_delta" || event.type === "tool_call") setReasoning("");
       if (event.type === "confirmation_required" && event.confirmation) {
         const confirmation = event.confirmation;
         if (!seen.current.has(confirmation.id)) {
@@ -1490,6 +1500,7 @@ function Conversation({
         kind === "chat_attach" ? { since: null, events: [] as ChatEvent[], joined: false } : null;
       reattached.current = replaying;
       setBusy(true);
+      setReasoning("");
       setError(null);
       // Cleared per run, not per confirmation: what must not repeat is the alert
       // for one waiting decision, and answering it is what starts the next run.
@@ -1552,6 +1563,7 @@ function Conversation({
         if (reattached.current === replaying) reattached.current = null;
         if (!superseded) {
           setBusy(false);
+          setReasoning("");
           // A run that stopped on a decision leaves its held call unanswered, so the
           // pane is told here. Not after a cut-off stream: the exchange is still
           // running and may hold the kernel, and the reattach replays the call.
@@ -1983,6 +1995,11 @@ function Conversation({
                   </MarkerIcon>
                   <MarkerContent>Working…</MarkerContent>
                 </Marker>
+              )}
+              {/* Outside the live region above: a summary that streams for a minute
+                  would otherwise be read out word by word. */}
+              {busy && reasoning !== "" && (
+                <ReasoningView text={reasoning} open={reasoningOpen} onOpenChange={setReasoningOpen} />
               )}
             </MessageScrollerContent>
           </MessageScrollerViewport>
@@ -3778,6 +3795,76 @@ const NOTICE_TONE: Record<
   error: { icon: CircleAlertIcon, className: "text-destructive" },
 };
 
+/**
+ * The model's thinking as the provider summarises it, under "Working…".
+ *
+ * Collapsed to its latest line, because a summary that keeps arriving would push
+ * the conversation off screen while the developer is reading it; opened, it shows
+ * the whole stretch so far. The raw reasoning is not available from any provider,
+ * so this is a paraphrase, and it is labelled as one.
+ *
+ * Opened, it follows the text as it arrives, the way the conversation follows its
+ * tail — and for the same reader only: someone who scrolled up inside it to re-read
+ * a step stays there until they scroll back down. The conversation's own scroller
+ * does not reach in here; the box scrolls on its own.
+ */
+function ReasoningView({
+  text,
+  open,
+  onOpenChange,
+}: {
+  text: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const body = useRef<HTMLDivElement>(null);
+  // Whether the reader is at the bottom of the box. Read on scroll rather than
+  // when text arrives, because by then the new text has already moved the bottom.
+  const atEnd = useRef(true);
+
+  // Opening starts at the newest line: that is what the collapsed row showed.
+  useLayoutEffect(() => {
+    if (open) atEnd.current = true;
+  }, [open]);
+
+  // Before paint, so the box never shows a frame with the new line below the fold.
+  useLayoutEffect(() => {
+    const element = body.current;
+    if (open && element && atEnd.current) element.scrollTop = element.scrollHeight;
+  }, [open, text]);
+
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={onOpenChange}
+      render={<div className="reasoning mx-auto w-full max-w-2xl px-3" />}
+    >
+      <CollapsibleTrigger
+        render={<Marker render={<button type="button" />} className="reasoning-head cursor-default" />}
+      >
+        <MarkerIcon>
+          <ChevronRightIcon className={cn("transition-transform", open && "rotate-90")} />
+        </MarkerIcon>
+        <MarkerContent className="reasoning-latest min-w-0 truncate text-xs">
+          <span className="font-medium">Thinking (summary):</span> {latestLine(text)}
+        </MarkerContent>
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        ref={body}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          // A few pixels of slack: a fractional scroll position at the bottom is
+          // still the bottom.
+          atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 8;
+        }}
+        className="reasoning-body mt-1 max-h-64 overflow-auto rounded-md bg-muted p-2 text-xs text-muted-foreground"
+      >
+        <Markdown text={text} />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 /** Marks the note in which ODE tells the model the session's tier, split and selection. */
 const SESSION_STATE_SUBJECT = "session_state";
 
@@ -3810,6 +3897,20 @@ function SessionStateNote({ text }: { text: string }) {
       </CollapsibleContent>
     </Collapsible>
   );
+}
+
+/**
+ * The last line with something in it, without the markdown around it.
+ *
+ * Only the line's own markers and the bold and code marks go. An underscore stays:
+ * a summary names device fields and tools, and `Leistung_PV` shown as
+ * `LeistungPV` names something that does not exist.
+ */
+function latestLine(text: string): string {
+  const lines = text
+    .split("\n")
+    .map((line) => line.replace(/^\s*(?:#+|>|[-*+])\s+/, "").replace(/\*\*|`/g, "").trim());
+  return lines.filter((line) => line !== "").at(-1) ?? "";
 }
 
 function TurnView({

@@ -540,7 +540,7 @@ The kernel inherits exactly the user's data authorisation — developer code and
 
 ### 5.7 `llm/` — provider abstraction (D7)
 
-A `Provider` interface with `Stream()` and `Capabilities()`; normalise all providers to one internal event stream (`text_delta`, `tool_call`, `tool_result`, `done`, `error`); provider-specific shapes must not leak upward. Streamed to the SPA over SSE.
+A `Provider` interface with `Stream()` and `Capabilities()`; normalise all providers to one internal event stream (`text_delta`, `thinking_delta`, `tool_call`, `tool_result`, `done`, `error`); provider-specific shapes must not leak upward. Streamed to the SPA over SSE.
 
 | Implementation | Transport | Tools via |
 |---|---|---|

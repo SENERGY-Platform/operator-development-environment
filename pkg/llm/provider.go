@@ -63,6 +63,17 @@ const (
 	ContentText       ContentType = "text"
 	ContentToolUse    ContentType = "tool_use"
 	ContentToolResult ContentType = "tool_result"
+	// ContentThinking and ContentRedactedThinking are the model's thinking as the
+	// Anthropic API returned it, kept so the next request of the conversation can
+	// send it back unchanged. The API asks for that in a tool loop, and since
+	// Claude Opus 5.5 the notes the model writes between tool calls arrive in these
+	// blocks rather than as text, so dropping them drops those too.
+	//
+	// They are opaque to everything but that provider: no other adapter sends
+	// them, no reader renders them, and their text is never handed to a model as
+	// text.
+	ContentThinking         ContentType = "thinking"
+	ContentRedactedThinking ContentType = "redacted_thinking"
 )
 
 // Content is one block. A message is a list of these because a single assistant
@@ -82,6 +93,14 @@ type Content struct {
 	// user-role message, which reads oddly and is correct.
 	ToolResult string `json:"tool_result,omitempty"`
 	IsError    bool   `json:"is_error,omitempty"`
+
+	// Thinking, on an assistant message: the provider's summary, empty when the
+	// request asked for none, and the signature that binds the block to this
+	// conversation. Data is a redacted block's encrypted content. All three go back
+	// byte for byte; the API refuses a block whose signature no longer matches.
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Data      string `json:"data,omitempty"`
 }
 
 type Message struct {

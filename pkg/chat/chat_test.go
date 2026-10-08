@@ -514,6 +514,41 @@ func TestMaxIterationsStopsARunawayLoop(t *testing.T) {
 	}
 }
 
+// TestThinkingIsShownAndNotStored checks the summary of the model's thinking
+// reaches a watching view and stays out of the conversation: the stored answer is
+// what the model said, and the next request hands it nothing else.
+func TestThinkingIsShownAndNotStored(t *testing.T) {
+	h := newHarness(t, []llm.Event{
+		llm.ThinkingEvent("Weighing the two series."),
+		llm.TextEvent("Leistung is the better input."),
+		llm.DoneEvent("end_turn", llm.Usage{
+			InputTokens: 10, OutputTokens: 5, Provider: "fake", Model: "fake-model",
+		}),
+	})
+	session := h.session(t, tools.L0)
+
+	exchange, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "which?")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	thinking := find(drain(t, exchange), EventThinkingDelta)
+	if len(thinking) != 1 || thinking[0].Text != "Weighing the two series." {
+		t.Errorf("thinking events = %+v, want the summary once", thinking)
+	}
+
+	messages, err := h.store.Messages(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	for _, message := range messages {
+		for _, content := range message.Content {
+			if strings.Contains(content.Text, "Weighing") {
+				t.Errorf("the thinking summary was stored: %+v", message)
+			}
+		}
+	}
+}
+
 // TestTheSystemPromptStaysPutWhenTheSessionChanges is the property the API's
 // thinking blocks depend on: each is bound to the system prompt it was produced
 // under, so a prompt that moved with the tier, the split or the selection made
@@ -578,6 +613,147 @@ func TestTheSystemPromptStaysPutWhenTheSessionChanges(t *testing.T) {
 		if !reflect.DeepEqual(message, third.Messages[i]) {
 			t.Fatalf("message %d changed between requests:\n%+v\n%+v", i, message, third.Messages[i])
 		}
+	}
+}
+
+// thinkingTurn scripts a turn the way the Anthropic adapter delivers one: the
+// streamed text and calls, and on done the whole message in the API's order with a
+// signed thinking block ahead of it.
+func thinkingTurn(signature, text string, calls ...llm.ToolCall) []llm.Event {
+	events := []llm.Event{}
+	rendered := []llm.Content{{Type: llm.ContentThinking, Thinking: "thinking " + signature, Signature: signature}}
+	if text != "" {
+		events = append(events, llm.TextEvent(text))
+		rendered = append(rendered, llm.Content{Type: llm.ContentText, Text: text})
+	}
+	for _, call := range calls {
+		events = append(events, llm.ToolCallEvent(call))
+		rendered = append(rendered, llm.Content{
+			Type: llm.ContentToolUse, ToolUseID: call.ID, ToolName: call.Name, ToolInput: call.Input,
+		})
+	}
+	stop := "end_turn"
+	if len(calls) > 0 {
+		stop = "tool_use"
+	}
+	return append(events, llm.Event{
+		Type: llm.EventDone, StopReason: stop, Content: rendered,
+		Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5, Provider: "fake", Model: "fake-model"},
+	})
+}
+
+// TestEveryRequestKeepsWhatTheLastOneSent is the API's binding check run over the
+// paths that append to a conversation: a tool loop, a tier change in the middle of
+// it, a confirmation and the developer's next message. Whenever a request's answer
+// was stored, the next request must open with that request byte for byte — the
+// thinking in the answer is bound to it.
+func TestEveryRequestKeepsWhatTheLastOneSent(t *testing.T) {
+	call := func(id, name string) llm.ToolCall {
+		return llm.ToolCall{ID: id, Name: name, Input: json.RawMessage(`{"device_id":"d-1"}`)}
+	}
+	h := newHarness(t,
+		thinkingTurn("sig-1", "Looking at the series.", call("call-1", "l1_tool")),
+		thinkingTurn("sig-2", "", call("call-2", "l0_tool")),
+		thinkingTurn("sig-3", "This needs your confirmation.", call("call-3", "confirmed_tool")),
+		thinkingTurn("sig-4", "Confirmed, and done."),
+		thinkingTurn("sig-5", "Here is the next step."),
+	)
+	session := h.session(t, tools.L1)
+	ctx := context.Background()
+
+	lowered := false
+	h.store.setHook(func() {
+		if !lowered && h.tracker.was("l1_tool") {
+			lowered = true
+			if _, err := h.engine.SetTier(ctx, testUser, session.ID, tools.L0); err != nil {
+				t.Errorf("SetTier: %v", err)
+			}
+		}
+	})
+
+	exchange, err := h.engine.Send(ctx, StaticToken(testToken), testUser, session.ID, "profile it")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, exchange)
+	pending, err := h.engine.PendingConfirmations(ctx, testUser, session.ID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending confirmations = %v (%v), want 1", pending, err)
+	}
+	resumed, err := h.engine.Confirm(ctx, StaticToken(testToken), testUser, session.ID, pending[0].ID, true, nil)
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	drain(t, resumed)
+	next, err := h.engine.Send(ctx, StaticToken(testToken), testUser, session.ID, "and now?")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, next)
+
+	h.provider.mux.Lock()
+	requests := append([]llm.Request{}, h.provider.requests...)
+	h.provider.mux.Unlock()
+	if len(requests) != 5 {
+		t.Fatalf("provider requests = %d, want 5", len(requests))
+	}
+	if !lowered {
+		t.Fatal("the tier was never changed, so the test proves nothing about it")
+	}
+	for i := 1; i < len(requests); i++ {
+		previous, current := requests[i-1], requests[i]
+		if current.System != previous.System {
+			t.Errorf("request %d changed the system prompt", i)
+		}
+		if len(current.Messages) <= len(previous.Messages) {
+			t.Fatalf("request %d has %d messages, fewer than the %d before it",
+				i, len(current.Messages), len(previous.Messages))
+		}
+		if !reflect.DeepEqual(current.Messages[:len(previous.Messages)], previous.Messages) {
+			t.Fatalf("request %d does not open with request %d:\n%+v\n%+v",
+				i, i-1, previous.Messages, current.Messages[:len(previous.Messages)])
+		}
+		answer := current.Messages[len(previous.Messages)]
+		if answer.Role != llm.RoleAssistant || answer.Content[0].Type != llm.ContentThinking {
+			t.Errorf("request %d: the answer to request %d went back as %+v", i, i-1, answer)
+		}
+	}
+}
+
+// TestTheProvidersRenderingIsStoredAndSentBack checks the thinking a provider
+// returns reaches the next request where it was, between the text and the call it
+// preceded, and that a turn of nothing but thinking is not stored as a turn.
+func TestTheProvidersRenderingIsStoredAndSentBack(t *testing.T) {
+	rendered := []llm.Content{
+		{Type: llm.ContentThinking, Thinking: "Which series first?", Signature: "sig-1"},
+		{Type: llm.ContentText, Text: "Profiling it."},
+		{Type: llm.ContentThinking, Thinking: "", Signature: "sig-2"},
+		{Type: llm.ContentToolUse, ToolUseID: "call-1", ToolName: "l0_tool", ToolInput: json.RawMessage(`{}`)},
+	}
+	first := []llm.Event{
+		llm.TextEvent("Profiling it."),
+		llm.ToolCallEvent(llm.ToolCall{ID: "call-1", Name: "l0_tool", Input: json.RawMessage(`{}`)}),
+		{Type: llm.EventDone, StopReason: "tool_use", Content: rendered,
+			Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5, Provider: "fake", Model: "fake-model"}},
+	}
+	h := newHarness(t, first, textTurn("Done."))
+	session := h.session(t, tools.L0)
+
+	exchange, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, exchange)
+
+	var assistant *llm.Message
+	for i, message := range h.provider.lastRequest(t).Messages {
+		if message.Role == llm.RoleAssistant {
+			assistant = &h.provider.lastRequest(t).Messages[i]
+			break
+		}
+	}
+	if assistant == nil || !reflect.DeepEqual(assistant.Content, rendered) {
+		t.Fatalf("assistant turn sent back = %+v, want the provider's rendering %+v", assistant, rendered)
 	}
 }
 

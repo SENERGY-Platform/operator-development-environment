@@ -20,6 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -136,6 +141,11 @@ func TestAnthropicEffortAndThinking(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"adaptive"`) {
 		t.Errorf("adaptive thinking not sent: %s", encoded)
+	}
+	// Without it the current models stream thinking blocks with empty text, and a
+	// turn that thinks for minutes shows nothing for minutes.
+	if !strings.Contains(string(encoded), `"display":"summarized"`) {
+		t.Errorf("thinking display not requested: %s", encoded)
 	}
 
 	// Off means no thinking configuration at all, which every model accepts.
@@ -322,6 +332,118 @@ func TestOpenAIParamsIncludeUsage(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), "max_completion_tokens") {
 		t.Errorf("max tokens not sent: %s", encoded)
+	}
+}
+
+// TestAnthropicForwardsTheThinkingSummary checks the summary reaches the stream
+// as thinking_delta, apart from the answer: the text event carries the answer
+// only, so nothing downstream can mistake the one for the other.
+func TestAnthropicForwardsTheThinkingSummary(t *testing.T) {
+	stream := []string{
+		`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant",` +
+			`"model":"claude-opus-5","content":[],"stop_reason":null,"stop_sequence":null,` +
+			`"usage":{"input_tokens":10,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Checking the series."}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Done."}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":20}}`,
+		`{"type":"message_stop"}`,
+	}
+	var beta, body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		beta = r.Header.Get("anthropic-beta")
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, data := range stream {
+			var head struct {
+				Type string `json:"type"`
+			}
+			_ = json.Unmarshal([]byte(data), &head)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", head.Type, data)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := NewAnthropicProvider("anthropic", AnthropicOptions{
+		APIKey: "k", BaseURL: server.URL, AdaptiveThinking: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewAnthropicProvider: %v", err)
+	}
+	events, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	thinking, text, stop := "", "", ""
+	var rendered []Content
+	for event := range events {
+		switch event.Type {
+		case EventThinkingDelta:
+			thinking += event.Text
+		case EventTextDelta:
+			text += event.Text
+		case EventDone:
+			stop = event.StopReason
+			rendered = event.Content
+		case EventError:
+			t.Fatalf("stream failed: %s", event.Err)
+		}
+	}
+	if thinking != "Checking the series." || text != "Done." || stop != "end_turn" {
+		t.Errorf("thinking = %q, text = %q, stop = %q", thinking, text, stop)
+	}
+
+	// The turn comes back whole and in the API's order, signature included, for
+	// the next request to send back.
+	want := []Content{
+		{Type: ContentThinking, Thinking: "Checking the series.", Signature: "sig"},
+		{Type: ContentText, Text: "Done."},
+	}
+	if !reflect.DeepEqual(rendered, want) {
+		t.Errorf("rendered turn = %+v, want %+v", rendered, want)
+	}
+
+	// A replayed block whose conversation changed is dropped rather than refused.
+	if !strings.Contains(beta, thinkingBindingBeta) {
+		t.Errorf("anthropic-beta = %q, want %q", beta, thinkingBindingBeta)
+	}
+	if !strings.Contains(body, `"block_binding":{"prefix_mismatch_behavior":"drop_block"}`) {
+		t.Errorf("request does not ask to drop a mismatched block: %s", body)
+	}
+}
+
+// TestAnthropicSendsThinkingBack checks a stored thinking block returns to the API
+// as the block it was, and that an unsigned one — a stream cut off inside it —
+// does not, since the API refuses it.
+func TestAnthropicSendsThinkingBack(t *testing.T) {
+	messages := toAnthropicMessages([]Message{
+		UserText("which series?"),
+		{Role: RoleAssistant, Content: []Content{
+			{Type: ContentThinking, Thinking: "Comparing.", Signature: "sig-1"},
+			{Type: ContentRedactedThinking, Data: "opaque"},
+			{Type: ContentThinking, Thinking: "cut off"},
+			{Type: ContentText, Text: "Leistung PV."},
+		}},
+	})
+	encoded, err := json.Marshal(messages[1])
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, expected := range []string{
+		`{"signature":"sig-1","thinking":"Comparing.","type":"thinking"}`,
+		`{"data":"opaque","type":"redacted_thinking"}`,
+	} {
+		if !strings.Contains(string(encoded), expected) {
+			t.Errorf("assistant turn %s lacks %s", encoded, expected)
+		}
+	}
+	if strings.Contains(string(encoded), "cut off") {
+		t.Errorf("an unsigned thinking block was sent: %s", encoded)
 	}
 }
 

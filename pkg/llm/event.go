@@ -19,16 +19,25 @@ package llm
 import "encoding/json"
 
 // EventType is the normalised event stream of §5.7. Every provider maps onto
-// exactly these five, and provider-specific shapes must not leak upward.
+// these six, and provider-specific shapes must not leak upward.
 //
-// The list is closed on purpose. A sixth type added for one provider's
-// convenience would be a shape the SPA has to know about per provider, which is
-// the coupling this interface exists to prevent.
+// The list is closed on purpose. A type added for one provider's convenience
+// would be a shape the SPA has to know about per provider, which is the coupling
+// this interface exists to prevent. thinking_delta is the one addition, and not
+// such a type: reasoning models of both vendors think before they answer and can
+// return a summary of it, and the event carries text and nothing else.
 type EventType string
 
 const (
 	// EventTextDelta carries an incremental piece of assistant text.
 	EventTextDelta EventType = "text_delta"
+	// EventThinkingDelta carries an incremental piece of the provider's summary of
+	// what the model is thinking. It is never part of the answer: it is not stored
+	// as text, the model is never handed it back as text, and no view renders it
+	// from the history — the thinking block it belongs to goes back to the API as
+	// a block (Content). It exists so a turn that thinks for minutes before it says
+	// anything is visibly working.
+	EventThinkingDelta EventType = "thinking_delta"
 	// EventToolCall is a complete tool invocation the model asked for. Emitted
 	// once the arguments are whole: a partially decoded call is useless to a
 	// dispatcher, and both native protocols stream arguments in fragments.
@@ -64,7 +73,7 @@ const (
 type Event struct {
 	Type EventType `json:"type"`
 
-	// Text is set on text_delta.
+	// Text is set on text_delta and thinking_delta.
 	Text string `json:"text,omitempty"`
 
 	// ToolCall is set on tool_call.
@@ -75,6 +84,11 @@ type Event struct {
 	// Usage and StopReason are set on done.
 	Usage      *Usage `json:"usage,omitempty"`
 	StopReason string `json:"stop_reason,omitempty"`
+	// Content is set on done by a provider whose next request needs the turn back
+	// exactly as it produced it, in its own order, thinking blocks included. The
+	// text and tool calls in it are the ones already streamed. A consumer that
+	// stores the turn stores this rather than rebuilding it; empty means rebuild.
+	Content []Content `json:"content,omitempty"`
 
 	// Err is set on error.
 	Err error `json:"-"`
@@ -156,6 +170,8 @@ func (u *Usage) Add(other Usage) {
 // TextEvent, ToolCallEvent, DoneEvent and ErrorEvent are constructors, so a
 // provider cannot forget to set the field its type implies.
 func TextEvent(text string) Event { return Event{Type: EventTextDelta, Text: text} }
+
+func ThinkingEvent(text string) Event { return Event{Type: EventThinkingDelta, Text: text} }
 
 func ToolCallEvent(call ToolCall) Event {
 	return Event{Type: EventToolCall, ToolCall: &call}

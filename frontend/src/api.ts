@@ -1213,13 +1213,19 @@ export interface ChatSession {
 export type ChatRole = "user" | "assistant";
 
 export interface ChatContent {
-  type: "text" | "tool_use" | "tool_result";
+  /** `thinking` and `redacted_thinking` are the model's thinking as the Anthropic
+   * API returned it, stored only so the next request can send it back. Nothing in
+   * the pane renders them. */
+  type: "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking";
   text?: string;
   tool_use_id?: string;
   tool_name?: string;
   tool_input?: unknown;
   tool_result?: string;
   is_error?: boolean;
+  thinking?: string;
+  signature?: string;
+  data?: string;
 }
 
 export interface ChatMessage {
@@ -1385,6 +1391,7 @@ export interface ToolProgress {
 export interface ChatEvent {
   type:
     | "text_delta"
+    | "thinking_delta"
     | "tool_call"
     | "tool_result"
     | "done"

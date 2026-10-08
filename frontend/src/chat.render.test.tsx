@@ -1429,6 +1429,122 @@ it("keeps the reason a turn failed, and does not call it a reply", async () => {
 });
 
 /*
+ * A turn that thinks before it answers shows the summary of that thinking, and
+ * only while it lasts.
+ *
+ * Without it a turn at a high effort was a minute or more of "Working…" with
+ * nothing else on screen. The summary is not stored, so it is the answer that
+ * replaces it, and the end of the turn takes the rest.
+ */
+it("shows the latest stretch of thinking while the turn runs", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  await act(async () =>
+    emit?.({ type: "thinking_delta", text: "**Comparing the inputs**\n\nLeistung PV is the inverter's" }),
+  );
+  await act(async () => emit?.({ type: "thinking_delta", text: " own total." }));
+  await settle(3);
+
+  expect(host.querySelector(".reasoning-latest")?.textContent).toContain(
+    "Leistung PV is the inverter's own total.",
+  );
+
+  await act(async () => emit?.({ type: "text_delta", text: "Leistung PV it is." }));
+  await settle(3);
+  expect(host.querySelector(".reasoning"), "the answer did not replace the thinking").toBeNull();
+
+  await act(async () => emit?.({ type: "thinking_delta", text: "Checking the split." }));
+  await act(async () => finishSend?.());
+  await settle();
+  expect(host.querySelector(".reasoning"), "the thinking outlived the turn").toBeNull();
+});
+
+/*
+ * Opened, the thinking box follows the text as it arrives — unless the reader
+ * scrolled up inside it, who stays where they are.
+ *
+ * jsdom has no layout, so the box's geometry is set by hand: 1000px of content in a
+ * 200px window.
+ */
+it("follows new thinking in the open box until the reader scrolls up", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  await act(async () => emit?.({ type: "thinking_delta", text: "First step." }));
+  await settle(3);
+  const trigger = host.querySelector<HTMLButtonElement>(".reasoning-head");
+  await act(async () => trigger?.click());
+  await settle(3);
+
+  const box = host.querySelector<HTMLElement>(".reasoning-body");
+  if (!box) throw new Error("the opened thinking box has no body");
+  let top = 0;
+  Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => 1000 });
+  Object.defineProperty(box, "clientHeight", { configurable: true, get: () => 200 });
+  Object.defineProperty(box, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (value: number) => {
+      top = value;
+    },
+  });
+
+  await act(async () => emit?.({ type: "thinking_delta", text: "\n\nSecond step." }));
+  await settle(3);
+  expect(top, "the open box did not follow the new text").toBe(1000);
+
+  // The reader scrolls up to re-read the first step.
+  top = 100;
+  await act(async () => box.dispatchEvent(new Event("scroll")));
+  await act(async () => emit?.({ type: "thinking_delta", text: "\n\nThird step." }));
+  await settle(3);
+  expect(top, "the box pulled a reader who had scrolled up back to the bottom").toBe(100);
+});
+
+/* A tool call ends the stretch of thinking that led to it, as the answer does. */
+it("drops the thinking when the tool call it led to arrives", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  await act(async () =>
+    emit?.({ type: "thinking_delta", text: "## Next\n- profile `Leistung_PV` first" }),
+  );
+  await settle(3);
+  // Markers go, the field name stays as the platform spells it.
+  expect(host.querySelector(".reasoning-latest")?.textContent).toContain(
+    "profile Leistung_PV first",
+  );
+
+  await act(async () =>
+    emit?.({ type: "tool_call", tool_call: { id: "c1", name: "quick_profile", input: {} } }),
+  );
+  await settle(3);
+  expect(host.querySelector(".reasoning"), "the tool call did not replace the thinking").toBeNull();
+});
+
+/*
+ * A view that attaches mid-turn gets the exchange replayed, thinking included, and
+ * shows where that replay ends: still thinking.
+ */
+it("shows the thinking of a turn it attached to mid-way", async () => {
+  live = true;
+  const host = await openStrict();
+  await settle(3);
+
+  await act(async () => emit?.({ type: "thinking_delta", text: "First look." }));
+  await act(async () => emit?.({ type: "text_delta", text: "Profiling." }));
+  await act(async () => emit?.({ type: "thinking_delta", text: "Reading the profile." }));
+  await settle(3);
+
+  expect(host.querySelector(".reasoning-latest")?.textContent).toContain("Reading the profile.");
+  expect(host.querySelector(".reasoning-latest")?.textContent).not.toContain("First look.");
+});
+
+/*
  * The note that tells the model the session's tier, split and selection is ODE's
  * and goes into every conversation, so it is a line the developer can open rather
  * than a bubble at the head of each one.

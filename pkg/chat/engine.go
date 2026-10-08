@@ -42,6 +42,10 @@ const (
 	EventToolResult EventType = "tool_result"
 	EventDone       EventType = "done"
 	EventError      EventType = "error"
+	// EventThinkingDelta is the provider's summary of the model's thinking. Live
+	// only: the stored history keeps the thinking block for the API and no view
+	// renders it, so it is gone from a view once the turn ends.
+	EventThinkingDelta EventType = "thinking_delta"
 
 	// EventConfirmation asks the developer to decide on a held tool call (D11).
 	EventConfirmation EventType = "confirmation_required"
@@ -1495,6 +1499,9 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 type turnResult struct {
 	text  string
 	calls []llm.ToolCall
+	// content is the turn as the provider rendered it, thinking included, when it
+	// supplies one (llm.Event.Content). What is stored when present.
+	content []llm.Content
 	// results is what an out-of-band provider reported for the calls it ran itself.
 	// Empty for every other provider, whose results come from the dispatcher.
 	results    []llm.ToolResult
@@ -1524,6 +1531,7 @@ func (e *Engine) consume(ctx context.Context, exchange *Exchange, stream <-chan 
 	for event := range stream {
 		if event.Type == llm.EventDone {
 			turn.stopReason = event.StopReason
+			turn.content = event.Content
 			if event.Usage != nil {
 				turn.usage = *event.Usage
 			}
@@ -1536,6 +1544,12 @@ func (e *Engine) consume(ctx context.Context, exchange *Exchange, stream <-chan 
 		case llm.EventTextDelta:
 			turn.text += event.Text
 			exchange.publish(Event{Type: EventTextDelta, Text: event.Text})
+			abandoned = ctx.Err() != nil
+		case llm.EventThinkingDelta:
+			// Not collected into the turn. The summary is the provider's account of
+			// the thinking, not the thinking, and storing it as text would hand the
+			// model a paraphrase of its own reasoning as if it had said it.
+			exchange.publish(Event{Type: EventThinkingDelta, Text: event.Text})
 			abandoned = ctx.Err() != nil
 		case llm.EventToolCall:
 			if event.ToolCall == nil {
@@ -1758,6 +1772,10 @@ func outOfBandResultMessage(results []llm.ToolResult) StoredMessage {
 // it is repaired on the way out by repairUnansweredToolCalls rather than by
 // dropping the record of what the model asked for.
 func (e *Engine) persistAbandoned(ctx context.Context, sessionID string, turn turnResult) {
+	// What the developer watched arrive, not the provider's rendering: once the
+	// turn is abandoned consume stops collecting, so the rendering can hold calls
+	// this turn never reported.
+	turn.content = nil
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 
@@ -1776,18 +1794,28 @@ func (e *Engine) persistAbandoned(ctx context.Context, sessionID string, turn tu
 	}
 }
 
+// persistAssistant stores what the model said in a turn.
+//
+// The provider's own rendering wins where it gives one: thinking blocks have to go
+// back to the API exactly where they came, between the text and the calls they
+// precede, and the rebuild below would move them. A turn with nothing in it but
+// thinking is stored as nothing, as it always was — there is nothing to show, and
+// a thinking block with no answer after it is not a turn to send back.
 func (e *Engine) persistAssistant(ctx context.Context, sessionID string, turn turnResult) error {
-	content := []llm.Content{}
-	if turn.text != "" {
-		content = append(content, llm.Content{Type: llm.ContentText, Text: turn.text})
-	}
-	for _, call := range turn.calls {
-		content = append(content, llm.Content{
-			Type:      llm.ContentToolUse,
-			ToolUseID: call.ID,
-			ToolName:  call.Name,
-			ToolInput: call.Input,
-		})
+	content := turn.content
+	if !answers(content) {
+		content = []llm.Content{}
+		if turn.text != "" {
+			content = append(content, llm.Content{Type: llm.ContentText, Text: turn.text})
+		}
+		for _, call := range turn.calls {
+			content = append(content, llm.Content{
+				Type:      llm.ContentToolUse,
+				ToolUseID: call.ID,
+				ToolName:  call.Name,
+				ToolInput: call.Input,
+			})
+		}
 	}
 	if len(content) == 0 {
 		return nil
@@ -1795,6 +1823,16 @@ func (e *Engine) persistAssistant(ctx context.Context, sessionID string, turn tu
 	return e.store.AppendMessages(ctx, sessionID, StoredMessage{
 		SessionID: sessionID, Role: llm.RoleAssistant, Content: content, CreatedAt: e.now(),
 	})
+}
+
+// answers reports whether a rendered turn holds anything beyond thinking.
+func answers(content []llm.Content) bool {
+	for _, block := range content {
+		if block.Type == llm.ContentText && block.Text != "" || block.Type == llm.ContentToolUse {
+			return true
+		}
+	}
+	return false
 }
 
 // confirmationOutcome reports a developer's decision as a user turn.

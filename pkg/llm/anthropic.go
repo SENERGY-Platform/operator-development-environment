@@ -47,7 +47,25 @@ type AnthropicOptions struct {
 	// Effort maps to output_config.effort. Empty sends none and takes the API
 	// default, which is "high".
 	Effort string
-	// AdaptiveThinking sends thinking: {type: "adaptive"}.
+	// AdaptiveThinking sends thinking: {type: "adaptive", display: "summarized"}.
+	//
+	// The display is what makes the thinking visible. The current models default
+	// to "omitted", which streams thinking blocks with empty text: the thinking is
+	// done and billed the same, and the developer sees a long pause. "summarized"
+	// streams the provider's summary of it instead, forwarded as thinking_delta.
+	// The raw reasoning is not available under any setting.
+	//
+	// It also sends block_binding.prefix_mismatch_behavior "drop_block". ODE sends
+	// thinking blocks back (see toAnthropicMessages), and the API checks that the
+	// conversation before each one is byte for byte the one that produced it. An
+	// account created on or after 2026-08-31 gets a 400 when it is not, and keeps
+	// getting it on every later turn, since the history is stored; dropping the
+	// block instead costs that turn the reasoning and nothing else. A drop is
+	// reported in input_transformations and logged, because it means ODE edited a
+	// history it promised not to. Only alongside the thinking configuration, because
+	// the field lives inside it; the API accepts it on every model that accepts
+	// adaptive thinking, enforcing or not, and a deployment whose models predate
+	// that leaves this off and sends neither.
 	//
 	// Worth setting deliberately rather than defaulting on: on the current models
 	// it is either the default already or the recommended mode, but a request that
@@ -61,6 +79,10 @@ const (
 	// defaultAnthropicModel is the current Opus. Named as a plain string because
 	// anthropic.Model is a string alias and the SDK carries no constant for it.
 	defaultAnthropicModel = "claude-opus-5-5"
+
+	// thinkingBindingBeta lets a request say what happens to a replayed thinking
+	// block whose conversation no longer matches the one that produced it.
+	thinkingBindingBeta = "thinking-binding-controls-2026-08-01"
 )
 
 // NewAnthropicProvider wires the provider. An empty API key is an error rather
@@ -117,7 +139,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 	go func() {
 		defer close(events)
 
-		stream := p.client.Messages.NewStreaming(ctx, params)
+		stream := p.client.Messages.NewStreaming(ctx, params, p.requestOptions()...)
 		// Accumulate rebuilds the complete message from the deltas, which is what
 		// makes tool arguments usable: both this API and OpenAI's stream a tool's
 		// JSON in fragments, and a half-decoded object cannot be dispatched.
@@ -131,16 +153,25 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 				return
 			}
 
-			// Only text is forwarded live. A tool call is forwarded once whole,
-			// below, because a partial one is not actionable.
+			if start, ok := event.AsAny().(anthropic.MessageStartEvent); ok {
+				p.reportTransformations(ctx, start)
+			}
+
+			// Text and the thinking summary are forwarded live. A tool call is
+			// forwarded once whole, below, because a partial one is not actionable.
 			if delta, ok := event.AsAny().(anthropic.ContentBlockDeltaEvent); ok {
-				if text, ok := delta.Delta.AsAny().(anthropic.TextDelta); ok && text.Text != "" {
-					if !send(ctx, events, TextEvent(text.Text)) {
-						// send only fails when the caller has gone, which here means the
-						// developer stopped the turn. It was still billed.
-						deliverDone(ctx, events, DoneEvent(StopReasonCancelled, p.usage(&message)))
-						return
-					}
+				var live Event
+				switch piece := delta.Delta.AsAny().(type) {
+				case anthropic.TextDelta:
+					live = TextEvent(piece.Text)
+				case anthropic.ThinkingDelta:
+					live = ThinkingEvent(piece.Thinking)
+				}
+				if live.Text != "" && !send(ctx, events, live) {
+					// send only fails when the caller has gone, which here means the
+					// developer stopped the turn. It was still billed.
+					deliverDone(ctx, events, DoneEvent(StopReasonCancelled, p.usage(&message)))
+					return
 				}
 			}
 		}
@@ -167,14 +198,32 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 			return
 		}
 
+		// The turn as the API returned it, in its order, for the engine to store and
+		// this adapter to send back. Thinking blocks are why it is needed: they have
+		// to return where they were, and the engine's own text-then-calls rebuild
+		// would move them. Block types ODE never asks for — server tools — are left
+		// out, which only an integration that used them could notice.
+		content := make([]Content, 0, len(message.Content))
 		for _, block := range message.Content {
-			if toolUse, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
-				input := json.RawMessage(toolUse.Input)
+			switch block := block.AsAny().(type) {
+			case anthropic.TextBlock:
+				content = append(content, Content{Type: ContentText, Text: block.Text})
+			case anthropic.ThinkingBlock:
+				content = append(content, Content{
+					Type: ContentThinking, Thinking: block.Thinking, Signature: block.Signature,
+				})
+			case anthropic.RedactedThinkingBlock:
+				content = append(content, Content{Type: ContentRedactedThinking, Data: block.Data})
+			case anthropic.ToolUseBlock:
+				input := json.RawMessage(block.Input)
 				if len(input) == 0 {
 					input = json.RawMessage(`{}`)
 				}
+				content = append(content, Content{
+					Type: ContentToolUse, ToolUseID: block.ID, ToolName: block.Name, ToolInput: input,
+				})
 				if !send(ctx, events, ToolCallEvent(ToolCall{
-					ID: toolUse.ID, Name: toolUse.Name, Input: input,
+					ID: block.ID, Name: block.Name, Input: input,
 				})) {
 					deliverDone(ctx, events, DoneEvent(StopReasonCancelled, p.usage(&message)))
 					return
@@ -182,10 +231,38 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 			}
 		}
 
-		send(ctx, events, DoneEvent(string(message.StopReason), p.usage(&message)))
+		done := DoneEvent(string(message.StopReason), p.usage(&message))
+		done.Content = content
+		send(ctx, events, done)
 	}()
 
 	return events, nil
+}
+
+// requestOptions carries what the typed params of this SDK version do not: the
+// thinking-binding beta and its field. See AnthropicOptions.AdaptiveThinking.
+func (p *AnthropicProvider) requestOptions() []option.RequestOption {
+	if !p.options.AdaptiveThinking {
+		return nil
+	}
+	return []option.RequestOption{
+		option.WithHeaderAdd("anthropic-beta", thinkingBindingBeta),
+		option.WithJSONSet("thinking.block_binding.prefix_mismatch_behavior", "drop_block"),
+	}
+}
+
+// reportTransformations logs what the API changed in the request before the
+// model read it. Under the thinking-binding beta every response carries the list,
+// empty when nothing was dropped; an entry means a thinking block did not reach
+// the model — ODE's own history edit (prefix_binding_mismatch) or a model switch
+// (model_binding_mismatch), which is expected.
+func (p *AnthropicProvider) reportTransformations(ctx context.Context, start anthropic.MessageStartEvent) {
+	raw := start.Message.JSON.ExtraFields["input_transformations"].Raw()
+	if raw == "" || raw == "null" || raw == "[]" {
+		return
+	}
+	slog.WarnContext(ctx, "the Anthropic API dropped thinking blocks before the model read them",
+		"provider", p.name, "model", string(start.Message.Model), "input_transformations", raw)
 }
 
 // usage is what the accumulated message says the turn cost, priced.
@@ -247,7 +324,9 @@ func (p *AnthropicProvider) params(req Request) (anthropic.MessageNewParams, err
 	}
 
 	if p.options.AdaptiveThinking {
-		adaptive := anthropic.ThinkingConfigAdaptiveParam{}
+		adaptive := anthropic.ThinkingConfigAdaptiveParam{
+			Display: anthropic.ThinkingConfigAdaptiveDisplaySummarized,
+		}
 		params.Thinking = anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptive}
 	}
 
@@ -407,6 +486,19 @@ func toAnthropicMessages(messages []Message) []anthropic.MessageParam {
 			case ContentToolResult:
 				blocks = append(blocks,
 					anthropic.NewToolResultBlock(content.ToolUseID, content.ToolResult, content.IsError))
+			case ContentThinking:
+				// Sent back as it came, empty summary included: the signature is what
+				// the API reads. An unsigned block is one a stream was cut off in, which
+				// the API would refuse; the engine does not store those.
+				if content.Signature == "" {
+					continue
+				}
+				blocks = append(blocks, anthropic.NewThinkingBlock(content.Signature, content.Thinking))
+			case ContentRedactedThinking:
+				if content.Data == "" {
+					continue
+				}
+				blocks = append(blocks, anthropic.NewRedactedThinkingBlock(content.Data))
 			}
 		}
 		if len(blocks) == 0 {

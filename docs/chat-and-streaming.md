@@ -114,6 +114,70 @@ WebSocket.**
 Request/response stays REST — sessions, the tier, the audit, admin, MCP — because a
 status code means something there and those routes are worth being able to curl.
 
+### The model's thinking is shown while it lasts, and never as part of the answer
+
+A turn at a high effort can think for minutes before it writes a word, and the
+current Anthropic models stream that thinking as blocks with empty text unless the
+request asks for `display: "summarized"`. The developer saw "Working…" and nothing
+else for the whole of it, which read as a hung request.
+
+With `llm_adaptive_thinking` set, the Anthropic adapter asks for the summary and
+forwards it as `thinking_delta`, the one event type added to the closed list in
+[event.go](../pkg/llm/event.go). It is not a type for one provider's convenience:
+the reasoning models of both vendors can return a summary of their thinking, and
+the event carries text and nothing else. The OpenAI adapter does not emit it yet,
+because chat completions has no field for it. On Claude Opus 5.5 the short notes
+the model writes between tool calls arrive in thinking blocks too, so they show up
+in the same place.
+
+**It is a paraphrase, not the reasoning.** No provider returns the raw chain of
+thought; `summarized` is the provider's account of it. So it is never stored as
+text, where the next request would hand the model a paraphrase of its own
+reasoning as something it had said, and the SPA never renders it from the history.
+The SPA keeps the latest stretch under "Working…", collapsed to its last line, and
+drops it when the answer or a tool call arrives and when the turn ends.
+
+### Thinking blocks go back to the API as they came
+
+The API asks for a turn's thinking blocks back on the next request of a
+conversation, and a tool loop is one: without them the model meets its own tool
+call with the reasoning behind it gone, up to `llm_max_tool_iterations` times an
+exchange. On Claude Opus 5.5 it also loses the notes it wrote between calls.
+
+So a turn is stored as the provider rendered it. The Anthropic adapter hands the
+engine the whole assistant message on its done event (`llm.Event.Content`), in the
+API's order, `thinking` and `redacted_thinking` blocks with their signatures
+included, and `toAnthropicMessages` sends them back where they were. They are
+`llm.Content` types every other reader skips: the OpenAI and CLI conversions, the
+interpretation service, and the SPA's replay. A turn with nothing but thinking in
+it is stored as nothing, as before, and a turn stopped early stores its text alone.
+
+Each block is bound to the conversation that produced it — the system prompt, the
+tools and every earlier message, byte for byte. Two things keep ODE inside that:
+
+- **The system prompt does not change within a session.** It used to carry the
+  tier, the data split and the confirmed selection, and the confirmation of a data
+  selection rewrote it. Those are now a note in the conversation —
+  `sessionStateNotice` in [prompt.go](../pkg/chat/prompt.go), `origin` `ode`,
+  `subject` `session_state` — appended before the first provider call and again
+  before any call after one of them changed, never edited. A user-role note rather
+  than a mid-conversation system message: a system message has to be followed by
+  an assistant turn, and a turn that stores nothing (cut off, refused, failed)
+  would leave it followed by the developer's next message, which the API refuses on
+  every later request. The SPA shows the note as one line to open.
+- **What `conversation()` does on the way out is deterministic.** Merging
+  consecutive user turns, answering an orphaned call and leaving out an empty
+  message produce the same bytes on every request, and the check compares what is
+  sent. Moving `cache_control` marks is allowed by the API.
+
+Anything that still breaks the binding — a provider switch, or an edit nobody
+foresaw — costs a block rather than the session. Requests ask for
+`prefix_mismatch_behavior: "drop_block"` under the `thinking-binding-controls`
+beta; an account created on or after 2026-08-31 would otherwise get a 400 on every
+later turn of a stored history. Dropped blocks are reported in
+`input_transformations` and logged as a warning, because a
+`prefix_binding_mismatch` there means ODE edited a history it promised not to.
+
 ### A connection outlives its token, and a chat turn can too
 
 The WebSocket
