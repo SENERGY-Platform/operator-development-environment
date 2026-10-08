@@ -84,7 +84,7 @@
   "llm_max_tool_iterations": 30,
 
   "//llm_pricing": "Per million tokens, for the estimated cost §3.3 accounts against. Matched exactly, else by longest prefix, and wins over llm.DefaultPrices' built-in table model by model — see pkg.go for how the two are assembled. Verify before relying on these; the built-in table is dated (llm.PricesAsOf) and this one is not.",
-  "llm_currency": "EUR",
+  "llm_currency": "USD",
   "llm_pricing": [
     { "model": "claude-fable-5", "input_per_mtok": 10.0, "output_per_mtok": 50.0, "cached_input_per_mtok": 1.0, "cache_write_per_mtok": 12.5 },
     { "model": "claude-opus-5-5", "input_per_mtok": 4.0, "output_per_mtok": 20.0, "cached_input_per_mtok": 0.2, "cache_write_per_mtok": 5.0 },
