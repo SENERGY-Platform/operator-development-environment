@@ -489,6 +489,54 @@ func TestUsageAddsAcrossTurns(t *testing.T) {
 	}
 }
 
+// TestCostBreakdownAddsUpToTheCost: the lines the popover shows are the figure ODE
+// charged taken apart, not a second estimate beside it. Two turns of one exchange
+// are priced, summed, and the sum's lines must still add up to its total, with the
+// rates being the effective ones after the cache fallbacks.
+func TestCostBreakdownAddsUpToTheCost(t *testing.T) {
+	pricing := NewPricing("EUR", ModelPrice{Model: "m", InputPerMTok: 4, OutputPerMTok: 20})
+
+	first := Usage{Model: "m", InputTokens: 1_000_000, CachedInputTokens: 2_000_000}
+	second := Usage{Model: "m", CacheWriteTokens: 1_000_000, OutputTokens: 500_000}
+	pricing.Apply(&first)
+	pricing.Apply(&second)
+
+	total := Usage{}
+	total.Add(first)
+	total.Add(second)
+
+	got := total.CostBreakdown
+	if got == nil {
+		t.Fatal("a priced exchange carries no breakdown")
+	}
+	want := CostBreakdown{
+		Input: CostLine{PerMTok: 4, Cost: 4},
+		// No cached price configured: a read falls back to the input price.
+		CachedInput: CostLine{PerMTok: 4, Cost: 8},
+		// No write price configured: 1.25x input, never the input price itself.
+		CacheWrite: CostLine{PerMTok: 5, Cost: 5},
+		Output:     CostLine{PerMTok: 20, Cost: 10},
+	}
+	if *got != want {
+		t.Errorf("breakdown = %+v, want %+v", *got, want)
+	}
+	if got.Total() != total.CostEUR {
+		t.Errorf("lines add up to %v, the cost is %v", got.Total(), total.CostEUR)
+	}
+	// The sum is a copy: adding into it must not have changed the first turn.
+	if first.CostBreakdown.CacheWrite.Cost != 0 {
+		t.Error("summing an exchange wrote into the breakdown of one of its turns")
+	}
+}
+
+func TestUnpricedUsageHasNoBreakdown(t *testing.T) {
+	usage := Usage{Model: "unpriced", InputTokens: 10}
+	NewPricing("EUR").Apply(&usage)
+	if usage.CostBreakdown != nil {
+		t.Errorf("an unpriced model got rates: %+v", *usage.CostBreakdown)
+	}
+}
+
 // --- CLI provider ---
 
 func TestCLIProviderStartsUnusableUntilProbed(t *testing.T) {

@@ -27,6 +27,7 @@ import {
   type ProviderInfo,
   type ResolvedInputTopic,
   type Session,
+  type SessionSpend,
   type Workbench,
 } from "./api";
 import sessionDetail from "./__contract__/chat_session.json";
@@ -122,6 +123,9 @@ let repointed: [string, string, string][] = [];
 /** Whether the session read carries a spend. Off is a deployment with no
  *  accounting, which the pane has to render without inventing a zero. */
 let accounted = true;
+/** A spend the session read answers with in place of the fixture's, for a test
+ *  that needs a priced model. The fixture's stub model has no price. */
+let spendOverride: SessionSpend | null = null;
 /** What /session answers with, for the usage the popover reads on open. */
 let bootstrap: Partial<Session> = {};
 /** How many session watches the panel has opened. Counted apart from `streamed`,
@@ -396,6 +400,7 @@ vi.mock("./api", async (importOriginal) => {
         // A deployment with no accounting answers without the field at all, which
         // is a different thing from answering with zeros.
         if (!accounted) delete detail.spend;
+        if (accounted && spendOverride) detail.spend = JSON.parse(JSON.stringify(spendOverride));
         for (const text of sent) {
           detail.messages.push({
             session_id: detail.session.id,
@@ -515,6 +520,7 @@ beforeEach(() => {
   offered = [];
   repointed = [];
   accounted = true;
+  spendOverride = null;
   bootstrap = {};
   decidedInputs = [];
   chatConfirmPayloads = [];
@@ -2652,6 +2658,62 @@ it("reads the period's usage against the cap when the detail is opened", async (
   expect(cap?.textContent, "the period's usage is not shown").toContain("of 1,000");
   // The admin's own threshold decides what counts as close, not a number chosen here.
   expect(cap?.textContent).toContain("close to the cap");
+});
+
+/*
+ * The conversation's cost taken apart: per model, and within a model per kind of
+ * token, with the count, the rate per million and what it came to. A kind with no
+ * tokens is left out rather than shown as a row of zeros, and every cost carries
+ * the deployment's currency.
+ */
+it("takes the conversation's cost apart by model and kind of token", async () => {
+  offered = [provider("stub", ["stub-model"])];
+  spendOverride = {
+    tokens: 3_500_000,
+    cost: 0.0935,
+    requests: 3,
+    cost_complete: true,
+    currency: "USD",
+    by_model: [
+      {
+        model: "stub-model",
+        requests: 3,
+        input_tokens: 12_345,
+        cached_input_tokens: 3_000_000,
+        cache_write_tokens: 0,
+        output_tokens: 487_655,
+        cost: 0.0935,
+        cost_complete: true,
+        breakdown: {
+          input: { per_mtok: 4, cost: 0.04938 },
+          cached_input: { per_mtok: 0.2, cost: 0.6 },
+          cache_write: { per_mtok: 5, cost: 0 },
+          output: { per_mtok: 20, cost: 9.7531 },
+        },
+      },
+    ],
+  };
+
+  const host = await open();
+  await settle(3);
+
+  await act(async () => (host.querySelector(".session-spend") as HTMLElement).click());
+  await settle(5);
+
+  const session = document.querySelector(".spend-session");
+  expect(session?.textContent, "the total carries no currency").toContain("0.0935 USD");
+  const table = session?.querySelector(".cost-table");
+  expect(table?.textContent).toContain("stub-model · 3 requests");
+  const rows = [...(table?.querySelectorAll("tbody tr") ?? [])].map((row) =>
+    [...row.children].map((cell) => cell.textContent),
+  );
+  expect(rows).toEqual([
+    // In full: "3M" would hide the digits a breakdown exists to show.
+    ["Input", "12,345", "4", "0.049380"],
+    ["Cache read", "3,000,000", "0.2", "0.600000"],
+    ["Output", "487,655", "20", "9.753100"],
+  ]);
+  expect(table?.textContent, "the unit is missing from the columns").toContain("Cost (USD)");
 });
 
 /*

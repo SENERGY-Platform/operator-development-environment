@@ -339,6 +339,16 @@ same honesty constraint §3.3 states for caps: an unpriced model accrues zero, s
 figure beside it is a floor rather than a total, and saying so is the difference
 between a cheap conversation and an unmeasured one.
 
+**`by_model` takes the total apart**: one entry per model in first-use order, its
+tokens split into input, cache read, cache write and output, the cost the requests
+were charged, and a `breakdown` with the effective rate per million and the cost of
+each kind. `currency` labels every figure. The `usage` stream event carries the same
+`cost_breakdown` for the last exchange.
+
+The breakdown is priced at today's rates, because `ode_usage` stores each request's
+total and not its lines. It adds up to the stored `cost` only while the price table
+is unchanged since the requests ran; the total stays the stored one.
+
 ### `time.Duration` marshals as nanoseconds
 
 A field named `duration_ms` carrying a

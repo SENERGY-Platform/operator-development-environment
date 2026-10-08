@@ -1280,6 +1280,40 @@ export interface SessionSpend {
   /** False when a turn ran on a model ODE has no price for. The cost beside it is
    * then a floor rather than a total. */
   cost_complete: boolean;
+  /** Labels every cost here. Not converted from anything. */
+  currency?: string;
+  /** The same total split by the model that served it, in first-use order. */
+  by_model?: ModelSpend[];
+}
+
+/** One model's share of a conversation, its tokens kept apart by kind. */
+export interface ModelSpend {
+  model: string;
+  requests: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  /** What the requests were charged when they ran. */
+  cost: number;
+  cost_complete: boolean;
+  /** The tokens above at today's rates; absent for a model with no price. */
+  breakdown?: CostBreakdown;
+}
+
+/** One kind of token in a cost: its rate per million tokens and what it came to. */
+export interface CostLine {
+  per_mtok: number;
+  cost: number;
+}
+
+/** A cost taken apart by the four kinds of token a provider bills separately. The
+ * rates are the effective ones, after the fallbacks for an absent cache price. */
+export interface CostBreakdown {
+  input: CostLine;
+  cached_input: CostLine;
+  cache_write: CostLine;
+  output: CostLine;
 }
 
 export interface TierChange {
@@ -1321,6 +1355,7 @@ export interface Usage {
   model?: string;
   cost_eur?: number;
   cost_estimated?: boolean;
+  cost_breakdown?: CostBreakdown;
 }
 
 export interface LimitWarning {

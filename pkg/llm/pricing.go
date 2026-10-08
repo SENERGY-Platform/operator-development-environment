@@ -158,16 +158,48 @@ func lookupIn(prices []ModelPrice, model string) (ModelPrice, bool) {
 	return best, found
 }
 
-// Apply fills in the cost of a usage record in place.
-func (p *Pricing) Apply(usage *Usage) {
-	if usage == nil {
-		return
-	}
-	price, found := p.Lookup(usage.Model)
+// CostLine is one kind of token in a cost: the rate it was priced at, per million
+// tokens, and what that came to. The token count is not repeated here; it already
+// sits beside the line on whatever carries it.
+type CostLine struct {
+	PerMTok float64 `json:"per_mtok"`
+	Cost    float64 `json:"cost"`
+}
+
+// CostBreakdown is a cost taken apart by the four kinds of token a provider bills
+// separately. The rates are the effective ones, after the fallbacks for an absent
+// cache price, so a reader multiplying tokens by rate gets the figure ODE charged
+// rather than having to know those rules.
+type CostBreakdown struct {
+	Input       CostLine `json:"input"`
+	CachedInput CostLine `json:"cached_input"`
+	CacheWrite  CostLine `json:"cache_write"`
+	Output      CostLine `json:"output"`
+}
+
+// Total is the sum of the four lines, added in the order Apply has always added
+// them so the figure is the same to the last bit.
+func (b CostBreakdown) Total() float64 {
+	return b.Input.Cost + b.CachedInput.Cost + b.CacheWrite.Cost + b.Output.Cost
+}
+
+// add accumulates another breakdown of the same model. The rates are taken from
+// other, which is only right because one exchange runs on one model.
+func (b *CostBreakdown) add(other CostBreakdown) {
+	b.Input = CostLine{PerMTok: other.Input.PerMTok, Cost: b.Input.Cost + other.Input.Cost}
+	b.CachedInput = CostLine{PerMTok: other.CachedInput.PerMTok,
+		Cost: b.CachedInput.Cost + other.CachedInput.Cost}
+	b.CacheWrite = CostLine{PerMTok: other.CacheWrite.PerMTok,
+		Cost: b.CacheWrite.Cost + other.CacheWrite.Cost}
+	b.Output = CostLine{PerMTok: other.Output.PerMTok, Cost: b.Output.Cost + other.Output.Cost}
+}
+
+// Breakdown prices token counts for a model line by line. found is false for an
+// unpriced model, and the breakdown is then empty rather than a row of zeros.
+func (p *Pricing) Breakdown(model string, input, cachedInput, cacheWrite, output int64) (CostBreakdown, bool) {
+	price, found := p.Lookup(model)
 	if !found {
-		usage.CostEUR = 0
-		usage.CostEstimated = false
-		return
+		return CostBreakdown{}, false
 	}
 
 	// Cached input is priced separately and is not part of InputTokens on either
@@ -182,11 +214,34 @@ func (p *Pricing) Apply(usage *Usage) {
 	}
 
 	const perMillion = 1_000_000.0
-	usage.CostEUR = float64(usage.InputTokens)/perMillion*price.InputPerMTok +
-		float64(usage.CachedInputTokens)/perMillion*cachedPrice +
-		float64(usage.CacheWriteTokens)/perMillion*writePrice +
-		float64(usage.OutputTokens)/perMillion*price.OutputPerMTok
+	line := func(tokens int64, perMTok float64) CostLine {
+		return CostLine{PerMTok: perMTok, Cost: float64(tokens) / perMillion * perMTok}
+	}
+	return CostBreakdown{
+		Input:       line(input, price.InputPerMTok),
+		CachedInput: line(cachedInput, cachedPrice),
+		CacheWrite:  line(cacheWrite, writePrice),
+		Output:      line(output, price.OutputPerMTok),
+	}, true
+}
+
+// Apply fills in the cost of a usage record in place, and the breakdown it was
+// added up from.
+func (p *Pricing) Apply(usage *Usage) {
+	if usage == nil {
+		return
+	}
+	breakdown, found := p.Breakdown(usage.Model, int64(usage.InputTokens),
+		int64(usage.CachedInputTokens), int64(usage.CacheWriteTokens), int64(usage.OutputTokens))
+	if !found {
+		usage.CostEUR = 0
+		usage.CostEstimated = false
+		usage.CostBreakdown = nil
+		return
+	}
+	usage.CostEUR = breakdown.Total()
 	usage.CostEstimated = true
+	usage.CostBreakdown = &breakdown
 }
 
 // Priced says whether a model has a configured price. The admin surface needs it

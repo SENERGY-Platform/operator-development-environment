@@ -141,24 +141,31 @@ func (s *MemoryStore) SpendSince(_ context.Context, subject string, since time.T
 func (s *MemoryStore) SessionSpend(_ context.Context, subject, sessionID string) (SessionSpend, error) {
 	s.mux.RLock()
 	defer s.mux.RUnlock()
-	// True until a record says otherwise, so a session with nothing in it reads as
-	// complete rather than as incomplete-and-empty.
-	spend := SessionSpend{CostComplete: true}
 	if subject == "" || sessionID == "" {
-		return spend, nil
+		return sessionSpendOf(nil), nil
 	}
+	byModel := []ModelSpend{}
+	index := map[string]int{}
 	for _, record := range s.usage {
 		if record.UserSub != subject || record.SessionID != sessionID {
 			continue
 		}
-		spend.Tokens += record.Tokens()
-		spend.Cost += record.Cost
-		spend.Requests++
-		if !record.CostEstimated {
-			spend.CostComplete = false
+		at, seen := index[record.Model]
+		if !seen {
+			at = len(byModel)
+			index[record.Model] = at
+			byModel = append(byModel, ModelSpend{Model: record.Model, CostComplete: true})
 		}
+		share := &byModel[at]
+		share.Requests++
+		share.InputTokens += int64(record.InputTokens)
+		share.CachedInputTokens += int64(record.CachedInputTokens)
+		share.CacheWriteTokens += int64(record.CacheWriteTokens)
+		share.OutputTokens += int64(record.OutputTokens)
+		share.Cost += record.Cost
+		share.CostComplete = share.CostComplete && record.CostEstimated
 	}
-	return spend, nil
+	return sessionSpendOf(byModel), nil
 }
 
 func (s *MemoryStore) UsageSince(_ context.Context, subject string, since time.Time, limit int) ([]Record, error) {
@@ -329,24 +336,44 @@ func (s *PostgresStore) SpendSince(ctx context.Context, subject string, since ti
 }
 
 func (s *PostgresStore) SessionSpend(ctx context.Context, subject, sessionID string) (SessionSpend, error) {
-	spend := SessionSpend{CostComplete: true}
 	if subject == "" || sessionID == "" {
-		return spend, nil
+		return sessionSpendOf(nil), nil
 	}
-	// COALESCE for the same reason SpendSince has it, and bool_and over no rows is
-	// NULL too: a conversation whose first turn has not finished has no rows at all.
-	row := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(input_tokens + output_tokens + cached_input_tokens + cache_write_tokens), 0),
-		       COALESCE(SUM(cost), 0),
+	// One row per model, never per nothing: GROUP BY over no rows returns no rows
+	// rather than one row of NULLs, so a conversation whose first turn has not
+	// finished comes out as an empty list and sessionSpendOf calls that complete.
+	rows, err := s.pool.Query(ctx, `
+		SELECT model,
 		       COUNT(*),
-		       COALESCE(bool_and(cost_estimated), TRUE)
+		       SUM(input_tokens),
+		       SUM(cached_input_tokens),
+		       SUM(cache_write_tokens),
+		       SUM(output_tokens),
+		       SUM(cost),
+		       bool_and(cost_estimated)
 		FROM ode_usage
-		WHERE user_sub = $1 AND session_id = $2`, subject, sessionID)
-
-	if err := row.Scan(&spend.Tokens, &spend.Cost, &spend.Requests, &spend.CostComplete); err != nil {
+		WHERE user_sub = $1 AND session_id = $2
+		GROUP BY model
+		ORDER BY MIN(at), model`, subject, sessionID)
+	if err != nil {
 		return SessionSpend{}, err
 	}
-	return spend, nil
+	defer rows.Close()
+
+	byModel := []ModelSpend{}
+	for rows.Next() {
+		var share ModelSpend
+		if err := rows.Scan(&share.Model, &share.Requests, &share.InputTokens,
+			&share.CachedInputTokens, &share.CacheWriteTokens, &share.OutputTokens,
+			&share.Cost, &share.CostComplete); err != nil {
+			return SessionSpend{}, err
+		}
+		byModel = append(byModel, share)
+	}
+	if err := rows.Err(); err != nil {
+		return SessionSpend{}, err
+	}
+	return sessionSpendOf(byModel), nil
 }
 
 func (s *PostgresStore) UsageSince(ctx context.Context, subject string, since time.Time, limit int) ([]Record, error) {

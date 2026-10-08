@@ -23,6 +23,7 @@ import {
   type ChatEvent,
   type ChatMessage,
   type ChatSession,
+  type CostBreakdown,
   type DataSplit,
   type InputTopic,
   type InputTopicFit,
@@ -2474,6 +2475,9 @@ function SpendSummary({
   // Nothing measured and nothing declared: no trigger at all, rather than a control
   // that opens on an empty card.
   if (spend === null && usage === null && provider === null) return null;
+  // From the session read. The stream's usage event carries none, so a deployment
+  // with no accounting shows its figures without a unit rather than with a guessed one.
+  const currency = spend?.currency;
 
   const total = spend
     ? `${num(spend.tokens)} tokens`
@@ -2493,42 +2497,66 @@ function SpendSummary({
       >
         {total || "Details"}
       </PopoverTrigger>
-      <PopoverContent className="session-spend-detail w-80 space-y-3 text-xs">
+      <PopoverContent className="session-spend-detail w-96 space-y-3 text-xs">
         {spend && (
-          <div className="spend-session space-y-0.5">
-            <p className="font-medium text-foreground">This conversation</p>
-            <p className="text-muted-foreground">
-              {num(spend.tokens)} tokens over {num(spend.requests)}{" "}
-              {spend.requests === 1 ? "request" : "requests"}
-              {spend.cost > 0 && (
-                <>
-                  {" · "}
-                  {spend.cost_complete ? "~" : "at least ~"}
-                  {spend.cost.toFixed(4)}
-                </>
-              )}
-            </p>
-            {!spend.cost_complete && (
+          <div className="spend-session space-y-2">
+            <div className="space-y-0.5">
+              <p className="font-medium text-foreground">This conversation</p>
               <p className="text-muted-foreground">
-                A turn here ran on a model with no configured price, so the cost is a
-                floor rather than a total.
+                {num(spend.tokens)} tokens over {num(spend.requests)}{" "}
+                {spend.requests === 1 ? "request" : "requests"}
+                {spend.cost > 0 && (
+                  <>
+                    {" · "}
+                    {spend.cost_complete ? "~" : "at least ~"}
+                    {money(spend.cost, currency)}
+                  </>
+                )}
               </p>
-            )}
+              {!spend.cost_complete && (
+                <p className="text-muted-foreground">
+                  A turn here ran on a model with no configured price, so the cost is a
+                  floor rather than a total.
+                </p>
+              )}
+            </div>
+            {spend.by_model?.map((share) => (
+              <CostTable
+                key={share.model}
+                title={`${share.model || "provider default"} · ${num(share.requests)} ${
+                  share.requests === 1 ? "request" : "requests"
+                }${share.cost > 0 ? ` · ~${money(share.cost, currency)}` : ""}`}
+                tokens={[
+                  share.input_tokens,
+                  share.cached_input_tokens,
+                  share.cache_write_tokens,
+                  share.output_tokens,
+                ]}
+                breakdown={share.breakdown}
+                currency={currency}
+              />
+            ))}
           </div>
         )}
         {usage && (
           <div className="spend-exchange space-y-0.5">
             <p className="font-medium text-foreground">Last exchange</p>
-            <p className="text-muted-foreground">
-              {num(usage.input_tokens)} in, {num(usage.output_tokens)} out
-              {usage.cached_input_tokens
-                ? `, ${num(usage.cached_input_tokens)} from cache`
-                : ""}
-              {usage.cost_eur ? ` · ~${usage.cost_eur.toFixed(4)}` : ""}
-            </p>
+            <CostTable
+              title={`${usage.model || "provider default"}${
+                usage.cost_eur ? ` · ~${money(usage.cost_eur, currency)}` : ""
+              }`}
+              tokens={[
+                usage.input_tokens,
+                usage.cached_input_tokens ?? 0,
+                usage.cache_write_tokens ?? 0,
+                usage.output_tokens,
+              ]}
+              breakdown={usage.cost_breakdown}
+              currency={currency}
+            />
           </div>
         )}
-        <PeriodSpend />
+        <PeriodSpend currency={currency} />
         {provider && <ProviderState provider={provider} />}
         <p className="spend-caveat text-muted-foreground">
           Costs are ODE's own estimate from configured prices, not an invoice.
@@ -2548,7 +2576,7 @@ function SpendSummary({
  * The popover's content is not mounted until it is opened, so the read happens then
  * and only then.
  */
-function PeriodSpend() {
+function PeriodSpend({ currency }: { currency?: string }) {
   // Stable, so useLoad's effect does not re-run on every render of the popover.
   const load = useCallback(() => api.session(), []);
   const { data, loading } = useLoad(load);
@@ -2583,12 +2611,113 @@ function PeriodSpend() {
           spent={spend.cost}
           cap={costCap}
           warnAt={warnAt}
-          render={(value) => `~${value.toFixed(2)}`}
+          render={(value) => `~${money(value, currency, 2)}`}
         />
       ) : (
         spend.cost > 0 && (
-          <p className="text-muted-foreground">~{spend.cost.toFixed(4)} spent, no cap set</p>
+          <p className="text-muted-foreground">
+            ~{money(spend.cost, currency)} spent, no cap set
+          </p>
         )
+      )}
+    </div>
+  );
+}
+
+/** money is a cost with its unit, where the deployment named one. Four decimals
+ * by default, as every cost in this popover has always been shown. */
+function money(value: number, currency?: string, decimals = 4): string {
+  return currency ? `${value.toFixed(decimals)} ${currency}` : value.toFixed(decimals);
+}
+
+/** Token counts in full: in a breakdown, "1.2M" would hide the digits it exists
+ * to show. */
+const exactCount = new Intl.NumberFormat("en-GB");
+
+/** The four kinds of token a provider bills separately, in the order of
+ * CostTable's `tokens`. */
+const TOKEN_KINDS = [
+  ["Input", "input"],
+  ["Cache read", "cached_input"],
+  ["Cache write", "cache_write"],
+  ["Output", "output"],
+] as const satisfies readonly (readonly [string, keyof CostBreakdown])[];
+
+/**
+ * CostTable is a cost taken apart by kind of token: how many, at what rate per
+ * million, and what that came to. The rates come from the backend after its
+ * fallbacks for an absent cache price, so tokens times rate here is the figure
+ * ODE charged rather than a second estimate computed beside it.
+ *
+ * A kind with no tokens is left out: a provider that reports no cache has no
+ * cache line, and a row of zeros would read as a measurement. A model with no
+ * price keeps its token counts and loses only the rate and cost columns.
+ */
+function CostTable({
+  title,
+  tokens,
+  breakdown,
+  currency,
+}: {
+  title: string;
+  tokens: readonly [number, number, number, number];
+  breakdown?: CostBreakdown;
+  currency?: string;
+}) {
+  const unit = currency ? ` (${currency})` : "";
+  const rows = TOKEN_KINDS.map(([label, kind], index) => ({
+    label,
+    count: tokens[index],
+    line: breakdown?.[kind],
+  })).filter((row) => row.count > 0);
+
+  return (
+    <div className="cost-table space-y-0.5">
+      <p className="text-muted-foreground">{title}</p>
+      {rows.length > 0 && (
+        <table className="w-full text-muted-foreground tabular-nums">
+          <thead>
+            <tr className="text-[0.625rem]">
+              <th scope="col" className="text-left font-normal">
+                Kind
+              </th>
+              <th scope="col" className="text-right font-normal">
+                Tokens
+              </th>
+              {breakdown && (
+                <>
+                  <th scope="col" className="text-right font-normal">
+                    Per million{unit}
+                  </th>
+                  <th scope="col" className="text-right font-normal">
+                    Cost{unit}
+                  </th>
+                </>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.label}>
+                <th scope="row" className="pr-2 text-left font-normal">
+                  {row.label}
+                </th>
+                <td className="pr-2 text-right">{exactCount.format(row.count)}</td>
+                {row.line && (
+                  <>
+                    <td className="pr-2 text-right">{num(row.line.per_mtok)}</td>
+                    {/* Six places, the precision ode_usage stores a cost at: a cache
+                        line of a few hundred tokens is invisible at four. */}
+                    <td className="text-right">{row.line.cost.toFixed(6)}</td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {!breakdown && rows.length > 0 && (
+        <p className="text-muted-foreground">No price configured for this model.</p>
       )}
     </div>
   );

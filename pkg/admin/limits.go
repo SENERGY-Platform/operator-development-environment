@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SENERGY-Platform/operator-development-environment/pkg/llm"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/tools"
 )
 
@@ -323,6 +324,47 @@ type SessionSpend struct {
 	// saying so is the same honesty constraint the package comment states for caps:
 	// an unpriced model accrues zero and would otherwise read as free.
 	CostComplete bool `json:"cost_complete"`
+	// Currency labels Cost and every figure in ByModel. Not converted from
+	// anything; see llm.Pricing.
+	Currency string `json:"currency,omitempty"`
+	// ByModel is the same total split by the model that served it, in the order
+	// each model was first used. The figures above are its sums.
+	ByModel []ModelSpend `json:"by_model,omitempty"`
+}
+
+// ModelSpend is one model's share of a conversation, with its tokens kept apart by
+// the kind the provider bills separately.
+type ModelSpend struct {
+	Model             string  `json:"model"`
+	Requests          int64   `json:"requests"`
+	InputTokens       int64   `json:"input_tokens"`
+	CachedInputTokens int64   `json:"cached_input_tokens"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	// Cost is what the requests were charged when they ran.
+	Cost         float64 `json:"cost"`
+	CostComplete bool    `json:"cost_complete"`
+	// Breakdown prices the tokens above at today's rates, so it adds up to Cost
+	// only while the price table has not changed since. Each record stores its
+	// total and not its lines, and splitting a stored total by today's rates would
+	// produce lines no rate ever charged. Nil for a model with no price.
+	Breakdown *llm.CostBreakdown `json:"breakdown,omitempty"`
+}
+
+// sessionSpendOf sums a conversation's per-model shares into its total, so the two
+// stores cannot disagree on what the total of the same rows is.
+func sessionSpendOf(byModel []ModelSpend) SessionSpend {
+	// True until a share says otherwise, so a session with nothing in it reads as
+	// complete rather than as incomplete-and-empty.
+	spend := SessionSpend{CostComplete: true, ByModel: byModel}
+	for _, share := range byModel {
+		spend.Tokens += share.InputTokens + share.CachedInputTokens + share.CacheWriteTokens +
+			share.OutputTokens
+		spend.Cost += share.Cost
+		spend.Requests += share.Requests
+		spend.CostComplete = spend.CostComplete && share.CostComplete
+	}
+	return spend
 }
 
 // LimitError is §3.3's structured refusal on cap breach.

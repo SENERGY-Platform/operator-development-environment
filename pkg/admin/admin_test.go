@@ -622,6 +622,69 @@ func TestSessionSpendReportsAnUnpricedTurn(t *testing.T) {
 	}
 }
 
+// TestSessionSpendSplitsByModelAndKind: the conversation's total taken apart by the
+// model that served it and, within a model, by the kind of token — each priced at
+// its own rate, and an unpriced model listed with its tokens but without rates.
+func TestSessionSpendSplitsByModelAndKind(t *testing.T) {
+	service, store := testService(t)
+	ctx := context.Background()
+
+	for _, record := range []Record{
+		{UserSub: testUser, SessionID: "s-1", Model: "test-model",
+			InputTokens: 1_000_000, CachedInputTokens: 2_000_000, Cost: 30, CostEstimated: true},
+		{UserSub: testUser, SessionID: "s-1", Model: "unpriced-model",
+			OutputTokens: 7},
+		{UserSub: testUser, SessionID: "s-1", Model: "test-model",
+			CacheWriteTokens: 1_000_000, OutputTokens: 1_000_000, Cost: 62.5, CostEstimated: true},
+	} {
+		if err := store.AppendUsage(ctx, record); err != nil {
+			t.Fatalf("AppendUsage: %v", err)
+		}
+	}
+
+	spend, err := service.SessionSpend(ctx, testUser, "s-1")
+	if err != nil {
+		t.Fatalf("SessionSpend: %v", err)
+	}
+	if spend.Currency != "EUR" {
+		t.Errorf("currency = %q, want the deployment's", spend.Currency)
+	}
+	if len(spend.ByModel) != 2 || spend.ByModel[0].Model != "test-model" ||
+		spend.ByModel[1].Model != "unpriced-model" {
+		t.Fatalf("by model = %+v, want test-model then unpriced-model, in first-use order",
+			spend.ByModel)
+	}
+
+	priced := spend.ByModel[0]
+	if priced.Requests != 2 || priced.InputTokens != 1_000_000 ||
+		priced.CachedInputTokens != 2_000_000 || priced.CacheWriteTokens != 1_000_000 ||
+		priced.OutputTokens != 1_000_000 || priced.Cost != 92.5 || !priced.CostComplete {
+		t.Errorf("test-model share = %+v", priced)
+	}
+	if priced.Breakdown == nil {
+		t.Fatal("a priced model's share carries no breakdown")
+	}
+	want := llm.CostBreakdown{
+		Input:       llm.CostLine{PerMTok: 10, Cost: 10},
+		CachedInput: llm.CostLine{PerMTok: 10, Cost: 20},
+		CacheWrite:  llm.CostLine{PerMTok: 12.5, Cost: 12.5},
+		Output:      llm.CostLine{PerMTok: 50, Cost: 50},
+	}
+	if *priced.Breakdown != want {
+		t.Errorf("breakdown = %+v, want %+v", *priced.Breakdown, want)
+	}
+
+	unpriced := spend.ByModel[1]
+	if unpriced.Breakdown != nil || unpriced.CostComplete || unpriced.OutputTokens != 7 {
+		t.Errorf("unpriced share = %+v, want its tokens, no rates and an incomplete cost", unpriced)
+	}
+
+	// The total is the shares' sum, and one unpriced share makes it a floor.
+	if spend.Requests != 3 || spend.Tokens != 5_000_007 || spend.Cost != 92.5 || spend.CostComplete {
+		t.Errorf("total = %+v", spend)
+	}
+}
+
 // TestSessionSpendOfAnEmptySessionIsComplete: nothing spent is a known total, not
 // an unknown one. The pane shows a zero here; it must not warn about a floor.
 func TestSessionSpendOfAnEmptySessionIsComplete(t *testing.T) {

@@ -342,8 +342,23 @@ func (s *Service) Spend(ctx context.Context, subject string, period time.Duratio
 // SessionSpend is what one conversation has cost, for the developer looking at it
 // rather than for a cap. Scoped to the subject as well as the session, so a session
 // id on its own does not open someone else's total.
+//
+// The store sums tokens; the rates are applied here, because the price table is
+// this service's and not the store's.
 func (s *Service) SessionSpend(ctx context.Context, subject, sessionID string) (SessionSpend, error) {
-	return s.store.SessionSpend(ctx, subject, sessionID)
+	spend, err := s.store.SessionSpend(ctx, subject, sessionID)
+	if err != nil {
+		return SessionSpend{}, err
+	}
+	spend.Currency = s.pricing.Currency()
+	for i := range spend.ByModel {
+		share := &spend.ByModel[i]
+		if breakdown, found := s.pricing.Breakdown(share.Model, share.InputTokens,
+			share.CachedInputTokens, share.CacheWriteTokens, share.OutputTokens); found {
+			share.Breakdown = &breakdown
+		}
+	}
+	return spend, nil
 }
 
 // Pricing exposes the configured table for the admin surface, which needs to show

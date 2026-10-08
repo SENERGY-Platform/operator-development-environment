@@ -122,6 +122,9 @@ type Usage struct {
 	// than from the provider. It always does today, and saying so keeps a
 	// developer from reading the figure as an invoice (§3.3).
 	CostEstimated bool `json:"cost_estimated,omitempty"`
+	// CostBreakdown is CostEUR taken apart by kind of token, with the rate each was
+	// priced at. Nil wherever CostEstimated is false: an unpriced model has no rate.
+	CostBreakdown *CostBreakdown `json:"cost_breakdown,omitempty"`
 }
 
 // Add accumulates usage across the turns of one exchange, which is what a tool
@@ -139,6 +142,15 @@ func (u *Usage) Add(other Usage) {
 		u.Model = other.Model
 	}
 	u.CostEstimated = u.CostEstimated || other.CostEstimated
+	if other.CostBreakdown != nil {
+		// A copy, so the sum never writes into the breakdown of the turn it came from.
+		merged := CostBreakdown{}
+		if u.CostBreakdown != nil {
+			merged = *u.CostBreakdown
+		}
+		merged.add(*other.CostBreakdown)
+		u.CostBreakdown = &merged
+	}
 }
 
 // TextEvent, ToolCallEvent, DoneEvent and ErrorEvent are constructors, so a
