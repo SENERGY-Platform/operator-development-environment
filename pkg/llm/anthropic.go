@@ -277,15 +277,16 @@ func (p *AnthropicProvider) params(req Request) (anthropic.MessageNewParams, err
 // markCachedTools puts a breakpoint on the last tool definition.
 //
 // The system mark below already covers tools, because tools render first — but it
-// covers them only as far as the system text is unchanged, and that text carries
-// the session's tier and split (see chat.systemPrompt). A tier change therefore
-// rewrites the whole prefix today, schemas included, though not one schema byte
-// differed. Tools are the larger half of it: 43 definitions are about 16k tokens
-// against roughly 4k of system text.
+// covers them only as far as the system text is unchanged. Within a session it no
+// longer changes: the tier, split and selection it used to carry are notes in the
+// conversation now (see chat.sessionStateNotice). Between providers it still does
+// — a provider without tools gets other instructions — and tools are the larger
+// half of the prefix: 43 definitions are about 16k tokens against roughly 4k of
+// system text.
 //
-// A mark of their own splits the two, so a tier change costs the system block and
-// the tool block survives it — and survives a split change, a new session and a
-// different developer with it, since the schemas depend on none of them.
+// A mark of their own splits the two, so whatever changes the system block leaves
+// the tool block cached, across sessions and developers too, since the schemas
+// depend on neither.
 //
 // This is the fourth breakpoint of the API's four, together with the system mark
 // and the two in markCachedPrefix. There is no room for a fifth.

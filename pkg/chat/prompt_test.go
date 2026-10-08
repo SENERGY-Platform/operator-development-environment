@@ -99,7 +99,7 @@ func promptRegistry(t *testing.T, deps tools.Deps) *tools.Registry {
 // browsing tools, which is the wrong moment.
 func TestThePromptTellsTheAssistantAboutTheSimulatorWhenThereIsOne(t *testing.T) {
 	prompt := systemPrompt(
-		promptRegistry(t, tools.Deps{Simulation: promptSimulation{}}), Session{Tier: tools.L0}, true)
+		promptRegistry(t, tools.Deps{Simulation: promptSimulation{}}), true)
 
 	for _, expected := range []string{
 		"MOSES",
@@ -124,7 +124,7 @@ func TestThePromptTellsTheAssistantAboutTheSimulatorWhenThereIsOne(t *testing.T)
 // A deployment without a simulator must not be told about one: the paragraph
 // would be an invitation to propose something that cannot happen.
 func TestThePromptSaysNothingAboutTheSimulatorWithoutOne(t *testing.T) {
-	prompt := systemPrompt(promptRegistry(t, tools.Deps{}), Session{Tier: tools.L0}, true)
+	prompt := systemPrompt(promptRegistry(t, tools.Deps{}), true)
 	if strings.Contains(prompt, "MOSES") {
 		t.Error("a deployment with no moses_url is told about a simulator it does not have")
 	}
@@ -134,7 +134,7 @@ func TestThePromptSaysNothingAboutTheSimulatorWithoutOne(t *testing.T) {
 // simulated one, and looking for example data comes before asserting a shape.
 func TestThePromptPutsRealDataAheadOfSimulatedData(t *testing.T) {
 	prompt := systemPrompt(
-		promptRegistry(t, tools.Deps{Simulation: promptSimulation{}}), Session{Tier: tools.L0}, true)
+		promptRegistry(t, tools.Deps{Simulation: promptSimulation{}}), true)
 	real := strings.Index(prompt, "Look for real data first")
 	example := strings.Index(prompt, "go and find example data")
 	asserted := strings.Index(prompt, "become the right source")
@@ -203,7 +203,7 @@ func TestThePromptRulesOutRunCodeAsASubstituteForATool(t *testing.T) {
 	// reachable. This is the tier where the substitution has the least standing in the
 	// rest of the prompt.
 	prompt := systemPrompt(
-		promptRegistry(t, tools.Deps{Kernel: promptKernel{}}), Session{Tier: tools.L2}, true)
+		promptRegistry(t, tools.Deps{Kernel: promptKernel{}}), true)
 
 	for _, expected := range []string{
 		"not a substitute for these tools",
@@ -227,7 +227,7 @@ func TestThePromptRulesOutRunCodeAsASubstituteForATool(t *testing.T) {
 // A deployment with no jupyterhub_url has no substitution to forbid, and the
 // paragraph would be where the model first heard of one.
 func TestThePromptSaysNothingAboutRunCodeWithoutAKernel(t *testing.T) {
-	prompt := systemPrompt(promptRegistry(t, tools.Deps{}), Session{Tier: tools.L0}, true)
+	prompt := systemPrompt(promptRegistry(t, tools.Deps{}), true)
 	// A phrase from the paragraph itself rather than a near-miss of it: an assertion
 	// on wording the block no longer uses would pass however the gate behaved.
 	if strings.Contains(prompt, "not a substitute for these tools") {

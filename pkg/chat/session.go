@@ -31,6 +31,7 @@ package chat
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/exposure"
@@ -139,6 +140,18 @@ type StoredMessage struct {
 
 // Injected reports whether ODE composed this message rather than the developer.
 func (m StoredMessage) Injected() bool { return m.Origin == OriginODE }
+
+// Note reports whether this is one of ODE's notes about the conversation itself —
+// a workbench move, an abandoned confirmation, the session's state — rather than
+// an injected message the assistant is meant to answer, which §5.13's run summary
+// is. A reader looking for the answer to an injected message reads past notes:
+// none of them asks anything, and the session state note lands between a summary
+// and its answer whenever the turn that answers it is the session's first.
+func (m StoredMessage) Note() bool {
+	return m.Injected() && (m.Subject == sessionStateSubject ||
+		strings.HasPrefix(m.Subject, moveSubjectPrefix) ||
+		strings.HasPrefix(m.Subject, abandonedSubjectPrefix))
+}
 
 // Message is the SPA's view of a turn: the same content, plus the tool outcomes
 // that belong beside it.

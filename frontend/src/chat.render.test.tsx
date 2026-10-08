@@ -99,7 +99,7 @@ let renamed: [string, string][] = [];
 /** Every workbench move the pane sent, as [id, workbench]. */
 let moved: [string, string][] = [];
 /** Notes ODE has put in the conversation, which a move is one of. */
-let notes: string[] = [];
+let notes: { text: string; subject: string }[] = [];
 /**
  * How the stored conversation holds a `launch_experiment` result, if it holds one.
  *
@@ -347,7 +347,10 @@ vi.mock("./api", async (importOriginal) => {
         const entry = listed.find((session) => session.id === id);
         if (!entry) throw new Error(`moved a session that is not listed: ${id}`);
         // The backend leaves a note in the conversation, so the next read has one.
-        notes.push(`ODE moved this conversation to another code workspace: ${workbenchId}.`);
+        notes.push({
+          text: `ODE moved this conversation to another code workspace: ${workbenchId}.`,
+          subject: `workbench:${workbenchId}`,
+        });
         const updated = { ...entry, workbench_id: workbenchId };
         listed = listed.map((session) => (session.id === id ? updated : session));
         return updated;
@@ -452,7 +455,7 @@ vi.mock("./api", async (importOriginal) => {
             created_at: "2026-01-01T00:00:00Z",
           });
         }
-        for (const text of notes) {
+        for (const { text, subject } of notes) {
           // Stored with the user role, because that is what a model reads as input,
           // and marked as ODE's — which is the pair the pane has to render apart.
           detail.messages.push({
@@ -460,7 +463,7 @@ vi.mock("./api", async (importOriginal) => {
             seq: detail.messages.length + 1,
             role: "user",
             origin: "ode",
-            subject: "workbench:wb-2",
+            subject,
             content: [{ type: "text", text }],
             created_at: "2026-01-01T00:00:00Z",
           });
@@ -1426,6 +1429,20 @@ it("keeps the reason a turn failed, and does not call it a reply", async () => {
 });
 
 /*
+ * The note that tells the model the session's tier, split and selection is ODE's
+ * and goes into every conversation, so it is a line the developer can open rather
+ * than a bubble at the head of each one.
+ */
+it("shows the session state note as a line, not a bubble", async () => {
+  notes = [{ text: "Session state, from ODE.\n\nData exposure tier. This session is at L0.", subject: "session_state" }];
+  const host = await open();
+  await settle(3);
+
+  expect(host.querySelector(".session-state")?.textContent).toContain("Session state");
+  expect(host.querySelector(".turn.ode"), "the note was drawn as a message").toBeNull();
+});
+
+/*
  * "Needs you" goes with the click, not with the next thing the engine says.
  *
  * Answering starts a turn and the engine reports it within a moment, which is
@@ -1661,7 +1678,9 @@ it("shows a turn ODE starts in the open conversation without a reload", async ()
   expect(attaches()).toBe(1);
 
   // The run finished: the summary is stored, then the exchange begins.
-  notes = ["A training run you launched from this conversation has finished."];
+  notes = [
+    { text: "A training run you launched from this conversation has finished.", subject: "e-1" },
+  ];
   live = true;
   await says("id-1", "running");
 
@@ -2285,9 +2304,13 @@ it("renders ODE's turn as markdown, so a run summary is a code block and not bac
   benches = [workbench("wb-1")];
   listed = [{ ...listed[0], workbench_id: "wb-1" }];
   notes = [
-    "A training run you launched from this conversation has finished.\n\n" +
-      '```json\n{\n  "run_id": "r-1",\n  "status": "FAILED"\n}\n```\n\n' +
-      "1. **What the numbers say.** Compare against the previous run.\n",
+    {
+      text:
+        "A training run you launched from this conversation has finished.\n\n" +
+        '```json\n{\n  "run_id": "r-1",\n  "status": "FAILED"\n}\n```\n\n' +
+        "1. **What the numbers say.** Compare against the previous run.\n",
+      subject: "workbench:wb-2",
+    },
   ];
 
   const host = await openPaired();

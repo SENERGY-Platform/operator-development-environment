@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -513,6 +514,73 @@ func TestMaxIterationsStopsARunawayLoop(t *testing.T) {
 	}
 }
 
+// TestTheSystemPromptStaysPutWhenTheSessionChanges is the property the API's
+// thinking blocks depend on: each is bound to the system prompt it was produced
+// under, so a prompt that moved with the tier, the split or the selection made
+// every earlier block unreadable. The change reaches the model as one appended
+// note instead, and a turn with nothing changed appends none.
+func TestTheSystemPromptStaysPutWhenTheSessionChanges(t *testing.T) {
+	h := newHarness(t, textTurn("one"), textTurn("two"), textTurn("three"))
+	session := h.session(t, tools.L0)
+	ctx := context.Background()
+
+	send := func(text string) llm.Request {
+		t.Helper()
+		exchange, err := h.engine.Send(ctx, StaticToken(testToken), testUser, session.ID, text)
+		if err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+		drain(t, exchange)
+		return h.provider.lastRequest(t)
+	}
+	notes := func() []StoredMessage {
+		t.Helper()
+		stored, err := h.store.Messages(ctx, session.ID)
+		if err != nil {
+			t.Fatalf("Messages: %v", err)
+		}
+		out := []StoredMessage{}
+		for _, message := range stored {
+			if message.Subject == sessionStateSubject {
+				out = append(out, message)
+			}
+		}
+		return out
+	}
+
+	first := send("hi")
+	second := send("and again")
+	if len(notes()) != 1 {
+		t.Fatalf("state notes after two unchanged turns = %d, want 1", len(notes()))
+	}
+
+	trainingEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := h.engine.SetSplit(ctx, testUser, session.ID, &exposure.Split{
+		TrainingEnd: trainingEnd, TestEnd: trainingEnd.AddDate(0, 0, 7),
+	}); err != nil {
+		t.Fatalf("SetSplit: %v", err)
+	}
+	third := send("now with a split")
+
+	if first.System != second.System || second.System != third.System {
+		t.Error("the system prompt changed within the session")
+	}
+	if strings.Contains(third.System, trainingEnd.Format(time.RFC3339)) {
+		t.Error("the split is in the system prompt again")
+	}
+	if got := notes(); len(got) != 2 ||
+		!strings.Contains(got[1].Content[0].Text, trainingEnd.Format(time.RFC3339)) {
+		t.Errorf("state notes = %+v, want a second one carrying the split", got)
+	}
+	// What the earlier requests sent is still what this one sends ahead of its new
+	// turns, which is the whole of the API's check.
+	for i, message := range second.Messages {
+		if !reflect.DeepEqual(message, third.Messages[i]) {
+			t.Fatalf("message %d changed between requests:\n%+v\n%+v", i, message, third.Messages[i])
+		}
+	}
+}
+
 // --- the tier gate, end to end ---
 
 // TestL0BlocksValueBearingToolsThroughTheEngine is the exit criterion at the level
@@ -625,10 +693,26 @@ func TestOutOfBandToolsStayTierFiltered(t *testing.T) {
 	}
 }
 
-// TestSystemPromptNamesTheTierAndWhatIsAbove is what makes §3.2's "ask the
+// told is everything a request says to the model in words: the system prompt and
+// the text of every message. The session's state is in a note in the
+// conversation rather than in the system prompt, so a test of what the model
+// knows reads both.
+func told(request llm.Request) string {
+	builder := &strings.Builder{}
+	builder.WriteString(request.System)
+	for _, message := range request.Messages {
+		for _, content := range message.Content {
+			builder.WriteString("\n")
+			builder.WriteString(content.Text)
+		}
+	}
+	return builder.String()
+}
+
+// TestTheModelIsToldTheTierAndWhatIsAbove is what makes §3.2's "ask the
 // developer to raise it" possible: the model cannot ask for something it does not
 // know exists.
-func TestSystemPromptNamesTheTierAndWhatIsAbove(t *testing.T) {
+func TestTheModelIsToldTheTierAndWhatIsAbove(t *testing.T) {
 	h := newHarness(t, textTurn("hello"))
 	session := h.session(t, tools.L0)
 
@@ -638,23 +722,23 @@ func TestSystemPromptNamesTheTierAndWhatIsAbove(t *testing.T) {
 	}
 	drain(t, events)
 
-	prompt := h.provider.lastRequest(t).System
-	if !strings.Contains(prompt, "L0") {
-		t.Error("the system prompt does not state the session's tier")
+	prompt := told(h.provider.lastRequest(t))
+	if !strings.Contains(prompt, "This session is at L0") {
+		t.Error("the model is not told the session's tier")
 	}
 	for _, name := range []string{"l1_tool", "l2_tool"} {
 		if !strings.Contains(prompt, name) {
-			t.Errorf("the system prompt does not mention %q, so the model cannot ask for it", name)
+			t.Errorf("the model is not told about %q, so it cannot ask for it", name)
 		}
 	}
 	if !strings.Contains(prompt, "cannot change") && !strings.Contains(prompt, "developer controls") {
-		t.Error("the system prompt should say the tier is the developer's to change")
+		t.Error("the model should be told the tier is the developer's to change")
 	}
 }
 
-// TestSystemPromptNamesTheAbsenceOfASplit is D36's default: a session that never
+// TestTheModelIsToldThereIsNoSplit is D36's default: a session that never
 // had a split set gets the sentence that says reads run up to now, not silence.
-func TestSystemPromptNamesTheAbsenceOfASplit(t *testing.T) {
+func TestTheModelIsToldThereIsNoSplit(t *testing.T) {
 	h := newHarness(t, textTurn("hello"))
 	session := h.session(t, tools.L0)
 
@@ -664,18 +748,17 @@ func TestSystemPromptNamesTheAbsenceOfASplit(t *testing.T) {
 	}
 	drain(t, events)
 
-	prompt := h.provider.lastRequest(t).System
-	if !strings.Contains(prompt, "No data split") {
-		t.Error("the system prompt does not say there is no data split")
+	if !strings.Contains(told(h.provider.lastRequest(t)), "No data split") {
+		t.Error("the model is not told there is no data split")
 	}
 }
 
-// TestSystemPromptNamesTheDataSplit is D36's twin of
-// TestSystemPromptNamesTheTierAndWhatIsAbove: the model has to be told the training
+// TestTheModelIsToldTheDataSplit is D36's twin of
+// TestTheModelIsToldTheTierAndWhatIsAbove: the model has to be told the training
 // end and told plainly to ask the developer instead of retrying with a narrower
 // window, because the tool result it would otherwise learn that from is a refusal
 // it has already tried to work around by then.
-func TestSystemPromptNamesTheDataSplit(t *testing.T) {
+func TestTheModelIsToldTheDataSplit(t *testing.T) {
 	h := newHarness(t, textTurn("hello"))
 	session := h.session(t, tools.L0)
 
@@ -693,12 +776,12 @@ func TestSystemPromptNamesTheDataSplit(t *testing.T) {
 	}
 	drain(t, events)
 
-	prompt := h.provider.lastRequest(t).System
+	prompt := told(h.provider.lastRequest(t))
 	if !strings.Contains(prompt, trainingEnd.Format(time.RFC3339)) {
-		t.Error("the system prompt does not state the session's training end")
+		t.Error("the model is not told the session's training end")
 	}
 	if !strings.Contains(prompt, "refused") || !strings.Contains(prompt, "ask the developer") {
-		t.Error("the system prompt should tell the model to ask the developer rather than retry")
+		t.Error("the model should be told to ask the developer rather than retry")
 	}
 }
 
@@ -1818,8 +1901,8 @@ func TestProposedSelectionLandsOnTheSession(t *testing.T) {
 	}
 	drain(t, events)
 
-	if !strings.Contains(h.provider.lastRequest(t).System, "value.power") {
-		t.Error("the confirmed selection is not in the system prompt")
+	if !strings.Contains(told(h.provider.lastRequest(t)), "value.power") {
+		t.Error("the model is not told the confirmed selection")
 	}
 }
 

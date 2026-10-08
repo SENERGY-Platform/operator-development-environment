@@ -789,7 +789,7 @@ func (s *Service) Decide(
 func lastAssistantAt(messages []chat.StoredMessage, injectedAt int) time.Time {
 	var at time.Time
 	for index := injectedAt + 1; index < len(messages); index++ {
-		if messages[index].Injected() {
+		if messages[index].Injected() && !messages[index].Note() {
 			break
 		}
 		if messages[index].Role == llm.RoleAssistant && hasText(messages[index]) {
@@ -840,7 +840,7 @@ func (s *Service) drop(experimentID string) {
 func deliveryState(messages []chat.StoredMessage, experimentID string) (at int, answered bool) {
 	at = -1
 	for index, message := range messages {
-		if message.Injected() {
+		if message.Injected() && !message.Note() {
 			if message.Subject == experimentID {
 				at, answered = index, false
 				continue
@@ -881,7 +881,7 @@ func assistantReply(messages []chat.StoredMessage, injectedAt int) string {
 	parts := []string{}
 	for index := injectedAt + 1; index < len(messages); index++ {
 		message := messages[index]
-		if message.Injected() {
+		if message.Injected() && !message.Note() {
 			// A later run's summary. Everything after it belongs to that one.
 			break
 		}

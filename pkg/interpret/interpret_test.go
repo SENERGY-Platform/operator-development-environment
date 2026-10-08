@@ -537,8 +537,9 @@ func TestAnAutomatedTurnIsRefusedWhileTheSessionIsBusyAndIsRetried(t *testing.T)
 	h.deliver()
 
 	// Nothing was injected into a conversation that is mid-turn.
+	// The turn's own session state note is ODE's too, and belongs to it.
 	for _, message := range h.messages() {
-		if message.Injected() {
+		if message.Injected() && !message.Note() {
 			t.Fatal("a summary was appended while an exchange was running; that leaves " +
 				"the history in a shape both native tool protocols reject")
 		}
@@ -920,7 +921,7 @@ func TestARunThatKeepsBeingRefusedIsLetGoOfAndOfferedAgain(t *testing.T) {
 		h.deliver()
 	}
 	for _, message := range h.messages() {
-		if message.Injected() {
+		if message.Injected() && !message.Note() {
 			t.Fatal("a summary was injected into a session that was mid-turn")
 		}
 	}

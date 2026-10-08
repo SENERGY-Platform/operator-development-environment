@@ -170,8 +170,8 @@ value. Whether it is shown that `preview_series` exists depends on the provider:
 one that takes tool schemas in the request is shown the whole surface, because a
 schema list that shrank with the tier could not be cached across a tier change,
 while a provider that runs its own loop is handed only the names this tier
-permits. Either way the system prompt names the tools above the tier and says not
-to attempt them, and either way the call is what is refused — the dispatcher
+permits. Either way the session state note names the tools above the tier and the
+system prompt says not to attempt them, and either way the call is what is refused — the dispatcher
 checks the tier itself and answers with §3.2's refusal verbatim:
 
 ```json
@@ -248,8 +248,8 @@ world rather than being told a series reaches into a range it may not read.
 The refusal is deliberate where a clamp would have been quieter. A window that
 starts past the training end has nothing left after clamping, and returning an
 empty result would let the model conclude that the series is empty there. The
-error names both instants and says to ask the developer; the system prompt says
-the same, so the model does not retry with another window.
+error names both instants and says to ask the developer; the session state note
+says the same, so the model does not retry with another window.
 
 What the split does **not** bind is stated rather than implied. The developer's own
 reads — the profile routes the UI calls, the charts they open — are not clamped,

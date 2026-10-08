@@ -1292,6 +1292,21 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 			return
 		}
 
+		// Told per iteration, for the reason the tier is re-read per iteration: a
+		// change the developer makes mid-exchange binds the next call, so the model
+		// should hear of it before making one. Appended, never rewritten — see
+		// systemPrompt for why the state no longer lives there.
+		if notice, due := sessionStateNotice(
+			e.dispatcher.Registry(), session, capabilities.Tools, messages); due {
+			notice.SessionID = session.ID
+			notice.CreatedAt = e.now()
+			if err := e.store.AppendMessages(ctx, session.ID, notice); err != nil {
+				exchange.publish(Event{Type: EventError, Error: err.Error()})
+				return
+			}
+			messages = append(messages, notice)
+		}
+
 		// Two lists, because the two paths pay for a tool name differently.
 		//
 		// offered is what this tier permits, and it is what an out-of-band provider
@@ -1315,7 +1330,7 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 
 		request := llm.Request{
 			Model:     session.Model,
-			System:    systemPrompt(e.dispatcher.Registry(), session, capabilities.Tools),
+			System:    systemPrompt(e.dispatcher.Registry(), capabilities.Tools),
 			Messages:  conversation(messages),
 			Tools:     toolDefinitions(presented),
 			MaxTokens: e.opts.MaxTokens,

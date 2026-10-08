@@ -3778,6 +3778,40 @@ const NOTICE_TONE: Record<
   error: { icon: CircleAlertIcon, className: "text-destructive" },
 };
 
+/** Marks the note in which ODE tells the model the session's tier, split and selection. */
+const SESSION_STATE_SUBJECT = "session_state";
+
+/**
+ * The note ODE puts in every conversation to tell the model the session's tier,
+ * data split and confirmed selection — once at the start and again when one
+ * changes. Shown, because nothing the model reads is hidden from the developer, but
+ * as one line to open: the developer set every value in it and knows them.
+ */
+function SessionStateNote({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} render={<div className="session-state" />}>
+      <CollapsibleTrigger
+        render={
+          <Marker
+            variant="separator"
+            render={<button type="button" />}
+            className="session-state-head cursor-default text-xs"
+          />
+        }
+      >
+        <MarkerIcon>
+          <ChevronRightIcon className={cn("transition-transform", open && "rotate-90")} />
+        </MarkerIcon>
+        <MarkerContent>Session state sent to the assistant</MarkerContent>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="session-state-body mx-auto mt-1 max-w-2xl rounded-md bg-muted p-2 text-xs text-muted-foreground">
+        <Markdown text={text} />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 function TurnView({
   turn,
   onOpenChart,
@@ -3850,6 +3884,9 @@ function TurnView({
   //
   // So it takes the assistant's side of the conversation and says whose it is in the
   // header, rather than sitting in the developer's bubble on the right.
+  if (message.origin === "ode" && message.subject === SESSION_STATE_SUBJECT) {
+    return <SessionStateNote text={text} />;
+  }
   if (message.origin === "ode") {
     return (
       <Message className="turn ode">
