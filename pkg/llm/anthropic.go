@@ -393,9 +393,13 @@ func toAnthropicMessages(messages []Message) []anthropic.MessageParam {
 				}
 				blocks = append(blocks, anthropic.NewTextBlock(content.Text))
 			case ContentToolUse:
-				var input any = map[string]any{}
-				if len(content.ToolInput) > 0 {
-					_ = json.Unmarshal(content.ToolInput, &input)
+				// The bytes the model produced, not a decoded copy: a round trip through
+				// any sorted the keys and ran every number through float64, so the
+				// history showed the model arguments it never wrote, an integer above
+				// 2^53 among them.
+				input := json.RawMessage(`{}`)
+				if len(content.ToolInput) > 0 && json.Valid(content.ToolInput) {
+					input = content.ToolInput
 				}
 				blocks = append(blocks,
 					anthropic.NewToolUseBlock(content.ToolUseID, input, content.ToolName))
