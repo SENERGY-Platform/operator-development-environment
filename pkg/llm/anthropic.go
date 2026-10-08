@@ -233,6 +233,9 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 
 		done := DoneEvent(string(message.StopReason), p.usage(&message))
 		done.Content = content
+		if message.StopReason == anthropic.StopReasonRefusal {
+			done.StopDetail = string(message.StopDetails.Category)
+		}
 		send(ctx, events, done)
 	}()
 

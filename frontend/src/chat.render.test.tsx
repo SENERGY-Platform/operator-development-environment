@@ -1559,6 +1559,29 @@ it("shows the session state note as a line, not a bubble", async () => {
 });
 
 /*
+ * A turn the engine stopped at one of its bounds, which says so on the done event.
+ *
+ * The same reload took this one off the screen too. At the response bound it left
+ * nothing at all: a turn that spent the bound thinking has no text to store, so a
+ * minute of "Working…" ended in a conversation that had simply stopped.
+ */
+it("keeps the reason the engine stopped a turn", async () => {
+  const host = await open();
+  await ask(host);
+  await settle(3);
+
+  const reason =
+    "the answer reached its length limit (llm_max_tokens) before it was complete, " +
+    "and the exchange was stopped";
+  await act(async () => emit?.({ type: "done", stop_reason: "max_tokens", error: reason }));
+  await act(async () => finishSend?.());
+  await settle();
+
+  expect(host.textContent, "the reason the turn stopped was wiped by the reload").toContain(reason);
+  expect(announced).toEqual([["Turn failed", sessionDetail.session.title]]);
+});
+
+/*
  * "Needs you" goes with the click, not with the next thing the engine says.
  *
  * Answering starts a turn and the engine reports it within a moment, which is

@@ -192,6 +192,9 @@ type Turn =
 /** One tool call in the transcript, named because a run of them is grouped. */
 type ToolCallTurn = Extract<Turn, { kind: "tool" }>;
 
+/** Why a turn ended early, as the notice that says so. */
+type TurnFailure = { level: "warn" | "error"; text: string };
+
 /** A transcript row: one turn, or a run of tool calls folded into one. */
 type Row =
   | { kind: "turn"; turn: Turn; index: number }
@@ -1405,7 +1408,11 @@ function Conversation({
   // notices. So the one thing telling the developer why their answer stopped was
   // removed a moment after it appeared, leaving an empty conversation under an
   // alert that said the reply was ready.
-  const failure = useRef<string | null>(null);
+  //
+  // A done event that carries a reason is the same case at warn level: the engine
+  // stopped the turn at one of its bounds — the tool loop, or the response length,
+  // which a turn at a high effort can spend entirely on thinking it does not show.
+  const failure = useRef<TurnFailure | null>(null);
 
   // Whether a call has moved the checkout since the code pane was last told, and
   // which calls the model asked for have not answered yet. The pane is told once
@@ -1448,7 +1455,12 @@ function Conversation({
         const settled = event.confirmation.id;
         setPending((existing) => existing.filter((entry) => entry.id !== settled));
       }
-      if (event.type === "error") failure.current = event.error ?? "Something failed.";
+      if (event.type === "error") {
+        failure.current = { level: "error", text: event.error ?? "Something failed." };
+      }
+      if (event.type === "done" && event.error) {
+        failure.current = { level: "warn", text: event.error };
+      }
       if (event.type === "tool_call" && event.tool_call) unanswered.current.add(event.tool_call.id);
       if (event.type === "tool_result" && event.tool_result) {
         unanswered.current.delete(event.tool_result.call_id);
@@ -1594,8 +1606,10 @@ function Conversation({
             // history has just replaced the view — otherwise the streamed one is
             // still on screen with the notice in it, and this would show it twice.
             if (completed && failure.current !== null) {
-              const text = failure.current;
-              setTurns((existing) => [...existing, { kind: "notice", level: "error", text }]);
+              // Typed by hand: the reset at the top of run() narrows the ref to null
+              // for the compiler, which cannot see the events that set it since.
+              const notice: TurnFailure = failure.current;
+              setTurns((existing) => [...existing, { kind: "notice", ...notice }]);
             }
             syncPending(detail.pending_confirmations);
             onSessionChange(detail.session);
@@ -4381,7 +4395,8 @@ export function apply(turns: Turn[], event: ChatEvent): Turn[] {
         { kind: "notice", level: "error", text: event.error ?? "Something failed." },
       ];
     case "done":
-      if (event.stop_reason === "max_iterations" && event.error) {
+      // A reason on a done event is a bound the engine stopped the turn at.
+      if (event.error) {
         return [...turns, { kind: "notice", level: "warn", text: event.error }];
       }
       return turns;

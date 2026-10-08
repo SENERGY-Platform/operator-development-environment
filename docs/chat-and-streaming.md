@@ -178,6 +178,24 @@ later turn of a stored history. Dropped blocks are reported in
 `input_transformations` and logged as a warning, because a
 `prefix_binding_mismatch` there means ODE edited a history it promised not to.
 
+### A turn cut off at its response bound, or declined, is reported, not continued
+
+`llm_max_tokens` bounds thinking and answer together, so a turn can spend all of it
+thinking and end with no text and no tool call; a refusal by the provider's safety
+classifiers can end a turn before any output at all. The engine used to treat both
+as a finished turn — it stored nothing, and the developer saw the conversation
+stop. `llm.StopReasonMaxTokens` and `llm.StopReasonRefusal` are one value each
+across providers (the OpenAI adapter maps `length` and `content_filter` onto them),
+and a native turn that ends on either keeps its text, drops its tool calls — the
+last may be cut mid-argument — records an exchange abort and ends with a done event
+that says why, naming the policy category of a refusal. The SPA keeps that reason
+on screen across the reload, as it now does for `max_iterations`.
+
+No fallback model is configured. The API's server-side `fallbacks` would re-serve a
+declined request on another model, but the fallback's stream can switch models
+mid-message, and a turn after such a switch has its own rules for which blocks may
+be sent back; that needs a run against the real API before ODE stores one.
+
 ### A connection outlives its token, and a chat turn can too
 
 The WebSocket

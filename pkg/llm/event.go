@@ -69,6 +69,22 @@ const (
 	StopReasonError     = "error"
 )
 
+// StopReasonMaxTokens is a turn cut off at its response bound before the model
+// finished. Anthropic reports it under this name and the OpenAI adapter maps its
+// `length` onto it, so a consumer looks for one value rather than one per
+// protocol.
+//
+// The bound covers thinking and answer together. A turn that spent all of it
+// thinking ends with no text and no tool call, which is a turn nobody can see
+// unless something downstream reads this value.
+const StopReasonMaxTokens = "max_tokens"
+
+// StopReasonRefusal is a turn the provider declined: Anthropic's safety
+// classifiers or the model itself, and OpenAI's content_filter, which the OpenAI
+// adapter maps onto it. It arrives as a successful response, and like a turn cut
+// off at the bound it can carry no text at all.
+const StopReasonRefusal = "refusal"
+
 // Event is one item of the normalised stream.
 type Event struct {
 	Type EventType `json:"type"`
@@ -84,6 +100,9 @@ type Event struct {
 	// Usage and StopReason are set on done.
 	Usage      *Usage `json:"usage,omitempty"`
 	StopReason string `json:"stop_reason,omitempty"`
+	// StopDetail is set on done when the provider says why it stopped beyond the
+	// reason itself: for a refusal, the policy category.
+	StopDetail string `json:"stop_detail,omitempty"`
 	// Content is set on done by a provider whose next request needs the turn back
 	// exactly as it produced it, in its own order, thinking blocks included. The
 	// text and tool calls in it are the ones already streamed. A consumer that

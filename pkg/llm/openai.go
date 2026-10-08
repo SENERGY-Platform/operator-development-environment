@@ -197,6 +197,12 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 		if len(accumulator.Choices) > 0 {
 			stopReason = accumulator.Choices[0].FinishReason
 		}
+		switch stopReason {
+		case "length":
+			stopReason = StopReasonMaxTokens
+		case "content_filter":
+			stopReason = StopReasonRefusal
+		}
 		send(ctx, events, DoneEvent(stopReason, p.usage(&accumulator, params)))
 	}()
 

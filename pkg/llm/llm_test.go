@@ -447,6 +447,92 @@ func TestAnthropicSendsThinkingBack(t *testing.T) {
 	}
 }
 
+// TestAnthropicReportsTheRefusalCategory checks a declined turn says which policy
+// declined it, which is the one thing a developer can act on.
+func TestAnthropicReportsTheRefusalCategory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, data := range []string{
+			`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant",` +
+				`"model":"claude-opus-5-5","content":[],"stop_reason":null,"stop_sequence":null,` +
+				`"usage":{"input_tokens":10,"output_tokens":0}}}`,
+			`{"type":"message_delta","delta":{"stop_reason":"refusal","stop_sequence":null,` +
+				`"stop_details":{"type":"refusal","category":"bio","explanation":null}},"usage":{"output_tokens":0}}`,
+			`{"type":"message_stop"}`,
+		} {
+			var head struct {
+				Type string `json:"type"`
+			}
+			_ = json.Unmarshal([]byte(data), &head)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", head.Type, data)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := NewAnthropicProvider("anthropic", AnthropicOptions{APIKey: "k", BaseURL: server.URL}, nil)
+	if err != nil {
+		t.Fatalf("NewAnthropicProvider: %v", err)
+	}
+	events, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var done Event
+	for event := range events {
+		if event.Type == EventDone {
+			done = event
+		}
+	}
+	if done.StopReason != StopReasonRefusal || done.StopDetail != "bio" {
+		t.Errorf("done = %+v, want a refusal in category bio", done)
+	}
+}
+
+// TestOpenAIReportsTheStopReasonsTheEngineActsOn checks the two stop reasons the
+// engine acts on arrive under one name whatever the protocol: chat completions
+// calls a turn cut off at its bound `length` and a filtered one `content_filter`.
+func TestOpenAIReportsTheStopReasonsTheEngineActsOn(t *testing.T) {
+	for finish, want := range map[string]string{
+		"length":         StopReasonMaxTokens,
+		"content_filter": StopReasonRefusal,
+	} {
+		t.Run(finish, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				chunk := `{"id":"c","object":"chat.completion.chunk","created":1,"model":"m",` +
+					`"choices":[{"index":0,"delta":%s,"finish_reason":%s}]}`
+				fmt.Fprintf(w, "data: "+chunk+"\n\n", `{"content":"half an"}`, "null")
+				fmt.Fprintf(w, "data: "+chunk+"\n\n", `{}`, `"`+finish+`"`)
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer server.Close()
+
+			provider, err := NewOpenAICompatibleProvider("local", OpenAIOptions{
+				BaseURL: server.URL, Models: []string{"m"},
+			}, nil)
+			if err != nil {
+				t.Fatalf("NewOpenAICompatibleProvider: %v", err)
+			}
+			events, err := provider.Stream(context.Background(), Request{Messages: []Message{UserText("hi")}})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			stop := ""
+			for event := range events {
+				if event.Type == EventError {
+					t.Fatalf("stream failed: %s", event.Err)
+				}
+				if event.Type == EventDone {
+					stop = event.StopReason
+				}
+			}
+			if stop != want {
+				t.Errorf("stop reason = %q, want %q", stop, want)
+			}
+		})
+	}
+}
+
 func TestOpenAIToolsAreOmittedWhenUnsupported(t *testing.T) {
 	provider, _ := NewOpenAICompatibleProvider("local", OpenAIOptions{
 		BaseURL: "http://localhost:8000/v1", Models: []string{"m"}, Tools: false,

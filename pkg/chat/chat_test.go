@@ -514,6 +514,158 @@ func TestMaxIterationsStopsARunawayLoop(t *testing.T) {
 	}
 }
 
+// TestMaxTokensStopsTheTurnAndDropsItsCalls checks a turn cut off at its response
+// bound: the developer is told, the text survives, and no tool call from it runs.
+//
+// The empty case is the one that was invisible. A model at a high effort spent the
+// whole bound thinking, produced no text and no call, and the turn ended like a
+// finished one — after a confirmation, the conversation simply stopped.
+func TestMaxTokensStopsTheTurnAndDropsItsCalls(t *testing.T) {
+	cases := map[string][]llm.Event{
+		"spent thinking": {
+			llm.DoneEvent(llm.StopReasonMaxTokens, llm.Usage{
+				InputTokens: 10, OutputTokens: 8192, Provider: "fake", Model: "fake-model",
+			}),
+		},
+		"cut through a call": {
+			llm.TextEvent("Profiling the series first."),
+			llm.ToolCallEvent(llm.ToolCall{
+				ID: "call-cut", Name: "l0_tool", Input: json.RawMessage(`{"device_id":"dev`),
+			}),
+			llm.DoneEvent(llm.StopReasonMaxTokens, llm.Usage{
+				InputTokens: 10, OutputTokens: 8192, Provider: "fake", Model: "fake-model",
+			}),
+		},
+	}
+	for name, turn := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, turn)
+			session := h.session(t, tools.L0)
+
+			exchange, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "go")
+			if err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			collected := drain(t, exchange)
+
+			if h.provider.callCount() != 1 {
+				t.Errorf("provider calls = %d, want 1: a cut-off turn is not continued", h.provider.callCount())
+			}
+			if h.tracker.was("l0_tool") {
+				t.Error("a tool call from a cut-off turn ran")
+			}
+			done := find(collected, EventDone)
+			if len(done) != 1 || done[0].StopReason != llm.StopReasonMaxTokens || done[0].Error == "" {
+				t.Fatalf("done = %+v, want one max_tokens stop that says why", done)
+			}
+
+			messages, err := h.store.Messages(context.Background(), session.ID)
+			if err != nil {
+				t.Fatalf("Messages: %v", err)
+			}
+			for _, message := range messages {
+				for _, content := range message.Content {
+					if content.Type == llm.ContentToolUse {
+						t.Errorf("the cut-off call was stored: %+v", content)
+					}
+				}
+			}
+			if name == "cut through a call" {
+				last := messages[len(messages)-1]
+				if last.Role != llm.RoleAssistant || len(last.Content) != 1 ||
+					last.Content[0].Text != "Profiling the series first." {
+					t.Errorf("last message = %+v, want the text the model wrote", last)
+				}
+			}
+
+			aborts, err := h.store.ExchangeAborts(context.Background(), session.ID)
+			if err != nil {
+				t.Fatalf("ExchangeAborts: %v", err)
+			}
+			if len(aborts) != 1 || aborts[0].Reason != llm.StopReasonMaxTokens {
+				t.Errorf("aborts = %+v, want one at the response bound", aborts)
+			}
+		})
+	}
+}
+
+// TestARefusalIsReported checks a declined turn says so and names the category,
+// rather than ending like a finished turn with nothing in it.
+func TestARefusalIsReported(t *testing.T) {
+	declined := llm.DoneEvent(llm.StopReasonRefusal, llm.Usage{
+		InputTokens: 10, Provider: "fake", Model: "fake-model",
+	})
+	declined.StopDetail = "cyber"
+	h := newHarness(t, []llm.Event{declined})
+	session := h.session(t, tools.L0)
+
+	exchange, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser, session.ID, "go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	done := find(drain(t, exchange), EventDone)
+	if len(done) != 1 || done[0].StopReason != llm.StopReasonRefusal ||
+		!strings.Contains(done[0].Error, "declined") || !strings.Contains(done[0].Error, "cyber") {
+		t.Fatalf("done = %+v, want a refusal that names its category", done)
+	}
+	aborts, err := h.store.ExchangeAborts(context.Background(), session.ID)
+	if err != nil || len(aborts) != 1 || aborts[0].Reason != llm.StopReasonRefusal {
+		t.Errorf("aborts = %+v (%v), want one refusal", aborts, err)
+	}
+}
+
+// TestMaxTokensAfterAConfirmationIsReported is the shape the stop was found in: the
+// developer approves a call, the resumed turn spends its bound thinking, and the
+// conversation must say so rather than end under the approval. The session also
+// has to stay usable — the next message reaches the provider with a history it
+// accepts.
+func TestMaxTokensAfterAConfirmationIsReported(t *testing.T) {
+	h := newHarness(t,
+		toolTurn("call-1", "confirmed_tool"),
+		[]llm.Event{llm.DoneEvent(llm.StopReasonMaxTokens, llm.Usage{
+			InputTokens: 10, OutputTokens: 8192, Provider: "fake", Model: "fake-model",
+		})},
+		textTurn("Picking up where I stopped."),
+	)
+	session := h.session(t, tools.L0)
+
+	events, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser,
+		session.ID, "do the thing")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	drain(t, events)
+	pending, err := h.engine.PendingConfirmations(context.Background(), testUser, session.ID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending confirmations = %v (%v), want 1", pending, err)
+	}
+
+	resumed, err := h.engine.Confirm(context.Background(), StaticToken(testToken), testUser,
+		session.ID, pending[0].ID, true, nil)
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	done := find(drain(t, resumed), EventDone)
+	if len(done) != 1 || done[0].StopReason != llm.StopReasonMaxTokens || done[0].Error == "" {
+		t.Fatalf("done = %+v, want one max_tokens stop that says why", done)
+	}
+
+	next, err := h.engine.Send(context.Background(), StaticToken(testToken), testUser,
+		session.ID, "go on")
+	if err != nil {
+		t.Fatalf("Send after the stop: %v", err)
+	}
+	drain(t, next)
+	// The approval's outcome and the new message are both user turns with nothing
+	// stored between them; the provider has to receive them as one.
+	messages := h.provider.lastRequest(t).Messages
+	for i := 1; i < len(messages); i++ {
+		if messages[i].Role == messages[i-1].Role {
+			t.Fatalf("messages %d and %d are both %s: %+v", i-1, i, messages[i].Role, messages)
+		}
+	}
+}
+
 // TestThinkingIsShownAndNotStored checks the summary of the model's thinking
 // reaches a watching view and stays out of the conversation: the stored answer is
 // what the model said, and the next request hands it nothing else.

@@ -1445,6 +1445,28 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 			return
 		}
 
+		// A turn cut off at its response bound, or declined, is reported and not
+		// continued, and its tool calls are not dispatched: the last of them may be
+		// the block the bound cut through, with arguments that stop mid-object. They
+		// are dropped before the history is written, so no tool_use is left there
+		// unanswered, and so is the provider's own rendering of the turn, whose
+		// thinking may stop mid-block. What the model wrote is kept.
+		//
+		// Without this the turn ended like a finished one. The bound covers thinking
+		// too, and a model at a high effort can spend all of it there; a refusal can
+		// arrive before any output at all. Either way the developer watched
+		// "Working…" end in an empty reply with nothing saying why.
+		if reason := stoppedEarly(turn); reason != "" {
+			turn.calls, turn.content = nil, nil
+			if err := e.persistAssistant(ctx, session.ID, turn); err != nil {
+				exchange.publish(Event{Type: EventError, Error: err.Error()})
+				return
+			}
+			e.recordAbort(ctx, session, turn.stopReason)
+			exchange.publish(Event{Type: EventDone, StopReason: turn.stopReason, Error: reason})
+			return
+		}
+
 		if err := e.persistAssistant(ctx, session.ID, turn); err != nil {
 			exchange.publish(Event{Type: EventError, Error: err.Error()})
 			return
@@ -1479,12 +1501,7 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 	// counts aborted exchanges per session — has no other trace to read, and an
 	// injected message would be one the model sees, which would change the
 	// conversation over a bound that is the environment's own.
-	if err := e.store.AppendExchangeAbort(ctx, ExchangeAbort{
-		SessionID: session.ID, UserSub: session.UserSub, Reason: StopMaxIterations,
-	}); err != nil {
-		slog.ErrorContext(ctx, "could not record an aborted exchange",
-			"session", session.ID, "reason", StopMaxIterations, "error", err)
-	}
+	e.recordAbort(ctx, session, StopMaxIterations)
 
 	exchange.publish(Event{
 		Type:       EventDone,
@@ -1495,6 +1512,34 @@ func (e *Engine) run(ctx context.Context, exchange *Exchange, token TokenSource,
 	})
 }
 
+// stoppedEarly says why a turn that ended on the provider's word cannot be
+// continued, or "" when it can.
+func stoppedEarly(turn turnResult) string {
+	switch turn.stopReason {
+	case llm.StopReasonMaxTokens:
+		return "the answer reached its length limit (llm_max_tokens) before it was " +
+			"complete, and the exchange was stopped"
+	case llm.StopReasonRefusal:
+		declined := "the model declined this request"
+		if turn.stopDetail != "" {
+			declined += " (" + turn.stopDetail + ")"
+		}
+		return declined + ", and the exchange was stopped"
+	}
+	return ""
+}
+
+// recordAbort writes an exchange ODE stopped to the audit trail. A failed write is
+// logged and not surfaced: the developer is told by the done event either way.
+func (e *Engine) recordAbort(ctx context.Context, session Session, reason string) {
+	if err := e.store.AppendExchangeAbort(ctx, ExchangeAbort{
+		SessionID: session.ID, UserSub: session.UserSub, Reason: reason,
+	}); err != nil {
+		slog.ErrorContext(ctx, "could not record an aborted exchange",
+			"session", session.ID, "reason", reason, "error", err)
+	}
+}
+
 // turnResult is what one provider call produced.
 type turnResult struct {
 	text  string
@@ -1502,6 +1547,9 @@ type turnResult struct {
 	// content is the turn as the provider rendered it, thinking included, when it
 	// supplies one (llm.Event.Content). What is stored when present.
 	content []llm.Content
+	// stopDetail is the provider's word on why it stopped, for a refusal its
+	// policy category.
+	stopDetail string
 	// results is what an out-of-band provider reported for the calls it ran itself.
 	// Empty for every other provider, whose results come from the dispatcher.
 	results    []llm.ToolResult
@@ -1531,6 +1579,7 @@ func (e *Engine) consume(ctx context.Context, exchange *Exchange, stream <-chan 
 	for event := range stream {
 		if event.Type == llm.EventDone {
 			turn.stopReason = event.StopReason
+			turn.stopDetail = event.StopDetail
 			turn.content = event.Content
 			if event.Usage != nil {
 				turn.usage = *event.Usage
