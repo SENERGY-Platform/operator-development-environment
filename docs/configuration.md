@@ -169,8 +169,8 @@ chat, tool and admin routes are not served. Keys belong in the environment.
 
 | Key | Default | What it decides |
 | --- | --- | --- |
-| `llm_effort` | unset | Anthropic's `output_config.effort` |
 | `llm_max_tokens` | each provider's own: `64000` for the Anthropic API, none for the OpenAI protocols | Bounds one response, thinking included. One value goes to every provider, so a set value has to fit the smallest output limit among the configured models. A turn that reaches it is stopped and reported, not continued, and its tool calls do not run |
+| `llm_effort` | unset | Anthropic's `output_config.effort`. Unset takes the API's default, which is `medium` on Claude Opus 5.5 and `high` before it. This repo's `config.json` sets `high` |
 | `llm_adaptive_thinking` | unset | Whether to send `thinking: {type: "adaptive", display: "summarized"}`, with `block_binding.prefix_mismatch_behavior: "drop_block"` under the `thinking-binding-controls-2026-08-01` beta. The display is what shows the thinking: without it the current models stream thinking blocks with empty text, and the chat shows nothing while the model thinks. The binding turns a replayed thinking block the API no longer accepts into a dropped one instead of a 400. See [chat-and-streaming.md](chat-and-streaming.md) |
 | `llm_max_tool_iterations` | `30` | How many times one exchange may loop through tools. A model that never concludes is stopped by control flow rather than by the spend cap |
 | `llm_currency` | `EUR` | The currency the figures below are in |
