@@ -158,7 +158,7 @@ type Options struct {
 }
 
 const (
-	defaultMaxIterations = 12
+	defaultMaxIterations = 30
 	defaultTitleWords    = 8
 	// maxTitleRunes bounds a title the developer sets themselves. The column is
 	// TEXT and takes anything; a session list is what has a width. Generous enough

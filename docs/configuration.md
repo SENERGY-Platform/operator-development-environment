@@ -170,9 +170,9 @@ chat, tool and admin routes are not served. Keys belong in the environment.
 | Key | Default | What it decides |
 | --- | --- | --- |
 | `llm_effort` | unset | Anthropic's `output_config.effort` |
-| `llm_max_tool_iterations` | `12` | How many times one exchange may loop through tools. A model that never concludes is stopped by control flow rather than by the spend cap |
 | `llm_max_tokens` | each provider's own: `64000` for the Anthropic API, none for the OpenAI protocols | Bounds one response, thinking included. One value goes to every provider, so a set value has to fit the smallest output limit among the configured models. A turn that reaches it is stopped and reported, not continued, and its tool calls do not run |
 | `llm_adaptive_thinking` | unset | Whether to send `thinking: {type: "adaptive", display: "summarized"}`, with `block_binding.prefix_mismatch_behavior: "drop_block"` under the `thinking-binding-controls-2026-08-01` beta. The display is what shows the thinking: without it the current models stream thinking blocks with empty text, and the chat shows nothing while the model thinks. The binding turns a replayed thinking block the API no longer accepts into a dropped one instead of a 400. See [chat-and-streaming.md](chat-and-streaming.md) |
+| `llm_max_tool_iterations` | `30` | How many times one exchange may loop through tools. A model that never concludes is stopped by control flow rather than by the spend cap |
 | `llm_currency` | `EUR` | The currency the figures below are in |
 | `llm_pricing` | the five models in `config.json` | Per million tokens, for the estimated cost §3.3 accounts against. Entries are `{model, input_per_mtok, output_per_mtok, cached_input_per_mtok}`, matched exactly and otherwise by longest prefix. Not baked into the binary, because a stale price makes a cost cap quietly wrong — **verify before relying on one** |
 | `chat_exchange_timeout` | `30m` | Ceiling on one detached turn. It exists because an exchange no longer ends with its connection — see [chat-and-streaming.md](chat-and-streaming.md) |

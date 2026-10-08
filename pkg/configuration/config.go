@@ -657,7 +657,7 @@ func applyDefaults(config Config) {
 		config.PostgresMaxConns = 8
 	}
 	if config.LlmMaxToolIterations <= 0 {
-		config.LlmMaxToolIterations = 12
+		config.LlmMaxToolIterations = 30
 	}
 	if config.LlmCurrency == "" {
 		config.LlmCurrency = "EUR"
