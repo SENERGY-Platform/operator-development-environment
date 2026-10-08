@@ -23,7 +23,7 @@ package llm
 // test or a startup log would notice. A date lets an admin compare the table
 // against the published list and see how old the answer is, which is the least a
 // figure that feeds a spend cap owes its reader.
-const PricesAsOf = "2026-09-16"
+const PricesAsOf = "2026-09-25"
 
 // PricesCurrency names what the figures below are in.
 //
@@ -69,6 +69,10 @@ func DefaultPrices() []ModelPrice {
 			CachedInputPerMTok: 0.25, CacheWritePerMTok: 12.5},
 		{Model: "claude-fable-5", InputPerMTok: 10, OutputPerMTok: 50,
 			CachedInputPerMTok: 1, CacheWritePerMTok: 12.5},
+		// Listed although claude-opus-5 would match it by prefix: it is the cheaper
+		// of the two, and a cache read costs it 0.05x input rather than 0.1x.
+		{Model: "claude-opus-5-5", InputPerMTok: 4, OutputPerMTok: 20,
+			CachedInputPerMTok: 0.2, CacheWritePerMTok: 5},
 		{Model: "claude-opus-5", InputPerMTok: 5, OutputPerMTok: 25,
 			CachedInputPerMTok: 0.5, CacheWritePerMTok: 6.25},
 		{Model: "claude-opus-4-8", InputPerMTok: 5, OutputPerMTok: 25,

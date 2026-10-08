@@ -60,7 +60,7 @@ const (
 	defaultMaxTokens = 8192
 	// defaultAnthropicModel is the current Opus. Named as a plain string because
 	// anthropic.Model is a string alias and the SDK carries no constant for it.
-	defaultAnthropicModel = "claude-opus-5"
+	defaultAnthropicModel = "claude-opus-5-5"
 )
 
 // NewAnthropicProvider wires the provider. An empty API key is an error rather

@@ -157,7 +157,7 @@ chat, tool and admin routes are not served. Keys belong in the environment.
 
 | Key | Default | What it decides |
 | --- | --- | --- |
-| `anthropic_api_key` / `anthropic_base_url` / `anthropic_models` | key empty, base URL the vendor's, models `["claude-opus-5"]` | The central key of D8, accounted per platform user rather than issued per user |
+| `anthropic_api_key` / `anthropic_base_url` / `anthropic_models` | key empty, base URL the vendor's, models `["claude-opus-5-5"]` | The central key of D8, accounted per platform user rather than issued per user |
 | `openai_api_key` / `openai_base_url` / `openai_models` | empty | The same, for OpenAI |
 | `compatible_name` | `openai-compatible` (this repo's `config.json` ships `local`) | Display name of the OpenAI-compatible provider |
 | `compatible_base_url` / `compatible_api_key` / `compatible_models` | empty | An OpenAI-compatible server: vLLM, Ollama, Azure |
@@ -174,7 +174,7 @@ chat, tool and admin routes are not served. Keys belong in the environment.
 | `llm_adaptive_thinking` | unset | Whether to send `thinking: {type: "adaptive"}` |
 | `llm_max_tool_iterations` | `12` | How many times one exchange may loop through tools. A model that never concludes is stopped by control flow rather than by the spend cap |
 | `llm_currency` | `EUR` | The currency the figures below are in |
-| `llm_pricing` | the four models in `config.json` | Per million tokens, for the estimated cost §3.3 accounts against. Entries are `{model, input_per_mtok, output_per_mtok, cached_input_per_mtok}`, matched exactly and otherwise by longest prefix. Not baked into the binary, because a stale price makes a cost cap quietly wrong — **verify before relying on one** |
+| `llm_pricing` | the five models in `config.json` | Per million tokens, for the estimated cost §3.3 accounts against. Entries are `{model, input_per_mtok, output_per_mtok, cached_input_per_mtok}`, matched exactly and otherwise by longest prefix. Not baked into the binary, because a stale price makes a cost cap quietly wrong — **verify before relying on one** |
 | `chat_exchange_timeout` | `30m` | Ceiling on one detached turn. It exists because an exchange no longer ends with its connection — see [chat-and-streaming.md](chat-and-streaming.md) |
 | `chat_confirmation_timeout` | `5m` | How long a confirmed tool call is held open waiting for the developer, where the provider runs its own tool loop (the CLI). Not the turn's ceiling above: it has to fit *inside* one, or the turn ends underneath the card. Startup warns when it does not |
 
