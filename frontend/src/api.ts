@@ -2223,12 +2223,15 @@ export interface TopicMapping {
   source: string;
 }
 
-/** FilterType is "DeviceId" or "OperatorId"; FilterValue the id it matches. */
+/** FilterType is "DeviceId", "ImportId" or "OperatorId"; FilterValue the id it matches.
+ * Role is "training" for a topic the operator learns from and is scored against,
+ * never read live; absent or "input" for one it reads live. */
 export interface InputTopic {
   name: string;
   filterType: string;
   filterValue: string;
   mappings: TopicMapping[];
+  role?: "input" | "training";
 }
 
 export interface ResolvedDevice {

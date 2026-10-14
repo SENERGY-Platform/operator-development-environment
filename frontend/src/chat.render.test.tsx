@@ -3367,6 +3367,112 @@ it("picking an alternative variable rewrites that mapping's source and is what g
   expect(sent.input_topics[0].mappings[0].dest).toBe(TOPIC_A.mappings[0].dest);
 });
 
+/*
+ * The role is the one decision on the card that no resolve answers, so choosing
+ * it has to reach the approved input on its own, and without a second read of
+ * the device that the preview already described.
+ */
+it("choosing training only reaches the approved input, and choosing input again leaves the topic as proposed", async () => {
+  resolvePreview = previewOf(TOPIC_A, "PV Inverter");
+  pending = [launchConfirmation([TOPIC_A])];
+
+  const host = await open();
+  await settle(5);
+  expect(host.querySelector(".launch-topic-training")).toBeNull();
+
+  const trigger = host.querySelector(".launch-topic-role-select") as HTMLElement | null;
+  expect(trigger, "no role select on the launch card").not.toBeNull();
+  await act(async () => trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await settle(5);
+
+  const pick = async (label: string) => {
+    const option = [...document.querySelectorAll("[role='option']")].find(
+      (o) => o.textContent?.trim() === label,
+    ) as HTMLElement | undefined;
+    expect(option, `the "${label}" role was not offered`).not.toBeUndefined();
+    await act(async () => {
+      for (const type of ["pointerdown", "pointerup", "click"]) {
+        option?.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+      }
+    });
+    await settle(5);
+  };
+
+  await pick("Training only");
+  expect(host.querySelector(".launch-topic-training")?.textContent).toContain("training only");
+  // Only the role changed: the card did not go back to the route for it.
+  expect(resolveCalls).toHaveLength(1);
+
+  await press(host, "Approve with changes");
+  await settle(5);
+  const sent = chatConfirmPayloads.at(-1)?.input as { input_topics: InputTopic[] };
+  expect(sent.input_topics[0].role).toBe("training");
+  expect(sent.input_topics[0].mappings).toEqual(TOPIC_A.mappings);
+});
+
+it("choosing input on a training topic removes the role from the approved input", async () => {
+  resolvePreview = previewOf({ ...TOPIC_A, role: "training" }, "PV Inverter");
+  pending = [launchConfirmation([{ ...TOPIC_A, role: "training" }])];
+
+  const host = await open();
+  await settle(5);
+  expect(host.querySelector(".launch-topic-training")).not.toBeNull();
+
+  const trigger = host.querySelector(".launch-topic-role-select") as HTMLElement | null;
+  await act(async () => trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await settle(5);
+  const option = [...document.querySelectorAll("[role='option']")].find(
+    (o) => o.textContent?.trim() === "Input",
+  ) as HTMLElement | undefined;
+  await act(async () => {
+    for (const type of ["pointerdown", "pointerup", "click"]) {
+      option?.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+    }
+  });
+  await settle(5);
+
+  expect(host.querySelector(".launch-topic-training")).toBeNull();
+  // The proposal was training, so dropping the role is a change to approve.
+  await press(host, "Approve with changes");
+  await settle(3);
+  expect(streamed).toContain("chat_confirm");
+  const sent = chatConfirmPayloads.at(-1)?.input as { input_topics: InputTopic[] };
+  expect(sent.input_topics[0].role).toBeUndefined();
+  expect("role" in sent.input_topics[0]).toBe(false);
+});
+
+/*
+ * The route answers the move without a role, as the fixture does, so the card is
+ * what keeps a training topic training when the developer moves it to another
+ * device.
+ */
+it("moving a training topic keeps its role when the route's answer carries none", async () => {
+  expect((inputTopicResolved as ResolvedInputTopic).topic.role).toBeUndefined();
+  const training: InputTopic = { ...TOPIC_A, role: "training" };
+  resolvePreview = previewOf(training, "PV Inverter");
+  candidateDevices = [candidate(DEVICE_B_ID, "Meter")];
+  pending = [launchConfirmation([training])];
+
+  const host = await open();
+  await settle(5);
+
+  await press(host, "Move to another device");
+  await settle(5);
+  const row = [...host.querySelectorAll(".device-picker tr")].find((r) =>
+    r.textContent?.includes("Meter"),
+  ) as HTMLElement | undefined;
+  await act(async () => row?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await settle(5);
+
+  expect(host.querySelector(".launch-topic-training")).not.toBeNull();
+
+  await press(host, "Approve with changes");
+  await settle(5);
+  const sent = chatConfirmPayloads.at(-1)?.input as { input_topics: InputTopic[] };
+  expect(sent.input_topics[0].filterValue).toBe(DEVICE_B_ID);
+  expect(sent.input_topics[0].role).toBe("training");
+});
+
 it("changedPaths names the leaf that moved, and nothing when nothing did", async () => {
   const { changedPaths } = await import("./chat");
   expect(

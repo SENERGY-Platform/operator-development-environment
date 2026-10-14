@@ -407,6 +407,42 @@ it("shows the input topics of a run, from the launch result", async () => {
   expect(topics, "no input topics shown for a run that carries them").not.toBeNull();
   expect(topics?.textContent).toContain("urn:infai:ses:device:input-topics-a");
   expect(topics?.textContent).toContain("value ← value.power");
+  expect(topics?.textContent).not.toContain("training only");
+});
+
+it("marks a training topic in the input topics of a run", async () => {
+  listing = [
+    {
+      ...EXPERIMENT,
+      input_topics: [
+        {
+          name: "urn_infai_ses_service_it-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          filterType: "DeviceId",
+          filterValue: "urn:infai:ses:device:input-topics-a",
+          mappings: [{ dest: "value", source: "value.power" }],
+        },
+        {
+          name: "urn_infai_ses_service_it-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+          filterType: "DeviceId",
+          filterValue: "urn:infai:ses:device:input-topics-b",
+          mappings: [{ dest: "value", source: "value.power" }],
+          role: "training",
+        },
+      ],
+    },
+  ];
+  primary = met(true);
+  secondary = [];
+  comparison = [];
+
+  const host = await open();
+  await openSubmission(host);
+
+  const items = [...host.querySelectorAll(".exp-input-topic")];
+  expect(items).toHaveLength(2);
+  expect(items[0]?.textContent).not.toContain("training only");
+  expect(items[1]?.textContent).toContain("urn:infai:ses:device:input-topics-b");
+  expect(items[1]?.textContent).toContain("(training only)");
 });
 
 /*

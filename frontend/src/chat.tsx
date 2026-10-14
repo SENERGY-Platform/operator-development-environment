@@ -3501,9 +3501,15 @@ function LaunchTopicCard({
     setMoveError(null);
     try {
       const resolved = await api.resolveInputTopic(topic, deviceId, serviceId);
-      resolvedFor.current = JSON.stringify(resolved.topic);
+      // The route keeps the role, but an answer without one must not turn a
+      // training topic into a live one: the role the card already holds carries over.
+      const next: InputTopic =
+        resolved.topic.role === undefined && topic.role !== undefined
+          ? { ...resolved.topic, role: topic.role }
+          : resolved.topic;
+      resolvedFor.current = JSON.stringify(next);
       setPreview(resolved);
-      onChange(resolved.topic);
+      onChange(next);
       setPickerOpen(false);
     } catch (e: unknown) {
       // Left unchanged, and the refusal names the mapping with no counterpart —
@@ -3512,6 +3518,19 @@ function LaunchTopicCard({
     } finally {
       setMoving(false);
     }
+  };
+
+  // The role is the one thing a developer decides on the card that no resolve
+  // answers, so it is set here and the preview is left as it is. "input" is the
+  // absence of a role, not a value of its own, so an untouched topic approves
+  // exactly as it was proposed.
+  const pickRole = (role: "input" | "training") => {
+    if (role === (topic.role ?? "input")) return;
+    const nextTopic: InputTopic = { ...topic };
+    if (role === "training") nextTopic.role = role;
+    else delete nextTopic.role;
+    resolvedFor.current = JSON.stringify(nextTopic);
+    onChange(nextTopic);
   };
 
   const pickAlternative = (mappingIndex: number, alt: ResolvedAlternative) => {
@@ -3571,6 +3590,11 @@ function LaunchTopicCard({
           fallbackId={preview.device.id}
         />
         <span className="muted-inline text-xs text-muted-foreground">{preview.service.name}</span>
+        {topic.role === "training" && (
+          <span className="launch-topic-training tag inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs text-foreground">
+            training only
+          </span>
+        )}
         <Collapsible open={pickerOpen} onOpenChange={setPickerOpen} className="ml-auto">
           <CollapsibleTrigger
             render={
@@ -3613,6 +3637,23 @@ function LaunchTopicCard({
           </Select>
         </div>
       )}
+      <div className="launch-topic-role flex flex-wrap items-center gap-2 text-xs">
+        <span className="muted-inline text-muted-foreground">Role</span>
+        <Select
+          value={topic.role === "training" ? "training" : "input"}
+          onValueChange={(value) => {
+            if (value === "input" || value === "training") pickRole(value);
+          }}
+        >
+          <SelectTrigger size="sm" aria-label="Role" className="launch-topic-role-select w-auto">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="input">Input</SelectItem>
+            <SelectItem value="training">Training only</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
       {moving && <Busy>Moving this input…</Busy>}
       {moveError && <p className="launch-topic-move-error text-xs text-destructive">{moveError}</p>}
       {preview.mappings.map((mapping, index) => (

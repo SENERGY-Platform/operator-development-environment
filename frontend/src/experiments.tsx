@@ -1066,6 +1066,9 @@ function Submission({
               {experiment.input_topics.map((topic) => (
                 <li key={`${topic.name}|${topic.filterValue}`} className="exp-input-topic">
                   <code className="wrap" title={topic.name}>{topic.filterValue}</code>
+                  {topic.role === "training" && (
+                    <span className="muted-inline text-xs text-muted-foreground"> (training only)</span>
+                  )}
                   <span className="muted-inline text-xs text-muted-foreground">
                     {" "}
                     {topic.mappings.map((m) => `${m.dest} ← ${m.source}`).join(", ")}
