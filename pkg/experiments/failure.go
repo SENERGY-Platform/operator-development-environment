@@ -333,7 +333,12 @@ func (s Summary) MaskedFor(tier exposure.Tier) Summary {
 	s.ComparisonToPrevious = filterDeltas(
 		s.ComparisonToPrevious, s.MetricTimes, cutoff, hasCutoff, split)
 	if split {
+		// A fresh map, so the status can be rewritten in place without reaching the
+		// developer's own copy.
 		s.Params = evaluationParamsOnly(s.Params)
+		if status, ok := s.Params[paramEvaluationMetricStatus]; ok {
+			s.Params[paramEvaluationMetricStatus] = withholdStatusSeries(status)
+		}
 	}
 	// The two fields that carry a metric's value without being the Metrics map, and
 	// the reason this filter is not one line. Both are derived in buildSummary from
@@ -712,4 +717,23 @@ func evaluationParamsOnly(params map[string]string) map[string]string {
 		}
 	}
 	return kept
+}
+
+// statusSeries matches the developer's target series as Operator Lib before
+// v1.9.0 quoted it into evaluation.metric_status when it could not resolve it:
+// "target series 'sensor.ENERGY.Power' matches no input topic". The quote is
+// closed by the "' matches" the library wrote after it, not by the next
+// apostrophe, so a series that contains one is withheld whole.
+var statusSeries = regexp.MustCompile(`(?is)target series '.*' matches`)
+
+// withholdStatusSeries takes the quoted series out of a metric status before a
+// model reads it (D38). The status is the one evaluation param whose text the
+// library composes from the developer's own configuration, and the series in it
+// is the answer to a choice the assistant is meant to make itself. From v1.9.0
+// the library no longer names it; the mask stays for runs pinned to an older
+// library and for summaries already cached from them. A pattern rather than the
+// series itself, because a cached summary is returned without evaluation.yaml
+// being read again, so the series is not known here.
+func withholdStatusSeries(status string) string {
+	return statusSeries.ReplaceAllString(status, "target series "+WithheldTargetSeries+" matches")
 }

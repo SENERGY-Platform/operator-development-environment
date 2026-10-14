@@ -120,7 +120,9 @@ only ([experiments.md](experiments.md), D41). The readers that run on Ray worker
 keep their signatures, so the cluster image needs no update. A repository left on
 `v1.8.x` ignores `trainingTopics`: operator code passing `role="training"` fails
 with a `TypeError`, and a target series mapped only in a training topic makes
-`evaluation.metric_status` say it matches no input topic.
+`evaluation.metric_status` say it matches no input topic. From `v1.9.0` that
+status no longer quotes the series; ODE masks it out of a status an older
+library wrote before a model reads it (D38).
 
 **A version this file names is not necessarily a version that exists.** The
 library bumps `operator_lib/__init__.py`'s `__version__` inside the commit that

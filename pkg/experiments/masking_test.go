@@ -488,6 +488,59 @@ func TestASplitRunShowsAModelTheFourMetricParamsButNotANearMiss(t *testing.T) {
 	}
 }
 
+// An Operator Lib older than v1.9.0 quotes the developer's target series into the
+// status when it cannot resolve it. The model's copy carries the status with the
+// series withheld (D38); the developer's own copy keeps it.
+func TestASplitRunsMetricStatusWithholdsAQuotedTargetSeries(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	launched := h.launch(func(req *experiments.LaunchRequest) {
+		req.Split = testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+	})
+
+	// An apostrophe inside the series must not end the mask early.
+	const series = "sensor.Owner's.Power"
+	status := "target series '" + series + "' matches no input topic"
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", status)
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", nil)
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	own := summaryOf(t, h, launched.ID)
+	masked := own.MaskedFor(exposure.L2)
+	got := masked.Params["evaluation.metric_status"]
+	if strings.Contains(strings.ToLower(got), "power") {
+		t.Errorf("model's metric_status = %q, want the series withheld", got)
+	}
+	if !strings.Contains(got, experiments.WithheldTargetSeries) ||
+		!strings.Contains(got, "matches no input topic") {
+		t.Errorf("model's metric_status = %q, want the reason kept and the series "+
+			"replaced by the withheld marker", got)
+	}
+	if own.Params["evaluation.metric_status"] != status {
+		t.Errorf("developer's metric_status = %q, want it unchanged: %q",
+			own.Params["evaluation.metric_status"], status)
+	}
+}
+
+// From v1.9.0 the status names no series, and it reaches the model as written.
+func TestASplitRunsMetricStatusWithoutASeriesPassesUnchanged(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+	launched := h.launch(func(req *experiments.LaunchRequest) {
+		req.Split = testSplit(time.Now().UTC().Add(-24*time.Hour), 6*time.Hour)
+	})
+
+	const status = "target series matches 2 mappings, expected exactly one"
+	h.mlflow.SetParam(t, launched.RunID, "evaluation.metric_status", status)
+	h.mlflow.Finish(t, launched.RunID, "FINISHED", nil)
+	h.ray.SetStatus(launched.SubmissionID, experiments.StatusSucceeded)
+
+	masked := summaryOf(t, h, launched.ID).MaskedFor(exposure.L0)
+	if got := masked.Params["evaluation.metric_status"]; got != status {
+		t.Errorf("model's metric_status = %q, want %q", got, status)
+	}
+}
+
 // Without a split nothing ran against a test window, and params pass as they
 // always did.
 func TestARunWithoutASplitStillShowsItsParams(t *testing.T) {

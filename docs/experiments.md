@@ -460,7 +460,7 @@ Under a split, with `evaluation.yaml` naming a `target_series`, the launch count
 the mappings of all topics, input and training, whose `source` without its first
 path element equals the target series: the rule the library resolves the target
 with. No match, or more than one, is a launch warning in the library's own words
-("matches no input topic", "matches 2 mappings, expected exactly one") and never a
+("matches no input or training topic", "matches 2 mappings, expected exactly one") and never a
 refusal, since the library itself only records the reason in
 `evaluation.metric_status` and completes the run. The warning names the count and
 never the series or the matching mappings: it reaches the model in the launch

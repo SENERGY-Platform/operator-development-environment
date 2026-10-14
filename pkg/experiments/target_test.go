@@ -82,7 +82,7 @@ func TestALaunchWarnsWhenTheTargetSeriesMatchesNoMapping(t *testing.T) {
 	if len(found) != 1 {
 		t.Fatalf("target warnings = %v (all: %v), want one", found, result.Warnings)
 	}
-	if !strings.Contains(found[0], "matches no input topic") {
+	if !strings.Contains(found[0], "matches no input or training topic") {
 		t.Errorf("warning = %q, want the library's own words for no match", found[0])
 	}
 	assertSeriesWithheld(t, result.Warnings, target)

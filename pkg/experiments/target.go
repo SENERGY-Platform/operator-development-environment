@@ -53,8 +53,8 @@ func targetSeriesMatches(targetSeries string, topics []InputTopic) int {
 // exists only to grade the run afterwards, which Launch already declines to do for
 // an unreadable evaluation.yaml.
 //
-// The words are the library's ("matches no input topic", "matches N mappings,
-// expected exactly one"), so that the warning and the status that follows the run
+// The words are the library's ("matches no input or training topic", "matches N
+// mappings, expected exactly one"), so that the warning and the status that follows the run
 // read as the same finding. What they leave out is the series itself and the
 // mappings that matched it. The launch result is read by the model, and D38
 // withholds the developer's target series from the model on every route, so the
@@ -70,8 +70,8 @@ func targetSeriesWarnings(targetSeries string, topics []InputTopic) []string {
 	switch matches := targetSeriesMatches(targetSeries, topics); {
 	case matches == 0:
 		return []string{fmt.Sprintf(
-			"the target series in %s matches no input topic: no mapping of an input or "+
-				"training topic reads that path, so the run will compute no metric over "+
+			"the target series in %s matches no input or training topic: no mapping of "+
+				"either reads that path, so the run will compute no metric over "+
 				"the test window", EvaluationCriteriaPath)}
 	case matches > 1:
 		return []string{fmt.Sprintf(
