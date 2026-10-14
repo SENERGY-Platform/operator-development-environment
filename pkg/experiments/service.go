@@ -421,7 +421,9 @@ type LaunchRequest struct {
 	RunName string
 	// InputTopics are the operator's inputs, which decide what history the run
 	// reads. They travel in the deployment config rather than as loose variables,
-	// because that is where Operator Lib looks for them.
+	// because that is where Operator Lib looks for them. Training topics are in
+	// the same list, told apart by their Role, and are split off only when the
+	// config is built, so every check before that reads them as topics.
 	InputTopics []InputTopic
 	// Split is the session's data split (D36), or nil for an ordinary launch.
 	// Read once from the session the way tools.Request.Split already is, and
@@ -628,6 +630,12 @@ func (s *Service) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, 
 	var criteria CriteriaDocument
 	if record.Split != nil {
 		criteria, _ = s.criteriaFor(ctx, req.Request, record)
+		// Here rather than beside the split and export warnings above, because the
+		// target series is only known once the file is read, and the read needs the
+		// commit the record names. Over req.InputTopics, the list deploymentEnvironment
+		// splits below, so the check reads the same topics the library will resolve
+		// the series against.
+		warnings = append(warnings, targetSeriesWarnings(criteria.TargetSeries, req.InputTopics)...)
 	}
 
 	deployment, err := s.deploymentEnvironment(

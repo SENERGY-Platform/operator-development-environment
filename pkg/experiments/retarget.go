@@ -438,6 +438,10 @@ func RetargetToService(topic InputTopic, from, to models.ExtendedDevice, service
 		FilterType:  "DeviceId",
 		FilterValue: to.Id,
 		Mappings:    newMappings,
+		// Carried over rather than derived: moving a label to another device keeps
+		// it a label, and a topic rebuilt without its role would come back as an
+		// input that infer() receives (D41).
+		Role: topic.Role,
 	}
 
 	return Resolved{

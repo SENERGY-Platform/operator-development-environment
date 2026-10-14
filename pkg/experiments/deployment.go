@@ -49,7 +49,24 @@ type InputTopic struct {
 	FilterType  string         `json:"filterType"`
 	FilterValue string         `json:"filterValue"`
 	Mappings    []TopicMapping `json:"mappings"`
+	// Role is "input" or "training", and empty means "input" so that every topic
+	// recorded before roles existed keeps meaning what it meant. A training topic
+	// is read in training, can hold the target series a data split is scored
+	// against, and never reaches infer() (D41). The role is ODE's own field rather
+	// than Operator Lib's: deploymentEnvironment turns it into the list a topic is
+	// written to and never sends it.
+	Role string `json:"role,omitempty"`
 }
+
+// The two values InputTopic.Role takes. RoleInput is also what an empty role
+// means.
+const (
+	RoleInput    = "input"
+	RoleTraining = "training"
+)
+
+// isTraining reports whether a topic is withheld from infer().
+func (t InputTopic) isTraining() bool { return t.Role == RoleTraining }
 
 // TopicMapping binds one path in the message to one name the operator sees. Dest
 // is what infer() finds in `data`, Source the path in the Kafka message.
@@ -62,6 +79,11 @@ type TopicMapping struct {
 type operatorConfig struct {
 	Config      operatorSettings `json:"config"`
 	InputTopics []InputTopic     `json:"inputTopics"`
+	// TrainingTopics are the launch's training topics, in the shape InputTopics
+	// has. Operator Lib v1.9.0 reads them in training and for the replay's metric
+	// only, and reads a missing key as empty, which is what the flow engine's
+	// configs carry. An older library declares no such key and ignores it.
+	TrainingTopics []InputTopic `json:"trainingTopics"`
 }
 
 // operatorSettings is Operator Lib's Config: the three URLs it connects with,
@@ -208,6 +230,7 @@ func (s *Service) deploymentEnvironment(
 		evaluationPredictionField = criteria.PredictionField
 		evaluationResolution = criteria.Resolution
 	}
+	inputTopics, trainingTopics := splitByRole(topics)
 	config := operatorConfig{
 		Config: operatorSettings{
 			LoggerLevel: "info",
@@ -228,7 +251,10 @@ func (s *Service) deploymentEnvironment(
 		},
 		// Never nil: Operator Lib iterates it without checking, and a null here is a
 		// TypeError inside the job rather than a refusal the developer can read.
-		InputTopics: topics,
+		InputTopics: inputTopics,
+		// Never nil either, for the same library and the same reason, although
+		// v1.9.0 reads a null as empty: `[]` is the one value every version agrees on.
+		TrainingTopics: trainingTopics,
 	}
 	encoded, err := json.Marshal(config)
 	if err != nil {
@@ -282,6 +308,29 @@ func (s *Service) deploymentEnvironment(
 	return environment, nil
 }
 
+// splitByRole divides a launch's topics into the two lists the deployment config
+// carries, each in the request's order and neither ever nil.
+//
+// The role is cleared on the way, in copies rather than in the caller's slice,
+// which is the stored record's. The list a topic lands in is the whole of what the
+// role says to Operator Lib, and a role written beside it would be a second
+// statement of the same fact, one a reader of CONFIG could take for the one that
+// decides.
+func splitByRole(topics []InputTopic) (inputs, training []InputTopic) {
+	inputs = make([]InputTopic, 0, len(topics))
+	training = make([]InputTopic, 0)
+	for _, topic := range topics {
+		isTraining := topic.isTraining()
+		topic.Role = ""
+		if isTraining {
+			training = append(training, topic)
+		} else {
+			inputs = append(inputs, topic)
+		}
+	}
+	return inputs, training
+}
+
 // reservedEnv are the variables ODE sets on every job, which a launch may not
 // override.
 //
@@ -313,9 +362,25 @@ var reservedEnv = map[string]bool{
 // is a failed run with a Python traceback in a log they have to go and find. The
 // refusal names the tool that fixes it instead, the way the uncommitted-changes
 // refusal names the commit.
+//
+// Training topics do not count. They are never delivered to infer(), so a launch
+// of training topics alone runs an operator that receives no data at all, and the
+// default provide_historic_data() returns the same empty list it would with no
+// topics. Refused in words of its own, because "no input topics" read beside a
+// topic list that is not empty would look like a fault in the check.
 func requireInputTopics(topics []InputTopic) error {
+	for _, topic := range topics {
+		if !topic.isTraining() {
+			return nil
+		}
+	}
 	if len(topics) > 0 {
-		return nil
+		return fmt.Errorf(
+			"%w: every topic of this experiment is a training topic, which is read in "+
+				"training and never delivered to infer(), so training topics alone give "+
+				"infer() nothing to run on; add the operator's inputs with the role input "+
+				"(propose_data_selection for a device, propose_operator_input for an import)",
+			ErrInvalidRequest)
 	}
 	return fmt.Errorf(
 		"%w: this experiment has no input topics, so a run would read no history and "+
@@ -328,6 +393,14 @@ func validateTopics(topics []InputTopic) error {
 	for _, topic := range topics {
 		if strings.TrimSpace(topic.Name) == "" {
 			return fmt.Errorf("%w: an input topic needs a name", ErrInvalidRequest)
+		}
+		// Exact values, not normalised: the role decides whether infer() receives
+		// the topic, and a misspelt "Training" quietly read as an input would hand
+		// the operator a label the developer meant to withhold from it.
+		if topic.Role != "" && topic.Role != RoleInput && topic.Role != RoleTraining {
+			return fmt.Errorf(
+				"%w: input topic %s has the role %q; a role is %q, %q, or left out for %q",
+				ErrInvalidRequest, topic.Name, topic.Role, RoleInput, RoleTraining, RoleInput)
 		}
 		if len(topic.Mappings) == 0 {
 			return fmt.Errorf(

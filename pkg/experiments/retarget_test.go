@@ -300,6 +300,45 @@ func TestRetargetPreservesEachSourceConvention(t *testing.T) {
 	}
 }
 
+// A topic moved to another device keeps its role. Retarget rebuilds the topic
+// field by field, and a role it forgot would turn a label back into an input that
+// infer() receives (D41) — on every route that moves a topic: the derived service,
+// the service a developer chose, and Describe, which moves nothing.
+func TestRetargetKeepsTheTopicsRole(t *testing.T) {
+	from := oneServiceDevice(fromDeviceID, fromTypeID, fromServiceID)
+	toServiceID := "urn:infai:ses:service:to-role-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	to := oneServiceDevice("urn:infai:ses:device:to-role", "dt-to-role", toServiceID)
+
+	for _, role := range []string{experiments.RoleTraining, experiments.RoleInput, ""} {
+		t.Run("role "+role, func(t *testing.T) {
+			topic := powerTopic("value.power")
+			topic.Role = role
+
+			derived, err := experiments.Retarget(topic, from, to)
+			if err != nil {
+				t.Fatalf("Retarget: %v", err)
+			}
+			if derived.Topic.Role != role {
+				t.Errorf("Retarget role = %q, want %q", derived.Topic.Role, role)
+			}
+			chosen, err := experiments.RetargetToService(topic, from, to, toServiceID)
+			if err != nil {
+				t.Fatalf("RetargetToService: %v", err)
+			}
+			if chosen.Topic.Role != role {
+				t.Errorf("RetargetToService role = %q, want %q", chosen.Topic.Role, role)
+			}
+			described, err := experiments.Describe(topic, from)
+			if err != nil {
+				t.Fatalf("Describe: %v", err)
+			}
+			if described.Topic.Role != role {
+				t.Errorf("Describe role = %q, want %q", described.Topic.Role, role)
+			}
+		})
+	}
+}
+
 func TestRetargetMatchesBySemanticsAndWarnsOnCharacteristicChange(t *testing.T) {
 	from := oneServiceDevice(fromDeviceID, fromTypeID, fromServiceID)
 	toServiceID := "urn:infai:ses:service:to-semantic-aaaa"

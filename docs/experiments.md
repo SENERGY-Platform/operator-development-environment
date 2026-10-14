@@ -418,6 +418,54 @@ turns out to be wrong. Building it first would have put a second authority besid
 `lib/access`, which already refuses a topic naming a device the developer may not
 read.
 
+## Training topics: ground truth the operator never receives
+
+A topic carries a role. `input`, or no role at all, which is every topic recorded
+before roles existed, is what a topic has always been: subscribed when the
+operator runs, read in training, and replayed into `infer()` under a data split.
+`training` is read in training only, through
+`provide_historic_data(role="training")` or `provide_historic_data_local(role="training")`,
+and can hold the target series a split is scored against. It is never subscribed,
+never replayed into `infer()` and never matched against a selector.
+
+The role exists for a label the operator will not have when it runs. An operator
+that estimates a heat pump's power from the household's main meter is trained
+against the heat pump's own sub-meter and judged against it in the test window, and
+as an input topic that sub-meter would sit in every `data` dict `infer()` receives:
+the operator would read the answer instead of estimating it. D41 records the
+decision; D11's "no labelled ground truth assumed" still holds, because the
+developer assigns the label and nothing infers one.
+
+The role is ODE's own field. It travels on the launch tool, the HTTP route, the
+stored record and the summary, and it does not reach the deployment config:
+`deploymentEnvironment` splits the topics into `inputTopics` and `trainingTopics`,
+both in Operator Lib's topic shape, and clears the role in both. `trainingTopics`
+is always written, `[]` when there are none, for the reason `inputTopics` is never
+null. Operator Lib v1.9.0 reads the key ([operator-lib-versions.md](operator-lib-versions.md));
+an older library ignores it, and operator code passing `role="training"` fails
+there with a `TypeError` rather than training without its label.
+
+Two refusals are added at the launch. A role other than `input` or `training` is
+refused, and so is a launch whose topics are all training topics:
+`provide_historic_data()` would return nothing and `infer()` would receive nothing,
+the case the no-inputs refusal above exists for. Everything else treats a training
+topic as a topic. `access.CheckTopics` authorises it as the
+developer, an import training topic reads its history from the export
+`resolveImportExports` resolves, and the evaluation window's row count includes it,
+because the library reads it over the test window to score the replay. The count
+therefore overstates the `infer()` calls by the training topics' rows, which errs
+towards refusing.
+
+Under a split, with `evaluation.yaml` naming a `target_series`, the launch counts
+the mappings of all topics, input and training, whose `source` without its first
+path element equals the target series: the rule the library resolves the target
+with. No match, or more than one, is a launch warning in the library's own words
+("matches no input topic", "matches 2 mappings, expected exactly one") and never a
+refusal, since the library itself only records the reason in
+`evaluation.metric_status` and completes the run. The warning names the count and
+never the series or the matching mappings: it reaches the model in the launch
+result, and D38 withholds the target series from the model.
+
 ## `train.py`, and why the entrypoint is not `main.py`
 
 `main.py` is the deployed operator's entrypoint and is the wrong one here.
@@ -517,8 +565,11 @@ deployment config beside `test_end`, as `evaluation_target_series`,
 `evaluation_prediction_field`, `evaluation_resolution` and `evaluation_metric`.
 Only when all four resolve does the replay's own `finally` compute anything: for
 each `prediction_rows` entry with a non-empty `result` and `result_time`, it reads
-`result[prediction_field]`, averages the target series — already in `merged`,
-nothing new read — over the `resolution` bucket `result_time` truncates into
+`result[prediction_field]`, averages the target series — already read over the
+test window, either replayed as an input or read beside the replay as a
+[training topic](#training-topics-ground-truth-the-operator-never-receives), which
+is how ground truth the operator must not receive is scored (D41) — over the
+`resolution` bucket `result_time` truncates into
 (never rounds into), and pairs the two where both exist. Each bucket then counts
 once: its errors are averaged first — absolute for `mae`, squared for `rmse` — and
 the metric is the mean over buckets, square-rooted for `rmse`. The replay calls

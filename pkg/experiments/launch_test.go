@@ -22,10 +22,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/SENERGY-Platform/analytics-flow-engine/lib/access"
+	"github.com/SENERGY-Platform/analytics-flow-engine/lib/exports"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/experiments"
 	"github.com/SENERGY-Platform/operator-development-environment/pkg/repo"
 )
@@ -429,23 +432,53 @@ func TestTheRayServiceAccountReachesTheCluster(t *testing.T) {
 // A launch's input topics are stored, not recomputed: a confirmed launch may
 // later be approved with an input the developer edited, and only the
 // record says which topics actually ran.
+//
+// A training topic among them keeps its role on the way. The record is the only
+// place the role survives the launch — the deployment config carries none — so a
+// record that dropped it would read a label back as an input the operator
+// received.
 func TestALaunchStoresItsInputTopicsAndReadsThemBackUnchanged(t *testing.T) {
 	h := newHarness(t)
 	h.ready()
+	// Built twice rather than shared: the request's slice is the one the launch
+	// could write through, and a comparison against that same slice would agree
+	// with whatever it had been changed to.
+	launched := append(testInputTopics(), testTrainingTopic())
+	want := append(testInputTopics(), testTrainingTopic())
 
-	result := h.launch()
-	if !reflect.DeepEqual(result.InputTopics, testInputTopics()) {
+	result := h.launch(func(req *experiments.LaunchRequest) { req.InputTopics = launched })
+	if !reflect.DeepEqual(result.InputTopics, want) {
 		t.Errorf("launch result input_topics = %+v, want the launched topics %+v",
-			result.InputTopics, testInputTopics())
+			result.InputTopics, want)
 	}
 
 	record, err := h.service.Get(context.Background(), h.request(), result.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if !reflect.DeepEqual(record.InputTopics, testInputTopics()) {
+	if !reflect.DeepEqual(record.InputTopics, want) {
 		t.Errorf("reading the experiment back = %+v, want the topics it was launched "+
-			"with %+v, unchanged", record.InputTopics, testInputTopics())
+			"with %+v, unchanged", record.InputTopics, want)
+	}
+
+	// The memory store keeps the struct, so the line above never encodes it.
+	// PostgresStore writes the column with json.Marshal and reads it back with
+	// json.Unmarshal (inputTopicsColumn), and the HTTP routes answer in JSON, so
+	// the role has to survive that encoding as well.
+	encoded, err := json.Marshal(record.InputTopics)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var decoded []experiments.InputTopic
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, want) {
+		t.Errorf("the topics after a JSON round trip = %+v, want %+v (encoded %s)",
+			decoded, want, encoded)
+	}
+	if !strings.Contains(string(encoded), `"role":"training"`) {
+		t.Errorf("encoded topics = %s, want the training topic's role written", encoded)
 	}
 }
 
@@ -472,6 +505,247 @@ func TestARecordWithNoInputTopicsReadsBackAsNilNotAsAPanic(t *testing.T) {
 	}
 	if read.InputTopics != nil {
 		t.Errorf("input_topics = %+v, want nil for a record that named none", read.InputTopics)
+	}
+}
+
+// --- training topics (D41) ---
+
+// testTrainingTopic is a label beside testInputTopics' one input: another device's
+// series, read in training and scored against, never delivered to infer().
+func testTrainingTopic() experiments.InputTopic {
+	return experiments.InputTopic{
+		Name:        "urn_infai_ses_service_5a1c8f3e-0d2b-4f6e-9a7c-3b8d1e2f4a5b",
+		FilterType:  "DeviceId",
+		FilterValue: "urn:infai:ses:device:7d4e2b1a-9c3f-4e8d-b6a5-1f2e3d4c5b6a",
+		Mappings:    []experiments.TopicMapping{{Dest: "label", Source: "value.energy.value"}},
+		Role:        experiments.RoleTraining,
+	}
+}
+
+// lastJobTopics decodes the last job's CONFIG twice: as the two topic lists, and
+// as raw top-level keys, so a test can tell `[]` from `null` and see a key that
+// should not be there at all.
+func lastJobTopics(t *testing.T, h *harness) (inputs, training []experiments.InputTopic, keys map[string]json.RawMessage, raw string) {
+	t.Helper()
+	raw = h.ray.LastJob(t).RuntimeEnv.EnvVars["CONFIG"]
+	var lists struct {
+		InputTopics    []experiments.InputTopic `json:"inputTopics"`
+		TrainingTopics []experiments.InputTopic `json:"trainingTopics"`
+	}
+	if err := json.Unmarshal([]byte(raw), &lists); err != nil {
+		t.Fatalf("CONFIG is not the JSON Operator Lib parses: %v", err)
+	}
+	if err := json.Unmarshal([]byte(raw), &keys); err != nil {
+		t.Fatalf("CONFIG is not a JSON object: %v", err)
+	}
+	return lists.InputTopics, lists.TrainingTopics, keys, raw
+}
+
+func topicNames(topics []experiments.InputTopic) []string {
+	names := make([]string, 0, len(topics))
+	for _, topic := range topics {
+		names = append(names, topic.Name)
+	}
+	return names
+}
+
+// A training topic goes into trainingTopics and never into inputTopics, which is
+// the list Operator Lib subscribes and replays into infer(). The role itself is
+// not in the config: the list is the whole of what it says to the library.
+// "input" spelt out and an absent role land in the same list, each list keeps the
+// request's order, and the request's own topics keep their roles.
+func TestTheDeploymentConfigCarriesTrainingTopicsInAListOfTheirOwnAndNoRole(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	spelt := testInputTopics()[0]
+	spelt.Name = "urn_infai_ses_service_0f9e8d7c-6b5a-4c3d-8e2f-1a0b9c8d7e6f"
+	spelt.Role = experiments.RoleInput
+	launched := []experiments.InputTopic{testInputTopics()[0], testTrainingTopic(), spelt}
+
+	h.launch(func(req *experiments.LaunchRequest) { req.InputTopics = launched })
+
+	inputs, training, _, raw := lastJobTopics(t, h)
+	if got, want := topicNames(inputs), []string{testInputTopics()[0].Name, spelt.Name}; !reflect.DeepEqual(got, want) {
+		t.Errorf("inputTopics = %v, want the two inputs in request order %v (CONFIG=%s)", got, want, raw)
+	}
+	if got, want := topicNames(training), []string{testTrainingTopic().Name}; !reflect.DeepEqual(got, want) {
+		t.Errorf("trainingTopics = %v, want the one training topic %v (CONFIG=%s)", got, want, raw)
+	}
+	if len(training) == 1 && !reflect.DeepEqual(training[0].Mappings, testTrainingTopic().Mappings) {
+		t.Errorf("training topic mappings = %+v, want them unchanged", training[0].Mappings)
+	}
+	if strings.Contains(raw, `"role"`) {
+		t.Errorf("CONFIG = %s, want no role in it: the list a topic is in is its role", raw)
+	}
+	if launched[1].Role != experiments.RoleTraining || launched[2].Role != experiments.RoleInput {
+		t.Errorf("request topics = %+v, want their roles left as they were: the record "+
+			"stores this slice", launched)
+	}
+}
+
+// Never null, even with no training topic at all: `[]` is what every library
+// version reads the same way, and every ordinary launch now carries it.
+func TestAnOrdinaryLaunchWritesAnEmptyTrainingTopicsListRatherThanNull(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	h.launch()
+
+	inputs, _, keys, raw := lastJobTopics(t, h)
+	got, ok := keys["trainingTopics"]
+	if !ok {
+		t.Fatalf("CONFIG = %s, want a trainingTopics key on every launch", raw)
+	}
+	if string(got) != "[]" {
+		t.Errorf("trainingTopics = %s, want []", got)
+	}
+	if len(inputs) != 1 || inputs[0].Name != testInputTopics()[0].Name {
+		t.Errorf("inputTopics = %+v, want the launch's one input unchanged", inputs)
+	}
+}
+
+// The role decides whether infer() receives a topic, so a value that is neither
+// is refused rather than read as one of the two.
+func TestALaunchRefusesARoleItDoesNotKnow(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	for _, role := range []string{"Training", "label", " training"} {
+		t.Run(role, func(t *testing.T) {
+			topic := testTrainingTopic()
+			topic.Role = role
+			_, err := h.service.Launch(context.Background(), experiments.LaunchRequest{
+				Request: h.request(), InputTopics: append(testInputTopics(), topic),
+			})
+			if !errors.Is(err, experiments.ErrInvalidRequest) {
+				t.Fatalf("error = %v, want an invalid request", err)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%q", role)) {
+				t.Errorf("error = %q, want it to name the role it refused", err)
+			}
+		})
+	}
+	if len(h.ray.Jobs()) != 0 {
+		t.Error("a job was submitted with a role nothing defines")
+	}
+}
+
+// Training topics alone give infer() nothing: the refusal says that, in its own
+// words, rather than claiming there are no topics beside a list that has one.
+func TestALaunchOfTrainingTopicsAloneIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.ready()
+
+	_, err := h.service.Launch(context.Background(), experiments.LaunchRequest{
+		Request: h.request(), InputTopics: []experiments.InputTopic{testTrainingTopic()},
+	})
+	if !errors.Is(err, experiments.ErrInvalidRequest) {
+		t.Fatalf("error = %v, want an invalid request", err)
+	}
+	for _, want := range []string{"training topic", "infer()"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to say %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "no input topics") {
+		t.Errorf("error = %q, want the training-only reason rather than the empty-list one", err)
+	}
+	if len(h.ray.Jobs()) != 0 {
+		t.Error("a job was submitted with nothing for infer() to receive")
+	}
+	if names := h.mlflow.Experiments(); len(names) != 0 {
+		t.Errorf("an MLflow experiment was created for a refused launch: %v", names)
+	}
+}
+
+// denyDevice allows everything except one device.
+type denyDevice struct{ id string }
+
+func (d denyDevice) UserHasExecuteAccess(resource string, ids []string, _ string) (bool, error) {
+	if resource != access.ResourceDevices {
+		return true, nil
+	}
+	for _, id := range ids {
+		if id == d.id {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// A training topic is read in training, so it is authorised as the developer like
+// any input: a label on a device they may not read refuses the launch exactly as an
+// input on it would.
+func TestALaunchAuthorizesItsTrainingTopicsToo(t *testing.T) {
+	t.Run("asked about", func(t *testing.T) {
+		perms := newRecordingPermissions()
+		h := newHarness(t, withPermissions(perms))
+		h.ready()
+
+		h.launch(func(req *experiments.LaunchRequest) {
+			req.InputTopics = append(testInputTopics(), testTrainingTopic())
+		})
+
+		devices := perms.asked[access.ResourceDevices]
+		found := false
+		for _, id := range devices {
+			found = found || id == testTrainingTopic().FilterValue
+		}
+		if !found {
+			t.Errorf("devices asked about = %v, want the training topic's device among them", devices)
+		}
+	})
+	t.Run("refused", func(t *testing.T) {
+		h := newHarness(t, withPermissions(denyDevice{id: testTrainingTopic().FilterValue}))
+		h.ready()
+
+		_, err := h.service.Launch(context.Background(), experiments.LaunchRequest{
+			Request: h.request(), InputTopics: append(testInputTopics(), testTrainingTopic()),
+		})
+		if !errors.Is(err, experiments.ErrInvalidRequest) {
+			t.Fatalf("error = %v, want the launch refused for the training topic's device", err)
+		}
+		if len(h.ray.Jobs()) != 0 {
+			t.Error("a job was submitted reading a label the developer may not read")
+		}
+	})
+}
+
+// An import as a training topic reads its history the way an import input does:
+// from the one export the developer may execute, named in import_exports.
+func TestAnImportTrainingTopicIsReadFromItsExport(t *testing.T) {
+	lister := &fakeLister{found: []exports.Export{exportOf("e31775ba-4bf5-46a5-ba8f-81adb3977104")}}
+	h := newHarness(t, withExports(lister))
+	h.ready()
+
+	label := importInputTopics()[0]
+	label.Role = experiments.RoleTraining
+	result := h.launch(func(req *experiments.LaunchRequest) {
+		req.InputTopics = append(testInputTopics(), label)
+	})
+
+	raw, ok := configOf(t, h).Config["import_exports"]
+	if !ok {
+		t.Fatal("CONFIG has no import_exports although the training topic's import has an export")
+	}
+	var encoded string
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		t.Fatalf("import_exports is not a JSON string: %v (%s)", err, raw)
+	}
+	var entries []exports.ImportExport
+	if err := json.Unmarshal([]byte(encoded), &entries); err != nil {
+		t.Fatalf("import_exports does not decode: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Topic != importTopic || entries[0].ImportID != importID {
+		t.Errorf("entries = %+v, want the training topic's import resolved to its export", entries)
+	}
+	if !hasWarning(result.Warnings, importTopic, "history from export e31775ba") {
+		t.Errorf("warnings = %v, want the export named", result.Warnings)
+	}
+	_, training, _, _ := lastJobTopics(t, h)
+	if got := topicNames(training); !reflect.DeepEqual(got, []string{importTopic}) {
+		t.Errorf("trainingTopics = %v, want the import", got)
 	}
 }
 

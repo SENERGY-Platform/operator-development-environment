@@ -1438,7 +1438,7 @@ func NewSurface(deps Deps) (*Registry, error) {
 			        "type": "object",
 			        "properties": {
 			          "name": {"type": "string", "description": "The topic, e.g. \"urn_infai_ses_service_...\" for a device service."},
-			          "filterType": {"type": "string", "description": "\"DeviceId\" or \"OperatorId\"."},
+			          "filterType": {"type": "string", "description": "\"DeviceId\", \"ImportId\" or \"OperatorId\"."},
 			          "filterValue": {"type": "string", "description": "The id the filter matches."},
 			          "mappings": {
 			            "type": "array",
@@ -1451,6 +1451,11 @@ func NewSurface(deps Deps) (*Registry, error) {
 			              },
 			              "required": ["dest", "source"]
 			            }
+			          },
+			          "role": {
+			            "type": "string",
+			            "enum": ["input", "training"],
+			            "description": "\"input\", the default when omitted, is delivered to infer() and read in training by provide_historic_data(). \"training\" is read only through provide_historic_data(role=\"training\") or provide_historic_data_local(role=\"training\"), can be the target series a data split scores against, and is never delivered to infer(): it is meant for a label that is not available when the operator runs. A launch needs at least one input topic."
 			          }
 			        },
 			        "required": ["name", "mappings"]

@@ -7011,6 +7011,10 @@
                 },
                 "name": {
                     "type": "string"
+                },
+                "role": {
+                    "description": "Role is \"input\" or \"training\", and empty means \"input\" so that every topic\nrecorded before roles existed keeps meaning what it meant. A training topic\nis read in training, can hold the target series a data split is scored\nagainst, and never reaches infer() (D41). The role is ODE's own field rather\nthan Operator Lib's: deploymentEnvironment turns it into the list a topic is\nwritten to and never sends it.",
+                    "type": "string"
                 }
             }
         },

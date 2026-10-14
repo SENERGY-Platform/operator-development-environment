@@ -1156,6 +1156,15 @@ definitions:
         type: array
       name:
         type: string
+      role:
+        description: |-
+          Role is "input" or "training", and empty means "input" so that every topic
+          recorded before roles existed keeps meaning what it meant. A training topic
+          is read in training, can hold the target series a data split is scored
+          against, and never reaches infer() (D41). The role is ODE's own field rather
+          than Operator Lib's: deploymentEnvironment turns it into the list a topic is
+          written to and never sends it.
+        type: string
     type: object
   experiments.LaunchResult:
     properties:

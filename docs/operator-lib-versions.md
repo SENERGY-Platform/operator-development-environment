@@ -110,6 +110,18 @@ runs one SELECT over all columns. Device reads stay on `/queries/v2`. A reposito
 on `v1.8.0` with an import input whose export is resolved fails at the history
 read until its pin moves.
 
+`v1.9.0` reads `trainingTopics`, the topics a launch marked with the role
+`training`, beside `inputTopics` in the same shape; a missing key or `null` reads
+as `[]`, so a deployed operator, whose config the flow engine writes without the
+key, is unchanged. `provide_historic_data` and `provide_historic_data_local` take
+`role="training"` to read them, and the replay scores `evaluation_target_series`
+against input and training topics together while handing `infer()` input topics
+only ([experiments.md](experiments.md), D41). The readers that run on Ray workers
+keep their signatures, so the cluster image needs no update. A repository left on
+`v1.8.x` ignores `trainingTopics`: operator code passing `role="training"` fails
+with a `TypeError`, and a target series mapped only in a training topic makes
+`evaluation.metric_status` say it matches no input topic.
+
 **A version this file names is not necessarily a version that exists.** The
 library bumps `operator_lib/__init__.py`'s `__version__` inside the commit that
 earns it rather than in a release step of its own, so a working copy can read

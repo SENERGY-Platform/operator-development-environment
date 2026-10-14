@@ -158,7 +158,8 @@ check Kafka retention, offsets or the oldest message on a topic before a run, do
 not ask the developer for them, and do not plan around them. One bound does need
 planning: Operator Lib refuses to read more
 than 365 days from Kafka, and provide_historic_data reads every input topic over
-the same duration. Once an import topic without an export is an input, no
+the same duration, or every training topic with role="training". Once an import
+topic without an export is an input or a training topic, no
 provide_historic_data or provide_historic_data_local call may ask for more than
 365 days.
 `)

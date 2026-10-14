@@ -342,6 +342,86 @@ func TestALaunchResultNamesTheTopicsTheRunActuallyRead(t *testing.T) {
 	}
 }
 
+// A topic's role reaches the experiment service as the model sent it, and the
+// schema offers exactly the two values the service accepts. A role lost on the way
+// would launch a label as an input infer() receives (D41), and nothing after this
+// point could tell that it had been meant otherwise.
+func TestTheLaunchToolPassesATopicsRoleThrough(t *testing.T) {
+	fake := &fakeExperiments{result: launchedResult()}
+	registry := experimentSurface(t, fake)
+
+	held := dispatchExperiment(t, registry, "launch_experiment", `{
+	  "input_topics": [
+	    {"name": "urn_infai_ses_service_aaaa", "filterType": "DeviceId",
+	     "filterValue": "urn:infai:ses:device:aaaa",
+	     "mappings": [{"dest": "value", "source": "value.power"}]},
+	    {"name": "urn_infai_ses_service_bbbb", "filterType": "DeviceId",
+	     "filterValue": "urn:infai:ses:device:bbbb", "role": "training",
+	     "mappings": [{"dest": "label", "source": "value.power"}]}
+	  ]
+	}`)
+	if held.Confirmation == nil {
+		t.Fatal("no confirmation was recorded for the developer to resolve")
+	}
+	dispatcher, err := NewDispatcher(registry, nil, &sequentialIDs{})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	confirmed := dispatcher.Confirm(context.Background(),
+		Request{Token: "Bearer t", UserSub: "user-1", SessionID: "sess-1", Tier: L0},
+		*held.Confirmation)
+	if confirmed.Outcome != OutcomeOK {
+		t.Fatalf("outcome = %q: %+v", confirmed.Outcome, confirmed.Content)
+	}
+	if len(fake.launches) != 1 {
+		t.Fatalf("launches = %d, want one", len(fake.launches))
+	}
+	topics := fake.launches[0].InputTopics
+	if len(topics) != 2 {
+		t.Fatalf("input topics = %+v, want both the call named", topics)
+	}
+	if topics[0].Role != "" {
+		t.Errorf("first topic role = %q, want it left unset as the call left it", topics[0].Role)
+	}
+	if topics[1].Role != experiments.RoleTraining {
+		t.Errorf("second topic role = %q, want %q", topics[1].Role, experiments.RoleTraining)
+	}
+
+	definition, found := registry.Lookup("launch_experiment")
+	if !found {
+		t.Fatal("launch_experiment is not declared")
+	}
+	var schema struct {
+		Properties struct {
+			InputTopics struct {
+				Items struct {
+					Properties map[string]struct {
+						Type string   `json:"type"`
+						Enum []string `json:"enum"`
+					} `json:"properties"`
+					Required []string `json:"required"`
+				} `json:"items"`
+			} `json:"input_topics"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(definition.Schema, &schema); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	items := schema.Properties.InputTopics.Items
+	role, declared := items.Properties["role"]
+	if !declared {
+		t.Fatalf("input_topics items declare %v, want a role", items.Properties)
+	}
+	if want := []string{experiments.RoleInput, experiments.RoleTraining}; !reflect.DeepEqual(role.Enum, want) {
+		t.Errorf("role enum = %v, want %v", role.Enum, want)
+	}
+	for _, name := range items.Required {
+		if name == "role" {
+			t.Error("role is required, want it optional: an omitted role is an input")
+		}
+	}
+}
+
 // The refusal on a dirty working copy has to reach the model as something it can
 // act on, because the action — commit — is one only the developer can take.
 func TestALaunchRefusedForUncommittedWorkTellsTheModelWhy(t *testing.T) {
