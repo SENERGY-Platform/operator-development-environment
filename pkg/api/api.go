@@ -148,6 +148,9 @@ func NewRouter(cfg Config, deps Deps) *gin.Engine {
 	r.Use(
 		ginmw.StructRecoveryHandler(logger, ginmw.DefaultRecoveryFunc),
 		ginmw.StructLoggerHandler(logger, attributes.Provider, []string{"/health"}, nil),
+		// After the logger on purpose: the WebSocket handshake may carry the token as
+		// ?access_token=, which must not reach the access log.
+		redactAccessTokenForLog(),
 	)
 	if len(cfg.CorsOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
