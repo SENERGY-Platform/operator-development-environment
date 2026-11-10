@@ -47,36 +47,34 @@ jobs:
           echo "::error::github-tag-action created no tag, so there is nothing to label the image with."
           exit 1
 
+  # Builds each platform on a native runner of its own, arm64 without QEMU, and merges
+  # both into one manifest under the tag.
   build:
     needs: tag
-    runs-on: ubuntu-latest
+    uses: docker/github-builder/.github/workflows/build.yml@v1
     permissions:
       contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
+      id-token: write # signs the provenance attestation
+    with:
+      output: image
+      push: true
+      platforms: linux/amd64,linux/arm64
+      meta-images: |
+        ghcr.io/senergy-platform/operator-development-environment
+      meta-tags: |
+        type=raw,value=${{ needs.tag.outputs.new_tag }}
+      meta-flavor: |
+        latest=false
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.CR_PAT }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ghcr.io/senergy-platform/operator-development-environment:${{ needs.tag.outputs.new_tag }}
-
+  summary:
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    steps:
       - name: Summary
         run: |
           echo "Pushed \`ghcr.io/senergy-platform/operator-development-environment:${{ needs.tag.outputs.new_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
